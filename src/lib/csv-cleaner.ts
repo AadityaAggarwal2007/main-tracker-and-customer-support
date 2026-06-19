@@ -116,7 +116,11 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
     }
   }
 
-  const orders = Array.from(orderMap.values());
+  const allOrders = Array.from(orderMap.values());
+
+  // ── Filter out zero-price orders (free/test orders, continuation rows) ──
+  const orders = allOrders.filter((o) => o.order_total > 0);
+  const skipped = allOrders.length - orders.length;
   const cancelled = orders.filter((o) => o.is_cancelled).length;
 
   return {
@@ -126,6 +130,7 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
       unique: orders.length,
       multiItem: orders.filter((o) => o.items.length > 1).length,
       cancelled,
+      skipped,  // zero-price orders skipped
     },
   };
 }
