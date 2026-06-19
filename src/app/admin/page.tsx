@@ -40,6 +40,7 @@ export default function AdminDashboard() {
   const [totalOrders, setTotalOrders] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
   const [brands, setBrands] = useState<string[]>([]);
@@ -203,8 +204,12 @@ export default function AdminDashboard() {
   }, [businesses]);
 
   const handleSearchChange = (val: string) => {
+    setSearchInput(val);
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => { setSearch(val); setPage(1); }, 400);
+    searchTimeout.current = setTimeout(() => {
+      setSearch(val);
+      setPage(1);
+    }, 400);
   };
 
   /* ═══ CSV UPLOAD (chunked — works on Vercel Hobby 10s limit) ═══ */
@@ -648,7 +653,7 @@ export default function AdminDashboard() {
               <div className="toolbar" style={{ flexWrap: 'wrap' }}>
                 <div className="toolbar-search">
                   <Search />
-                  <input type="text" className="form-input" placeholder="Search by order ID, name, phone, email..." onChange={(e) => handleSearchChange(e.target.value)} />
+                  <input type="text" className="form-input" placeholder="Search by order ID, name, phone, email..." value={searchInput} onChange={(e) => handleSearchChange(e.target.value)} />
                 </div>
                 <select className="form-select" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}>
                   <option value="">All Statuses</option>
