@@ -725,6 +725,7 @@ export default function AdminDashboard() {
                             <th className="col-hide-md">Customer</th>
                             <th className="col-hide-lg">City</th>
                             <th className="col-hide-sm">Total</th>
+                            <th className="col-hide-md">Tracking ID</th>
                             <th>Status</th>
                             <th style={{ textAlign: 'right' }}>Actions</th>
                           </tr>
@@ -761,6 +762,15 @@ export default function AdminDashboard() {
                                 </div>
                               </td>
                               <td className="col-hide-sm" style={{ fontWeight: 500 }}>₹{Number(order.order_total).toLocaleString()}</td>
+                              <td className="col-hide-md">
+                                {order.tracking_id
+                                  ? <div>
+                                      <span style={{ fontWeight: 600, fontSize: '0.8125rem', fontFamily: 'monospace' }}>{order.tracking_id}</span>
+                                      {order.courier_partner && <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '1px' }}>{order.courier_partner}</p>}
+                                    </div>
+                                  : <span style={{ color: 'var(--fg-muted)', fontSize: '0.75rem' }}>—</span>
+                                }
+                              </td>
                               <td>
                                 <span className={`status-pill ${getStatusColorClass(order.is_cancelled ? 'Cancelled' : order.tracking_status)}`}>
                                   {order.is_cancelled ? 'Cancelled' : order.tracking_status}
