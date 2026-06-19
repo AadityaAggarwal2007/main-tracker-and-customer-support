@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { Search, Loader2, AlertCircle, Truck, ClipboardCheck, PackageCheck, CheckCircle, Package, MapPin, Phone, Mail } from 'lucide-react';
 
 interface OrderItem { brand: string; product_name: string; quantity: number; price: number; }
@@ -44,6 +44,14 @@ export default function TrackingPage() {
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState('');
 
+  // Load brand info on mount so header shows correct logo/name immediately
+  useEffect(() => {
+    fetch('/api/brand')
+      .then(r => r.json())
+      .then(d => { if (d.business) setBusiness(d.business); })
+      .catch(() => {});
+  }, []);
+
   const handleSearch = async (e: FormEvent) => {
     e.preventDefault();
     setError(''); setOrder(null); setBusiness(null); setLoading(true);
@@ -53,7 +61,7 @@ export default function TrackingPage() {
       const r = await fetch(`/api/track?orderId=${encodeURIComponent(sid)}&phone=${phone}`);
       const d = await r.json();
       if (!r.ok) setError(d.error || 'Order not found');
-      else { setOrder(d.order); setBusiness(d.business || null); setHistory(d.history || []); }
+      else { setOrder(d.order); if (d.business) setBusiness(d.business); setHistory(d.history || []); }
     } catch { setError('Something went wrong.'); }
     finally { setLoading(false); }
   };
