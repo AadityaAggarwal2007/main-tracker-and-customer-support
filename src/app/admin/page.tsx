@@ -722,10 +722,10 @@ export default function AdminDashboard() {
                           <tr>
                             {hasPermission('update_status') && (<th style={{ width: 48 }}><input type="checkbox" className="tf-checkbox" onChange={toggleSelectAll} checked={selectedOrders.size === orders.length && orders.length > 0} /></th>)}
                             <th>Order</th>
-                            <th className="col-hide-md">Customer</th>
-                            <th className="col-hide-lg">City</th>
-                            <th className="col-hide-sm">Total</th>
-                            <th className="col-hide-md">Tracking ID</th>
+                            <th>Customer</th>
+                            <th>City</th>
+                            <th>Total</th>
+                            <th>Tracking ID</th>
                             <th>Status</th>
                             <th style={{ textAlign: 'right' }}>Actions</th>
                           </tr>
@@ -743,26 +743,27 @@ export default function AdminDashboard() {
                                 <td><input type="checkbox" className="tf-checkbox" checked={selectedOrders.has(order.order_id)} onChange={() => toggleSelectOrder(order.order_id)} /></td>
                               )}
                               <td><span style={{ fontWeight: 600, color: 'var(--primary)' }}>{order.order_id}</span></td>
-                              <td className="col-hide-md">
+                              <td>
                                 <div>
                                   <p style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                                     {order.customer_name}
                                     {order.customer_email && order.customer_email.includes('@')
                                       ? <span title="Has email" style={{ fontSize: '0.625rem', color: 'var(--success)' }}>📧</span>
-                                      : <span title="No email — WhatsApp" style={{ fontSize: '0.625rem', color: 'var(--warning)' }}>📵</span>}
+                                      : <span title="No email — WhatsApp only" style={{ fontSize: '0.625rem', color: 'var(--warning)' }}>📵</span>}
                                   {emailedOrderIds.has(order.order_id) && <span title="Email already sent" style={{ fontSize: '0.625rem', color: 'var(--info)' }}>✉️</span>}
                                   </p>
                                   {order.customer_email && <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{order.customer_email}</p>}
+                                  {order.customer_mobile && <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{order.customer_mobile}</p>}
                                 </div>
                               </td>
-                              <td className="col-hide-lg">
+                              <td>
                                 <div>
                                   <p>{order.city}</p>
                                   <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{order.state}</p>
                                 </div>
                               </td>
-                              <td className="col-hide-sm" style={{ fontWeight: 500 }}>₹{Number(order.order_total).toLocaleString()}</td>
-                              <td className="col-hide-md">
+                              <td style={{ fontWeight: 500 }}>₹{Number(order.order_total).toLocaleString()}</td>
+                              <td>
                                 {order.tracking_id
                                   ? <div>
                                       <span style={{ fontWeight: 600, fontSize: '0.8125rem', fontFamily: 'monospace' }}>{order.tracking_id}</span>
