@@ -131,13 +131,13 @@ function setupAutoSendTrigger() {
     }
   }
 
-  // Create new trigger: run sendDrafts every 1 hour
+  // Create new trigger: run sendDrafts every 1 minute
   ScriptApp.newTrigger('sendDrafts')
     .timeBased()
-    .everyHours(1)
+    .everyMinutes(1)
     .create();
 
-  Logger.log('✅ Auto-send trigger created! Will send ' + SEND_COUNT + ' drafts every hour.');
+  Logger.log('✅ Auto-send trigger created! Will send ' + SEND_COUNT + ' drafts every minute.');
 }
 
 // ── Run this to STOP auto-sending ──
