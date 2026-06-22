@@ -139,7 +139,7 @@ export default function TrackingPage() {
       
       {/* ── ADVISORY BANNER ── */}
       <div style={{ background: '#FFF7ED', borderBottom: '1px solid #FFEDD5', padding: '10px 16px', textAlign: 'center', fontSize: '13px', color: '#C2410C', fontWeight: 500 }}>
-        ⚠️ <strong>Advisory:</strong> Beware of fraud calls & messages. Fship never asks for payment/OTP/card details or app downloads for shipping or delivery. Do not pay any extra amount to delivery agents.
+        ⚠️ <strong>Advisory:</strong> Beware of fraud calls & messages. ShipTrack never asks for payment/OTP/card details or app downloads for shipping or delivery. Do not pay any extra amount to delivery agents.
       </div>
 
       {/* ── HEADER ── */}
@@ -160,7 +160,7 @@ export default function TrackingPage() {
           <span>Shipping</span>
           <span style={{ color: '#F97316', fontWeight: 600 }}>Powered</span>
           <span>by</span>
-          <div style={{ background: '#1E293B', color: '#FFFFFF', padding: '4px 8px', borderRadius: '4px', fontWeight: 700, fontSize: '11px', letterSpacing: '0.5px' }}>FShip</div>
+          <div style={{ background: '#1E293B', color: '#FFFFFF', padding: '4px 8px', borderRadius: '4px', fontWeight: 700, fontSize: '11px', letterSpacing: '0.5px' }}>ShipTrack</div>
         </div>
       </header>
 
@@ -170,7 +170,7 @@ export default function TrackingPage() {
         {/* Search form */}
         {!order && (
           <div style={{ maxWidth: '440px', margin: '48px auto 0' }}>
-            <form onSubmit={handleSearch} className="fship-card" style={{ padding: '28px' }}>
+            <form onSubmit={handleSearch} className="st-card" style={{ padding: '28px' }}>
               <h2 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: 700, color: '#0F172A' }}>Track Your Order</h2>
               <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#64748B' }}>Enter your order ID and phone number</p>
               <input
@@ -208,14 +208,14 @@ export default function TrackingPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
                 {/* Order Status */}
-                <div className="fship-card">
+                <div className="st-card">
                   <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Order Status</p>
                   <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: statusColor }}>{displayStatus}</p>
                 </div>
 
                 {/* Estimated Delivery */}
                 {order.estimated_delivery && (
-                  <div className="fship-card">
+                  <div className="st-card">
                     <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Estimated Delivery by</p>
                     <p style={{ margin: 0, fontSize: '22px', fontWeight: 800, color: '#0F172A' }}>
                       {new Date(order.estimated_delivery).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })}
@@ -224,7 +224,7 @@ export default function TrackingPage() {
                 )}
 
                 {/* Order Details */}
-                <div className="fship-card">
+                <div className="st-card">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                     <Package size={18} style={{ color: '#F97316' }} />
                     <span style={{ fontWeight: 700, fontSize: '16px', color: '#0F172A' }}>Order Details</span>
@@ -263,7 +263,7 @@ export default function TrackingPage() {
               </div>
 
               {/* RIGHT — Courier + Recent Activities */}
-              <div className="fship-card" style={{ display: 'flex', flexDirection: 'column' }}>
+              <div className="st-card" style={{ display: 'flex', flexDirection: 'column' }}>
                 {/* Courier header */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '14px', marginBottom: '16px' }}>
                   <div>
@@ -327,10 +327,10 @@ export default function TrackingPage() {
             </div>
 
             {/* ── STEPPER ── */}
-            <div className="fship-card" style={{ marginTop: '16px', padding: '32px 24px' }}>
+            <div className="st-card" style={{ marginTop: '16px', padding: '32px 24px' }}>
               {/* Desktop Stepper */}
-              <div className="fship-stepper-desktop">
-                <div className="fship-stepper-desktop-container">
+              <div className="st-stepper-desktop">
+                <div className="st-stepper-desktop-container">
                   {steps.map((step, idx) => {
                     const isCompleted = idx < currentStepIndex;
                     const isCurrent = idx === currentStepIndex;
@@ -338,7 +338,7 @@ export default function TrackingPage() {
                     const Icon = step.Icon;
                     
                     return (
-                      <div key={idx} className={`fship-stepper-step ${isCompleted ? 'completed' : ''}`}>
+                      <div key={idx} className={`st-stepper-step ${isCompleted ? 'completed' : ''}`}>
                         <div style={{
                           width: '52px', height: '52px', borderRadius: '50%',
                           background: '#FFFFFF',
@@ -363,7 +363,7 @@ export default function TrackingPage() {
               </div>
 
               {/* Mobile Stepper */}
-              <div className="fship-stepper-mobile">
+              <div className="st-stepper-mobile">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
                   {steps.map((step, idx) => {
                     const isCompleted = idx < currentStepIndex;
@@ -372,7 +372,7 @@ export default function TrackingPage() {
                     const Icon = step.Icon;
                     
                     return (
-                      <div key={idx} className={`fship-stepper-mobile-step ${isCompleted ? 'completed' : ''}`}>
+                      <div key={idx} className={`st-stepper-mobile-step ${isCompleted ? 'completed' : ''}`}>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
                           <div style={{
                             width: '44px', height: '44px', borderRadius: '50%',
@@ -421,17 +421,17 @@ export default function TrackingPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#1E293B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 800, fontSize: '10px' }}>FS</div>
               <span style={{ fontSize: '14px', color: '#64748B' }}>
-                <strong style={{ color: '#0F172A' }}>Fship</strong> – Shipping that fuels Ecommerce <span style={{ color: '#F97316', fontWeight: 600 }}>Success.</span>
+                <strong style={{ color: '#0F172A' }}>ShipTrack</strong> – Shipping that fuels Ecommerce <span style={{ color: '#F97316', fontWeight: 600 }}>Success.</span>
               </span>
             </div>
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
               {business.support_phone && (
-                <a href={`tel:${business.support_phone}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="fship-footer-pill">
+                <a href={`tel:${business.support_phone}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="st-footer-pill">
                   📞 {business.support_phone}
                 </a>
               )}
               {business.support_email && (
-                <a href={`mailto:${business.support_email}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="fship-footer-pill">
+                <a href={`mailto:${business.support_email}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="st-footer-pill">
                   ✉️ {business.support_email}
                 </a>
               )}
@@ -443,7 +443,7 @@ export default function TrackingPage() {
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-        .fship-card {
+        .st-card {
           background: #FFFFFF;
           border-radius: 12px;
           padding: 24px;
@@ -457,21 +457,21 @@ export default function TrackingPage() {
           gap: 20px;
         }
 
-        .fship-stepper-desktop {
+        .st-stepper-desktop {
           display: block;
         }
 
-        .fship-stepper-mobile {
+        .st-stepper-mobile {
           display: none;
         }
 
-        .fship-stepper-desktop-container {
+        .st-stepper-desktop-container {
           display: flex;
           justify-content: space-between;
           position: relative;
         }
 
-        .fship-stepper-step {
+        .st-stepper-step {
           position: relative;
           display: flex;
           flex-direction: column;
@@ -479,7 +479,7 @@ export default function TrackingPage() {
           flex: 1;
         }
 
-        .fship-stepper-step::after {
+        .st-stepper-step::after {
           content: '';
           position: absolute;
           top: 26px;
@@ -490,26 +490,26 @@ export default function TrackingPage() {
           z-index: 1;
         }
 
-        .fship-stepper-step:last-child::after {
+        .st-stepper-step:last-child::after {
           display: none;
         }
 
-        .fship-stepper-step.completed::after {
+        .st-stepper-step.completed::after {
           background: #1E293B;
         }
 
-        .fship-stepper-mobile-step {
+        .st-stepper-mobile-step {
           display: flex;
           gap: 16px;
           position: relative;
           padding-bottom: 24px;
         }
 
-        .fship-stepper-mobile-step:last-child {
+        .st-stepper-mobile-step:last-child {
           padding-bottom: 0;
         }
 
-        .fship-stepper-mobile-step::after {
+        .st-stepper-mobile-step::after {
           content: '';
           position: absolute;
           top: 44px;
@@ -520,15 +520,15 @@ export default function TrackingPage() {
           z-index: 1;
         }
 
-        .fship-stepper-mobile-step:last-child::after {
+        .st-stepper-mobile-step:last-child::after {
           display: none;
         }
 
-        .fship-stepper-mobile-step.completed::after {
+        .st-stepper-mobile-step.completed::after {
           background: #1E293B;
         }
 
-        .fship-footer-pill:hover {
+        .st-footer-pill:hover {
           background: #F8FAFC !important;
           border-color: #CBD5E1 !important;
         }
@@ -538,10 +538,10 @@ export default function TrackingPage() {
             grid-template-columns: 1fr;
             gap: 16px;
           }
-          .fship-stepper-desktop {
+          .st-stepper-desktop {
             display: none;
           }
-          .fship-stepper-mobile {
+          .st-stepper-mobile {
             display: block;
           }
         }
