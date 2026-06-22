@@ -89,7 +89,8 @@ export async function PATCH(request: NextRequest) {
 
     const updateData: Record<string, unknown> = {};
     if (name !== undefined) updateData.name = name;
-    if (logoUrl !== undefined) updateData.logo_url = logoUrl;
+    // Only update logo if a real value is provided — null/undefined means "keep existing logo"
+    if (logoUrl !== undefined && logoUrl !== null && logoUrl !== '') updateData.logo_url = logoUrl;
     if (supportEmail !== undefined) updateData.support_email = supportEmail;
     if (supportPhone !== undefined) updateData.support_phone = supportPhone;
     if (isDefault !== undefined) updateData.is_default = isDefault;

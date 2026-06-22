@@ -962,16 +962,18 @@ export default function AdminDashboard() {
                     try {
                       const defaultBiz = businesses.find(b => b.is_default) || businesses[0];
                       const method = defaultBiz ? 'PATCH' : 'POST';
+                      // Send null for logoUrl if empty — avoids clearing existing logo accidentally
+                      const logoUrlToSend = brandForm.logoUrl || null;
                       const body = defaultBiz
-                        ? { id: defaultBiz.id, name: brandForm.name, logoUrl: brandForm.logoUrl, supportEmail: brandForm.supportEmail, supportPhone: brandForm.supportPhone, isDefault: true }
-                        : { name: brandForm.name, logoUrl: brandForm.logoUrl, supportEmail: brandForm.supportEmail, supportPhone: brandForm.supportPhone, isDefault: true };
+                        ? { id: defaultBiz.id, name: brandForm.name, logoUrl: logoUrlToSend, supportEmail: brandForm.supportEmail || null, supportPhone: brandForm.supportPhone || null, isDefault: true }
+                        : { name: brandForm.name, logoUrl: logoUrlToSend, supportEmail: brandForm.supportEmail || null, supportPhone: brandForm.supportPhone || null, isDefault: true };
                       const res = await fetch('/api/businesses', {
                         method,
                         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                         body: JSON.stringify(body),
                       });
                       if (res.ok) {
-                        showAlert('success', 'Brand settings saved!');
+                        showAlert('success', 'Brand settings saved! Customers will see the new branding immediately.');
                         fetchBusinesses();
                       } else { showAlert('error', 'Failed to save'); }
                     } catch { showAlert('error', 'Failed to save'); }
