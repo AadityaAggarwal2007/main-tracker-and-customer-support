@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Package, Loader2, AlertCircle, ArrowLeft, MapPin, Truck, Flame, ClipboardCheck, PackageCheck, CheckCircle, Calendar } from 'lucide-react';
+import { Package, Loader2, AlertCircle, ArrowLeft, MapPin, Truck, ClipboardCheck, PackageCheck, CheckCircle } from 'lucide-react';
 
 interface OrderItem { brand: string; product_name: string; quantity: number; price: number; }
 interface TrackingOrder {
@@ -12,27 +12,73 @@ interface TrackingOrder {
 interface Business { name: string; logo_url: string; support_email: string; support_phone: string; }
 interface TrackingHistory { status: string; created_at: string; notes: string; }
 
-const STEPS = [
-  { label: 'Order\nBooked', icon: ClipboardCheck, key: 'booked' },
-  { label: 'Pickup\nCompleted', icon: PackageCheck, key: 'pickup' },
-  { label: 'In-Transit', icon: Truck, key: 'transit' },
-  { label: 'Out For\nDelivery', icon: MapPin, key: 'out' },
-  { label: 'Delivered', icon: CheckCircle, key: 'delivered' },
-];
-const statusToStep: Record<string, number> = {
-  'order placed': 0, processing: 0, packed: 1, shipped: 1,
-  'in transit': 2, 'out for delivery': 3, delivered: 4,
-};
-
-const getStatusColor = (s: string, c: boolean) => {
-  if (c) return 'var(--danger)';
-  if (s.toLowerCase() === 'delivered') return 'var(--success)';
-  return 'var(--fg)';
-};
 const getDisplayStatus = (s: string, c: boolean) => {
   if (c) return 'Cancelled';
-  const m: Record<string, string> = { 'order placed': 'Order Placed', processing: 'Processing', packed: 'Packed', shipped: 'Shipped', 'in transit': 'In Transit', 'out for delivery': 'Out For Delivery', delivered: 'Delivered', rto: 'RTO In Transit' };
+  const m: Record<string, string> = {
+    'order placed': 'Order Placed', processing: 'Processing', packed: 'Packed',
+    shipped: 'Shipped', 'in transit': 'In Transit', 'out for delivery': 'Out For Delivery',
+    delivered: 'Delivered', rto: 'RTO In Transit',
+  };
   return m[s.toLowerCase()] || s;
+};
+
+const getStatusColor = (status: string, isCancelled: boolean) => {
+  if (isCancelled) return '#EF4444';
+  const s = status.toLowerCase();
+  if (s === 'delivered') return '#10B981';
+  return '#F97316';
+};
+
+const getSteps = (status: string) => {
+  const baseSteps = [
+    { label: 'Order\nBooked', key: 'booked', Icon: ClipboardCheck },
+    { label: 'Pickup\nCompleted', key: 'pickup', Icon: PackageCheck },
+    { label: 'In-Transit', key: 'transit', Icon: Truck },
+    { label: 'Out For\nDelivery', key: 'out', Icon: MapPin },
+  ];
+
+  const s = status.toLowerCase();
+  if (s.includes('undelivered') || s.includes('failed')) {
+    return [
+      ...baseSteps,
+      { label: 'Undelivered', key: 'undelivered', Icon: AlertCircle },
+      { label: 'Delivered', key: 'delivered', Icon: CheckCircle },
+    ];
+  } else if (s.includes('rto')) {
+    return [
+      ...baseSteps,
+      { label: 'RTO In Transit', key: 'rto', Icon: AlertCircle },
+      { label: 'Returned', key: 'returned', Icon: Package },
+    ];
+  } else {
+    return [
+      ...baseSteps,
+      { label: 'Delivered', key: 'delivered', Icon: CheckCircle },
+    ];
+  }
+};
+
+const getStepIndex = (status: string, steps: any[]) => {
+  const s = status.toLowerCase();
+  if (s === 'order placed' || s === 'processing') return 0;
+  if (s === 'packed' || s === 'shipped') return 1;
+  if (s === 'in transit') return 2;
+  if (s === 'out for delivery') return 3;
+  
+  if (s.includes('undelivered') || s.includes('failed')) {
+    return steps.findIndex(x => x.key === 'undelivered');
+  }
+  if (s.includes('rto')) {
+    return steps.findIndex(x => x.key === 'rto');
+  }
+  if (s === 'returned') {
+    return steps.findIndex(x => x.key === 'returned');
+  }
+  if (s === 'delivered') {
+    return steps.findIndex(x => x.key === 'delivered');
+  }
+  
+  return -1;
 };
 
 export default function TrackingTokenPage({ params }: { params: { token: string } }) {
@@ -56,200 +102,444 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
   }, [token]);
 
   const brandName = business?.name || 'Order Tracking';
+  const logoUrl = (() => {
+    const u = business?.logo_url;
+    if (!u) return null;
+    return u.includes('drive.google.com') ? u.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1') : u;
+  })();
 
-  if (loading) return <div className="tracking-page"><Header brandName={brandName} business={business} /><div className="loading-center" style={{ minHeight: '60vh' }}><Loader2 size={32} style={{ animation: 'spin 0.6s linear infinite', color: 'var(--primary)' }} /></div></div>;
+  const displayStatus = order ? getDisplayStatus(order.tracking_status, order.is_cancelled) : '';
+  const statusColor = order ? getStatusColor(order.tracking_status, order.is_cancelled) : '#F97316';
 
-  if (error || !order) return (
-    <div className="tracking-page"><Header brandName={brandName} business={business} />
-      <div className="tracking-body"><div className="tf-card animate-fade-in-up" style={{ padding: '2.5rem', textAlign: 'center' }}>
-        <AlertCircle size={40} style={{ color: 'var(--danger)', margin: '0 auto 0.75rem' }} />
-        <h2 style={{ fontSize: '1.125rem', fontWeight: 600 }}>Order Not Found</h2>
-        <p style={{ fontSize: '0.875rem', color: 'var(--fg-muted)', marginBottom: '1.5rem' }}>This tracking link may be invalid or expired.</p>
-        <a href="/track" className="btn btn-primary" style={{ display: 'inline-flex', gap: '0.5rem' }}><ArrowLeft size={16} /> Search by Order ID</a>
-      </div></div>
-    </div>
-  );
+  const fmt = (iso: string) => {
+    const d = new Date(iso);
+    return {
+      date: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+      time: d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }),
+    };
+  };
 
-  const currentStep = order.is_cancelled ? -1 : (statusToStep[order.tracking_status.toLowerCase()] ?? -1);
-  const isRTO = order.tracking_status.toLowerCase() === 'rto';
-  const productNames = order.order_items?.map(i => i.product_name).filter(Boolean) || [];
-  const activities = history.map((h, i) => ({
-    date: new Date(h.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
-    time: new Date(h.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-    activity: h.status,
-    notes: h.notes,
-    isCurrent: i === history.length - 1,
-  }));
+  const steps = order ? getSteps(order.tracking_status) : [];
+  const currentStepIndex = order ? getStepIndex(order.tracking_status, steps) : -1;
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#EFF3F8', fontFamily: 'Inter, system-ui, -apple-system, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <Loader2 size={36} style={{ animation: 'spin 0.6s linear infinite', color: '#F97316' }} />
+        <p style={{ marginTop: '12px', fontSize: '14px', color: '#64748B', fontWeight: 500 }}>Loading Tracking Details...</p>
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  if (error || !order) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#EFF3F8', fontFamily: 'Inter, system-ui, -apple-system, sans-serif', color: '#1E293B', display: 'flex', flexDirection: 'column' }}>
+        {/* HEADER */}
+        <header style={{ background: '#FFFFFF', borderBottom: '1px solid #E2E8F0', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {logoUrl ? (
+              <img src={logoUrl} alt={brandName} style={{ height: '36px', width: '36px', borderRadius: '50%', objectFit: 'cover', border: '1px solid #E2E8F0' }} />
+            ) : (
+              <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#1E293B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '14px' }}>
+                {brandName.charAt(0)}
+              </div>
+            )}
+            <span style={{ fontWeight: 700, fontSize: '18px', color: '#0F172A' }}>{brandName}</span>
+          </div>
+        </header>
+
+        {/* ERROR CARD */}
+        <main style={{ maxWidth: '440px', width: '100%', margin: '80px auto', padding: '0 16px', boxSizing: 'border-box' }}>
+          <div style={{ background: '#FFFFFF', borderRadius: '12px', padding: '40px 24px', textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', border: '1px solid #E2E8F0' }}>
+            <AlertCircle size={48} style={{ color: '#EF4444', margin: '0 auto 16px' }} />
+            <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#0F172A', margin: '0 0 8px' }}>Tracking Link Invalid</h2>
+            <p style={{ fontSize: '14px', color: '#64748B', margin: '0 0 24px', lineHeight: 1.5 }}>This tracking link may have expired or the order could not be found. Please check your link or search by Order ID manually.</p>
+            <a href="/track" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 20px', background: '#F97316', color: '#FFFFFF', borderRadius: '8px', fontSize: '14px', fontWeight: 600, textDecoration: 'none' }}>
+              <ArrowLeft size={16} /> Search by Order ID
+            </a>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
-    <div className="tracking-page">
-      <Header brandName={brandName} business={business} />
-      <main className="tracking-body animate-fade-in-up">
-        <div className="remix-grid">
-          {/* LEFT */}
-          <div className="remix-left">
-            {/* Status */}
-            <div className="tf-card" style={{ padding: '1.25rem' }}>
-              <p className="section-label" style={{ marginBottom: '0.25rem' }}>Order Status</p>
-              <p style={{ fontSize: '1.375rem', fontWeight: 800, color: getStatusColor(order.tracking_status, order.is_cancelled) }}>
-                {getDisplayStatus(order.tracking_status, order.is_cancelled)}
-              </p>
+    <div style={{ minHeight: '100vh', background: '#EFF3F8', fontFamily: 'Inter, system-ui, -apple-system, sans-serif', color: '#1E293B', display: 'flex', flexDirection: 'column' }}>
+      
+      {/* ── ADVISORY BANNER ── */}
+      <div style={{ background: '#FFF7ED', borderBottom: '1px solid #FFEDD5', padding: '10px 16px', textAlign: 'center', fontSize: '13px', color: '#C2410C', fontWeight: 500 }}>
+        ⚠️ <strong>Advisory:</strong> Beware of fraud calls & messages. Fship never asks for payment/OTP/card details or app downloads for shipping or delivery. Do not pay any extra amount to delivery agents.
+      </div>
+
+      {/* ── HEADER ── */}
+      <header style={{ background: '#FFFFFF', borderBottom: '1px solid #E2E8F0', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+        {/* Brand logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {logoUrl ? (
+            <img src={logoUrl} alt={brandName} style={{ height: '36px', width: '36px', borderRadius: '50%', objectFit: 'cover', border: '1px solid #E2E8F0' }} />
+          ) : (
+            <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#1E293B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '14px' }}>
+              {brandName.charAt(0)}
+            </div>
+          )}
+          <span style={{ fontWeight: 700, fontSize: '18px', color: '#0F172A' }}>{brandName}</span>
+        </div>
+        {/* "Powered by" badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#64748B' }}>
+          <span>Shipping</span>
+          <span style={{ color: '#F97316', fontWeight: 600 }}>Powered</span>
+          <span>by</span>
+          <div style={{ background: '#1E293B', color: '#FFFFFF', padding: '4px 8px', borderRadius: '4px', fontWeight: 700, fontSize: '11px', letterSpacing: '0.5px' }}>FShip</div>
+        </div>
+      </header>
+
+      {/* ── BODY ── */}
+      <main style={{ maxWidth: '1200px', width: '100%', margin: '0 auto', padding: '24px 16px', flex: 1, boxSizing: 'border-box' }}>
+        
+        {/* ── TWO-COLUMN GRID ── */}
+        <div className="tracking-dashboard-grid">
+
+          {/* LEFT — 3 stacked cards */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+            {/* Order Status */}
+            <div className="fship-card">
+              <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Order Status</p>
+              <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: statusColor }}>{displayStatus}</p>
             </div>
 
             {/* Estimated Delivery */}
             {order.estimated_delivery && (
-              <div className="tf-card" style={{ padding: '1.25rem' }}>
-                <p className="section-label" style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                  <Calendar size={11} /> Estimated Delivery by
-                </p>
-                <p style={{ fontSize: '1.125rem', fontWeight: 800 }}>
-                  {new Date(order.estimated_delivery).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              <div className="fship-card">
+                <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Estimated Delivery by</p>
+                <p style={{ margin: 0, fontSize: '22px', fontWeight: 800, color: '#0F172A' }}>
+                  {new Date(order.estimated_delivery).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })}
                 </p>
               </div>
             )}
 
             {/* Order Details */}
-            <div className="tf-card" style={{ padding: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                <MapPin size={16} />
-                <span style={{ fontSize: '0.9375rem', fontWeight: 700 }}>Order Details</span>
+            <div className="fship-card">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                <Package size={18} style={{ color: '#F97316' }} />
+                <span style={{ fontWeight: 700, fontSize: '16px', color: '#0F172A' }}>Order Details</span>
               </div>
-              <div className="detail-table">
-                <div className="detail-row"><span className="detail-key">Order ID</span><span className="detail-val">{order.order_id}</span></div>
-                {productNames.map((name, i) => (
-                  <div key={i} className="detail-row"><span className="detail-key">{i === 0 ? 'Product' : ''}</span><span className="detail-val">{name}</span></div>
-                ))}
-                <div className="detail-row" style={{ borderBottom: 'none' }}><span className="detail-key">Delivery City</span><span className="detail-val">{order.city}</span></div>
-              </div>
-            </div>
-          </div>
-
-          {/* RIGHT */}
-          <div className="remix-right">
-            <div className="tf-card" style={{ padding: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-                <div className="courier-avatar"><Truck size={18} style={{ color: 'var(--primary)' }} /></div>
-                <span style={{ fontSize: '0.9375rem', fontWeight: 700 }}>{order.courier_partner || 'Courier Partner'}</span>
-              </div>
-              <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
-                TRACKING ID : <span style={{ fontWeight: 600, color: 'var(--fg)', fontSize: '0.9375rem' }}>{order.tracking_id || '—'}</span>
-              </p>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                <Flame size={16} />
-                <span style={{ fontSize: '0.9375rem', fontWeight: 700 }}>Recent Activities</span>
-              </div>
-
-              <div style={{ position: 'relative', marginLeft: '0.25rem', maxHeight: '300px', overflowY: 'auto', paddingRight: '0.5rem' }}>
-                {activities.length > 0 ? activities.map((act, i) => (
-                  <div key={i} style={{ display: 'flex', gap: '0.75rem' }}>
-                    <div style={{ width: '3.5rem', flexShrink: 0, textAlign: 'right', paddingRight: '0.375rem' }}>
-                      <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--primary)', lineHeight: 1.2 }}>{act.date}</p>
-                      <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem' }}>{act.time}</p>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <div style={{ width: '0.625rem', height: '0.625rem', borderRadius: '50%', marginTop: '0.25rem', flexShrink: 0, zIndex: 10, background: act.isCurrent ? 'var(--success)' : 'var(--fg-muted)' }} />
-                      {i < activities.length - 1 && <div style={{ width: '1px', flex: 1, borderLeft: '2px dashed var(--border)', minHeight: '2.25rem' }} />}
-                    </div>
-                    <div style={{ paddingBottom: '1.25rem', flex: 1 }}>
-                      <p style={{ fontSize: '0.8125rem' }}><span style={{ fontWeight: 600 }}>Activity : </span>{act.activity}</p>
-                      {act.notes && act.notes.trim() !== '' && !act.notes.startsWith('Status updated to') && !act.notes.startsWith('CSV import') && (
-                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.125rem', fontStyle: 'italic' }}>📝 {act.notes}</p>
-                      )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F1F5F9', paddingBottom: '10px' }}>
+                  <span style={{ fontSize: '14px', color: '#64748B' }}>Order ID</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{order.order_id}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F1F5F9', paddingBottom: '10px' }}>
+                  <span style={{ fontSize: '14px', color: '#64748B' }}>Order Shipped On</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>
+                    {new Date(order.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
+                    {new Date(order.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '2px' }}>
+                  <span style={{ fontSize: '14px', color: '#64748B' }}>Delivery City</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{order.city || '—'}</span>
+                </div>
+                {order.order_items?.length > 0 && (
+                  <div style={{ borderTop: '1px solid #F1F5F9', paddingTop: '12px', marginTop: '4px' }}>
+                    <span style={{ fontSize: '12px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '8px' }}>Products</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {order.order_items.map((item, i) => (
+                        <div key={i} style={{ fontSize: '13px', color: '#334155', background: '#F8FAFC', padding: '8px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                          <span>{item.product_name}</span>
+                          <span style={{ fontWeight: 600 }}>Qty: {item.quantity}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                )) : (
-                  <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)' }}>No activity yet — updates will appear here.</p>
                 )}
               </div>
             </div>
           </div>
+
+          {/* RIGHT — Courier + Recent Activities */}
+          <div className="fship-card" style={{ display: 'flex', flexDirection: 'column' }}>
+            {/* Courier header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '14px', marginBottom: '16px' }}>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Courier Partner</div>
+                <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A' }}>{order.courier_partner || 'Courier Partner'}</div>
+              </div>
+              {order.tracking_id && (
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '12px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tracking ID</div>
+                  <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A' }}>{order.tracking_id}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Recent Activities heading */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <Truck size={18} style={{ color: '#F97316' }} />
+              <span style={{ fontWeight: 700, fontSize: '16px', color: '#0F172A' }}>Recent Activities</span>
+            </div>
+
+            {/* Timeline */}
+            <div style={{ flex: 1, overflowY: 'auto', maxHeight: '350px', paddingRight: '4px' }}>
+              {history.length > 0 ? history.map((h, i) => {
+                const { date, time } = fmt(h.created_at);
+                const isLast = i === history.length - 1;
+                return (
+                  <div key={i} style={{ display: 'flex', gap: '14px' }}>
+                    {/* Date/time */}
+                    <div style={{ width: '70px', flexShrink: 0, textAlign: 'right', paddingTop: '2px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>{date}</div>
+                      <div style={{ fontSize: '12px', color: '#64748B', marginTop: '1px' }}>{time}</div>
+                    </div>
+                    {/* Dot + line */}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                      <div style={{
+                        width: '10px', height: '10px', borderRadius: '50%',
+                        background: isLast ? '#22C55E' : '#1E293B',
+                        marginTop: '6px', zIndex: 10,
+                        boxShadow: isLast ? '0 0 0 3px rgba(34, 197, 94, 0.2)' : 'none'
+                      }} />
+                      {!isLast && <div style={{ width: '2px', flex: 1, background: '#E2E8F0', minHeight: '36px', margin: '4px 0' }} />}
+                    </div>
+                    {/* Activity */}
+                    <div style={{ paddingBottom: '20px', flex: 1 }}>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#1E293B', lineHeight: 1.4 }}>
+                        Activity: {h.status}
+                      </div>
+                      {h.notes && h.notes.trim() && !h.notes.startsWith('Status updated') && !h.notes.startsWith('CSV import') && (
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                          Location: {h.notes}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }) : (
+                <p style={{ fontSize: '14px', color: '#94A3B8', margin: 0 }}>No activity yet — updates will appear here.</p>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* TIMELINE */}
-        <div className="tf-card" style={{ padding: '1rem 0.5rem', marginTop: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', padding: '0 0.25rem' }}>
-            <div style={{ position: 'absolute', top: '1.25rem', left: 0, right: 0, display: 'flex', padding: '0 22px', zIndex: 0 }}>
-              {STEPS.slice(0, -1).map((_, i) => (
-                <div key={i} style={{ flex: 1, height: '2px', backgroundColor: i < currentStep ? 'var(--primary)' : 'var(--border)' }} />
-              ))}
-            </div>
-            {STEPS.map((step, i) => {
-              const Icon = step.icon;
-              const done = !order.is_cancelled && i < currentStep;
-              const active = !order.is_cancelled && i === currentStep;
-              return (
-                <div key={step.key} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', zIndex: 10, width: `${100 / STEPS.length}%` }}>
-                  <div style={{
-                    width: '2.5rem', height: '2.5rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    border: `2px solid ${done || active ? 'var(--primary)' : 'var(--border)'}`, background: 'white',
-                    ...(active ? { animation: 'pulseDot 2s ease-in-out infinite' } : {}),
-                  }}>
-                    <Icon size={16} style={{ color: done || active ? 'var(--primary)' : 'var(--fg-muted)' }} strokeWidth={done || active ? 2.5 : 1.5} />
+        {/* ── STEPPER ── */}
+        <div className="fship-card" style={{ marginTop: '16px', padding: '32px 24px' }}>
+          {/* Desktop Stepper */}
+          <div className="fship-stepper-desktop">
+            <div className="fship-stepper-desktop-container">
+              {steps.map((step, idx) => {
+                const isCompleted = idx < currentStepIndex;
+                const isCurrent = idx === currentStepIndex;
+                const isActive = isCompleted || isCurrent;
+                const Icon = step.Icon;
+                
+                return (
+                  <div key={idx} className={`fship-stepper-step ${isCompleted ? 'completed' : ''}`}>
+                    <div style={{
+                      width: '52px', height: '52px', borderRadius: '50%',
+                      background: '#FFFFFF',
+                      border: `2px solid ${isActive ? '#1E293B' : '#CBD5E1'}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+                      color: isActive ? '#F97316' : '#94A3B8',
+                      zIndex: 10
+                    }}>
+                      <Icon size={22} strokeWidth={1.75} />
+                    </div>
+                    <div style={{
+                      fontSize: '13px', marginTop: '10px', textAlign: 'center',
+                      fontWeight: isActive ? 600 : 500,
+                      color: isActive ? '#1E293B' : '#94A3B8',
+                      lineHeight: 1.4, whiteSpace: 'pre-line'
+                    }}>{step.label}</div>
                   </div>
-                  <span style={{ fontSize: '0.5625rem', marginTop: '0.375rem', textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.3, fontWeight: done || active ? 600 : 500, color: done || active ? 'var(--fg)' : 'var(--fg-muted)' }}>{step.label}</span>
-                </div>
-              );
-            })}
-            {isRTO && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', zIndex: 10, width: `${100 / (STEPS.length + 1)}%` }}>
-                <div style={{ width: '2.5rem', height: '2.5rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--danger)', background: 'white', animation: 'pulseDot 2s ease-in-out infinite' }}>
-                  <Package size={16} style={{ color: 'var(--danger)' }} strokeWidth={2.5} />
-                </div>
-                <span style={{ fontSize: '0.5625rem', marginTop: '0.375rem', textAlign: 'center', fontWeight: 600, color: 'var(--danger)' }}>RTO In{'\n'}Transit</span>
-              </div>
-            )}
+                );
+              })}
+            </div>
           </div>
+
+          {/* Mobile Stepper */}
+          <div className="fship-stepper-mobile">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+              {steps.map((step, idx) => {
+                const isCompleted = idx < currentStepIndex;
+                const isCurrent = idx === currentStepIndex;
+                const isActive = isCompleted || isCurrent;
+                const Icon = step.Icon;
+                
+                return (
+                  <div key={idx} className={`fship-stepper-mobile-step ${isCompleted ? 'completed' : ''}`}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                      <div style={{
+                        width: '44px', height: '44px', borderRadius: '50%',
+                        background: '#FFFFFF',
+                        border: `2px solid ${isActive ? '#1E293B' : '#CBD5E1'}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                        color: isActive ? '#F97316' : '#94A3B8',
+                        zIndex: 10
+                      }}>
+                        <Icon size={18} strokeWidth={1.75} />
+                      </div>
+                    </div>
+                    <div style={{ paddingTop: '10px' }}>
+                      <span style={{
+                        fontSize: '14px',
+                        fontWeight: isActive ? 600 : 500,
+                        color: isActive ? '#1E293B' : '#94A3B8',
+                        whiteSpace: 'pre-line'
+                      }}>{step.label.replace('\n', ' ')}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Home search button */}
+        <div style={{ textAlign: 'center', marginTop: '24px' }}>
+          <a
+            href="/track"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '11px 28px', background: 'transparent', border: '1px solid #CBD5E1', borderRadius: '8px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', color: '#475569', transition: 'all 0.2s', textDecoration: 'none' }}
+          >
+            ← Track another order
+          </a>
         </div>
       </main>
 
+      {/* ── FOOTER ── */}
       {business && (
-        <footer className="tracking-footer-brand">
-          <div className="tracking-footer-inner" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <img src="/shiptrack-logo.png" alt="ShipTrack" style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
-              <p style={{ fontSize: '0.8125rem' }}><span style={{ color: 'var(--primary)', fontWeight: 600 }}>Shipping </span>that fuels Ecommerce<span style={{ color: 'var(--primary)', fontWeight: 600 }}> Success.</span></p>
+        <footer style={{ background: '#FFFFFF', borderTop: '1px solid #E2E8F0', padding: '20px 24px', marginTop: '48px' }}>
+          <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#1E293B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 800, fontSize: '10px' }}>FS</div>
+              <span style={{ fontSize: '14px', color: '#64748B' }}>
+                <strong style={{ color: '#0F172A' }}>Fship</strong> – Shipping that fuels Ecommerce <span style={{ color: '#F97316', fontWeight: 600 }}>Success.</span>
+              </span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-              {business.support_phone && <span className="footer-pill">📞 {business.support_phone}</span>}
-              {business.support_email && <span className="footer-pill">📧 {business.support_email}</span>}
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              {business.support_phone && (
+                <a href={`tel:${business.support_phone}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="fship-footer-pill">
+                  📞 {business.support_phone}
+                </a>
+              )}
+              {business.support_email && (
+                <a href={`mailto:${business.support_email}`} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '9999px', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0F172A', fontSize: '13px', fontWeight: 500 }} className="fship-footer-pill">
+                  ✉️ {business.support_email}
+                </a>
+              )}
             </div>
           </div>
         </footer>
       )}
-    </div>
-  );
-}
 
-function Header({ brandName, business }: { brandName: string; business: Business | null }) {
-  const logoUrl = business?.logo_url;
-  // Convert Google Drive share links to direct image URLs
-  const directLogo = logoUrl && logoUrl.includes('drive.google.com')
-    ? logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1')
-    : logoUrl;
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-  return (
-    <div className="tracking-header">
-      <div className="tracking-header-inner" style={{ justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
-          {directLogo ? (
-            <img src={directLogo} alt={brandName} style={{ width: '2.5rem', height: '2.5rem', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }} />
-          ) : (
-            <div className="courier-avatar">
-              <span style={{ fontWeight: 700, fontSize: '0.75rem', color: 'var(--primary)' }}>
-                {brandName.substring(0, 2).toUpperCase()}
-              </span>
-            </div>
-          )}
-          <span style={{ fontSize: '1rem', fontWeight: 700, letterSpacing: '-0.01em' }}>{brandName}</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>
-          <span>Shipping</span>
-          <span style={{ color: 'var(--primary)', fontWeight: 600 }}>Powered</span>
-          <span>by</span>
-          <img src="/shiptrack-logo.png" alt="ShipTrack" style={{ width: '1.75rem', height: '1.75rem', marginLeft: '0.125rem' }} />
-        </div>
-      </div>
+        .fship-card {
+          background: #FFFFFF;
+          border-radius: 12px;
+          padding: 24px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.02);
+          border: 1px solid #E2E8F0;
+        }
+
+        .tracking-dashboard-grid {
+          display: grid;
+          grid-template-columns: 4.5fr 7.5fr;
+          gap: 20px;
+        }
+
+        .fship-stepper-desktop {
+          display: block;
+        }
+
+        .fship-stepper-mobile {
+          display: none;
+        }
+
+        .fship-stepper-desktop-container {
+          display: flex;
+          justify-content: space-between;
+          position: relative;
+        }
+
+        .fship-stepper-step {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          flex: 1;
+        }
+
+        .fship-stepper-step::after {
+          content: '';
+          position: absolute;
+          top: 26px;
+          left: 50%;
+          width: 100%;
+          height: 4px;
+          background: #E2E8F0;
+          z-index: 1;
+        }
+
+        .fship-stepper-step:last-child::after {
+          display: none;
+        }
+
+        .fship-stepper-step.completed::after {
+          background: #1E293B;
+        }
+
+        .fship-stepper-mobile-step {
+          display: flex;
+          gap: 16px;
+          position: relative;
+          padding-bottom: 24px;
+        }
+
+        .fship-stepper-mobile-step:last-child {
+          padding-bottom: 0;
+        }
+
+        .fship-stepper-mobile-step::after {
+          content: '';
+          position: absolute;
+          top: 44px;
+          left: 21px;
+          width: 2px;
+          height: calc(100% - 44px);
+          background: #CBD5E1;
+          z-index: 1;
+        }
+
+        .fship-stepper-mobile-step:last-child::after {
+          display: none;
+        }
+
+        .fship-stepper-mobile-step.completed::after {
+          background: #1E293B;
+        }
+
+        .fship-footer-pill:hover {
+          background: #F8FAFC !important;
+          border-color: #CBD5E1 !important;
+        }
+
+        @media (max-width: 768px) {
+          .tracking-dashboard-grid {
+            grid-template-columns: 1fr;
+            gap: 16px;
+          }
+          .fship-stepper-desktop {
+            display: none;
+          }
+          .fship-stepper-mobile {
+            display: block;
+          }
+        }
+      `}</style>
     </div>
   );
 }

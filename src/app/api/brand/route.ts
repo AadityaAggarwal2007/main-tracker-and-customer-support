@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
+export const dynamic = 'force-dynamic';
+
 // Public endpoint — returns default business branding (no auth required)
 export async function GET() {
   const { data } = await getSupabaseAdmin()
