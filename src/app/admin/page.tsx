@@ -196,6 +196,17 @@ export default function AdminDashboard() {
     } catch { /* ignore */ }
   }, [token]);
 
+  const fetchProgressionSteps = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/progression-settings?t=${Date.now()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok) {
+        setProgressionSteps(data.steps || []);
+        setProgressionDirty(false);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   const fetchQueueStats = useCallback(async () => {
     if (!token) return;
     setLoadingQueue(true);
@@ -207,9 +218,10 @@ export default function AdminDashboard() {
     finally { setLoadingQueue(false); }
   }, [token]);
 
-  useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
+  useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); fetchProgressionSteps(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats, fetchProgressionSteps]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
   useEffect(() => { if (activeTab === 'team') fetchTeamUsers(); }, [activeTab, fetchTeamUsers]);
+  useEffect(() => { if (activeTab === 'settings') fetchProgressionSteps(); }, [activeTab, fetchProgressionSteps]);
   useEffect(() => { fetchEmailedOrders(); }, [fetchEmailedOrders]);
   // Auto-refresh email stats every 30 seconds
   useEffect(() => {
@@ -1064,16 +1076,7 @@ export default function AdminDashboard() {
                   <button
                     className="btn btn-sm btn-outline"
                     style={{ fontSize: '0.75rem' }}
-                    onClick={async () => {
-                      try {
-                        const res = await fetch('/api/progression-settings');
-                        if (res.ok) {
-                          const data = await res.json();
-                          setProgressionSteps(data.steps || []);
-                          setProgressionDirty(false);
-                        }
-                      } catch { /* ignore */ }
-                    }}
+                    onClick={fetchProgressionSteps}
                   >
                     Refresh
                   </button>
@@ -1086,15 +1089,7 @@ export default function AdminDashboard() {
                   <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--fg-muted)' }}>
                     <Timer size={32} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
                     <p style={{ fontSize: '0.875rem' }}>Loading progression settings...</p>
-                    <button className="btn btn-sm btn-primary" style={{ marginTop: '0.75rem' }} onClick={async () => {
-                      try {
-                        const res = await fetch('/api/progression-settings');
-                        if (res.ok) {
-                          const data = await res.json();
-                          setProgressionSteps(data.steps || []);
-                        }
-                      } catch { /* ignore */ }
-                    }}>Load Settings</button>
+                    <button className="btn btn-sm btn-primary" style={{ marginTop: '0.75rem' }} onClick={fetchProgressionSteps}>Load Settings</button>
                   </div>
                 ) : (
                   <>
@@ -1188,6 +1183,7 @@ export default function AdminDashboard() {
                             if (res.ok) {
                               showAlert('success', 'Auto-progression settings saved!');
                               setProgressionDirty(false);
+                              fetchProgressionSteps();
                             } else { showAlert('error', 'Failed to save progression settings'); }
                           } catch { showAlert('error', 'Failed to save'); }
                           finally { setSavingProgression(false); }
