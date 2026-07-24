@@ -1117,28 +1117,17 @@ export default function AdminDashboard() {
                               <input
                                 type="number"
                                 min="1"
-                                value={step.delay_minutes >= 60 ? Math.round(step.delay_minutes / 60) : step.delay_minutes}
+                                value={step.delay_minutes}
                                 onChange={(e) => {
                                   const val = parseInt(e.target.value) || 1;
-                                  const inMinutes = step.delay_minutes >= 60 ? val * 60 : val;
-                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: inMinutes } : s));
+                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: val } : s));
                                   setProgressionDirty(true);
                                 }}
-                                style={{ width: '4rem', padding: '0.25rem 0.5rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.8125rem', fontWeight: 600, textAlign: 'center' }}
+                                style={{ width: '5rem', padding: '0.25rem 0.5rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.8125rem', fontWeight: 600, textAlign: 'center' }}
                               />
-                              <select
-                                value={step.delay_minutes >= 60 ? 'hours' : 'minutes'}
-                                onChange={(e) => {
-                                  const currentVal = step.delay_minutes >= 60 ? Math.round(step.delay_minutes / 60) : step.delay_minutes;
-                                  const newMinutes = e.target.value === 'hours' ? currentVal * 60 : currentVal;
-                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: newMinutes } : s));
-                                  setProgressionDirty(true);
-                                }}
-                                style={{ padding: '0.25rem 0.375rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.75rem', color: 'var(--fg-muted)' }}
-                              >
-                                <option value="minutes">min</option>
-                                <option value="hours">hrs</option>
-                              </select>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>
+                                min {step.delay_minutes >= 60 && <span style={{ color: 'var(--primary)', fontWeight: 600 }}>({step.delay_minutes >= 1440 ? `${(step.delay_minutes / 1440).toFixed(1)} days` : `${(step.delay_minutes / 60).toFixed(1)} hrs`})</span>}
+                              </span>
                               <button
                                 onClick={() => {
                                   setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, is_enabled: !s.is_enabled } : s));
