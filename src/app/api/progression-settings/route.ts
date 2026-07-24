@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthFromRequest } from '@/lib/auth';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
@@ -18,12 +17,8 @@ export async function GET() {
   return NextResponse.json({ steps: data });
 }
 
-// PUT: Update progression settings (admin only)
+// PUT: Update progression settings
 export async function PUT(request: NextRequest) {
-  const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
 
   try {
     const { steps } = await request.json();
