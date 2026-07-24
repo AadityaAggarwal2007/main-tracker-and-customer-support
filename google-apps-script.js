@@ -261,6 +261,47 @@ function processQueue() {
     Logger.log('⚠️ Failed to report results: ' + err.toString());
     // Not fatal — the queue rows will stay as 'processing' and can be retried
   }
+
+  // ── Auto-progress orders (piggyback on the 1-minute trigger) ──
+  progressOrders();
+}
+
+// ═══════════════════════════════════════════════
+// AUTO-PROGRESSION
+// ═══════════════════════════════════════════════
+// Calls the progress-orders endpoint to auto-advance
+// order statuses based on configured timers.
+// Runs every minute as part of processQueue.
+//
+// Requires Script Property:
+//   PROGRESS_URL → https://shiptrack.store/api/cron/progress-orders
+// ═══════════════════════════════════════════════
+
+function progressOrders() {
+  var props = PropertiesService.getScriptProperties();
+  var progressUrl = props.getProperty('PROGRESS_URL');
+  var secret = props.getProperty('QUEUE_SECRET');
+
+  if (!progressUrl || !secret) {
+    // Silently skip if not configured
+    return;
+  }
+
+  try {
+    var url = progressUrl + '?key=' + encodeURIComponent(secret);
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+    var body = res.getContentText();
+    
+    if (res.getResponseCode() === 200) {
+      var result = JSON.parse(body);
+      if (result.progressed > 0) {
+        Logger.log('🔄 Auto-progressed ' + result.progressed + ' orders.');
+      }
+    }
+  } catch (err) {
+    // Don't fail processQueue if progression fails
+    Logger.log('⚠️ Auto-progression error: ' + err.toString());
+  }
 }
 
 // ── Run this ONCE to set up automatic queue processing every minute ──

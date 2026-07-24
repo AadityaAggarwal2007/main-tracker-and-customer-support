@@ -7,7 +7,7 @@ import {
   Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
-  Activity, Zap, Calendar, StickyNote, Settings
+  Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight
 } from 'lucide-react';
 
 /* ═══════════ TYPES ═══════════ */
@@ -93,6 +93,12 @@ export default function AdminDashboard() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '' });
   const [savingBrand, setSavingBrand] = useState(false);
+
+  // Auto-Progression
+  interface ProgressionStep { id: string; step_from: string; step_to: string; step_order: number; delay_minutes: number; is_enabled: boolean; }
+  const [progressionSteps, setProgressionSteps] = useState<ProgressionStep[]>([]);
+  const [progressionDirty, setProgressionDirty] = useState(false);
+  const [savingProgression, setSavingProgression] = useState(false);
 
   // Alert
   const [alert, setAlert] = useState<{ type: string; message: string } | null>(null);
@@ -1046,6 +1052,164 @@ export default function AdminDashboard() {
                     {savingBrand ? 'Saving...' : 'Save Settings'}
                   </button>
                 </div>
+              </div>
+
+              {/* ── Auto-Progression Settings ── */}
+              <div className="tf-card" style={{ padding: '1.5rem', marginTop: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Timer size={18} style={{ color: 'var(--primary)' }} />
+                    <span style={{ fontWeight: 700, fontSize: '1rem' }}>Auto-Progression</span>
+                  </div>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/progression-settings');
+                        if (res.ok) {
+                          const data = await res.json();
+                          setProgressionSteps(data.steps || []);
+                          setProgressionDirty(false);
+                        }
+                      } catch { /* ignore */ }
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
+                  Orders automatically move through stages after the set time. Customer tracking pages update in real-time.
+                </p>
+
+                {progressionSteps.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--fg-muted)' }}>
+                    <Timer size={32} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
+                    <p style={{ fontSize: '0.875rem' }}>Loading progression settings...</p>
+                    <button className="btn btn-sm btn-primary" style={{ marginTop: '0.75rem' }} onClick={async () => {
+                      try {
+                        const res = await fetch('/api/progression-settings');
+                        if (res.ok) {
+                          const data = await res.json();
+                          setProgressionSteps(data.steps || []);
+                        }
+                      } catch { /* ignore */ }
+                    }}>Load Settings</button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Visual Timeline */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                      {/* Order Placed (start) */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.625rem 0' }}>
+                        <div style={{ width: '2.25rem', height: '2.25rem', borderRadius: '50%', background: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>1</div>
+                        <span style={{ fontWeight: 600, fontSize: '0.875rem', minWidth: '10rem' }}>Order Placed</span>
+                      </div>
+
+                      {progressionSteps.map((step, idx) => (
+                        <div key={step.id}>
+                          {/* Delay connector */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.375rem 0', paddingLeft: '0.875rem' }}>
+                            <div style={{ width: '2px', height: '2rem', background: step.is_enabled ? 'var(--primary)' : 'var(--border)', marginLeft: '0', flexShrink: 0 }} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+                              <ArrowRight size={12} style={{ color: 'var(--fg-muted)' }} />
+                              <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>after</span>
+                              <input
+                                type="number"
+                                min="1"
+                                value={step.delay_minutes >= 60 ? Math.round(step.delay_minutes / 60) : step.delay_minutes}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value) || 1;
+                                  const inMinutes = step.delay_minutes >= 60 ? val * 60 : val;
+                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: inMinutes } : s));
+                                  setProgressionDirty(true);
+                                }}
+                                style={{ width: '4rem', padding: '0.25rem 0.5rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.8125rem', fontWeight: 600, textAlign: 'center' }}
+                              />
+                              <select
+                                value={step.delay_minutes >= 60 ? 'hours' : 'minutes'}
+                                onChange={(e) => {
+                                  const currentVal = step.delay_minutes >= 60 ? Math.round(step.delay_minutes / 60) : step.delay_minutes;
+                                  const newMinutes = e.target.value === 'hours' ? currentVal * 60 : currentVal;
+                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: newMinutes } : s));
+                                  setProgressionDirty(true);
+                                }}
+                                style={{ padding: '0.25rem 0.375rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.75rem', color: 'var(--fg-muted)' }}
+                              >
+                                <option value="minutes">min</option>
+                                <option value="hours">hrs</option>
+                              </select>
+                              <button
+                                onClick={() => {
+                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, is_enabled: !s.is_enabled } : s));
+                                  setProgressionDirty(true);
+                                }}
+                                title={step.is_enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
+                                style={{ cursor: 'pointer', background: 'none', border: 'none', padding: '0.125rem', display: 'flex' }}
+                              >
+                                {step.is_enabled
+                                  ? <ToggleRight size={20} style={{ color: 'var(--success)' }} />
+                                  : <ToggleLeft size={20} style={{ color: 'var(--fg-muted)' }} />
+                                }
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Step destination */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.625rem 0', opacity: step.is_enabled ? 1 : 0.4 }}>
+                            <div style={{
+                              width: '2.25rem', height: '2.25rem', borderRadius: '50%',
+                              background: idx === progressionSteps.length - 1 ? 'var(--success)' : 'var(--primary)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              color: 'white', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0
+                            }}>{idx + 2}</div>
+                            <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{step.step_to}</span>
+                            {idx === progressionSteps.length - 1 && <Check size={16} style={{ color: 'var(--success)' }} />}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Total time */}
+                    <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'var(--primary-light)', borderRadius: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Timer size={14} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontSize: '0.8125rem', color: 'var(--primary)', fontWeight: 600 }}>
+                        Total estimated delivery: ~{(() => {
+                          const totalMin = progressionSteps.filter(s => s.is_enabled).reduce((sum, s) => sum + s.delay_minutes, 0);
+                          if (totalMin >= 1440) return `${(totalMin / 1440).toFixed(1)} days`;
+                          if (totalMin >= 60) return `${(totalMin / 60).toFixed(1)} hours`;
+                          return `${totalMin} minutes`;
+                        })()}
+                      </span>
+                    </div>
+
+                    {/* Save button */}
+                    <div style={{ marginTop: '1rem' }}>
+                      <button
+                        className="btn btn-primary"
+                        disabled={!progressionDirty || savingProgression}
+                        onClick={async () => {
+                          setSavingProgression(true);
+                          try {
+                            const res = await fetch('/api/progression-settings', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                              body: JSON.stringify({ steps: progressionSteps }),
+                            });
+                            if (res.ok) {
+                              showAlert('success', 'Auto-progression settings saved!');
+                              setProgressionDirty(false);
+                            } else { showAlert('error', 'Failed to save progression settings'); }
+                          } catch { showAlert('error', 'Failed to save'); }
+                          finally { setSavingProgression(false); }
+                        }}
+                      >
+                        {savingProgression ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Check size={14} />}
+                        {savingProgression ? 'Saving...' : 'Save Progression Settings'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Danger Zone */}

@@ -194,6 +194,7 @@ export async function POST(request: NextRequest) {
         tracking_status: isCancelled ? 'Cancelled' : 'Order Placed',
         tracking_id: trackingId,
         tracking_token: trackingToken,
+        status_updated_at: new Date().toISOString(),
         ...(businessId ? { business_id: businessId } : {}),
       });
 
