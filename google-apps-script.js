@@ -21,11 +21,11 @@ function doPost(e) {
     
     if (!emails || !emails.length) {
       return ContentService.createTextOutput(
-        JSON.stringify({ success: false, error: 'No emails provided', drafts: 0 })
+        JSON.stringify({ success: false, error: 'No emails provided', sent: 0 })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     
-    var created = 0;
+    var sent = 0;
     var failed = 0;
     var errors = [];
     
@@ -33,15 +33,15 @@ function doPost(e) {
       try {
         var email = emails[i];
         
-        // Create a draft in Gmail
-        GmailApp.createDraft(
+        // Send email directly — no drafts!
+        GmailApp.sendEmail(
           email.to,       // recipient
           email.subject,  // subject
           '',             // plain text body (empty, we use HTML)
           { htmlBody: email.html }  // HTML body
         );
         
-        created++;
+        sent++;
       } catch (err) {
         failed++;
         if (errors.length < 3) {
@@ -53,16 +53,17 @@ function doPost(e) {
     return ContentService.createTextOutput(
       JSON.stringify({
         success: true,
-        drafts: created,
+        sent: sent,
+        drafts: sent,  // keep backwards compatibility
         failed: failed,
         errors: errors,
-        message: created + ' drafts created' + (failed > 0 ? ', ' + failed + ' failed' : '')
+        message: sent + ' emails sent' + (failed > 0 ? ', ' + failed + ' failed' : '')
       })
     ).setMimeType(ContentService.MimeType.JSON);
     
   } catch (err) {
     return ContentService.createTextOutput(
-      JSON.stringify({ success: false, error: err.toString(), drafts: 0 })
+      JSON.stringify({ success: false, error: err.toString(), sent: 0, drafts: 0 })
     ).setMimeType(ContentService.MimeType.JSON);
   }
 }
