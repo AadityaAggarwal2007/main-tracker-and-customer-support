@@ -28,9 +28,9 @@ export async function PUT(request: NextRequest) {
 
     const results = [];
 
-    // Update each step
     for (const step of steps) {
-      const { data, error } = await getSupabaseAdmin()
+      // Update
+      const { data: updated, error } = await getSupabaseAdmin()
         .from('progression_settings')
         .update({
           delay_minutes: step.delay_minutes,
@@ -40,17 +40,27 @@ export async function PUT(request: NextRequest) {
         .eq('id', step.id)
         .select();
 
+      // Read back immediately
+      const { data: readBack } = await getSupabaseAdmin()
+        .from('progression_settings')
+        .select('id, delay_minutes, updated_at')
+        .eq('id', step.id)
+        .single();
+
+      // Also count total rows
+      const { data: allRows } = await getSupabaseAdmin()
+        .from('progression_settings')
+        .select('id, step_from, step_to, delay_minutes, step_order')
+        .eq('step_from', 'Order Placed');
+
       results.push({
         id: step.id,
-        delay_minutes: step.delay_minutes,
-        updated: data?.length ?? 0,
+        requested_delay: step.delay_minutes,
+        update_returned: updated,
+        read_back: readBack,
+        all_matching_rows: allRows,
         error: error?.message || null,
       });
-
-      if (error) {
-        console.error('Failed to update step:', error);
-        return NextResponse.json({ error: error.message, debug: results }, { status: 500 });
-      }
     }
 
     return NextResponse.json({ success: true, results });
