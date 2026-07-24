@@ -68,6 +68,10 @@ export default function AdminDashboard() {
   const [uploadNewOrderIds, setUploadNewOrderIds] = useState<string[]>([]);
   const [sendingUploadEmails, setSendingUploadEmails] = useState(false);
 
+  // Draft queue
+  const [queueStats, setQueueStats] = useState<{ pending: number; processing: number; done: number; failed: number; total: number } | null>(null);
+  const [loadingQueue, setLoadingQueue] = useState(false);
+
   // Bulk status modal
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [bulkStatus, setBulkStatus] = useState('');
@@ -186,7 +190,19 @@ export default function AdminDashboard() {
     } catch { /* ignore */ }
   }, [token]);
 
+  const fetchQueueStats = useCallback(async () => {
+    if (!token) return;
+    setLoadingQueue(true);
+    try {
+      const res = await fetch('/api/draft-queue', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (res.ok) setQueueStats(data);
+    } catch { /* ignore */ }
+    finally { setLoadingQueue(false); }
+  }, [token]);
+
   useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
+  useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
   useEffect(() => { if (activeTab === 'team') fetchTeamUsers(); }, [activeTab, fetchTeamUsers]);
   useEffect(() => { fetchEmailedOrders(); }, [fetchEmailedOrders]);
   // Auto-refresh email stats every 30 seconds
@@ -271,25 +287,23 @@ export default function AdminDashboard() {
       showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated, ${totalBrands} brands detected`);
       fetchOrders(); fetchBrands(); fetchBusinesses();
 
-      // Auto-create drafts for new orders
+      // Enqueue new orders for draft creation (non-blocking — Apps Script processes 5/min)
       if (allNewOrderIds.length > 0) {
-        showAlert('info', `Creating ${allNewOrderIds.length} email drafts in Gmail...`);
         try {
-          const emailRes = await fetch('/api/send-email', {
+          const queueRes = await fetch('/api/draft-queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ orderIds: allNewOrderIds, status: 'Order Placed' }),
           });
-          const emailData = await emailRes.json();
-          if (emailRes.ok && emailData.sent > 0) {
-            showAlert('success', `Upload complete! ${totalNew} new orders + ${emailData.sent} drafts created in Gmail`);
+          const queueData = await queueRes.json();
+          if (queueRes.ok && queueData.queued > 0) {
+            showAlert('success', `✅ ${totalNew} new orders uploaded! ${queueData.queued} queued for Gmail drafts (~${Math.ceil(queueData.queued / 5)} min to complete)`);
           } else {
             showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated`);
           }
-          fetchEmailStats();
-          fetchEmailedOrders();
+          fetchQueueStats();
         } catch {
-          showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated (drafts failed)`);
+          showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated`);
         }
       }
     } catch { showAlert('error', 'Upload failed'); }
@@ -873,12 +887,61 @@ export default function AdminDashboard() {
                 </div>
               )}
 
+              {/* Draft Queue Status */}
+              <div className="tf-card" style={{ padding: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                  <Mail size={15} style={{ color: 'var(--primary)' }} />
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 600 }}>Gmail Draft Queue</span>
+                  <span style={{ marginLeft: 'auto', fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'var(--primary-light)', color: 'var(--primary)', fontWeight: 600 }}>
+                    5 drafts / min
+                  </span>
+                  <button
+                    className="btn-icon"
+                    onClick={fetchQueueStats}
+                    title="Refresh queue stats"
+                    style={{ marginLeft: '0.25rem' }}
+                    disabled={loadingQueue}
+                  >
+                    {loadingQueue
+                      ? <Loader2 size={13} style={{ animation: 'spin 0.6s linear infinite' }} />
+                      : <Activity size={13} />}
+                  </button>
+                </div>
+
+                {queueStats ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
+                    {[
+                      { label: 'Pending', value: queueStats.pending, color: 'var(--warning)' },
+                      { label: 'Processing', value: queueStats.processing, color: 'var(--info)' },
+                      { label: 'Done', value: queueStats.done, color: 'var(--success)' },
+                      { label: 'Failed', value: queueStats.failed, color: 'var(--danger)' },
+                    ].map((s) => (
+                      <div key={s.label} style={{ padding: '0.625rem', background: 'var(--bg-subtle)', borderRadius: 'var(--radius-lg)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.25rem', fontWeight: 700, color: s.value > 0 ? s.color : 'var(--fg-muted)' }}>{s.value.toLocaleString()}</div>
+                        <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '2px', fontWeight: 500 }}>{s.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', textAlign: 'center', padding: '0.5rem 0' }}>
+                    Upload a CSV to see queue status
+                  </p>
+                )}
+
+                {queueStats && queueStats.pending > 0 && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.75rem', textAlign: 'center' }}>
+                    ⏱️ Est. time to complete: ~{Math.ceil(queueStats.pending / 5)} min
+                    &nbsp;·&nbsp; Make sure the Apps Script queue trigger is running
+                  </p>
+                )}
+              </div>
+
               <div className="info-box">
                 <Info size={16} />
                 <div>
                   <p className="info-box-title">How it works</p>
                   <p className="info-box-text">
-                    Export your orders from Shopify as CSV, then upload here. Brands are <strong>auto-detected</strong> from the Vendor column and businesses are created automatically. Re-uploading updates existing orders without creating duplicates. Handles 3,000+ orders in seconds.
+                    Export your orders from Shopify as CSV, then upload here. Brands are <strong>auto-detected</strong> from the Vendor column and businesses are created automatically. Re-uploading updates existing orders without creating duplicates. New orders are <strong>queued for Gmail drafts</strong> — the Apps Script processes 5 per minute automatically.
                   </p>
                 </div>
               </div>

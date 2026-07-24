@@ -4,10 +4,11 @@
 // 
 // HOW TO SET UP:
 // 1. Go to https://script.google.com → New Project
+//    (Make sure you're signed in with your Workspace account)
 // 2. Delete any existing code and paste this entire file
 // 3. Click "Deploy" → "New Deployment"
 // 4. Type: "Web app"
-// 5. Execute as: "Me (krvvy700@gmail.com)"
+// 5. Execute as: "Me (your-workspace-email@yourdomain.com)"
 // 6. Who has access: "Anyone"
 // 7. Click "Deploy" → Authorize when prompted
 // 8. Copy the Web App URL → paste in Vercel as GMAIL_SCRIPT_URL
@@ -151,4 +152,160 @@ function removeAutoSendTrigger() {
     }
   }
   Logger.log('Removed ' + removed + ' trigger(s). Auto-send stopped.');
+}
+
+
+// ═══════════════════════════════════════════════
+// DRAFT QUEUE PROCESSOR
+// ═══════════════════════════════════════════════
+//
+// This replaces the old "create all drafts at once" approach.
+// Instead of timing out on 900 orders, it processes 5 at a time
+// every minute by polling the /api/draft-queue/next endpoint.
+//
+// HOW TO SET UP (do this ONCE):
+// 1. Go to Project Settings (⚙️) → Script Properties
+// 2. Add these three properties:
+//      QUEUE_NEXT_URL     → https://your-app.vercel.app/api/draft-queue/next
+//      QUEUE_COMPLETE_URL → https://your-app.vercel.app/api/draft-queue/complete
+//      QUEUE_SECRET       → (same random string you set as DRAFT_QUEUE_SECRET in Vercel)
+// 3. Run "setupQueueTrigger" once to start the auto-processing.
+// ═══════════════════════════════════════════════
+
+var QUEUE_BATCH_SIZE = 5; // drafts to create per minute (safe limit)
+
+function processQueue() {
+  var props = PropertiesService.getScriptProperties();
+  var nextUrl = props.getProperty('QUEUE_NEXT_URL');
+  var completeUrl = props.getProperty('QUEUE_COMPLETE_URL');
+  var secret = props.getProperty('QUEUE_SECRET');
+
+  if (!nextUrl || !completeUrl || !secret) {
+    Logger.log('❌ Queue not configured. Set QUEUE_NEXT_URL, QUEUE_COMPLETE_URL, QUEUE_SECRET in Script Properties.');
+    return;
+  }
+
+  // 1. Fetch next batch of pending orders from our API
+  var fetchUrl = nextUrl + '?limit=' + QUEUE_BATCH_SIZE + '&key=' + encodeURIComponent(secret);
+  var fetchRes;
+  try {
+    fetchRes = UrlFetchApp.fetch(fetchUrl, { method: 'get', muteHttpExceptions: true });
+  } catch (err) {
+    Logger.log('❌ Failed to fetch queue: ' + err.toString());
+    return;
+  }
+
+  if (fetchRes.getResponseCode() !== 200) {
+    Logger.log('❌ Queue next returned ' + fetchRes.getResponseCode() + ': ' + fetchRes.getContentText().slice(0, 200));
+    return;
+  }
+
+  var payload;
+  try {
+    payload = JSON.parse(fetchRes.getContentText());
+  } catch (err) {
+    Logger.log('❌ Failed to parse queue response: ' + err.toString());
+    return;
+  }
+
+  var emails = payload.emails || [];
+
+  if (emails.length === 0) {
+    Logger.log('✅ Queue empty — nothing to process.');
+    return;
+  }
+
+  Logger.log('📬 Processing ' + emails.length + ' queued drafts...');
+
+  // 2. Create Gmail drafts for each item
+  var results = [];
+  for (var i = 0; i < emails.length; i++) {
+    var item = emails[i];
+
+    // Items with skip=true (no email address, template missing) — mark done without creating draft
+    if (item.skip) {
+      Logger.log('⏭️ Skipped ' + item.queueId + ' (' + item.reason + ')');
+      results.push({ queueId: item.queueId, orderId: item.orderId, to: '', success: true, error: 'skipped:' + item.reason });
+      continue;
+    }
+
+    try {
+      GmailApp.createDraft(
+        item.to,
+        item.subject,
+        '',
+        { htmlBody: item.html }
+      );
+      Logger.log('✅ Draft created for order ' + item.orderId + ' → ' + item.to);
+      results.push({ queueId: item.queueId, orderId: item.orderId, to: item.to, success: true });
+    } catch (err) {
+      Logger.log('❌ Failed draft for ' + item.orderId + ': ' + err.toString());
+      results.push({ queueId: item.queueId, orderId: item.orderId, to: item.to, success: false, error: err.toString() });
+    }
+
+    Utilities.sleep(300); // small delay between drafts
+  }
+
+  // 3. Report results back to our API
+  try {
+    var completeFullUrl = completeUrl + '?key=' + encodeURIComponent(secret);
+    UrlFetchApp.fetch(completeFullUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ results: results }),
+      muteHttpExceptions: true,
+    });
+    Logger.log('✅ Reported ' + results.length + ' results back to queue.');
+  } catch (err) {
+    Logger.log('⚠️ Failed to report results: ' + err.toString());
+    // Not fatal — the queue rows will stay as 'processing' and can be retried
+  }
+}
+
+// ── Run this ONCE to set up automatic queue processing every minute ──
+function setupQueueTrigger() {
+  // Remove any existing processQueue triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'processQueue') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  ScriptApp.newTrigger('processQueue')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+
+  Logger.log('✅ Queue trigger created! Will process ' + QUEUE_BATCH_SIZE + ' drafts every minute.');
+}
+
+// ── Run this to STOP queue processing ──
+function removeQueueTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var removed = 0;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'processQueue') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+  Logger.log('Removed ' + removed + ' queue trigger(s). Queue processing stopped.');
+}
+
+// ── Test the queue connection ──
+function testQueueConnection() {
+  var props = PropertiesService.getScriptProperties();
+  var nextUrl = props.getProperty('QUEUE_NEXT_URL');
+  var secret = props.getProperty('QUEUE_SECRET');
+
+  if (!nextUrl || !secret) {
+    Logger.log('❌ QUEUE_NEXT_URL and QUEUE_SECRET must be set in Script Properties first.');
+    return;
+  }
+
+  var url = nextUrl + '?limit=1&key=' + encodeURIComponent(secret);
+  var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  Logger.log('Status: ' + res.getResponseCode());
+  Logger.log('Response: ' + res.getContentText().slice(0, 300));
 }
