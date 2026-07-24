@@ -222,13 +222,27 @@ export async function POST(request: NextRequest) {
     // 13. Send email immediately (skip drafts!) — only if customer has email
     if (customerEmail && customerEmail.includes('@') && !isCancelled) {
       try {
-        // Fetch business info for email template
-        let bizName = brand || 'ShipTrack';
+        // Fetch brand settings from admin dashboard (default business)
+        // This uses the brand configured in Settings, NOT the Shopify vendor name
+        let bizName = 'ShipTrack';
         let logoUrl = '';
         let supportEmail = '';
         let supportPhone = '';
 
-        if (businessId) {
+        // First try: get the default business (configured in Brand Settings)
+        const { data: defaultBiz } = await getSupabaseAdmin()
+          .from('businesses')
+          .select('name, logo_url, support_email, support_phone')
+          .eq('is_default', true)
+          .single();
+
+        if (defaultBiz) {
+          bizName = defaultBiz.name || bizName;
+          logoUrl = defaultBiz.logo_url || '';
+          supportEmail = defaultBiz.support_email || '';
+          supportPhone = defaultBiz.support_phone || '';
+        } else if (businessId) {
+          // Fallback: use the matched business
           const { data: biz } = await getSupabaseAdmin()
             .from('businesses')
             .select('name, logo_url, support_email, support_phone')
