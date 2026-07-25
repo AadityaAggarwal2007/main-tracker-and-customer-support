@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       status: result.sent > 0 ? 'OK' : 'FAILED',
-      scriptUrl: scriptUrl.substring(0, 50) + '...',
+      scriptUrl: scriptUrl,
       baseUrl,
       sendResult: result,
       timestamp: new Date().toISOString(),
