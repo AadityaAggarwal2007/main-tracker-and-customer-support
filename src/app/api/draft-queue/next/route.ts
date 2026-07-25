@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { generateTrackingEmail } from '@/lib/email-templates';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 // GET /api/draft-queue/next?limit=5&key=SECRET
 // Called by Google Apps Script every minute.
 // Returns the next N pending orders as ready-to-send email payloads.
