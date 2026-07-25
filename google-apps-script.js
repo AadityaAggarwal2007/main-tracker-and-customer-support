@@ -268,8 +268,92 @@ function processQueue() {
     // Not fatal — the queue rows will stay as 'processing' and can be retried
   }
 
+  // ── Send pending emails (pull from Vercel, send via Gmail) ──
+  sendPendingEmails();
+
   // ── Auto-progress orders (piggyback on the 1-minute trigger) ──
   progressOrders();
+}
+
+// ═══════════════════════════════════════════════
+// SEND PENDING EMAILS
+// ═══════════════════════════════════════════════
+// Instead of Vercel pushing to Apps Script (blocked by Workspace),
+// Apps Script PULLS unsent orders from Vercel and sends directly.
+//
+// Requires Script Property:
+//   PENDING_EMAILS_URL → https://shiptrack.store/api/cron/pending-emails
+//   QUEUE_SECRET       → (same secret as before)
+// ═══════════════════════════════════════════════
+
+function sendPendingEmails() {
+  var props = PropertiesService.getScriptProperties();
+  var pendingUrl = props.getProperty('PENDING_EMAILS_URL');
+  var secret = props.getProperty('QUEUE_SECRET');
+
+  if (!pendingUrl || !secret) {
+    // Not configured yet — skip silently
+    return;
+  }
+
+  try {
+    // 1. Fetch unsent emails from Vercel
+    var url = pendingUrl + '?key=' + encodeURIComponent(secret) + '&limit=5';
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+
+    if (res.getResponseCode() !== 200) {
+      Logger.log('⚠️ Pending emails returned ' + res.getResponseCode());
+      return;
+    }
+
+    var data = JSON.parse(res.getContentText());
+    var emails = data.emails || [];
+
+    if (emails.length === 0) {
+      return; // Nothing to send
+    }
+
+    Logger.log('📧 Sending ' + emails.length + ' pending emails...');
+
+    // 2. Send each email via Gmail
+    var results = [];
+    for (var i = 0; i < emails.length; i++) {
+      var email = emails[i];
+      try {
+        GmailApp.sendEmail(
+          email.to,
+          email.subject,
+          '',
+          { htmlBody: email.html }
+        );
+        Logger.log('✅ Email sent for ' + email.orderId + ' → ' + email.to);
+        results.push({ orderId: email.orderId, to: email.to, success: true });
+      } catch (err) {
+        Logger.log('❌ Failed email for ' + email.orderId + ': ' + err.toString());
+        results.push({ orderId: email.orderId, to: email.to, success: false, error: err.toString() });
+      }
+      Utilities.sleep(300);
+    }
+
+    // 3. Report results back to Vercel (log them in email_logs)
+    if (results.length > 0) {
+      try {
+        var reportUrl = pendingUrl + '?key=' + encodeURIComponent(secret);
+        UrlFetchApp.fetch(reportUrl, {
+          method: 'post',
+          contentType: 'application/json',
+          payload: JSON.stringify({ results: results }),
+          muteHttpExceptions: true,
+        });
+        Logger.log('✅ Reported ' + results.length + ' email results.');
+      } catch (err) {
+        Logger.log('⚠️ Failed to report email results: ' + err.toString());
+      }
+    }
+
+  } catch (err) {
+    Logger.log('⚠️ sendPendingEmails error: ' + err.toString());
+  }
 }
 
 // ═══════════════════════════════════════════════
