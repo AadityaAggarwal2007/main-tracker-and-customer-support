@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { sendBatchEmails } from '@/lib/gmail-client';
+import { sendEmailDirect } from '@/lib/smtp-client';
 import { generateTrackingEmail } from '@/lib/email-templates';
 import crypto from 'crypto';
 
@@ -10,7 +10,7 @@ import crypto from 'crypto';
 // When a customer places an order on Shopify,
 // this endpoint automatically:
 //   1. Creates the order in Supabase
-//   2. Sends a tracking email via Gmail (Apps Script)
+//   2. Sends a tracking email via Gmail SMTP (direct)
 //   3. Logs the email in email_logs for dedup
 // ═══════════════════════════════════════════════
 
@@ -222,7 +222,7 @@ export async function POST(request: NextRequest) {
             );
 
             if (emailResult) {
-              const sendResult = await sendBatchEmails([
+              const sendResult = await sendEmailDirect([
                 { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
               ]);
               await getSupabaseAdmin().from('email_logs').insert({
@@ -351,7 +351,7 @@ export async function POST(request: NextRequest) {
         );
 
         if (emailResult) {
-          const sendResult = await sendBatchEmails([
+          const sendResult = await sendEmailDirect([
             { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
           ]);
 
