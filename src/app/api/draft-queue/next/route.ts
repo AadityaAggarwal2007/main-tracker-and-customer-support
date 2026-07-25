@@ -124,6 +124,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     console.error('Draft queue next error:', err);
-    return NextResponse.json({ error: 'Failed to fetch queue', detail: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    const detail = err && typeof err === 'object' && 'message' in err ? (err as { message: string }).message : JSON.stringify(err);
+    return NextResponse.json({ error: 'Failed to fetch queue', detail }, { status: 500 });
   }
 }
