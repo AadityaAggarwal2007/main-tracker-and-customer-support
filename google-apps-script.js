@@ -14,6 +14,12 @@
 // 8. Copy the Web App URL → paste in Vercel as GMAIL_SCRIPT_URL
 // ═══════════════════════════════════════════════
 
+function doGet(e) {
+  return ContentService.createTextOutput(
+    JSON.stringify({ status: 'ok', service: 'ShipTrack Email Web App' })
+  ).setMimeType(ContentService.MimeType.JSON);
+}
+
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
