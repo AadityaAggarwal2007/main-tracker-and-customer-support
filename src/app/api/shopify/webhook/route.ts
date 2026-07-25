@@ -170,6 +170,75 @@ export async function POST(request: NextRequest) {
           .insert(lineItems.map((item: { brand: string; product_name: string; quantity: number; price: number }) => ({ order_id: orderId, ...item })));
       }
 
+      // Send email for updated order too (if not already sent)
+      if (customerEmail && customerEmail.includes('@') && !isCancelled) {
+        try {
+          // Check if email already sent for this order
+          const { data: existingLog } = await getSupabaseAdmin()
+            .from('email_logs')
+            .select('id')
+            .eq('order_id', orderId)
+            .eq('success', true)
+            .maybeSingle();
+
+          if (!existingLog) {
+            // No email sent yet — send now
+            const { data: biz } = await getSupabaseAdmin()
+              .from('businesses')
+              .select('name, logo_url, support_email, support_phone')
+              .eq('is_default', true)
+              .maybeSingle();
+
+            let bizName = biz?.name || 'ShipTrack';
+            let logoUrl = biz?.logo_url || '';
+            if (logoUrl && logoUrl.includes('drive.google.com')) {
+              logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
+            }
+
+            // Get tracking token from existing order
+            const { data: existingOrder } = await getSupabaseAdmin()
+              .from('orders')
+              .select('tracking_id, tracking_token, order_total, city, customer_name')
+              .eq('order_id', orderId)
+              .single();
+
+            const emailResult = generateTrackingEmail(
+              {
+                customerName: existingOrder?.customer_name || customerName,
+                orderId,
+                productNames: lineItems.map((i: { product_name: string }) => i.product_name).filter(Boolean),
+                trackingId: existingOrder?.tracking_id || '',
+                courierPartner: '',
+                trackingUrl: `${BASE_URL}/track/${existingOrder?.tracking_token || ''}`,
+                businessName: bizName,
+                businessLogoUrl: logoUrl || undefined,
+                supportEmail: biz?.support_email || '',
+                supportPhone: biz?.support_phone || '',
+                estimatedDelivery: undefined,
+                orderTotal: existingOrder?.order_total || orderTotal,
+                city: existingOrder?.city || city,
+              },
+              'Order Placed'
+            );
+
+            if (emailResult) {
+              const sendResult = await sendBatchEmails([
+                { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
+              ]);
+              await getSupabaseAdmin().from('email_logs').insert({
+                order_id: orderId,
+                status: 'Order Placed',
+                recipient_email: customerEmail,
+                success: sendResult.sent > 0,
+                error_message: sendResult.errors[0] || '',
+              });
+            }
+          }
+        } catch (emailErr) {
+          console.error('Webhook update: Email send failed:', emailErr);
+        }
+      }
+
       return NextResponse.json({ success: true, action: 'updated', orderId });
     }
 
