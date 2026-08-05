@@ -43,6 +43,7 @@ export default function AdminDashboard() {
   const [searchInput, setSearchInput] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
+  const [storeFilter, setStoreFilter] = useState('');
   const [brands, setBrands] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
@@ -133,6 +134,7 @@ export default function AdminDashboard() {
       if (search) params.set('search', search);
       if (statusFilter) params.set('status', statusFilter);
       if (brandFilter) params.set('brand', brandFilter);
+      if (storeFilter) params.set('store', storeFilter);
       if (dateFrom) params.set('dateFrom', dateFrom);
       if (dateTo) params.set('dateTo', dateTo);
       const res = await fetch(`/api/orders?${params}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -140,7 +142,7 @@ export default function AdminDashboard() {
       if (res.ok) { setOrders(data.orders); setTotalOrders(data.total); }
     } catch { showAlert('error', 'Failed to load orders'); }
     finally { setLoading(false); }
-  }, [token, page, limit, search, statusFilter, brandFilter, dateFrom, dateTo]);
+  }, [token, page, limit, search, statusFilter, brandFilter, storeFilter, dateFrom, dateTo]);
 
   // Fetch email stats
   const fetchEmailStats = useCallback(async () => {
@@ -694,6 +696,11 @@ export default function AdminDashboard() {
                 <select className="form-select" value={brandFilter} onChange={(e) => { setBrandFilter(e.target.value); setPage(1); }}>
                   <option value="">All Brands</option>
                   {brands.map((b) => (<option key={b} value={b}>{b}</option>))}
+                </select>
+                <select className="form-select" value={storeFilter} onChange={(e) => { setStoreFilter(e.target.value); setPage(1); }}>
+                  <option value="">🏪 All Stores</option>
+                  <option value="ruhani.myshopify.com">Ruhani Store</option>
+                  <option value="unknown">Other / CSV</option>
                 </select>
                 <select className="form-select" value={emailFilter} onChange={(e) => { setEmailFilter(e.target.value); setPage(1); }}>
                   <option value="">📧 All</option>

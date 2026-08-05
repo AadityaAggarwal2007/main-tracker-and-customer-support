@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
   const search = searchParams.get('search') || '';
   const status = searchParams.get('status') || '';
   const brand = searchParams.get('brand') || '';
+  const store = searchParams.get('store') || '';
   const dateFrom = searchParams.get('dateFrom') || '';
   const dateTo = searchParams.get('dateTo') || '';
   const page = parseInt(searchParams.get('page') || '1');
@@ -47,6 +48,11 @@ export async function GET(request: NextRequest) {
     query = query.lte('created_at', `${dateTo}T23:59:59`);
   }
 
+  // Store filter — filter by which Shopify store the order came from
+  if (store) {
+    query = query.eq('source_store', store);
+  }
+
   if (brand) {
     const { data: orderIds } = await getSupabaseAdmin()
       .from('order_items')
@@ -60,6 +66,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ orders: [], total: 0, page, limit });
     }
   }
+
+
 
   const { data, count, error } = await query
     .order('created_at', { ascending: false })

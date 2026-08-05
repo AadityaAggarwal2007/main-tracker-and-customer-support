@@ -107,6 +107,9 @@ export async function POST(request: NextRequest) {
     const paymentMethod = shopifyOrder.gateway || 'COD';
     const isCancelled = shopifyOrder.cancelled_at ? true : false;
 
+    // Capture which Shopify store this order came from
+    const sourceStore = request.headers.get('x-shopify-shop-domain') || shopifyOrder.domain || 'unknown';
+
     // 8. Auto-detect brand → create/find business
     const brand = lineItems[0]?.brand || '';
     let businessId: string | null = null;
@@ -158,6 +161,7 @@ export async function POST(request: NextRequest) {
           pincode,
           order_total: orderTotal,
           is_cancelled: isCancelled,
+          source_store: sourceStore,
           ...(businessId ? { business_id: businessId } : {}),
         })
         .eq('order_id', orderId);
@@ -264,6 +268,7 @@ export async function POST(request: NextRequest) {
         tracking_id: trackingId,
         tracking_token: trackingToken,
         status_updated_at: new Date().toISOString(),
+        source_store: sourceStore,
         ...(businessId ? { business_id: businessId } : {}),
       });
 
