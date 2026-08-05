@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
+import { sendEmailDirect } from '@/lib/smtp-client';
 import { generateTrackingEmail } from '@/lib/email-templates';
 
 export const dynamic = 'force-dynamic';
@@ -7,8 +8,12 @@ export const dynamic = 'force-dynamic';
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || '';
 const QUEUE_SECRET = process.env.DRAFT_QUEUE_SECRET || '';
 
-// GET: Returns orders that need emails sent (no successful email_log entry)
-// Called by Linux cron every minute
+// ═══════════════════════════════════════════════════════════════
+// GET /api/cron/pending-emails?key=SECRET
+// Called by Linux cron every minute.
+// Picks the OLDEST unsent order, sends 1 email via SMTP, logs result.
+// Result: 1 email/minute regardless of queue size.
+// ═══════════════════════════════════════════════════════════════
 export async function GET(request: NextRequest) {
   const key = request.nextUrl.searchParams.get('key') || '';
   if (!QUEUE_SECRET || key !== QUEUE_SECRET) {
@@ -16,14 +21,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '5', 10), 20);
-
-    // Single query: find orders from last 7 days that have NO successful email log
-    const result = await query<Record<string, unknown>>(
+    // Pick 1 oldest order that has a valid email and no successful send yet
+    const order = await queryOne<Record<string, unknown>>(
       `SELECT
          o.order_id, o.customer_name, o.customer_email, o.tracking_id,
          o.courier_partner, o.tracking_token, o.estimated_delivery,
-         o.order_total, o.city, o.tracking_status, o.business_id, o.created_at,
+         o.order_total, o.city, o.tracking_status, o.business_id,
          COALESCE(
            json_agg(
              json_build_object('product_name', oi.product_name)
@@ -34,20 +37,18 @@ export async function GET(request: NextRequest) {
        WHERE o.customer_email IS NOT NULL
          AND o.customer_email != ''
          AND o.customer_email LIKE '%@%'
-         AND o.created_at >= NOW() - INTERVAL '7 days'
+         AND o.is_cancelled = false
          AND NOT EXISTS (
            SELECT 1 FROM email_logs el
            WHERE el.order_id = o.order_id AND el.success = true
          )
        GROUP BY o.id
        ORDER BY o.created_at ASC
-       LIMIT $1`,
-      [limit]
+       LIMIT 1`
     );
 
-    const unsent = result.rows;
-    if (unsent.length === 0) {
-      return NextResponse.json({ emails: [], count: 0 });
+    if (!order) {
+      return NextResponse.json({ sent: 0, message: 'No pending emails' });
     }
 
     // Get default business for branding
@@ -64,46 +65,68 @@ export async function GET(request: NextRequest) {
       logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
     }
 
-    // Generate email HTML for each unsent order
-    const emails = unsent.map(order => {
-      const items = (order.order_items || []) as { product_name: string }[];
-      const emailResult = generateTrackingEmail(
-        {
-          customerName: order.customer_name as string,
-          orderId: order.order_id as string,
-          productNames: items.map(i => i.product_name).filter(Boolean),
-          trackingId: (order.tracking_id as string) || '',
-          courierPartner: (order.courier_partner as string) || '',
-          trackingUrl: `${BASE_URL}/track/${order.tracking_token}`,
-          businessName: bizName,
-          businessLogoUrl: logoUrl || undefined,
-          supportEmail: biz?.support_email || '',
-          supportPhone: biz?.support_phone || '',
-          estimatedDelivery: (order.estimated_delivery as string) || undefined,
-          orderTotal: (order.order_total as number) || 0,
-          city: (order.city as string) || '',
-        },
-        'Order Placed'
+    const items = (order.order_items || []) as { product_name: string }[];
+
+    const emailResult = generateTrackingEmail(
+      {
+        customerName: order.customer_name as string,
+        orderId: order.order_id as string,
+        productNames: items.map(i => i.product_name).filter(Boolean),
+        trackingId: (order.tracking_id as string) || '',
+        courierPartner: (order.courier_partner as string) || '',
+        trackingUrl: `${BASE_URL}/track/${order.tracking_token}`,
+        businessName: bizName,
+        businessLogoUrl: logoUrl || undefined,
+        supportEmail: biz?.support_email || '',
+        supportPhone: biz?.support_phone || '',
+        estimatedDelivery: (order.estimated_delivery as string) || undefined,
+        orderTotal: (order.order_total as number) || 0,
+        city: (order.city as string) || '',
+      },
+      'Order Placed'
+    );
+
+    if (!emailResult) {
+      // Log as failed so it doesn't block the queue
+      await query(
+        `INSERT INTO email_logs (order_id, status, recipient_email, success, error_message)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [order.order_id, 'Order Placed', order.customer_email, false, 'Email template generation failed']
       );
+      return NextResponse.json({ sent: 0, error: 'Template generation failed', orderId: order.order_id });
+    }
 
-      if (!emailResult) return null;
+    // Send via SMTP
+    const sendResult = await sendEmailDirect([
+      { to: order.customer_email as string, subject: emailResult.subject, html: emailResult.html },
+    ]);
 
-      return {
-        orderId: order.order_id,
-        to: order.customer_email,
-        subject: emailResult.subject,
-        html: emailResult.html,
-      };
-    }).filter(Boolean);
+    // Log result
+    await query(
+      `INSERT INTO email_logs (order_id, status, recipient_email, success, error_message)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        order.order_id, 'Order Placed', order.customer_email,
+        sendResult.sent > 0,
+        sendResult.errors[0] || '',
+      ]
+    );
 
-    return NextResponse.json({ emails, count: emails.length });
+    return NextResponse.json({
+      sent: sendResult.sent,
+      orderId: order.order_id,
+      to: order.customer_email,
+      success: sendResult.sent > 0,
+      error: sendResult.errors[0] || null,
+    });
+
   } catch (err) {
-    console.error('Pending emails error:', err);
+    console.error('Pending emails cron error:', err);
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
 
-// POST: Mark emails as sent (called by Apps Script after sending)
+// POST: Legacy endpoint — kept for backward compatibility, returns queue stats
 export async function POST(request: NextRequest) {
   const key = request.nextUrl.searchParams.get('key') || '';
   if (!QUEUE_SECRET || key !== QUEUE_SECRET) {
@@ -111,32 +134,18 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { results } = await request.json();
-
-    if (!results || !Array.isArray(results)) {
-      return NextResponse.json({ error: 'Invalid results' }, { status: 400 });
-    }
-
-    // Batch insert all email logs in one query
-    if (results.length > 0) {
-      const valuePlaceholders = results.map(
-        (_: unknown, i: number) => `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`
-      ).join(', ');
-
-      const params: unknown[] = [];
-      results.forEach((r: { orderId: string; to: string; success: boolean; error?: string }) => {
-        params.push(r.orderId, 'Order Placed', r.to, r.success, r.error || '');
-      });
-
-      await query(
-        `INSERT INTO email_logs (order_id, status, recipient_email, success, error_message) VALUES ${valuePlaceholders}`,
-        params
-      );
-    }
-
-    return NextResponse.json({ success: true, logged: results.length });
+    const result = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM orders
+       WHERE customer_email LIKE '%@%'
+         AND is_cancelled = false
+         AND NOT EXISTS (
+           SELECT 1 FROM email_logs el WHERE el.order_id = orders.order_id AND el.success = true
+         )`
+    );
+    const pending = parseInt(result.rows[0]?.count || '0', 10);
+    return NextResponse.json({ pending, message: 'Use GET to process queue' });
   } catch (err) {
-    console.error('Log emails error:', err);
+    console.error('Pending emails POST error:', err);
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

@@ -184,10 +184,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 9. Check if order already exists (dedup)
+    // 9. Check if order already exists (dedup by order_id + source_store)
     const existing = await queryOne<{ order_id: string }>(
-      `SELECT order_id FROM orders WHERE order_id = $1`,
-      [orderId]
+      `SELECT order_id FROM orders WHERE order_id = $1 AND source_store = $2`,
+      [orderId, sourceStore]
     );
 
     const trackingId = generateTrackingId();
@@ -195,22 +195,26 @@ export async function POST(request: NextRequest) {
 
     if (existing) {
       // ── Update existing order ──────────────────────────────
+      const updateParams: unknown[] = [
+        shopifyId, paymentMethod, financialStatus, customerName, customerEmail,
+        customerMobile, address1, address2, city, state, pincode, orderTotal,
+        isCancelled, sourceStore,
+      ];
+      const updateSets = [
+        'shopify_id = $1', 'payment_method = $2', 'financial_status = $3',
+        'customer_name = $4', 'customer_email = $5', 'customer_mobile = $6',
+        'address_line1 = $7', 'address_line2 = $8', 'city = $9', 'state = $10',
+        'pincode = $11', 'order_total = $12', 'is_cancelled = $13', 'source_store = $14',
+      ];
+      if (businessId) {
+        updateSets.push(`business_id = $${updateParams.length + 1}`);
+        updateParams.push(businessId);
+      }
+      updateParams.push(orderId, sourceStore);
       await query(
-        `UPDATE orders SET
-           shopify_id = $1, payment_method = $2, financial_status = $3,
-           customer_name = $4, customer_email = $5, customer_mobile = $6,
-           address_line1 = $7, address_line2 = $8, city = $9, state = $10,
-           pincode = $11, order_total = $12, is_cancelled = $13,
-           source_store = $16
-           ${businessId ? ', business_id = $15' : ''}
-         WHERE order_id = $14`,
-        [
-          shopifyId, paymentMethod, financialStatus, customerName, customerEmail,
-          customerMobile, address1, address2, city, state, pincode, orderTotal,
-          isCancelled, orderId,
-          ...(businessId ? [businessId] : [null]),
-          sourceStore,
-        ]
+        `UPDATE orders SET ${updateSets.join(', ')}
+         WHERE order_id = $${updateParams.length - 1} AND source_store = $${updateParams.length}`,
+        updateParams
       );
 
       // Replace items
