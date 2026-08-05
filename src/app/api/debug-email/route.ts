@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sendBatchEmails } from '@/lib/gmail-client';
+import { sendEmailDirect } from '@/lib/smtp-client';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,22 +11,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const scriptUrl = process.env.GMAIL_SCRIPT_URL || '';
+  const gmailUser = process.env.GMAIL_USER || '';
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || '';
 
-  // Test 1: Check if GMAIL_SCRIPT_URL is configured
-  if (!scriptUrl) {
+  // Test 1: Check if GMAIL_USER is configured
+  if (!gmailUser) {
     return NextResponse.json({
       status: 'FAILED',
-      issue: 'GMAIL_SCRIPT_URL is NOT set in Vercel environment variables',
-      scriptUrl: '(empty)',
+      issue: 'GMAIL_USER is NOT set in environment variables',
+      gmailUser: '(empty)',
       baseUrl,
     });
   }
 
-  // Test 2: Try to send a test email via the script
+  // Test 2: Try to send a test email via SMTP
   try {
-    const result = await sendBatchEmails([
+    const result = await sendEmailDirect([
       {
         to: 'test-diagnostic@example.com',
         subject: 'ShipTrack Diagnostic Test',
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       status: result.sent > 0 ? 'OK' : 'FAILED',
-      scriptUrl: scriptUrl,
+      gmailUser,
       baseUrl,
       sendResult: result,
       timestamp: new Date().toISOString(),
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     return NextResponse.json({
       status: 'ERROR',
-      scriptUrl: scriptUrl.substring(0, 50) + '...',
+      gmailUser,
       baseUrl,
       error: String(err),
       timestamp: new Date().toISOString(),

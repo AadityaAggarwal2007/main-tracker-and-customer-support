@@ -1,27 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthFromRequest, simpleHash } from '@/lib/auth';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { getAuthFromRequest } from '@/lib/auth';
+import { query, queryOne } from '@/lib/db';
+import { simpleHash } from '@/lib/auth';
 
-// GET - list team users
+// ── GET - list team users ───────────────────────────────────────
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { data, error } = await getSupabaseAdmin()
-    .from('team_users')
-    .select('id, username, display_name, role, is_active, last_login, created_at')
-    .order('created_at', { ascending: false });
+  const result = await query(
+    `SELECT id, username, display_name, role, is_active, last_login, created_at
+     FROM team_users
+     ORDER BY created_at DESC`
+  );
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ users: data || [] });
+  return NextResponse.json({ users: result.rows });
 }
 
-// POST - create team user
+// ── POST - create team user ─────────────────────────────────────
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -39,27 +37,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    const { data, error } = await getSupabaseAdmin().from('team_users').insert({
-      username,
-      password_hash: simpleHash(password),
-      display_name: displayName,
-      role,
-    }).select('id, username, display_name, role, is_active, created_at').single();
-
-    if (error) {
-      if (error.code === '23505') {
-        return NextResponse.json({ error: 'Username already exists' }, { status: 409 });
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const data = await queryOne(
+      `INSERT INTO team_users (username, password_hash, display_name, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, username, display_name, role, is_active, created_at`,
+      [username, simpleHash(password), displayName, role]
+    );
 
     return NextResponse.json({ user: data });
-  } catch {
+  } catch (err: unknown) {
+    // Unique constraint violation (username already exists)
+    if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
+      return NextResponse.json({ error: 'Username already exists' }, { status: 409 });
+    }
     return NextResponse.json({ error: 'Failed to create user' }, { status: 500 });
   }
 }
 
-// PATCH - update team user
+// ── PATCH - update team user ────────────────────────────────────
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -73,20 +68,21 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'User ID required' }, { status: 400 });
     }
 
-    const updateData: Record<string, unknown> = {};
-    if (displayName !== undefined) updateData.display_name = displayName;
-    if (role !== undefined) updateData.role = role;
-    if (isActive !== undefined) updateData.is_active = isActive;
-    if (password) updateData.password_hash = simpleHash(password);
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let pi = 1;
 
-    const { error } = await getSupabaseAdmin()
-      .from('team_users')
-      .update(updateData)
-      .eq('id', id);
+    if (displayName !== undefined) { sets.push(`display_name = $${pi++}`);   params.push(displayName); }
+    if (role !== undefined)        { sets.push(`role = $${pi++}`);            params.push(role); }
+    if (isActive !== undefined)    { sets.push(`is_active = $${pi++}`);       params.push(isActive); }
+    if (password)                  { sets.push(`password_hash = $${pi++}`);   params.push(simpleHash(password)); }
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (sets.length === 0) {
+      return NextResponse.json({ success: true });
     }
+
+    params.push(id);
+    await query(`UPDATE team_users SET ${sets.join(', ')} WHERE id = $${pi}`, params);
 
     return NextResponse.json({ success: true });
   } catch {
@@ -94,7 +90,7 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// DELETE - delete team user
+// ── DELETE - delete team user ───────────────────────────────────
 export async function DELETE(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -108,11 +104,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'User ID required' }, { status: 400 });
   }
 
-  const { error } = await getSupabaseAdmin().from('team_users').delete().eq('id', id);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  await query(`DELETE FROM team_users WHERE id = $1`, [id]);
 
   return NextResponse.json({ success: true });
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query } from '@/lib/db';
 
 // POST /api/draft-queue/complete?key=SECRET
 // Called by Google Apps Script after attempting to create Gmail drafts.
@@ -8,7 +8,6 @@ import { getSupabaseAdmin } from '@/lib/supabase';
 const QUEUE_SECRET = process.env.DRAFT_QUEUE_SECRET || '';
 
 export async function POST(request: NextRequest) {
-  // Validate secret key
   const { searchParams } = new URL(request.url);
   const key = searchParams.get('key') || '';
 
@@ -39,47 +38,39 @@ export async function POST(request: NextRequest) {
     // Mark successes as 'done'
     if (succeeded.length > 0) {
       const ids = succeeded.map((r) => r.queueId);
-      await getSupabaseAdmin()
-        .from('draft_queue')
-        .update({ status: 'done', processed_at: now, error: null })
-        .in('id', ids);
+      await query(
+        `UPDATE draft_queue SET status = 'done', updated_at = $1 WHERE id = ANY($2::uuid[])`,
+        [now, ids]
+      );
     }
 
     // Mark failures as 'failed' and increment attempt count
     for (const f of failed) {
-      // First read current attempts
-      const { data: row } = await getSupabaseAdmin()
-        .from('draft_queue')
-        .select('attempts')
-        .eq('id', f.queueId)
-        .single();
-
-      const newAttempts = (row?.attempts ?? 0) + 1;
-
-      await getSupabaseAdmin()
-        .from('draft_queue')
-        .update({
-          status: 'failed',
-          processed_at: now,
-          error: f.error || 'Unknown error',
-          attempts: newAttempts,
-        })
-        .eq('id', f.queueId);
+      await query(
+        `UPDATE draft_queue
+         SET status = 'failed', updated_at = $1, updated_at = NOW()
+         WHERE id = $2`,
+        [now, f.queueId]
+      );
     }
 
-    // Log successful drafts to email_logs so the "already sent" dedup works
-    const emailLogRows = succeeded
-      .filter((r) => r.orderId)
-      .map((r) => ({
-        order_id: r.orderId!,
-        status: 'Order Placed',
-        recipient_email: r.to || '',
-        success: true,
-        error_message: '',
-      }));
-
-    if (emailLogRows.length > 0) {
-      await getSupabaseAdmin().from('email_logs').insert(emailLogRows);
+    // Log successful drafts to email_logs for dedup
+    if (succeeded.length > 0) {
+      const emailLogRows = succeeded.filter(r => r.orderId);
+      if (emailLogRows.length > 0) {
+        const colCount = 5;
+        const placeholders = emailLogRows.map(
+          (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
+        ).join(', ');
+        const params: unknown[] = [];
+        emailLogRows.forEach(r => {
+          params.push(r.orderId!, 'Order Placed', r.to || '', true, '');
+        });
+        await query(
+          `INSERT INTO email_logs (order_id, status, recipient_email, success, error_message) VALUES ${placeholders}`,
+          params
+        );
+      }
     }
 
     return NextResponse.json({

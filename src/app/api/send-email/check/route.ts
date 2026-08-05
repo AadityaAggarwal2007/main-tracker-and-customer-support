@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query } from '@/lib/db';
 
 // POST: Check which order IDs have been emailed
 export async function POST(request: NextRequest) {
@@ -16,20 +16,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ emailedIds: [] });
     }
 
-    const emailedIds = new Set<string>();
+    // Single query — direct Postgres has no batch limit
+    const result = await query<{ order_id: string }>(
+      `SELECT DISTINCT order_id FROM email_logs
+       WHERE order_id = ANY($1::text[]) AND success = true`,
+      [orderIds]
+    );
 
-    // Batch query to avoid .in() limit
-    for (let i = 0; i < orderIds.length; i += 100) {
-      const batch = orderIds.slice(i, i + 100);
-      const { data: logs } = await getSupabaseAdmin()
-        .from('email_logs')
-        .select('order_id')
-        .in('order_id', batch)
-        .eq('success', true);
-      if (logs) logs.forEach((l) => emailedIds.add(l.order_id));
-    }
+    const emailedIds = result.rows.map(r => r.order_id);
 
-    return NextResponse.json({ emailedIds: Array.from(emailedIds) });
+    return NextResponse.json({ emailedIds });
   } catch {
     return NextResponse.json({ emailedIds: [] });
   }

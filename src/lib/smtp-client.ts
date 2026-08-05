@@ -27,7 +27,7 @@ export async function sendEmailDirect(
     return {
       sent: 0,
       failed: emails.length,
-      errors: ['GMAIL_USER or GMAIL_APP_PASSWORD not set in Vercel env vars'],
+      errors: ['GMAIL_USER or GMAIL_APP_PASSWORD not set in environment variables'],
     };
   }
 

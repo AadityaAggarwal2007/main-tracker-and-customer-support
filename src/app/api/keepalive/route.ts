@@ -1,17 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { queryCount } from '@/lib/db';
 
-// Keep-alive endpoint — prevents Supabase Free from pausing after 7 days
-// Called by Vercel Cron daily
+// Keep-alive / health-check endpoint
+// No longer needed for Supabase pause prevention, but useful for monitoring
 export async function GET() {
   try {
-    const { count, error } = await getSupabaseAdmin()
-      .from('orders')
-      .select('id', { count: 'exact', head: true });
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const count = await queryCount('SELECT COUNT(*) FROM orders');
 
     return NextResponse.json({
       ok: true,
@@ -19,6 +13,6 @@ export async function GET() {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    return NextResponse.json({ error: 'Keep-alive failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Health check failed' }, { status: 500 });
   }
 }

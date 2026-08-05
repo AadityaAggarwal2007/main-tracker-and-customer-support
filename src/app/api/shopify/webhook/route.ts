@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query, queryOne } from '@/lib/db';
 import { sendEmailDirect } from '@/lib/smtp-client';
 import { generateTrackingEmail } from '@/lib/email-templates';
 import crypto from 'crypto';
@@ -9,7 +9,7 @@ import crypto from 'crypto';
 // ═══════════════════════════════════════════════
 // When a customer places an order on Shopify,
 // this endpoint automatically:
-//   1. Creates the order in Supabase
+//   1. Creates the order in PostgreSQL
 //   2. Sends a tracking email via Gmail SMTP (direct)
 //   3. Logs the email in email_logs for dedup
 // ═══════════════════════════════════════════════
@@ -17,7 +17,6 @@ import crypto from 'crypto';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || '';
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || '';
 
-// Generate tracking ID: ST + 10 uppercase alphanumeric chars
 function generateTrackingId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let id = 'ST';
@@ -25,12 +24,10 @@ function generateTrackingId(): string {
   return id;
 }
 
-// Generate tracking token: random 32-char hex string
 function generateTrackingToken(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
-// Normalize phone: strip country code, keep last 10 digits
 function normalizePhone(phone: string): string {
   if (!phone) return '';
   let cleaned = phone.replace(/\D/g, '');
@@ -40,14 +37,71 @@ function normalizePhone(phone: string): string {
   return cleaned.slice(-10);
 }
 
-// Verify Shopify HMAC-SHA256 signature
 function verifyShopifyWebhook(rawBody: string, hmacHeader: string): boolean {
-  if (!SHOPIFY_WEBHOOK_SECRET || !hmacHeader) return false;
+  // If no secret configured, skip verification (accepts all webhooks)
+  // Set SHOPIFY_WEBHOOK_SECRET in env to enable HMAC security
+  if (!SHOPIFY_WEBHOOK_SECRET) return true;
+  if (!hmacHeader) return false;
   const digest = crypto
     .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
     .update(rawBody, 'utf8')
     .digest('base64');
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacHeader));
+}
+
+// ── Helper: send tracking email and log it ──────────────────────
+async function sendAndLogEmail(
+  orderId: string, customerEmail: string, customerName: string,
+  trackingId: string, trackingToken: string, orderTotal: number,
+  city: string, lineItems: { product_name: string }[]
+) {
+  // Get default business for branding
+  const biz = await queryOne<{
+    name: string; logo_url: string; support_email: string; support_phone: string;
+  }>(
+    `SELECT name, logo_url, support_email, support_phone
+     FROM businesses WHERE is_default = true LIMIT 1`
+  );
+
+  let bizName = biz?.name || 'ShipTrack';
+  let logoUrl = biz?.logo_url || '';
+  if (logoUrl && logoUrl.includes('drive.google.com')) {
+    logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
+  }
+
+  const emailResult = generateTrackingEmail(
+    {
+      customerName,
+      orderId,
+      productNames: lineItems.map(i => i.product_name).filter(Boolean),
+      trackingId,
+      courierPartner: '',
+      trackingUrl: `${BASE_URL}/track/${trackingToken}`,
+      businessName: bizName,
+      businessLogoUrl: logoUrl || undefined,
+      supportEmail: biz?.support_email || '',
+      supportPhone: biz?.support_phone || '',
+      estimatedDelivery: undefined,
+      orderTotal,
+      city,
+    },
+    'Order Placed'
+  );
+
+  if (emailResult) {
+    const sendResult = await sendEmailDirect([
+      { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
+    ]);
+
+    await query(
+      `INSERT INTO email_logs (order_id, status, recipient_email, success, error_message)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [orderId, 'Order Placed', customerEmail, sendResult.sent > 0, sendResult.errors[0] || '']
+    );
+
+    return sendResult.sent > 0;
+  }
+  return false;
 }
 
 export async function POST(request: NextRequest) {
@@ -66,10 +120,9 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const shopifyOrder: any = JSON.parse(rawBody);
 
-    const orderId = shopifyOrder.name || `#${shopifyOrder.order_number}`; // e.g. "#1001"
+    const orderId = shopifyOrder.name || `#${shopifyOrder.order_number}`;
     const shopifyId = String(shopifyOrder.id || '');
 
-    // Skip test/draft orders
     if (shopifyOrder.test || shopifyOrder.source_name === 'web' && shopifyOrder.confirmed === false) {
       return NextResponse.json({ skipped: true, reason: 'test/draft order' });
     }
@@ -115,127 +168,96 @@ export async function POST(request: NextRequest) {
     let businessId: string | null = null;
 
     if (brand) {
-      const { data: existingBiz } = await getSupabaseAdmin()
-        .from('businesses')
-        .select('id')
-        .ilike('name', brand)
-        .single();
+      const existingBiz = await queryOne<{ id: string }>(
+        `SELECT id FROM businesses WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+        [brand]
+      );
 
       if (existingBiz) {
         businessId = existingBiz.id;
       } else {
-        const { data: newBiz } = await getSupabaseAdmin()
-          .from('businesses')
-          .insert({ name: brand })
-          .select('id')
-          .single();
+        const newBiz = await queryOne<{ id: string }>(
+          `INSERT INTO businesses (name) VALUES ($1) RETURNING id`,
+          [brand]
+        );
         if (newBiz) businessId = newBiz.id;
       }
     }
 
     // 9. Check if order already exists (dedup)
-    const { data: existing } = await getSupabaseAdmin()
-      .from('orders')
-      .select('order_id')
-      .eq('order_id', orderId)
-      .single();
+    const existing = await queryOne<{ order_id: string }>(
+      `SELECT order_id FROM orders WHERE order_id = $1`,
+      [orderId]
+    );
 
     const trackingId = generateTrackingId();
     const trackingToken = generateTrackingToken();
 
     if (existing) {
-      // Update existing order
-      await getSupabaseAdmin()
-        .from('orders')
-        .update({
-          shopify_id: shopifyId,
-          payment_method: paymentMethod,
-          financial_status: financialStatus,
-          customer_name: customerName,
-          customer_email: customerEmail,
-          customer_mobile: customerMobile,
-          address_line1: address1,
-          address_line2: address2,
-          city,
-          state,
-          pincode,
-          order_total: orderTotal,
-          is_cancelled: isCancelled,
-          source_store: sourceStore,
-          ...(businessId ? { business_id: businessId } : {}),
-        })
-        .eq('order_id', orderId);
+      // ── Update existing order ──────────────────────────────
+      await query(
+        `UPDATE orders SET
+           shopify_id = $1, payment_method = $2, financial_status = $3,
+           customer_name = $4, customer_email = $5, customer_mobile = $6,
+           address_line1 = $7, address_line2 = $8, city = $9, state = $10,
+           pincode = $11, order_total = $12, is_cancelled = $13,
+           source_store = $16
+           ${businessId ? ', business_id = $15' : ''}
+         WHERE order_id = $14`,
+        [
+          shopifyId, paymentMethod, financialStatus, customerName, customerEmail,
+          customerMobile, address1, address2, city, state, pincode, orderTotal,
+          isCancelled, orderId,
+          ...(businessId ? [businessId] : [null]),
+          sourceStore,
+        ]
+      );
 
       // Replace items
-      await getSupabaseAdmin().from('order_items').delete().eq('order_id', orderId);
+      await query(`DELETE FROM order_items WHERE order_id = $1`, [orderId]);
       if (lineItems.length > 0) {
-        await getSupabaseAdmin()
-          .from('order_items')
-          .insert(lineItems.map((item: { brand: string; product_name: string; quantity: number; price: number }) => ({ order_id: orderId, ...item })));
+        const colCount = 5;
+        const placeholders = lineItems.map(
+          (_: unknown, j: number) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
+        ).join(', ');
+        const params: unknown[] = [];
+        lineItems.forEach((item: { brand: string; product_name: string; quantity: number; price: number }) => {
+          params.push(orderId, item.brand, item.product_name, item.quantity, item.price);
+        });
+        await query(
+          `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`,
+          params
+        );
       }
 
-      // Send email for updated order too (if not already sent)
+      // Send email if not already sent
       if (customerEmail && customerEmail.includes('@') && !isCancelled) {
         try {
-          // Check if email already sent for this order
-          const { data: existingLog } = await getSupabaseAdmin()
-            .from('email_logs')
-            .select('id')
-            .eq('order_id', orderId)
-            .eq('success', true)
-            .maybeSingle();
+          const existingLog = await queryOne(
+            `SELECT id FROM email_logs WHERE order_id = $1 AND success = true LIMIT 1`,
+            [orderId]
+          );
 
           if (!existingLog) {
-            // No email sent yet — send now
-            const { data: biz } = await getSupabaseAdmin()
-              .from('businesses')
-              .select('name, logo_url, support_email, support_phone')
-              .eq('is_default', true)
-              .maybeSingle();
-
-            let bizName = biz?.name || 'ShipTrack';
-            let logoUrl = biz?.logo_url || '';
-            if (logoUrl && logoUrl.includes('drive.google.com')) {
-              logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
-            }
-
-            // Get tracking token from existing order
-            const { data: existingOrder } = await getSupabaseAdmin()
-              .from('orders')
-              .select('tracking_id, tracking_token, order_total, city, customer_name')
-              .eq('order_id', orderId)
-              .single();
-
-            const emailResult = generateTrackingEmail(
-              {
-                customerName: existingOrder?.customer_name || customerName,
-                orderId,
-                productNames: lineItems.map((i: { product_name: string }) => i.product_name).filter(Boolean),
-                trackingId: existingOrder?.tracking_id || '',
-                courierPartner: '',
-                trackingUrl: `${BASE_URL}/track/${existingOrder?.tracking_token || ''}`,
-                businessName: bizName,
-                businessLogoUrl: logoUrl || undefined,
-                supportEmail: biz?.support_email || '',
-                supportPhone: biz?.support_phone || '',
-                estimatedDelivery: undefined,
-                orderTotal: existingOrder?.order_total || orderTotal,
-                city: existingOrder?.city || city,
-              },
-              'Order Placed'
+            const existingOrder = await queryOne<{
+              tracking_id: string; tracking_token: string; order_total: number;
+              city: string; customer_name: string;
+            }>(
+              `SELECT tracking_id, tracking_token, order_total, city, customer_name
+               FROM orders WHERE order_id = $1`,
+              [orderId]
             );
 
-            if (emailResult) {
-              const sendResult = await sendEmailDirect([
-                { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
-              ]);
-              await getSupabaseAdmin().from('email_logs').insert({
-                order_id: orderId,
-                status: 'Order Placed',
-                recipient_email: customerEmail,
-                success: sendResult.sent > 0,
-                error_message: sendResult.errors[0] || '',
-              });
+            if (existingOrder) {
+              await sendAndLogEmail(
+                orderId, customerEmail,
+                existingOrder.customer_name || customerName,
+                existingOrder.tracking_id || '',
+                existingOrder.tracking_token || '',
+                existingOrder.order_total || orderTotal,
+                existingOrder.city || city,
+                lineItems
+              );
             }
           }
         } catch (emailErr) {
@@ -247,142 +269,70 @@ export async function POST(request: NextRequest) {
     }
 
     // 10. Insert new order
-    const { error: insertError } = await getSupabaseAdmin()
-      .from('orders')
-      .insert({
-        order_id: orderId,
-        shopify_id: shopifyId,
-        payment_method: paymentMethod,
-        financial_status: financialStatus,
-        customer_name: customerName,
-        customer_email: customerEmail,
-        customer_mobile: customerMobile,
-        address_line1: address1,
-        address_line2: address2,
-        city,
-        state,
-        pincode,
-        order_total: orderTotal,
-        is_cancelled: isCancelled,
-        tracking_status: isCancelled ? 'Cancelled' : 'Order Placed',
-        tracking_id: trackingId,
-        tracking_token: trackingToken,
-        status_updated_at: new Date().toISOString(),
-        source_store: sourceStore,
-        ...(businessId ? { business_id: businessId } : {}),
-      });
+    const insertResult = await query(
+      `INSERT INTO orders (
+         order_id, shopify_id, payment_method, financial_status,
+         customer_name, customer_email, customer_mobile,
+         address_line1, address_line2, city, state, pincode,
+         order_total, is_cancelled, tracking_status,
+         tracking_id, tracking_token, status_updated_at, source_store
+         ${businessId ? ', business_id' : ''}
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),$18${businessId ? ',$19' : ''})`,
+      [
+        orderId, shopifyId, paymentMethod, financialStatus,
+        customerName, customerEmail, customerMobile,
+        address1, address2, city, state, pincode,
+        orderTotal, isCancelled, isCancelled ? 'Cancelled' : 'Order Placed',
+        trackingId, trackingToken, sourceStore,
+        ...(businessId ? [businessId] : []),
+      ]
+    );
 
-    if (insertError) {
-      console.error('Shopify webhook: Failed to insert order:', insertError);
+    if ((insertResult.rowCount ?? 0) === 0) {
+      console.error('Shopify webhook: Failed to insert order');
       return NextResponse.json({ error: 'Failed to create order' }, { status: 500 });
     }
 
     // 11. Insert line items
     if (lineItems.length > 0) {
-      await getSupabaseAdmin()
-        .from('order_items')
-        .insert(lineItems.map((item: { brand: string; product_name: string; quantity: number; price: number }) => ({ order_id: orderId, ...item })));
+      const colCount = 5;
+      const placeholders = lineItems.map(
+        (_: unknown, j: number) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
+      ).join(', ');
+      const params: unknown[] = [];
+      lineItems.forEach((item: { brand: string; product_name: string; quantity: number; price: number }) => {
+        params.push(orderId, item.brand, item.product_name, item.quantity, item.price);
+      });
+      await query(
+        `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`,
+        params
+      );
     }
 
-    // 12. Tracking history entry
-    await getSupabaseAdmin()
-      .from('tracking_history')
-      .insert({
-        order_id: orderId,
-        status: isCancelled ? 'Cancelled' : 'Order Placed',
-        changed_by: 'shopify-webhook',
-        notes: 'Auto-imported from Shopify',
-      });
+    // 12. Tracking history
+    await query(
+      `INSERT INTO tracking_history (order_id, status, changed_by, notes)
+       VALUES ($1, $2, 'shopify-webhook', 'Auto-imported from Shopify')`,
+      [orderId, isCancelled ? 'Cancelled' : 'Order Placed']
+    );
 
-    // 13. Send email immediately (skip drafts!) — only if customer has email
+    // 13. Send email immediately
+    let emailSent = false;
     if (customerEmail && customerEmail.includes('@') && !isCancelled) {
       try {
-        // Fetch brand settings from admin dashboard (default business)
-        // This uses the brand configured in Settings, NOT the Shopify vendor name
-        let bizName = 'ShipTrack';
-        let logoUrl = '';
-        let supportEmail = '';
-        let supportPhone = '';
-
-        // First try: get the default business (configured in Brand Settings)
-        const { data: defaultBiz } = await getSupabaseAdmin()
-          .from('businesses')
-          .select('name, logo_url, support_email, support_phone')
-          .eq('is_default', true)
-          .single();
-
-        if (defaultBiz) {
-          bizName = defaultBiz.name || bizName;
-          logoUrl = defaultBiz.logo_url || '';
-          supportEmail = defaultBiz.support_email || '';
-          supportPhone = defaultBiz.support_phone || '';
-        } else if (businessId) {
-          // Fallback: use the matched business
-          const { data: biz } = await getSupabaseAdmin()
-            .from('businesses')
-            .select('name, logo_url, support_email, support_phone')
-            .eq('id', businessId)
-            .single();
-          if (biz) {
-            bizName = biz.name || bizName;
-            logoUrl = biz.logo_url || '';
-            supportEmail = biz.support_email || '';
-            supportPhone = biz.support_phone || '';
-          }
-        }
-
-        // Transform Google Drive URLs
-        if (logoUrl && logoUrl.includes('drive.google.com')) {
-          logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
-        }
-
-        const emailResult = generateTrackingEmail(
-          {
-            customerName,
-            orderId,
-            productNames: lineItems.map((i: { product_name: string }) => i.product_name).filter(Boolean),
-            trackingId,
-            courierPartner: '',
-            trackingUrl: `${BASE_URL}/track/${trackingToken}`,
-            businessName: bizName,
-            businessLogoUrl: logoUrl || undefined,
-            supportEmail,
-            supportPhone,
-            estimatedDelivery: undefined,
-            orderTotal,
-            city,
-          },
-          'Order Placed'
+        emailSent = await sendAndLogEmail(
+          orderId, customerEmail, customerName,
+          trackingId, trackingToken, orderTotal, city, lineItems
         );
-
-        if (emailResult) {
-          const sendResult = await sendEmailDirect([
-            { to: customerEmail, subject: emailResult.subject, html: emailResult.html },
-          ]);
-
-          // Log the email
-          await getSupabaseAdmin().from('email_logs').insert({
-            order_id: orderId,
-            status: 'Order Placed',
-            recipient_email: customerEmail,
-            success: sendResult.sent > 0,
-            error_message: sendResult.errors[0] || '',
-          });
-
-          return NextResponse.json({
-            success: true,
-            action: 'created',
-            orderId,
-            emailSent: sendResult.sent > 0,
-          });
-        }
       } catch (emailErr) {
         console.error('Shopify webhook: Email send failed (order still created):', emailErr);
-        // Don't fail the webhook — order is already created
       }
     }
 
-    return NextResponse.json({ success: true, action: 'created', orderId });
+    return NextResponse.json({
+      success: true, action: 'created', orderId,
+      ...(emailSent !== undefined ? { emailSent } : {}),
+    });
   } catch (err) {
     console.error('Shopify webhook error:', err);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });

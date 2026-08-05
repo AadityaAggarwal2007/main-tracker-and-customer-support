@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { getSupabaseAdmin } from './supabase';
+import { queryOne, query } from './db';
 
 export interface AuthUser {
   username: string;
@@ -41,28 +41,32 @@ export async function authenticateUser(
     return { user, token };
   }
 
-  // Check team users in database
+  // Check team users in database (direct SQL — no Supabase)
   try {
-    const { data } = await getSupabaseAdmin()
-      .from('team_users')
-      .select('*')
-      .eq('username', username)
-      .eq('is_active', true)
-      .single();
+    const data = await queryOne<{
+      id: string; username: string; display_name: string;
+      role: string; password_hash: string;
+    }>(
+      `SELECT id, username, display_name, role, password_hash
+       FROM team_users
+       WHERE username = $1 AND is_active = true
+       LIMIT 1`,
+      [username]
+    );
 
     if (data && data.password_hash === simpleHash(password)) {
       const user: AuthUser = {
         username: data.username,
         displayName: data.display_name,
-        role: data.role,
+        role: data.role as AuthUser['role'],
       };
       const token = generateToken(data.username, data.role);
 
-      // Update last login
-      await getSupabaseAdmin()
-        .from('team_users')
-        .update({ last_login: new Date().toISOString() })
-        .eq('id', data.id);
+      // Update last login (fire-and-forget)
+      query(
+        `UPDATE team_users SET last_login = NOW() WHERE id = $1`,
+        [data.id]
+      ).catch(() => {});
 
       return { user, token };
     }
@@ -79,7 +83,7 @@ export function getAuthFromRequest(request: NextRequest): AuthUser | null {
   return verifyToken(authHeader.slice(7));
 }
 
-// Simple hash for team user passwords (not for production-grade security, but sufficient for internal CRM)
+// Simple hash for team user passwords (sufficient for internal CRM)
 export function simpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {

@@ -1,25 +1,26 @@
 import { NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { queryOne } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
 // Public endpoint — returns default business branding (no auth required)
 export async function GET() {
-  const { data } = await getSupabaseAdmin()
-    .from('businesses')
-    .select('name, logo_url, support_email, support_phone')
-    .eq('is_default', true)
-    .single();
+  let data = await queryOne(
+    `SELECT name, logo_url, support_email, support_phone
+     FROM businesses
+     WHERE is_default = true
+     LIMIT 1`
+  );
 
   if (!data) {
     // Fallback: grab the first business
-    const { data: first } = await getSupabaseAdmin()
-      .from('businesses')
-      .select('name, logo_url, support_email, support_phone')
-      .limit(1)
-      .single();
-    return NextResponse.json({ business: first || null });
+    data = await queryOne(
+      `SELECT name, logo_url, support_email, support_phone
+       FROM businesses
+       ORDER BY created_at ASC
+       LIMIT 1`
+    );
   }
 
-  return NextResponse.json({ business: data });
+  return NextResponse.json({ business: data || null });
 }

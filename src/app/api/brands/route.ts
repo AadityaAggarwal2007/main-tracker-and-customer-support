@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query } from '@/lib/db';
 
 // GET - get unique brands from order_items
 export async function GET(request: NextRequest) {
@@ -9,17 +9,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { data, error } = await getSupabaseAdmin()
-    .from('order_items')
-    .select('brand')
-    .not('brand', 'is', null)
-    .not('brand', 'eq', '');
+  const result = await query<{ brand: string }>(
+    `SELECT DISTINCT brand FROM order_items
+     WHERE brand IS NOT NULL AND brand != ''
+     ORDER BY brand ASC`
+  );
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  const uniqueBrands = [...new Set((data || []).map((d) => d.brand))].filter(Boolean).sort();
-
-  return NextResponse.json({ brands: uniqueBrands });
+  return NextResponse.json({ brands: result.rows.map(r => r.brand) });
 }

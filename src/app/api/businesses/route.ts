@@ -1,27 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query, queryOne } from '@/lib/db';
 
-// GET all businesses
+// ── GET all businesses ─────────────────────────────────────────
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { data, error } = await getSupabaseAdmin()
-    .from('businesses')
-    .select('*')
-    .order('created_at', { ascending: true });
+  const result = await query(
+    `SELECT * FROM businesses ORDER BY created_at ASC`
+  );
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ businesses: data || [] });
+  return NextResponse.json({ businesses: result.rows });
 }
 
-// POST create business
+// ── POST create business ───────────────────────────────────────
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -37,27 +32,15 @@ export async function POST(request: NextRequest) {
 
     // If setting as default, unset other defaults
     if (isDefault) {
-      await getSupabaseAdmin()
-        .from('businesses')
-        .update({ is_default: false })
-        .eq('is_default', true);
+      await query(`UPDATE businesses SET is_default = false WHERE is_default = true`);
     }
 
-    const { data, error } = await getSupabaseAdmin()
-      .from('businesses')
-      .insert({
-        name,
-        logo_url: logoUrl || null,
-        support_email: supportEmail || null,
-        support_phone: supportPhone || null,
-        is_default: isDefault || false,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    const data = await queryOne(
+      `INSERT INTO businesses (name, logo_url, support_email, support_phone, is_default)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [name, logoUrl || null, supportEmail || null, supportPhone || null, isDefault || false]
+    );
 
     return NextResponse.json({ business: data });
   } catch {
@@ -65,7 +48,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PATCH update business
+// ── PATCH update business ──────────────────────────────────────
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -81,28 +64,27 @@ export async function PATCH(request: NextRequest) {
 
     // If setting as default, unset other defaults
     if (isDefault) {
-      await getSupabaseAdmin()
-        .from('businesses')
-        .update({ is_default: false })
-        .eq('is_default', true);
+      await query(`UPDATE businesses SET is_default = false WHERE is_default = true AND id != $1`, [id]);
     }
 
-    const updateData: Record<string, unknown> = {};
-    if (name !== undefined) updateData.name = name;
-    // Only update logo if a real value is provided — null/undefined means "keep existing logo"
-    if (logoUrl !== undefined && logoUrl !== null && logoUrl !== '') updateData.logo_url = logoUrl;
-    if (supportEmail !== undefined) updateData.support_email = supportEmail;
-    if (supportPhone !== undefined) updateData.support_phone = supportPhone;
-    if (isDefault !== undefined) updateData.is_default = isDefault;
+    // Build SET clause dynamically (only update provided fields)
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let pi = 1;
 
-    const { error } = await getSupabaseAdmin()
-      .from('businesses')
-      .update(updateData)
-      .eq('id', id);
+    if (name !== undefined)         { sets.push(`name = $${pi++}`);          params.push(name); }
+    if (logoUrl !== undefined && logoUrl !== null && logoUrl !== '')
+                                    { sets.push(`logo_url = $${pi++}`);      params.push(logoUrl); }
+    if (supportEmail !== undefined) { sets.push(`support_email = $${pi++}`); params.push(supportEmail); }
+    if (supportPhone !== undefined) { sets.push(`support_phone = $${pi++}`); params.push(supportPhone); }
+    if (isDefault !== undefined)    { sets.push(`is_default = $${pi++}`);    params.push(isDefault); }
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (sets.length === 0) {
+      return NextResponse.json({ success: true });
     }
+
+    params.push(id);
+    await query(`UPDATE businesses SET ${sets.join(', ')} WHERE id = $${pi}`, params);
 
     return NextResponse.json({ success: true });
   } catch {
@@ -110,7 +92,7 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// DELETE business
+// ── DELETE business ────────────────────────────────────────────
 export async function DELETE(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || user.role !== 'admin') {
@@ -125,19 +107,8 @@ export async function DELETE(request: NextRequest) {
   }
 
   // Nullify any orders pointing to this business
-  await getSupabaseAdmin()
-    .from('orders')
-    .update({ business_id: null })
-    .eq('business_id', id);
-
-  const { error } = await getSupabaseAdmin()
-    .from('businesses')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  await query(`UPDATE orders SET business_id = NULL WHERE business_id = $1`, [id]);
+  await query(`DELETE FROM businesses WHERE id = $1`, [id]);
 
   return NextResponse.json({ success: true });
 }

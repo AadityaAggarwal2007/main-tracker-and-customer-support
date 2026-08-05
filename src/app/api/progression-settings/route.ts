@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const fetchCache = 'force-no-store';
 
-// GET: Fetch current progression settings
+// ── GET: Fetch current progression settings ─────────────────────
 export async function GET() {
-  const { data, error } = await getSupabaseAdmin()
-    .from('progression_settings')
-    .select('*')
-    .order('step_order', { ascending: true });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  const result = await query(
+    `SELECT * FROM progression_settings ORDER BY step_order ASC`
+  );
 
   return NextResponse.json(
-    { steps: data },
+    { steps: result.rows },
     {
       headers: {
         'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -26,7 +21,7 @@ export async function GET() {
   );
 }
 
-// PUT: Update progression settings
+// ── PUT: Update progression settings ───────────────────────────
 export async function PUT(request: NextRequest) {
   try {
     const { steps } = await request.json();
@@ -35,22 +30,17 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid steps data' }, { status: 400 });
     }
 
-    // Update each step
-    for (const step of steps) {
-      const { error } = await getSupabaseAdmin()
-        .from('progression_settings')
-        .update({
-          delay_minutes: step.delay_minutes,
-          is_enabled: step.is_enabled,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', step.id);
-
-      if (error) {
-        console.error('Failed to update step:', error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
-      }
-    }
+    // Update each step in parallel for speed
+    await Promise.all(
+      steps.map((step: { id: string; delay_minutes: number; is_enabled: boolean }) =>
+        query(
+          `UPDATE progression_settings
+           SET delay_minutes = $1, is_enabled = $2, updated_at = NOW()
+           WHERE id = $3`,
+          [step.delay_minutes, step.is_enabled, step.id]
+        )
+      )
+    );
 
     return NextResponse.json({ success: true });
   } catch (err) {
