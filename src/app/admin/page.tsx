@@ -92,7 +92,9 @@ export default function AdminDashboard() {
   // Team
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
   const [showTeamModal, setShowTeamModal] = useState(false);
-  const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer' });
+  const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] as string[] });
+  const [editingUserPanels, setEditingUserPanels] = useState<string | null>(null);
+  const [editUserPanelIds, setEditUserPanelIds] = useState<string[]>([]);
 
   // Panel switcher
   const [activePanelId, setActivePanelId] = useState<string>('');
@@ -108,10 +110,6 @@ export default function AdminDashboard() {
   const [shopifyForm, setShopifyForm] = useState({ domain: '', apiToken: '' });
   const [connectingShopify, setConnectingShopify] = useState(false);
 
-  // Team — panel access assignment
-  const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] as string[] });
-  const [editingUserPanels, setEditingUserPanels] = useState<string | null>(null);
-  const [editUserPanelIds, setEditUserPanelIds] = useState<string[]>([]);
 
   // Auto-Progression
   interface ProgressionStep { id: string; step_from: string; step_to: string; step_order: number; delay_minutes: number; is_enabled: boolean; }
@@ -1313,31 +1311,73 @@ export default function AdminDashboard() {
                         <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
                           New orders from <strong>{activeBusiness.shopify_domain}</strong> auto-import into this panel and receive tracking emails.
                         </p>
+                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
+                          Store name and logo were auto-imported from Shopify. You can override them above.
+                        </p>
                       </div>
                     ) : (
                       <>
-                        <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1rem' }}>
-                          Connect Shopify to auto-import new orders and send tracking emails automatically.
+                        <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
+                          One click — redirects to Shopify, you approve, we auto-import your store name + logo and register the webhook.
                         </p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                          <div className="form-group">
-                            <label className="form-label">Shopify Store Domain</label>
-                            <input className="form-input" value={shopifyForm.domain} onChange={(e) => setShopifyForm({ ...shopifyForm, domain: e.target.value })} placeholder="mystore.myshopify.com" />
+
+                        {/* OAuth button — primary flow */}
+                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginBottom: '1rem' }}>
+                          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                            <label className="form-label">Your Shopify Store URL</label>
+                            <input
+                              className="form-input"
+                              value={shopifyForm.domain}
+                              onChange={(e) => setShopifyForm({ ...shopifyForm, domain: e.target.value })}
+                              placeholder="mystore.myshopify.com"
+                            />
                           </div>
+                          <a
+                            href={shopifyForm.domain
+                              ? `/api/shopify/oauth/start?shop=${encodeURIComponent(shopifyForm.domain)}&businessId=${activePanelId}`
+                              : '#'}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
+                              padding: '0.625rem 1.25rem', borderRadius: 'var(--radius-lg)',
+                              background: shopifyForm.domain ? '#96bf48' : 'var(--border)',
+                              color: shopifyForm.domain ? '#fff' : 'var(--fg-muted)',
+                              fontWeight: 700, fontSize: '0.875rem', textDecoration: 'none',
+                              pointerEvents: shopifyForm.domain ? 'auto' : 'none',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <ShoppingBag size={16} />
+                            Connect with Shopify
+                          </a>
+                        </div>
+
+                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                          After approving, your store name, logo, and support email are imported automatically. Orders start flowing in immediately.
+                        </p>
+
+                        {/* Divider */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', margin: '1.25rem 0' }}>
+                          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                          <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>or connect manually with API token</span>
+                          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                        </div>
+
+                        {/* Manual fallback */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
                           <div className="form-group">
                             <label className="form-label">Admin API Access Token</label>
                             <input className="form-input" type="password" value={shopifyForm.apiToken} onChange={(e) => setShopifyForm({ ...shopifyForm, apiToken: e.target.value })} placeholder="shpat_xxxxxxxxxx" />
                           </div>
                         </div>
-                        <button className="btn btn-primary" disabled={connectingShopify || !shopifyForm.domain || !shopifyForm.apiToken} onClick={handleShopifyConnect}>
-                          {connectingShopify ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Link2 size={14} />}
-                          {connectingShopify ? 'Connecting...' : 'Connect & Register Webhook'}
-                        </button>
-                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.625rem' }}>
-                          This creates an <code>orders/create</code> webhook on Shopify automatically. No manual setup needed.
-                        </p>
+                        {shopifyForm.apiToken && (
+                          <button className="btn btn-outline btn-sm" disabled={connectingShopify || !shopifyForm.domain} onClick={handleShopifyConnect}>
+                            {connectingShopify ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Link2 size={14} />}
+                            {connectingShopify ? 'Connecting...' : 'Connect with token'}
+                          </button>
+                        )}
                       </>
                     )}
+
                   </div>
                 </>
               )}
