@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { name, logoUrl, supportEmail, supportPhone, isDefault } = await request.json();
+    const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor } = await request.json();
 
     if (!name) {
       return NextResponse.json({ error: 'Business name is required' }, { status: 400 });
@@ -36,10 +36,11 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await queryOne(
-      `INSERT INTO businesses (name, logo_url, support_email, support_phone, is_default)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO businesses (name, logo_url, support_email, support_phone, is_default, tracking_domain, primary_color)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [name, logoUrl || null, supportEmail || null, supportPhone || null, isDefault || false]
+      [name, logoUrl || null, supportEmail || null, supportPhone || null, isDefault || false,
+       trackingDomain || null, primaryColor || '#4F46E5']
     );
 
     return NextResponse.json({ business: data });
@@ -56,7 +57,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const { id, name, logoUrl, supportEmail, supportPhone, isDefault } = await request.json();
+    const { id, name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor } = await request.json();
 
     if (!id) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
@@ -72,12 +73,14 @@ export async function PATCH(request: NextRequest) {
     const params: unknown[] = [];
     let pi = 1;
 
-    if (name !== undefined)         { sets.push(`name = $${pi++}`);          params.push(name); }
+    if (name !== undefined)           { sets.push(`name = $${pi++}`);            params.push(name); }
     if (logoUrl !== undefined && logoUrl !== null && logoUrl !== '')
-                                    { sets.push(`logo_url = $${pi++}`);      params.push(logoUrl); }
-    if (supportEmail !== undefined) { sets.push(`support_email = $${pi++}`); params.push(supportEmail); }
-    if (supportPhone !== undefined) { sets.push(`support_phone = $${pi++}`); params.push(supportPhone); }
-    if (isDefault !== undefined)    { sets.push(`is_default = $${pi++}`);    params.push(isDefault); }
+                                      { sets.push(`logo_url = $${pi++}`);        params.push(logoUrl); }
+    if (supportEmail !== undefined)   { sets.push(`support_email = $${pi++}`);   params.push(supportEmail); }
+    if (supportPhone !== undefined)   { sets.push(`support_phone = $${pi++}`);   params.push(supportPhone); }
+    if (isDefault !== undefined)      { sets.push(`is_default = $${pi++}`);      params.push(isDefault); }
+    if (trackingDomain !== undefined) { sets.push(`tracking_domain = $${pi++}`); params.push(trackingDomain || null); }
+    if (primaryColor !== undefined)   { sets.push(`primary_color = $${pi++}`);   params.push(primaryColor); }
 
     if (sets.length === 0) {
       return NextResponse.json({ success: true });

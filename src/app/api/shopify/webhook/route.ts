@@ -14,8 +14,8 @@ import crypto from 'crypto';
 //   3. Logs the email in email_logs for dedup
 // ═══════════════════════════════════════════════
 
-const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || '';
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || '';
+
 
 function generateTrackingId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -37,13 +37,12 @@ function normalizePhone(phone: string): string {
   return cleaned.slice(-10);
 }
 
-function verifyShopifyWebhook(rawBody: string, hmacHeader: string): boolean {
-  // If no secret configured, skip verification (accepts all webhooks)
-  // Set SHOPIFY_WEBHOOK_SECRET in env to enable HMAC security
-  if (!SHOPIFY_WEBHOOK_SECRET) return true;
+function verifyShopifyWebhook(rawBody: string, hmacHeader: string, secret: string): boolean {
+  // If no secret configured, skip verification (development only)
+  if (!secret) return true;
   if (!hmacHeader) return false;
   const digest = crypto
-    .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
+    .createHmac('sha256', secret)
     .update(rawBody, 'utf8')
     .digest('base64');
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacHeader));
@@ -53,14 +52,17 @@ function verifyShopifyWebhook(rawBody: string, hmacHeader: string): boolean {
 async function sendAndLogEmail(
   orderId: string, customerEmail: string, customerName: string,
   trackingId: string, trackingToken: string, orderTotal: number,
-  city: string, lineItems: { product_name: string }[]
+  city: string, lineItems: { product_name: string }[],
+  businessId?: string
 ) {
-  // Get default business for branding
+  // Get business branding (by id if known, else default)
   const biz = await queryOne<{
-    name: string; logo_url: string; support_email: string; support_phone: string;
+    name: string; logo_url: string; support_email: string; support_phone: string; tracking_domain: string | null;
   }>(
-    `SELECT name, logo_url, support_email, support_phone
-     FROM businesses WHERE is_default = true LIMIT 1`
+    businessId
+      ? `SELECT name, logo_url, support_email, support_phone, tracking_domain FROM businesses WHERE id = $1 LIMIT 1`
+      : `SELECT name, logo_url, support_email, support_phone, tracking_domain FROM businesses WHERE is_default = true LIMIT 1`,
+    businessId ? [businessId] : []
   );
 
   let bizName = biz?.name || 'ShipTrack';
@@ -68,6 +70,7 @@ async function sendAndLogEmail(
   if (logoUrl && logoUrl.includes('drive.google.com')) {
     logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
   }
+  const trackingBase = biz?.tracking_domain || BASE_URL;
 
   const emailResult = generateTrackingEmail(
     {
@@ -76,7 +79,7 @@ async function sendAndLogEmail(
       productNames: lineItems.map(i => i.product_name).filter(Boolean),
       trackingId,
       courierPartner: '',
-      trackingUrl: `${BASE_URL}/track/${trackingToken}`,
+      trackingUrl: `${trackingBase}/track/${trackingToken}`,
       businessName: bizName,
       businessLogoUrl: logoUrl || undefined,
       supportEmail: biz?.support_email || '',
@@ -109,8 +112,22 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const hmacHeader = request.headers.get('x-shopify-hmac-sha256') || '';
 
-  // 2. Verify signature
-  if (!verifyShopifyWebhook(rawBody, hmacHeader)) {
+  // 2. Get business_id from query param (?b=uuid)
+  const { searchParams } = new URL(request.url);
+  const businessId = searchParams.get('b') || '';
+
+  // 3. Look up per-business HMAC secret
+  let webhookSecret = '';
+  if (businessId) {
+    const biz = await queryOne<{ shopify_webhook_secret: string | null }>(
+      `SELECT shopify_webhook_secret FROM businesses WHERE id = $1 LIMIT 1`,
+      [businessId]
+    );
+    webhookSecret = biz?.shopify_webhook_secret || '';
+  }
+
+  // 4. Verify HMAC signature
+  if (!verifyShopifyWebhook(rawBody, hmacHeader, webhookSecret)) {
     console.error('Shopify webhook: Invalid HMAC signature');
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
@@ -163,26 +180,29 @@ export async function POST(request: NextRequest) {
     // Capture which Shopify store this order came from
     const sourceStore = request.headers.get('x-shopify-shop-domain') || shopifyOrder.domain || 'unknown';
 
-    // 8. Auto-detect brand → create/find business
-    const brand = lineItems[0]?.brand || '';
-    let businessId: string | null = null;
+    // 8. Resolve business_id — prefer the one from webhook URL (?b=uuid),
+    //    fall back to auto-detect from product brand name
+    let resolvedBusinessId: string | null = businessId || null;
 
-    if (brand) {
-      const existingBiz = await queryOne<{ id: string }>(
-        `SELECT id FROM businesses WHERE LOWER(name) = LOWER($1) LIMIT 1`,
-        [brand]
-      );
-
-      if (existingBiz) {
-        businessId = existingBiz.id;
-      } else {
-        const newBiz = await queryOne<{ id: string }>(
-          `INSERT INTO businesses (name) VALUES ($1) RETURNING id`,
+    if (!resolvedBusinessId) {
+      const brand = lineItems[0]?.brand || '';
+      if (brand) {
+        const existingBiz = await queryOne<{ id: string }>(
+          `SELECT id FROM businesses WHERE LOWER(name) = LOWER($1) LIMIT 1`,
           [brand]
         );
-        if (newBiz) businessId = newBiz.id;
+        if (existingBiz) {
+          resolvedBusinessId = existingBiz.id;
+        } else {
+          const newBiz = await queryOne<{ id: string }>(
+            `INSERT INTO businesses (name) VALUES ($1) RETURNING id`,
+            [brand]
+          );
+          if (newBiz) resolvedBusinessId = newBiz.id;
+        }
       }
     }
+
 
     // 9. Check if order already exists (dedup by order_id + source_store)
     const existing = await queryOne<{ order_id: string }>(

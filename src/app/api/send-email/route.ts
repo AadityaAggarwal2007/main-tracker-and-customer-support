@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
       order_items: { product_name: string }[];
       biz_name: string; biz_logo_url: string;
       biz_support_email: string; biz_support_phone: string;
+      biz_tracking_domain: string | null; // per-business tracking URL override
     }
 
     const allOrders: OrderRow[] = [];
@@ -48,7 +49,8 @@ export async function POST(request: NextRequest) {
              FILTER (WHERE oi.id IS NOT NULL), '[]'::json
            ) AS order_items,
            b.name AS biz_name, b.logo_url AS biz_logo_url,
-           b.support_email AS biz_support_email, b.support_phone AS biz_support_phone
+           b.support_email AS biz_support_email, b.support_phone AS biz_support_phone,
+           b.tracking_domain AS biz_tracking_domain
          FROM orders o
          LEFT JOIN order_items oi ON oi.order_id = o.order_id
          LEFT JOIN businesses b ON b.id = o.business_id
@@ -104,7 +106,9 @@ export async function POST(request: NextRequest) {
             productNames: items.map(i => i.product_name).filter(Boolean),
             trackingId: order.tracking_id || '',
             courierPartner: order.courier_partner || '',
-            trackingUrl: `${BASE_URL}/track/${order.tracking_token}`,
+            // Use per-business tracking domain if set, else fall back to BASE_URL
+            // This fixes the server IP bug — set NEXT_PUBLIC_BASE_URL in .env.local
+            trackingUrl: `${order.biz_tracking_domain || BASE_URL}/track/${order.tracking_token}`,
             businessName: order.biz_name || 'ShipTrack',
             businessLogoUrl: logoUrl || undefined,
             supportEmail: order.biz_support_email || '',

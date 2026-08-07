@@ -5,11 +5,12 @@ export interface AuthUser {
   username: string;
   displayName: string;
   role: 'admin' | 'manager' | 'viewer';
+  businessIds: string[] | null; // null = all panels (admin), string[] = specific panels only
 }
 
 // Simple token-based auth using base64 encoded credentials
-export function generateToken(username: string, role: string): string {
-  const payload = JSON.stringify({ username, role, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 });
+export function generateToken(username: string, role: string, businessIds: string[] | null = null): string {
+  const payload = JSON.stringify({ username, role, businessIds, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 });
   return Buffer.from(payload).toString('base64');
 }
 
@@ -21,6 +22,7 @@ export function verifyToken(token: string): AuthUser | null {
       username: payload.username,
       displayName: payload.username,
       role: payload.role,
+      businessIds: payload.businessIds ?? null,
     };
   } catch {
     return null;
@@ -36,18 +38,18 @@ export async function authenticateUser(
   const envPassword = process.env.ADMIN_PASSWORD;
 
   if (username === envUsername && password === envPassword) {
-    const user: AuthUser = { username, displayName: 'Super Admin', role: 'admin' };
-    const token = generateToken(username, 'admin');
+    const user: AuthUser = { username, displayName: 'Super Admin', role: 'admin', businessIds: null };
+    const token = generateToken(username, 'admin', null);
     return { user, token };
   }
 
-  // Check team users in database (direct SQL — no Supabase)
+  // Check team users in database
   try {
     const data = await queryOne<{
       id: string; username: string; display_name: string;
-      role: string; password_hash: string;
+      role: string; password_hash: string; business_ids: string[] | null;
     }>(
-      `SELECT id, username, display_name, role, password_hash
+      `SELECT id, username, display_name, role, password_hash, business_ids
        FROM team_users
        WHERE username = $1 AND is_active = true
        LIMIT 1`,
@@ -55,18 +57,17 @@ export async function authenticateUser(
     );
 
     if (data && data.password_hash === simpleHash(password)) {
+      const businessIds = data.business_ids && data.business_ids.length > 0 ? data.business_ids : null;
       const user: AuthUser = {
         username: data.username,
         displayName: data.display_name,
         role: data.role as AuthUser['role'],
+        businessIds,
       };
-      const token = generateToken(data.username, data.role);
+      const token = generateToken(data.username, data.role, businessIds);
 
       // Update last login (fire-and-forget)
-      query(
-        `UPDATE team_users SET last_login = NOW() WHERE id = $1`,
-        [data.id]
-      ).catch(() => {});
+      query(`UPDATE team_users SET last_login = NOW() WHERE id = $1`, [data.id]).catch(() => {});
 
       return { user, token };
     }

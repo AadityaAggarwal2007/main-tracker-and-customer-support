@@ -12,15 +12,16 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const search   = searchParams.get('search') || '';
-  const status   = searchParams.get('status') || '';
-  const brand    = searchParams.get('brand') || '';
-  const store    = searchParams.get('store') || '';
-  const dateFrom = searchParams.get('dateFrom') || '';
-  const dateTo   = searchParams.get('dateTo') || '';
-  const page     = parseInt(searchParams.get('page') || '1');
-  const limit    = Math.min(parseInt(searchParams.get('limit') || '50'), 1000);
-  const offset   = (page - 1) * limit;
+  const search      = searchParams.get('search') || '';
+  const status      = searchParams.get('status') || '';
+  const brand       = searchParams.get('brand') || '';
+  const store       = searchParams.get('store') || '';
+  const businessId  = searchParams.get('businessId') || ''; // panel filter
+  const dateFrom    = searchParams.get('dateFrom') || '';
+  const dateTo      = searchParams.get('dateTo') || '';
+  const page        = parseInt(searchParams.get('page') || '1');
+  const limit       = Math.min(parseInt(searchParams.get('limit') || '50'), 1000);
+  const offset      = (page - 1) * limit;
 
   // Build WHERE clauses dynamically
   const conditions: string[] = [];
@@ -61,6 +62,27 @@ export async function GET(request: NextRequest) {
   if (store) {
     conditions.push(`o.source_store = $${paramIdx}`);
     params.push(store);
+    paramIdx++;
+  }
+
+  // Panel (business) filter — from query param OR user's token access restriction
+  const effectiveBusinessIds: string[] = [];
+  if (businessId) effectiveBusinessIds.push(businessId);
+  // If user has panel restrictions in their token, enforce them
+  if (user.businessIds && user.businessIds.length > 0) {
+    if (businessId && !user.businessIds.includes(businessId)) {
+      // Requested a panel they don't have access to — return empty
+      return NextResponse.json({ orders: [], total: 0, page, limit });
+    }
+    if (!businessId) effectiveBusinessIds.push(...user.businessIds);
+  }
+  if (effectiveBusinessIds.length === 1) {
+    conditions.push(`o.business_id = $${paramIdx}`);
+    params.push(effectiveBusinessIds[0]);
+    paramIdx++;
+  } else if (effectiveBusinessIds.length > 1) {
+    conditions.push(`o.business_id = ANY($${paramIdx}::uuid[])`);
+    params.push(effectiveBusinessIds);
     paramIdx++;
   }
 

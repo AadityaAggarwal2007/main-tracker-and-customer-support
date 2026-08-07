@@ -23,9 +23,13 @@ interface Order {
   notes: string; created_at: string; updated_at: string; order_items: OrderItem[];
   business_id: string;
 }
-interface AuthUser { username: string; displayName: string; role: 'admin' | 'manager' | 'viewer'; }
-interface TeamUser { id: string; username: string; display_name: string; role: string; is_active: boolean; last_login: string; created_at: string; }
-interface Business { id: string; name: string; logo_url: string; support_email: string; support_phone: string; is_default: boolean; created_at: string; }
+interface AuthUser { username: string; displayName: string; role: 'admin' | 'manager' | 'viewer'; businessIds: string[] | null; }
+interface TeamUser { id: string; username: string; display_name: string; role: string; is_active: boolean; last_login: string; created_at: string; business_ids: string[] | null; }
+interface Business {
+  id: string; name: string; logo_url: string; support_email: string; support_phone: string;
+  is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null;
+  is_shopify_connected: boolean; shopify_domain: string | null;
+}
 type TabType = 'orders' | 'upload' | 'team' | 'settings';
 
 export default function AdminDashboard() {
@@ -90,10 +94,24 @@ export default function AdminDashboard() {
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer' });
 
+  // Panel switcher
+  const [activePanelId, setActivePanelId] = useState<string>('');
+  const [showPanelDropdown, setShowPanelDropdown] = useState(false);
+
   // Businesses / Brand Settings
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '' });
+  const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
+  const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '', trackingDomain: '', primaryColor: '#4F46E5' });
   const [savingBrand, setSavingBrand] = useState(false);
+
+  // Shopify connect
+  const [shopifyForm, setShopifyForm] = useState({ domain: '', apiToken: '' });
+  const [connectingShopify, setConnectingShopify] = useState(false);
+
+  // Team — panel access assignment
+  const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] as string[] });
+  const [editingUserPanels, setEditingUserPanels] = useState<string | null>(null);
+  const [editUserPanelIds, setEditUserPanelIds] = useState<string[]>([]);
 
   // Auto-Progression
   interface ProgressionStep { id: string; step_from: string; step_to: string; step_order: number; delay_minutes: number; is_enabled: boolean; }
@@ -112,7 +130,11 @@ export default function AdminDashboard() {
     const savedUser = localStorage.getItem('auth_user');
     if (!savedToken || !savedUser) { router.push('/login'); return; }
     setToken(savedToken);
-    setUser(JSON.parse(savedUser));
+    const parsedUser = JSON.parse(savedUser);
+    setUser(parsedUser);
+    // Restore last active panel
+    const savedPanel = localStorage.getItem('active_panel_id') || '';
+    setActivePanelId(savedPanel);
   }, [router]);
 
   const hasPermission = (perm: string) => {
@@ -137,12 +159,13 @@ export default function AdminDashboard() {
       if (storeFilter) params.set('store', storeFilter);
       if (dateFrom) params.set('dateFrom', dateFrom);
       if (dateTo) params.set('dateTo', dateTo);
+      if (activePanelId) params.set('businessId', activePanelId); // Panel filter
       const res = await fetch(`/api/orders?${params}`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (res.ok) { setOrders(data.orders); setTotalOrders(data.total); }
     } catch { showAlert('error', 'Failed to load orders'); }
     finally { setLoading(false); }
-  }, [token, page, limit, search, statusFilter, brandFilter, storeFilter, dateFrom, dateTo]);
+  }, [token, page, limit, search, statusFilter, brandFilter, storeFilter, dateFrom, dateTo, activePanelId]);
 
   // Fetch email stats
   const fetchEmailStats = useCallback(async () => {
@@ -231,13 +254,29 @@ export default function AdminDashboard() {
     const interval = setInterval(fetchEmailStats, 30000);
     return () => clearInterval(interval);
   }, [token, fetchEmailStats]);
-  // Load brand form from businesses
+  // Load brand form from active panel's business
   useEffect(() => {
-    const defaultBiz = businesses.find(b => b.is_default) || businesses[0];
-    if (defaultBiz) {
-      setBrandForm({ name: defaultBiz.name, logoUrl: defaultBiz.logo_url || '', supportEmail: defaultBiz.support_email || '', supportPhone: defaultBiz.support_phone || '' });
+    const biz = activePanelId
+      ? businesses.find(b => b.id === activePanelId)
+      : (businesses.find(b => b.is_default) || businesses[0]);
+    setActiveBusiness(biz || null);
+    if (biz) {
+      setBrandForm({
+        name: biz.name, logoUrl: biz.logo_url || '',
+        supportEmail: biz.support_email || '', supportPhone: biz.support_phone || '',
+        trackingDomain: biz.tracking_domain || '', primaryColor: biz.primary_color || '#4F46E5',
+      });
     }
-  }, [businesses]);
+  }, [businesses, activePanelId]);
+
+  // Sync activePanelId to localStorage and restrict to accessible panels
+  const switchPanel = (panelId: string) => {
+    setActivePanelId(panelId);
+    localStorage.setItem('active_panel_id', panelId);
+    setShowPanelDropdown(false);
+    setPage(1);
+    setSelectedOrders(new Set());
+  };
 
   const handleSearchChange = (val: string) => {
     setSearchInput(val);
@@ -400,9 +439,61 @@ export default function AdminDashboard() {
       const data = await res.json();
       if (res.ok) {
         showAlert('success', `User ${newTeamUser.username} created`);
-        setShowTeamModal(false); setNewTeamUser({ username: '', password: '', displayName: '', role: 'viewer' });
+        setShowTeamModal(false);
+        setNewTeamUser({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] });
         fetchTeamUsers();
       } else { showAlert('error', data.error || 'Failed'); }
+    } catch { showAlert('error', 'Failed'); }
+  };
+
+  /* ═══ SHOPIFY CONNECT ═══ */
+  const handleShopifyConnect = async () => {
+    if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
+    if (!shopifyForm.domain || !shopifyForm.apiToken) { showAlert('error', 'Enter Shopify domain and API token'); return; }
+    setConnectingShopify(true);
+    try {
+      const res = await fetch('/api/shopify/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          businessId: activePanelId,
+          shopifyDomain: shopifyForm.domain,
+          apiToken: shopifyForm.apiToken,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('success', data.message || 'Shopify connected!');
+        setShopifyForm({ domain: '', apiToken: '' });
+        fetchBusinesses();
+      } else { showAlert('error', data.error || 'Connection failed'); }
+    } catch { showAlert('error', 'Connection failed'); }
+    finally { setConnectingShopify(false); }
+  };
+
+  const handleShopifyDisconnect = async () => {
+    if (!activePanelId || !confirm('Disconnect Shopify? Webhook will be deleted.')) return;
+    try {
+      const res = await fetch(`/api/shopify/connect?businessId=${activePanelId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) { showAlert('success', 'Shopify disconnected'); fetchBusinesses(); }
+      else { showAlert('error', 'Disconnect failed'); }
+    } catch { showAlert('error', 'Disconnect failed'); }
+  };
+
+  /* ═══ PANEL ACCESS ═══ */
+  const handleUpdateUserPanels = async (userId: string) => {
+    try {
+      await fetch('/api/team', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ id: userId, businessIds: editUserPanelIds }),
+      });
+      showAlert('success', 'Panel access updated');
+      setEditingUserPanels(null);
+      fetchTeamUsers();
     } catch { showAlert('error', 'Failed'); }
   };
 
@@ -538,12 +629,88 @@ export default function AdminDashboard() {
 
       {/* Sidebar */}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div className="sidebar-brand">
-          <div className="sidebar-brand-icon"><Package /></div>
-          <div>
-            <div className="sidebar-brand-name">TrackFlow</div>
-            <div className="sidebar-brand-sub">Order Management</div>
-          </div>
+        {/* Panel Switcher */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setShowPanelDropdown(!showPanelDropdown)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.625rem', width: '100%',
+              padding: '0.875rem 1rem', background: 'var(--primary-light)',
+              border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            {activeBusiness?.logo_url ? (
+              <img src={activeBusiness.logo_url} alt="" style={{ width: 32, height: 32, borderRadius: 6, objectFit: 'contain', background: '#fff' }} />
+            ) : (
+              <div style={{ width: 32, height: 32, borderRadius: 6, background: activeBusiness?.primary_color || 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '0.875rem' }}>
+                {(activeBusiness?.name || 'T').charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--fg)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {activeBusiness?.name || 'All Panels'}
+              </div>
+              <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                {activeBusiness?.is_shopify_connected
+                  ? <><span style={{ color: 'var(--success)' }}>●</span> Shopify connected</>
+                  : <><span style={{ color: 'var(--fg-muted)' }}>○</span> Switch panel</>}
+              </div>
+            </div>
+            <ChevronRight size={14} style={{ color: 'var(--fg-muted)', transform: showPanelDropdown ? 'rotate(90deg)' : 'none', transition: '0.15s' }} />
+          </button>
+
+          {showPanelDropdown && (
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
+              background: 'var(--card-bg)', border: '1px solid var(--border)',
+              borderRadius: '0 0 var(--radius-lg) var(--radius-lg)', boxShadow: 'var(--shadow-lg)',
+              maxHeight: 260, overflowY: 'auto',
+            }}>
+              {/* All Panels option */}
+              <button
+                onClick={() => switchPanel('')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%',
+                  padding: '0.625rem 1rem', border: 'none', background: !activePanelId ? 'var(--primary-light)' : 'transparent',
+                  cursor: 'pointer', fontSize: '0.8125rem', fontWeight: !activePanelId ? 700 : 400,
+                  color: !activePanelId ? 'var(--primary)' : 'var(--fg)',
+                }}
+              >
+                <div style={{ width: 24, height: 24, borderRadius: 4, background: 'var(--bg-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.625rem' }}>🏪</div>
+                All Panels
+                {!activePanelId && <Check size={12} style={{ marginLeft: 'auto', color: 'var(--primary)' }} />}
+              </button>
+              {/* Each accessible panel */}
+              {businesses
+                .filter(b => !user?.businessIds || user.businessIds.includes(b.id))
+                .map(biz => (
+                  <button
+                    key={biz.id}
+                    onClick={() => switchPanel(biz.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%',
+                      padding: '0.625rem 1rem', border: 'none',
+                      background: activePanelId === biz.id ? 'var(--primary-light)' : 'transparent',
+                      cursor: 'pointer', fontSize: '0.8125rem',
+                      fontWeight: activePanelId === biz.id ? 700 : 400,
+                      color: activePanelId === biz.id ? 'var(--primary)' : 'var(--fg)',
+                    }}
+                  >
+                    {biz.logo_url ? (
+                      <img src={biz.logo_url} alt="" style={{ width: 24, height: 24, borderRadius: 4, objectFit: 'contain', background: '#fff' }} />
+                    ) : (
+                      <div style={{ width: 24, height: 24, borderRadius: 4, background: biz.primary_color || 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '0.625rem' }}>
+                        {biz.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{biz.name}</span>
+                    {biz.is_shopify_connected && <span style={{ fontSize: '0.625rem', color: 'var(--success)' }}>●</span>}
+                    {activePanelId === biz.id && <Check size={12} style={{ color: 'var(--primary)' }} />}
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
 
         <nav className="sidebar-nav">
@@ -977,101 +1144,211 @@ export default function AdminDashboard() {
           {/* ════════ SETTINGS TAB ════════ */}
           {activeTab === 'settings' && hasPermission('manage_businesses') && (
             <div className="space-y-6 animate-fade-in-up">
-              <div>
-                <h2 className="page-title">Brand Settings</h2>
-                <p className="page-subtitle">Your brand name and logo appear on tracking pages and email templates</p>
-              </div>
-
-              <div className="info-box">
-                <Info size={16} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <p className="info-box-text">
-                    These settings apply to <strong>all orders</strong>. Customers will see this brand name and logo on their tracking page and in email notifications.
+                  <h2 className="page-title">Panel Settings</h2>
+                  <p className="page-subtitle">
+                    {activeBusiness ? `Editing: ${activeBusiness.name}` : 'Select a panel from the top-left or manage all panels below'}
                   </p>
                 </div>
+                {/* New Panel button */}
+                {user?.role === 'admin' && (
+                  <button className="btn btn-primary btn-sm" onClick={async () => {
+                    const name = prompt('New panel name (e.g. Store Name):');
+                    if (!name) return;
+                    const res = await fetch('/api/businesses', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                      body: JSON.stringify({ name }),
+                    });
+                    if (res.ok) { showAlert('success', `Panel "${name}" created`); fetchBusinesses(); }
+                    else showAlert('error', 'Failed to create panel');
+                  }}>
+                    <Plus size={14} /> New Panel
+                  </button>
+                )}
               </div>
 
-              <div className="tf-card" style={{ padding: '1.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                  {brandForm.logoUrl ? (
-                    <img src={brandForm.logoUrl.includes('drive.google.com') ? brandForm.logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1') : brandForm.logoUrl} alt="Logo" style={{ width: '4rem', height: '4rem', borderRadius: '0.75rem', objectFit: 'cover', border: '2px solid var(--border)' }} />
-                  ) : (
-                    <div style={{ width: '4rem', height: '4rem', borderRadius: '0.75rem', background: 'var(--primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', fontWeight: 700, color: 'var(--primary)' }}>
-                      {brandForm.name ? brandForm.name.charAt(0).toUpperCase() : '?'}
-                    </div>
-                  )}
-                  <div>
-                    <p style={{ fontWeight: 700, fontSize: '1.125rem' }}>{brandForm.name || 'Your Brand Name'}</p>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>This is how customers see your brand</p>
+              {/* Panel list */}
+              {businesses.length > 0 && (
+                <div className="tf-card" style={{ padding: '1rem' }}>
+                  <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--fg-muted)' }}>All Panels</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    {businesses.map(biz => (
+                      <button key={biz.id} onClick={() => switchPanel(biz.id)} style={{
+                        display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.375rem 0.75rem',
+                        borderRadius: '9999px', border: activePanelId === biz.id ? '2px solid var(--primary)' : '1px solid var(--border)',
+                        background: activePanelId === biz.id ? 'var(--primary-light)' : 'var(--card-bg)',
+                        fontSize: '0.75rem', fontWeight: 500, cursor: 'pointer',
+                        color: activePanelId === biz.id ? 'var(--primary)' : 'var(--fg)',
+                      }}>
+                        {biz.is_shopify_connected && <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>}
+                        {biz.name}
+                        {activePanelId === biz.id && <Check size={10} />}
+                      </button>
+                    ))}
                   </div>
                 </div>
+              )}
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">Brand Name *</label>
-                    <input className="form-input" value={brandForm.name} onChange={(e) => setBrandForm({ ...brandForm, name: e.target.value })} placeholder="e.g. My Store" />
+              {activeBusiness && (
+                <>
+                  {/* Brand settings card */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.25rem' }}>
+                      <Building2 size={16} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontWeight: 700 }}>Branding</span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                      {brandForm.logoUrl ? (
+                        <img src={brandForm.logoUrl.includes('drive.google.com') ? brandForm.logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1') : brandForm.logoUrl} alt="Logo" style={{ width: '4rem', height: '4rem', borderRadius: '0.75rem', objectFit: 'cover', border: '2px solid var(--border)' }} />
+                      ) : (
+                        <div style={{ width: '4rem', height: '4rem', borderRadius: '0.75rem', background: brandForm.primaryColor || 'var(--primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', fontWeight: 700, color: '#fff' }}>
+                          {brandForm.name ? brandForm.name.charAt(0).toUpperCase() : '?'}
+                        </div>
+                      )}
+                      <div>
+                        <p style={{ fontWeight: 700, fontSize: '1.125rem' }}>{brandForm.name || 'Panel Name'}</p>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Customers see this on tracking pages &amp; emails</p>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                      <div className="form-group">
+                        <label className="form-label">Panel / Brand Name *</label>
+                        <input className="form-input" value={brandForm.name} onChange={(e) => setBrandForm({ ...brandForm, name: e.target.value })} placeholder="e.g. My Store" />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Brand Color</label>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <input type="color" value={brandForm.primaryColor} onChange={(e) => setBrandForm({ ...brandForm, primaryColor: e.target.value })} style={{ width: 36, height: 36, border: 'none', borderRadius: 6, cursor: 'pointer', padding: 2 }} />
+                          <input className="form-input" value={brandForm.primaryColor} onChange={(e) => setBrandForm({ ...brandForm, primaryColor: e.target.value })} style={{ flex: 1 }} />
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Logo URL / Upload</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+                            <Upload size={14} /> Upload
+                            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              if (file.size > 500 * 1024) { showAlert('error', 'Logo must be under 500KB'); return; }
+                              const reader = new FileReader();
+                              reader.onload = () => setBrandForm({ ...brandForm, logoUrl: reader.result as string });
+                              reader.readAsDataURL(file);
+                            }} />
+                          </label>
+                          {brandForm.logoUrl && <button className="btn-icon" onClick={() => setBrandForm({ ...brandForm, logoUrl: '' })} style={{ color: 'var(--danger)' }}><X size={14} /></button>}
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Support Email</label>
+                        <input className="form-input" type="email" value={brandForm.supportEmail} onChange={(e) => setBrandForm({ ...brandForm, supportEmail: e.target.value })} placeholder="support@yourbrand.com" />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Support Phone</label>
+                        <input className="form-input" value={brandForm.supportPhone} onChange={(e) => setBrandForm({ ...brandForm, supportPhone: e.target.value })} placeholder="+91 98765 43210" />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">📧 Tracking Domain (fixes IP bug)</label>
+                        <input className="form-input" value={brandForm.trackingDomain} onChange={(e) => setBrandForm({ ...brandForm, trackingDomain: e.target.value })} placeholder="https://track.yourbrand.com" />
+                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+                          Email tracking links use this domain. Leave blank to use server default.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: '1.25rem' }}>
+                      <button className="btn btn-primary" disabled={!brandForm.name || savingBrand} onClick={async () => {
+                        setSavingBrand(true);
+                        try {
+                          const body = {
+                            id: activeBusiness.id, name: brandForm.name,
+                            logoUrl: brandForm.logoUrl || null,
+                            supportEmail: brandForm.supportEmail || null,
+                            supportPhone: brandForm.supportPhone || null,
+                            trackingDomain: brandForm.trackingDomain || null,
+                            primaryColor: brandForm.primaryColor || '#4F46E5',
+                          };
+                          const res = await fetch('/api/businesses', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                            body: JSON.stringify(body),
+                          });
+                          if (res.ok) { showAlert('success', 'Panel settings saved!'); fetchBusinesses(); }
+                          else showAlert('error', 'Failed to save');
+                        } catch { showAlert('error', 'Failed to save'); }
+                        finally { setSavingBrand(false); }
+                      }}>
+                        {savingBrand ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Check size={14} />}
+                        {savingBrand ? 'Saving...' : 'Save Branding'}
+                      </button>
+                    </div>
                   </div>
-                  <div className="form-group">
-                    <label className="form-label">Brand Logo</label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
-                        <Upload size={14} />
-                        Upload Image
-                        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          if (file.size > 500 * 1024) { showAlert('error', 'Logo must be under 500KB'); return; }
-                          const reader = new FileReader();
-                          reader.onload = () => setBrandForm({ ...brandForm, logoUrl: reader.result as string });
-                          reader.readAsDataURL(file);
-                        }} />
-                      </label>
-                      {brandForm.logoUrl && (
-                        <button className="btn-icon" onClick={() => setBrandForm({ ...brandForm, logoUrl: '' })} title="Remove logo" style={{ color: 'var(--danger)' }}>
-                          <X size={14} />
+
+                  {/* Shopify Connect card */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <ShoppingBag size={16} style={{ color: '#96bf48' }} />
+                        <span style={{ fontWeight: 700 }}>Shopify Integration</span>
+                        {activeBusiness.is_shopify_connected && (
+                          <span style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'var(--success-light)', color: 'var(--success)', fontWeight: 600 }}>
+                            ● Connected — {activeBusiness.shopify_domain}
+                          </span>
+                        )}
+                      </div>
+                      {activeBusiness.is_shopify_connected && (
+                        <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)', borderColor: 'var(--danger)', fontSize: '0.75rem' }} onClick={handleShopifyDisconnect}>
+                          Disconnect
                         </button>
                       )}
-                      <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>PNG, JPG — max 500KB</span>
                     </div>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Support Email</label>
-                    <input className="form-input" type="email" value={brandForm.supportEmail} onChange={(e) => setBrandForm({ ...brandForm, supportEmail: e.target.value })} placeholder="support@yourbrand.com" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Support Phone</label>
-                    <input className="form-input" value={brandForm.supportPhone} onChange={(e) => setBrandForm({ ...brandForm, supportPhone: e.target.value })} placeholder="+91 98765 43210" />
-                  </div>
-                </div>
 
-                <div style={{ marginTop: '1.25rem' }}>
-                  <button className="btn btn-primary" disabled={!brandForm.name || savingBrand} onClick={async () => {
-                    setSavingBrand(true);
-                    try {
-                      const defaultBiz = businesses.find(b => b.is_default) || businesses[0];
-                      const method = defaultBiz ? 'PATCH' : 'POST';
-                      // Send null for logoUrl if empty — avoids clearing existing logo accidentally
-                      const logoUrlToSend = brandForm.logoUrl || null;
-                      const body = defaultBiz
-                        ? { id: defaultBiz.id, name: brandForm.name, logoUrl: logoUrlToSend, supportEmail: brandForm.supportEmail || null, supportPhone: brandForm.supportPhone || null, isDefault: true }
-                        : { name: brandForm.name, logoUrl: logoUrlToSend, supportEmail: brandForm.supportEmail || null, supportPhone: brandForm.supportPhone || null, isDefault: true };
-                      const res = await fetch('/api/businesses', {
-                        method,
-                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                        body: JSON.stringify(body),
-                      });
-                      if (res.ok) {
-                        showAlert('success', 'Brand settings saved! Customers will see the new branding immediately.');
-                        fetchBusinesses();
-                      } else { showAlert('error', 'Failed to save'); }
-                    } catch { showAlert('error', 'Failed to save'); }
-                    finally { setSavingBrand(false); }
-                  }}>
-                    {savingBrand ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Check size={14} />}
-                    {savingBrand ? 'Saving...' : 'Save Settings'}
-                  </button>
+                    {activeBusiness.is_shopify_connected ? (
+                      <div style={{ padding: '1rem', background: 'var(--success-light)', borderRadius: 'var(--radius-lg)' }}>
+                        <p style={{ fontSize: '0.8125rem', color: 'var(--success)', fontWeight: 600 }}>✅ Shopify webhook is active</p>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+                          New orders from <strong>{activeBusiness.shopify_domain}</strong> auto-import into this panel and receive tracking emails.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1rem' }}>
+                          Connect Shopify to auto-import new orders and send tracking emails automatically.
+                        </p>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                          <div className="form-group">
+                            <label className="form-label">Shopify Store Domain</label>
+                            <input className="form-input" value={shopifyForm.domain} onChange={(e) => setShopifyForm({ ...shopifyForm, domain: e.target.value })} placeholder="mystore.myshopify.com" />
+                          </div>
+                          <div className="form-group">
+                            <label className="form-label">Admin API Access Token</label>
+                            <input className="form-input" type="password" value={shopifyForm.apiToken} onChange={(e) => setShopifyForm({ ...shopifyForm, apiToken: e.target.value })} placeholder="shpat_xxxxxxxxxx" />
+                          </div>
+                        </div>
+                        <button className="btn btn-primary" disabled={connectingShopify || !shopifyForm.domain || !shopifyForm.apiToken} onClick={handleShopifyConnect}>
+                          {connectingShopify ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Link2 size={14} />}
+                          {connectingShopify ? 'Connecting...' : 'Connect & Register Webhook'}
+                        </button>
+                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.625rem' }}>
+                          This creates an <code>orders/create</code> webhook on Shopify automatically. No manual setup needed.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {!activeBusiness && businesses.length === 0 && (
+                <div className="tf-card" style={{ padding: '2rem', textAlign: 'center' }}>
+                  <Building2 size={40} style={{ opacity: 0.2, marginBottom: '0.75rem' }} />
+                  <p style={{ color: 'var(--fg-muted)' }}>No panels yet. Click <strong>New Panel</strong> to create your first store panel.</p>
                 </div>
-              </div>
+              )}
+
 
               {/* ── Auto-Progression Settings ── */}
               <div className="tf-card" style={{ padding: '1.5rem', marginTop: '0.5rem' }}>
@@ -1232,7 +1509,7 @@ export default function AdminDashboard() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <h2 className="page-title">Team</h2>
-                  <p className="page-subtitle">Manage team members and permissions</p>
+                  <p className="page-subtitle">Manage team members, roles, and panel access</p>
                 </div>
                 <button className="btn btn-primary" onClick={() => setShowTeamModal(true)}>
                   <UserPlus size={16} /> Add Member
@@ -1243,7 +1520,7 @@ export default function AdminDashboard() {
                 <Info size={16} />
                 <div>
                   <p className="info-box-text">
-                    <strong>Admin</strong> — Full access &nbsp;|&nbsp;
+                    <strong>Admin</strong> — Full access to all panels &nbsp;|&nbsp;
                     <strong>Manager</strong> — Upload, update, cancel &nbsp;|&nbsp;
                     <strong>Viewer</strong> — View only
                   </p>
@@ -1256,7 +1533,7 @@ export default function AdminDashboard() {
                     <tr>
                       <th>Member</th>
                       <th className="col-hide-sm">Role</th>
-                      <th className="col-hide-md">Status</th>
+                      <th>Panel Access</th>
                       <th className="col-hide-lg">Last Login</th>
                       <th style={{ textAlign: 'right' }}>Actions</th>
                     </tr>
@@ -1274,41 +1551,61 @@ export default function AdminDashboard() {
                         </div>
                       </td>
                       <td className="col-hide-sm"><span className="role-pill">admin</span></td>
-                      <td className="col-hide-md"><span className="status-pill status-pill-delivered">Active</span></td>
+                      <td><span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>All panels</span></td>
                       <td className="col-hide-lg" style={{ color: 'var(--fg-muted)' }}>—</td>
                       <td style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>System account</td>
                     </tr>
                     {teamUsers.map((tu) => (
-                      <tr key={tu.id}>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                            <div className="sidebar-avatar" style={{ width: '2rem', height: '2rem', fontSize: '0.75rem' }}>{tu.display_name.charAt(0)}</div>
-                            <div>
-                              <p style={{ fontWeight: 500 }}>{tu.display_name}</p>
-                              <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>@{tu.username}</p>
+                      <>
+                        <tr key={tu.id}>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <div className="sidebar-avatar" style={{ width: '2rem', height: '2rem', fontSize: '0.75rem' }}>{tu.display_name.charAt(0)}</div>
+                              <div>
+                                <p style={{ fontWeight: 500 }}>{tu.display_name}</p>
+                                <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>@{tu.username}</p>
+                              </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className="col-hide-sm"><span className="role-pill">{tu.role}</span></td>
-                        <td className="col-hide-md">
-                          <span className={`status-pill ${tu.is_active ? 'status-pill-delivered' : 'status-pill-default'}`}>
-                            {tu.is_active ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-                        <td className="col-hide-lg" style={{ color: 'var(--fg-muted)' }}>
-                          {tu.last_login ? new Date(tu.last_login).toLocaleDateString() : 'Never'}
-                        </td>
-                        <td>
-                          <div className="table-actions">
-                            <button className="btn-icon" onClick={() => handleToggleTeamUser(tu.id, !tu.is_active)} title={tu.is_active ? 'Disable' : 'Enable'}>
-                              {tu.is_active ? <Lock size={16} /> : <Unlock size={16} />}
-                            </button>
-                            <button className="btn-icon" onClick={() => handleDeleteTeamUser(tu.id)} title="Delete" style={{ color: 'var(--danger)' }}>
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="col-hide-sm"><span className="role-pill">{tu.role}</span></td>
+                          <td>
+                            {editingUserPanels === tu.id ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', alignItems: 'center' }}>
+                                {businesses.map(biz => (
+                                  <label key={biz.id} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.6875rem', cursor: 'pointer', padding: '0.125rem 0.375rem', borderRadius: '9999px', border: '1px solid var(--border)', background: editUserPanelIds.includes(biz.id) ? 'var(--primary-light)' : 'transparent', color: editUserPanelIds.includes(biz.id) ? 'var(--primary)' : 'var(--fg-muted)' }}>
+                                    <input type="checkbox" style={{ display: 'none' }} checked={editUserPanelIds.includes(biz.id)} onChange={(e) => {
+                                      if (e.target.checked) setEditUserPanelIds([...editUserPanelIds, biz.id]);
+                                      else setEditUserPanelIds(editUserPanelIds.filter(id => id !== biz.id));
+                                    }} />
+                                    {biz.name}
+                                  </label>
+                                ))}
+                                <button className="btn btn-primary btn-sm" style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem' }} onClick={() => handleUpdateUserPanels(tu.id)}>Save</button>
+                                <button className="btn btn-outline btn-sm" style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem' }} onClick={() => setEditingUserPanels(null)}>Cancel</button>
+                              </div>
+                            ) : (
+                              <button onClick={() => { setEditingUserPanels(tu.id); setEditUserPanelIds(tu.business_ids || []); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.6875rem', color: 'var(--primary)', textDecoration: 'underline' }}>
+                                {tu.business_ids && tu.business_ids.length > 0
+                                  ? businesses.filter(b => tu.business_ids!.includes(b.id)).map(b => b.name).join(', ') || 'Set panels'
+                                  : 'All panels'}
+                              </button>
+                            )}
+                          </td>
+                          <td className="col-hide-lg" style={{ color: 'var(--fg-muted)' }}>
+                            {tu.last_login ? new Date(tu.last_login).toLocaleDateString() : 'Never'}
+                          </td>
+                          <td>
+                            <div className="table-actions">
+                              <button className="btn-icon" onClick={() => handleToggleTeamUser(tu.id, !tu.is_active)} title={tu.is_active ? 'Disable' : 'Enable'}>
+                                {tu.is_active ? <Lock size={16} /> : <Unlock size={16} />}
+                              </button>
+                              <button className="btn-icon" onClick={() => handleDeleteTeamUser(tu.id)} title="Delete" style={{ color: 'var(--danger)' }}>
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      </>
                     ))}
                   </tbody>
                 </table>
