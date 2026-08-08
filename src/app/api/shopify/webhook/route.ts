@@ -31,8 +31,11 @@ function generateTrackingToken(): string {
 function normalizePhone(phone: string): string {
   if (!phone) return '';
   let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length > 10 && cleaned.startsWith('91')) {
-    cleaned = cleaned.slice(2);
+  cleaned = cleaned.replace(/^0+/, '');
+  // Only strip 91 if remaining is exactly 10 digits
+  if (cleaned.startsWith('91') && cleaned.length > 10) {
+    const stripped = cleaned.slice(2);
+    if (stripped.length === 10) cleaned = stripped;
   }
   return cleaned.slice(-10);
 }
@@ -180,27 +183,15 @@ export async function POST(request: NextRequest) {
     // Capture which Shopify store this order came from
     const sourceStore = request.headers.get('x-shopify-shop-domain') || shopifyOrder.domain || 'unknown';
 
-    // 8. Resolve business_id — prefer the one from webhook URL (?b=uuid),
-    //    fall back to auto-detect from product brand name
-    let resolvedBusinessId: string | null = businessId || null;
-
+    // 8. Resolve business_id — MUST come from webhook URL (?b=uuid)
+    //    If not provided, reject — we never auto-create panels from webhook
+    const resolvedBusinessId: string | null = businessId || null;
     if (!resolvedBusinessId) {
-      const brand = lineItems[0]?.brand || '';
-      if (brand) {
-        const existingBiz = await queryOne<{ id: string }>(
-          `SELECT id FROM businesses WHERE LOWER(name) = LOWER($1) LIMIT 1`,
-          [brand]
-        );
-        if (existingBiz) {
-          resolvedBusinessId = existingBiz.id;
-        } else {
-          const newBiz = await queryOne<{ id: string }>(
-            `INSERT INTO businesses (name) VALUES ($1) RETURNING id`,
-            [brand]
-          );
-          if (newBiz) resolvedBusinessId = newBiz.id;
-        }
-      }
+      console.error('Webhook rejected: no ?b= panel ID in URL. Register webhook with ?b=YOUR_PANEL_ID');
+      return NextResponse.json(
+        { error: 'Webhook URL missing panel ID. Add ?b=YOUR_PANEL_ID to the webhook URL in Shopify.' },
+        { status: 400 }
+      );
     }
 
 
@@ -227,7 +218,8 @@ export async function POST(request: NextRequest) {
         'pincode = $11', 'order_total = $12', 'is_cancelled = $13', 'source_store = $14',
       ];
       if (businessId) {
-        updateSets.push(`business_id = $${updateParams.length + 1}`);
+        // COALESCE: only set panel if order doesn't already have one
+        updateSets.push(`business_id = COALESCE(business_id, $${updateParams.length + 1})`);
         updateParams.push(businessId);
       }
       updateParams.push(orderId, sourceStore);
