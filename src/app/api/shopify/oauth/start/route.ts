@@ -18,11 +18,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'shop parameter required (e.g. mystore.myshopify.com)' }, { status: 400 });
   }
 
-  // Normalize — strip https:// if user pasted full URL
-  shop = shop.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  if (!shop.includes('.myshopify.com')) {
-    shop = `${shop}.myshopify.com`;
+  // Normalize — accept ANY Shopify URL format:
+  // https://admin.shopify.com/store/rzqjxj-qq  → rzqjxj-qq.myshopify.com
+  // https://roopvastra.myshopify.com           → roopvastra.myshopify.com
+  // roopvastra.myshopify.com                   → roopvastra.myshopify.com
+  // roopvastra                                 → roopvastra.myshopify.com
+  shop = shop.trim();
+  const adminUrlMatch = shop.match(/admin\.shopify\.com\/store\/([^/?]+)/);
+  if (adminUrlMatch) {
+    shop = `${adminUrlMatch[1]}.myshopify.com`;
+  } else {
+    shop = shop.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (!shop.includes('.myshopify.com')) {
+      shop = `${shop}.myshopify.com`;
+    }
   }
+
 
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   if (!clientId) {
