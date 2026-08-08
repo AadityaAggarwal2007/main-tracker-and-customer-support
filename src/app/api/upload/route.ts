@@ -66,12 +66,6 @@ export async function POST(request: NextRequest) {
 
     const { orders, stats } = cleanCSVData(parsed.data as Record<string, string>[]);
 
-    // ── DEBUG: log parse result ──
-    console.log(`[UPLOAD] forcedBusinessId=${forcedBusinessId} rawRows=${parsed.data.length} cleanedOrders=${orders.length}`);
-    if (orders.length > 0) {
-      console.log(`[UPLOAD] sample order_id=${orders[0].order_id} total=${orders[0].order_total} items=${orders[0].items.length}`);
-    }
-
     // ── If 0 orders parsed, return early with debug info ──
     if (orders.length === 0) {
       return NextResponse.json({
@@ -185,9 +179,6 @@ export async function POST(request: NextRequest) {
     const newOrders = orders.filter((o) => !existingOrderIds.has(o.order_id));
     const existingOrders = orders.filter((o) => existingOrderIds.has(o.order_id));
 
-    // ── DEBUG: log dedup result ──
-    console.log(`[UPLOAD] dedup: existing=${existingOrders.length} new=${newOrders.length} (checked against business_id=${forcedBusinessId})`);
-
     // ═══ STEP 2: Batch-INSERT new orders ═══
     let newCount = 0;
     // Track inserted orders for email queuing
@@ -266,7 +257,6 @@ export async function POST(request: NextRequest) {
            ON CONFLICT (order_id, business_id) WHERE business_id IS NOT NULL DO NOTHING`,
           insertParams
         );
-        console.log(`[UPLOAD] INSERT batch rowCount=${result.rowCount} attempted=${batch.length}`);
         newCount += result.rowCount ?? 0;
         // Track for email queuing
         insertValues.forEach(v => {
