@@ -227,8 +227,7 @@ export async function POST(request: NextRequest) {
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
              tracking_id, tracking_token, business_id, created_at, estimated_delivery
-           ) VALUES ${placeholders}
-           ON CONFLICT DO NOTHING`,
+           ) VALUES ${placeholders}`,
           insertParams
         );
         newCount += result.rowCount ?? 0;
@@ -399,8 +398,7 @@ export async function POST(request: NextRequest) {
         try {
           const result = await query(
             `INSERT INTO email_queue (order_id, status_stage, to_email, subject, html, from_name)
-             VALUES ${placeholders}
-             ON CONFLICT DO NOTHING`,
+             VALUES ${placeholders}`,
             params
           );
           emailsQueued += result.rowCount ?? 0;
