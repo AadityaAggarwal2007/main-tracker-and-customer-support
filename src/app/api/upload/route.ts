@@ -108,6 +108,11 @@ export async function POST(request: NextRequest) {
     }>(`SELECT step_from, step_to, delay_minutes, step_order, is_enabled FROM progression_settings ORDER BY step_order ASC`);
     const progSteps = progResult.rows;
 
+    // Total minutes from Order Placed → Delivered (the full pipeline)
+    const totalDeliveryMinutes = progSteps
+      .filter(s => s.is_enabled)
+      .reduce((sum, s) => sum + s.delay_minutes, 0);
+
     function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): string {
       if (isCancelled) return 'Cancelled';
       if (!createdAtStr || progSteps.length === 0) return 'Order Placed';
@@ -122,6 +127,14 @@ export async function POST(request: NextRequest) {
         if (minutesElapsed >= accumulated) { currentStatus = step.step_to; } else { break; }
       }
       return currentStatus;
+    }
+
+    // Calculate estimated delivery date from order creation date
+    function calcEstimatedDelivery(createdAtStr: string): string | null {
+      if (!createdAtStr || totalDeliveryMinutes === 0) return null;
+      const createdAt = new Date(createdAtStr);
+      if (isNaN(createdAt.getTime())) return null;
+      return new Date(createdAt.getTime() + totalDeliveryMinutes * 60000).toISOString();
     }
 
     // ═══ STEP 1: Batch-check existing orders ═══
@@ -146,8 +159,8 @@ export async function POST(request: NextRequest) {
     const insertedOrders: Array<{
       order_id: string; customer_email: string; customer_name: string;
       tracking_id: string; tracking_token: string; order_total: number;
-      city: string; tracking_status: string; business_id: string | null;
-      items: CleanedOrder['items'];
+      city: string; tracking_status: string; estimated_delivery: string | null;
+      business_id: string | null; items: CleanedOrder['items'];
     }> = [];
 
     for (let i = 0; i < newOrders.length; i += BATCH_SIZE) {
@@ -157,6 +170,8 @@ export async function POST(request: NextRequest) {
         const businessId = getBusinessId(order);
         const trackingStatus = calcStatusFromDate(order.created_at, order.is_cancelled);
         const originalDate = order.created_at ? new Date(order.created_at) : null;
+        const validOriginalDate = originalDate && !isNaN(originalDate.getTime()) ? originalDate : null;
+        const estimatedDelivery = validOriginalDate ? calcEstimatedDelivery(order.created_at) : null;
         const trackingId = generateTrackingId();
         const trackingToken = generateTrackingToken();
         return {
@@ -179,12 +194,13 @@ export async function POST(request: NextRequest) {
           tracking_id: trackingId,
           tracking_token: trackingToken,
           business_id: businessId,
-          original_created_at: originalDate && !isNaN(originalDate.getTime()) ? originalDate.toISOString() : null,
+          original_created_at: validOriginalDate ? validOriginalDate.toISOString() : null,
+          estimated_delivery: estimatedDelivery,
           items: order.items,
         };
       });
 
-      const colCount = 20;
+      const colCount = 21;
       const placeholders = insertValues.map(
         (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
@@ -197,7 +213,8 @@ export async function POST(request: NextRequest) {
           v.address_line1, v.address_line2, v.address_line3,
           v.city, v.state, v.pincode,
           v.order_total, v.is_cancelled, v.tracking_status,
-          v.tracking_id, v.tracking_token, v.business_id, v.original_created_at
+          v.tracking_id, v.tracking_token, v.business_id,
+          v.original_created_at, v.estimated_delivery
         );
       });
 
@@ -209,7 +226,7 @@ export async function POST(request: NextRequest) {
              address_line1, address_line2, address_line3,
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
-             tracking_id, tracking_token, business_id, created_at
+             tracking_id, tracking_token, business_id, created_at, estimated_delivery
            ) VALUES ${placeholders}
            ON CONFLICT DO NOTHING`,
           insertParams
@@ -227,6 +244,7 @@ export async function POST(request: NextRequest) {
               order_total: v.order_total,
               city: v.city,
               tracking_status: v.tracking_status,
+              estimated_delivery: v.estimated_delivery,
               business_id: v.business_id,
               items: v.items,
             });
@@ -349,6 +367,7 @@ export async function POST(request: NextRequest) {
             primaryColor: biz?.primary_color || undefined,
             supportEmail: biz?.support_email || '',
             supportPhone: biz?.support_phone || '',
+            estimatedDelivery: order.estimated_delivery || undefined,
             orderTotal: order.order_total,
             city: order.city,
           },
