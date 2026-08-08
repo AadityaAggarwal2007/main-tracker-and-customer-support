@@ -29,11 +29,21 @@ export async function GET(request: NextRequest) {
   let paramIdx = 1;
 
   if (search) {
-    conditions.push(
-      `(o.order_id ILIKE $${paramIdx} OR o.customer_name ILIKE $${paramIdx} OR o.customer_mobile ILIKE $${paramIdx} OR o.customer_email ILIKE $${paramIdx})`
-    );
-    params.push(`%${search}%`);
-    paramIdx++;
+    const looksLikeOrderId = search.startsWith('#') || /^\d+$/.test(search);
+    if (looksLikeOrderId) {
+      // Fast exact/prefix match for order IDs
+      const searchId = search.startsWith('#') ? search : `#${search}`;
+      conditions.push(`(o.order_id = $${paramIdx} OR o.order_id ILIKE $${paramIdx + 1})`);
+      params.push(searchId, `${searchId}%`);
+      paramIdx += 2;
+    } else {
+      // Full text search — uses trigram indexes
+      conditions.push(
+        `(o.order_id ILIKE $${paramIdx} OR o.customer_name ILIKE $${paramIdx} OR o.customer_mobile ILIKE $${paramIdx} OR o.customer_email ILIKE $${paramIdx})`
+      );
+      params.push(`%${search}%`);
+      paramIdx++;
+    }
   }
 
   if (status) {
