@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { query } from '@/lib/db';
-import { sendEmailDirect } from '@/lib/smtp-client';
+import { query, queryOne } from '@/lib/db';
 import { generateTrackingEmail } from '@/lib/email-templates';
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || '';
@@ -24,7 +23,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No status provided' }, { status: 400 });
     }
 
-    // Fetch orders with business info in one query using JOIN
+    // Fetch orders with business info
     interface OrderRow {
       order_id: string; customer_name: string; customer_email: string;
       tracking_id: string; courier_partner: string; tracking_token: string;
@@ -90,8 +89,84 @@ export async function POST(request: NextRequest) {
         withEmail.push(order);
       } else {
         noEmail.push(order.order_id);
-      }\n    }\n\n    // Build email payloads + add to queue (sent 1/min by cron)\n    const emailRows: { orderId: string; to: string; subject: string; html: string; fromName: string }[] = [];\n\n    for (const order of withEmail) {\n      const items = order.order_items || [];\n      const logoUrl = order.biz_logo_url && order.biz_logo_url.includes('drive.google.com')\n        ? order.biz_logo_url.replace(/\\/file\\/d\\/([^/]+).*/, '/uc?export=view&id=$1')\n        : order.biz_logo_url;\n\n      const result = generateTrackingEmail(\n        {\n          customerName: order.customer_name,\n          orderId: order.order_id,\n          productNames: items.map(i => i.product_name).filter(Boolean),\n          trackingId: order.tracking_id || '',\n          courierPartner: order.courier_partner || '',\n          trackingUrl: `${order.biz_tracking_domain || BASE_URL}/track/${order.tracking_token}`,\n          businessName: order.biz_name || 'ShipTrack',\n          businessLogoUrl: logoUrl || undefined,\n          primaryColor: order.biz_primary_color || undefined,\n          supportEmail: order.biz_support_email || '',\n          supportPhone: order.biz_support_phone || '',\n          estimatedDelivery: order.estimated_delivery || undefined,\n          orderTotal: order.order_total || 0,\n          city: order.city || '',\n        },\n        status\n      );\n      if (!result) continue;\n      emailRows.push({ orderId: order.order_id, to: order.customer_email, subject: result.subject, html: result.html, fromName: order.biz_name || 'ShipTrack' });\n    }\n\n    if (emailRows.length === 0) {\n      return NextResponse.json({\n        queued: 0, noEmail: noEmail.length, skipped: skipped.length,\n        message: 'No emails to queue',\n      });\n    }\n\n    // Batch-insert into email_queue\n    const colCount = 5;\n    const placeholders = emailRows.map(\n      (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`\n    ).join(', ');\n    const queueParams: unknown[] = [];\n    emailRows.forEach(r => {\n      queueParams.push(r.orderId, status, r.to, r.subject, r.html);\n    });\n    // Note: from_name stored in subject prefix — or pass separately\n    await query(\n      `INSERT INTO email_queue (order_id, status_stage, to_email, subject, html, from_name)\n       VALUES ${placeholders}\n       ON CONFLICT DO NOTHING`,\n      queueParams\n    );\n\n    // Estimate delivery time (1 email/min)\n    const pendingCount = await queryOne<{ count: string }>(`SELECT COUNT(*) as count FROM email_queue WHERE state = 'pending'`);\n    const totalPending = parseInt(pendingCount?.count || '0');\n    const hoursLeft = Math.ceil(totalPending / 60);\n\n    return NextResponse.json({\n      queued: emailRows.length,\n      noEmail: noEmail.length,\n      skipped: skipped.length,\n      totalPending,\n      estimatedHours: hoursLeft,\n      message: `${emailRows.length} emails queued. Sending 1/min — done in ~${hoursLeft} hours.`,\n
-      debug: { scriptConfigured: !!process.env.GMAIL_USER, baseUrl: BASE_URL || 'NOT SET' },
+      }
+    }
+
+    // Build email payloads and add to queue (sent 1/min by cron)
+    const emailRows: { orderId: string; to: string; subject: string; html: string; fromName: string }[] = [];
+
+    for (const order of withEmail) {
+      const items = order.order_items || [];
+      const logoUrl = order.biz_logo_url && order.biz_logo_url.includes('drive.google.com')
+        ? order.biz_logo_url.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1')
+        : order.biz_logo_url;
+
+      const result = generateTrackingEmail(
+        {
+          customerName: order.customer_name,
+          orderId: order.order_id,
+          productNames: items.map(i => i.product_name).filter(Boolean),
+          trackingId: order.tracking_id || '',
+          courierPartner: order.courier_partner || '',
+          trackingUrl: `${order.biz_tracking_domain || BASE_URL}/track/${order.tracking_token}`,
+          businessName: order.biz_name || 'ShipTrack',
+          businessLogoUrl: logoUrl || undefined,
+          primaryColor: order.biz_primary_color || undefined,
+          supportEmail: order.biz_support_email || '',
+          supportPhone: order.biz_support_phone || '',
+          estimatedDelivery: order.estimated_delivery || undefined,
+          orderTotal: order.order_total || 0,
+          city: order.city || '',
+        },
+        status
+      );
+      if (!result) continue;
+      emailRows.push({
+        orderId: order.order_id,
+        to: order.customer_email,
+        subject: result.subject,
+        html: result.html,
+        fromName: order.biz_name || 'ShipTrack',
+      });
+    }
+
+    if (emailRows.length === 0) {
+      return NextResponse.json({
+        queued: 0, noEmail: noEmail.length, skipped: skipped.length,
+        message: 'No emails to queue',
+      });
+    }
+
+    // Batch-insert into email_queue (1/min cron picks them up)
+    const colCount = 6;
+    const placeholders = emailRows.map(
+      (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
+    ).join(', ');
+    const queueParams: unknown[] = [];
+    emailRows.forEach(r => {
+      queueParams.push(r.orderId, status, r.to, r.subject, r.html, r.fromName);
+    });
+    await query(
+      `INSERT INTO email_queue (order_id, status_stage, to_email, subject, html, from_name)
+       VALUES ${placeholders}
+       ON CONFLICT DO NOTHING`,
+      queueParams
+    );
+
+    // Queue stats
+    const pendingCount = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM email_queue WHERE state = 'pending'`
+    );
+    const totalPending = parseInt(pendingCount?.count || '0');
+    const hoursLeft = Math.ceil(totalPending / 60);
+
+    return NextResponse.json({
+      queued: emailRows.length,
+      noEmail: noEmail.length,
+      skipped: skipped.length,
+      totalPending,
+      estimatedHours: hoursLeft,
+      message: `${emailRows.length} emails queued. Sending 1/min — all done in ~${hoursLeft} hours.`,
     });
   } catch (err) {
     console.error('Send email error:', err);
@@ -99,7 +174,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET: Fetch daily email stats
+// GET: Fetch daily email stats + queue status
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -108,14 +183,29 @@ export async function GET(request: NextRequest) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const result = await query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM email_logs
-       WHERE sent_at >= $1 AND success = true`,
-      [today.toISOString()]
-    );
+    const [sentResult, queueResult] = await Promise.all([
+      query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM email_logs WHERE sent_at >= $1 AND success = true`,
+        [today.toISOString()]
+      ),
+      queryOne<{ pending: string; sent: string; failed: string }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE state = 'pending') as pending,
+           COUNT(*) FILTER (WHERE state = 'sent')    as sent,
+           COUNT(*) FILTER (WHERE state = 'failed')  as failed
+         FROM email_queue`
+      ),
+    ]);
 
-    return NextResponse.json({ sentToday: parseInt(result.rows[0]?.count ?? '0', 10) });
+    return NextResponse.json({
+      sentToday: parseInt(sentResult.rows[0]?.count ?? '0', 10),
+      queue: {
+        pending: parseInt(queueResult?.pending || '0'),
+        sent: parseInt(queueResult?.sent || '0'),
+        failed: parseInt(queueResult?.failed || '0'),
+      },
+    });
   } catch {
-    return NextResponse.json({ sentToday: 0 });
+    return NextResponse.json({ sentToday: 0, queue: { pending: 0, sent: 0, failed: 0 } });
   }
 }
