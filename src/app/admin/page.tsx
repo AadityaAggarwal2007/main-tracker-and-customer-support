@@ -1288,97 +1288,92 @@ export default function AdminDashboard() {
 
                   {/* Shopify Connect card */}
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <ShoppingBag size={16} style={{ color: '#96bf48' }} />
-                        <span style={{ fontWeight: 700 }}>Shopify Integration</span>
-                        {activeBusiness.is_shopify_connected && (
-                          <span style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'var(--success-light)', color: 'var(--success)', fontWeight: 600 }}>
-                            ● Connected — {activeBusiness.shopify_domain}
-                          </span>
-                        )}
-                      </div>
-                      {activeBusiness.is_shopify_connected && (
-                        <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)', borderColor: 'var(--danger)', fontSize: '0.75rem' }} onClick={handleShopifyDisconnect}>
-                          Disconnect
-                        </button>
-                      )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                      <ShoppingBag size={16} style={{ color: '#96bf48' }} />
+                      <span style={{ fontWeight: 700 }}>Shopify Webhook Setup</span>
+                      <span style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'rgba(150,191,72,0.15)', color: '#96bf48', fontWeight: 600 }}>2 min setup</span>
                     </div>
 
-                    {activeBusiness.is_shopify_connected ? (
-                      <div style={{ padding: '1rem', background: 'var(--success-light)', borderRadius: 'var(--radius-lg)' }}>
-                        <p style={{ fontSize: '0.8125rem', color: 'var(--success)', fontWeight: 600 }}>✅ Shopify webhook is active</p>
-                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                          New orders from <strong>{activeBusiness.shopify_domain}</strong> auto-import into this panel and receive tracking emails.
-                        </p>
-                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-                          Store name and logo were auto-imported from Shopify. You can override them above.
-                        </p>
+                    <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
+                      Copy your unique webhook URL below and add it to Shopify. New orders will automatically flow into this panel.
+                    </p>
+
+                    {/* Webhook URL box */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '0.875rem 1rem', marginBottom: '1.5rem' }}>
+                      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Your Webhook URL</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <code style={{ flex: 1, fontSize: '0.8125rem', color: 'var(--primary)', wordBreak: 'break-all' }}>
+                          {`${process.env.NEXT_PUBLIC_BASE_URL || 'https://shiptrack.store'}/api/shopify/webhook?b=${activePanelId}`}
+                        </code>
+                        <button
+                          className="btn btn-sm btn-outline"
+                          style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                          onClick={() => {
+                            navigator.clipboard.writeText(`${process.env.NEXT_PUBLIC_BASE_URL || 'https://shiptrack.store'}/api/shopify/webhook?b=${activePanelId}`);
+                            const btn = document.getElementById('copy-webhook-btn');
+                            if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => { btn.textContent = 'Copy URL'; }, 2000); }
+                          }}
+                          id="copy-webhook-btn"
+                        >
+                          Copy URL
+                        </button>
                       </div>
-                    ) : (
-                      <>
-                        <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
-                          One click — redirects to Shopify, you approve, we auto-import your store name + logo and register the webhook.
-                        </p>
+                    </div>
 
-                        {/* OAuth button — primary flow */}
-                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginBottom: '1rem' }}>
-                          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
-                            <label className="form-label">Your Shopify Store URL</label>
-                            <input
-                              className="form-input"
-                              value={shopifyForm.domain}
-                              onChange={(e) => setShopifyForm({ ...shopifyForm, domain: e.target.value })}
-                              placeholder="mystore.myshopify.com"
-                            />
+                    {/* Step by step guide */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      {[
+                        {
+                          step: 1,
+                          title: 'Open Shopify Notifications',
+                          desc: 'Go to your Shopify Admin → Settings → Notifications',
+                          link: 'https://admin.shopify.com/settings/notifications',
+                          linkText: 'Open Shopify Settings →',
+                        },
+                        {
+                          step: 2,
+                          title: 'Create Webhook',
+                          desc: 'Scroll to the bottom of the page → click "Webhooks" → click "Create webhook"',
+                          link: null,
+                          linkText: null,
+                        },
+                        {
+                          step: 3,
+                          title: 'Configure the Webhook',
+                          desc: 'Event: Order creation  |  Format: JSON  |  URL: paste your webhook URL above',
+                          link: null,
+                          linkText: null,
+                        },
+                        {
+                          step: 4,
+                          title: 'Save & Done',
+                          desc: 'Click Save. Every new order from this store will automatically appear in this panel.',
+                          link: null,
+                          linkText: null,
+                        },
+                      ].map(({ step, title, desc, link, linkText }) => (
+                        <div key={step} style={{ display: 'flex', gap: '0.875rem', alignItems: 'flex-start', padding: '0.875rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)' }}>
+                          <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.8125rem', flexShrink: 0 }}>
+                            {step}
                           </div>
-                          <a
-                            href={shopifyForm.domain
-                              ? `/api/shopify/oauth/start?shop=${encodeURIComponent(shopifyForm.domain)}&businessId=${activePanelId}&token=${encodeURIComponent(token)}`
-                              : '#'}
-                            style={{
-                              display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
-                              padding: '0.625rem 1.25rem', borderRadius: 'var(--radius-lg)',
-                              background: shopifyForm.domain ? '#96bf48' : 'var(--border)',
-                              color: shopifyForm.domain ? '#fff' : 'var(--fg-muted)',
-                              fontWeight: 700, fontSize: '0.875rem', textDecoration: 'none',
-                              pointerEvents: shopifyForm.domain ? 'auto' : 'none',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            <ShoppingBag size={16} />
-                            Connect with Shopify
-                          </a>
-                        </div>
-
-                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
-                          After approving, your store name, logo, and support email are imported automatically. Orders start flowing in immediately.
-                        </p>
-
-                        {/* Divider */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', margin: '1.25rem 0' }}>
-                          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                          <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>or connect manually with API token</span>
-                          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                        </div>
-
-                        {/* Manual fallback */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                          <div className="form-group">
-                            <label className="form-label">Admin API Access Token</label>
-                            <input className="form-input" type="password" value={shopifyForm.apiToken} onChange={(e) => setShopifyForm({ ...shopifyForm, apiToken: e.target.value })} placeholder="shpat_xxxxxxxxxx" />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: '0.25rem' }}>{title}</div>
+                            <div style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)' }}>{desc}</div>
+                            {link && (
+                              <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8125rem', color: 'var(--primary)', fontWeight: 600, display: 'inline-block', marginTop: '0.375rem' }}>
+                                {linkText}
+                              </a>
+                            )}
                           </div>
                         </div>
-                        {shopifyForm.apiToken && (
-                          <button className="btn btn-outline btn-sm" disabled={connectingShopify || !shopifyForm.domain} onClick={handleShopifyConnect}>
-                            {connectingShopify ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Link2 size={14} />}
-                            {connectingShopify ? 'Connecting...' : 'Connect with token'}
-                          </button>
-                        )}
-                      </>
-                    )}
+                      ))}
+                    </div>
 
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '1rem' }}>
+                      ℹ️ Share this panel's webhook URL with your team member. They add it to their Shopify store once and orders start flowing in automatically — no login, no API tokens needed.
+                    </p>
                   </div>
+
                 </>
               )}
 
