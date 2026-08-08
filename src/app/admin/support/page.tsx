@@ -76,6 +76,7 @@ export default function SupportPage() {
   const [replyText, setReplyText] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
   const [generatingDraft, setGeneratingDraft] = useState(false);
+  const [syncingShopify, setSyncingShopify] = useState(false);
 
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<SupportSettings | null>(null);
@@ -216,6 +217,26 @@ export default function SupportPage() {
       setSelectedTicket(prev => prev ? { ...prev, status } : null);
     }
     fetchTickets();
+  };
+
+  const handleShopifySync = async () => {
+    if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
+    setSyncingShopify(true);
+    try {
+      const res = await fetch('/api/support/shopify-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: activePanelId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('success', `✅ Shopify sync done — ${data.imported} new tickets imported (${data.total} conversations found)`);
+        fetchTickets();
+      } else {
+        showAlert('error', data.error || 'Shopify sync failed');
+      }
+    } catch { showAlert('error', 'Shopify sync failed'); }
+    finally { setSyncingShopify(false); }
   };
 
   const handleSaveSettings = async () => {
@@ -438,6 +459,14 @@ export default function SupportPage() {
                     <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)}
                       style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '0.8125rem', color: 'var(--fg)', width: '100%' }} />
                   </div>
+                  <button
+                    onClick={handleShopifySync}
+                    disabled={syncingShopify || !activePanelId}
+                    title="Sync conversations from Shopify Inbox"
+                    style={{ background: syncingShopify ? 'var(--border)' : '#96bf48', border: 'none', cursor: !activePanelId || syncingShopify ? 'not-allowed' : 'pointer', color: '#fff', padding: '0.375rem 0.625rem', borderRadius: 7, display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 }}>
+                    {syncingShopify ? <Loader2 size={13} className="animate-spin" /> : <span>🛍️</span>}
+                    {syncingShopify ? 'Syncing…' : 'Shopify'}
+                  </button>
                   <button onClick={fetchTickets} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', padding: '0.25rem' }}>
                     <RefreshCw size={16} className={loadingTickets ? 'animate-spin' : ''} />
                   </button>
