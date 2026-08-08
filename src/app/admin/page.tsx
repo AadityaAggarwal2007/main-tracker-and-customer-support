@@ -718,6 +718,15 @@ export default function AdminDashboard() {
               {item.label}
             </button>
           ))}
+          {/* Support Inbox */}
+          <button
+            className="nav-btn"
+            onClick={() => router.push('/admin/support')}
+            style={{ borderTop: '1px solid var(--border)', marginTop: '0.25rem', paddingTop: '0.75rem' }}
+          >
+            <MessageCircle size={18} />
+            Support Inbox
+          </button>
         </nav>
 
         <div className="sidebar-footer">
