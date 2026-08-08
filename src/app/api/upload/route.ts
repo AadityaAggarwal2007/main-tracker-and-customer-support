@@ -159,15 +159,19 @@ export async function POST(request: NextRequest) {
       return new Date(createdAt.getTime() + totalDeliveryMinutes * 60000).toISOString();
     }
 
-    // ═══ STEP 1: Batch-check existing orders ═══
+    // ═══ STEP 1: Batch-check existing orders — SCOPED TO THIS PANEL ═══
+    // Two panels can have the same order_id (e.g. LOMORA #1355 ≠ RUHANI #1355)
+    // So we check for existing by (order_id + business_id) not order_id alone
     const allOrderIds = orders.map((o) => o.order_id);
     const existingOrderIds = new Set<string>();
 
     for (let i = 0; i < allOrderIds.length; i += BATCH_SIZE) {
       const batch = allOrderIds.slice(i, i + BATCH_SIZE);
       const result = await query<{ order_id: string }>(
-        `SELECT order_id FROM orders WHERE order_id = ANY($1::text[])`,
-        [batch]
+        `SELECT order_id FROM orders
+         WHERE order_id = ANY($1::text[])
+         AND business_id = $2`,
+        [batch, forcedBusinessId]
       );
       result.rows.forEach(d => existingOrderIds.add(d.order_id));
     }
@@ -249,7 +253,8 @@ export async function POST(request: NextRequest) {
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
              tracking_id, tracking_token, business_id, created_at, estimated_delivery
-           ) VALUES ${placeholders}`,
+           ) VALUES ${placeholders}
+           ON CONFLICT DO NOTHING`,
           insertParams
         );
         newCount += result.rowCount ?? 0;
