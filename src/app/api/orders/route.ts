@@ -146,12 +146,14 @@ export async function GET(request: NextRequest) {
     [...params, limit, offset]
   );
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     orders: ordersResult.rows,
     total,
     page,
     limit,
   });
+  response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  return response;
 }
 
 // ── PATCH - bulk update status ─────────────────────────────────

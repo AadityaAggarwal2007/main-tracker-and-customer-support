@@ -158,7 +158,10 @@ export default function AdminDashboard() {
       if (dateFrom) params.set('dateFrom', dateFrom);
       if (dateTo) params.set('dateTo', dateTo);
       if (activePanelId) params.set('businessId', activePanelId); // Panel filter
-      const res = await fetch(`/api/orders?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/orders?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      });
       const data = await res.json();
       if (res.ok) { setOrders(data.orders); setTotalOrders(data.total); }
     } catch { showAlert('error', 'Failed to load orders'); }
