@@ -53,14 +53,14 @@ export async function GET(request: NextRequest) {
   const state = Buffer.from(JSON.stringify({ businessId, nonce })).toString('base64');
 
   const scopes = 'read_orders,read_customers';
-  const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/shopify/oauth/callback`;
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://shiptrack.store';
+  const redirectUri = `${baseUrl}/api/shopify/oauth/callback`;
 
   const authUrl = `https://${shop}/admin/oauth/authorize?` + new URLSearchParams({
     client_id: clientId,
     scope: scopes,
     redirect_uri: redirectUri,
     state,
-    'grant_options[]': 'per-user',
   }).toString();
 
   return NextResponse.redirect(authUrl);
