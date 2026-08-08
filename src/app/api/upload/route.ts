@@ -345,9 +345,19 @@ export async function POST(request: NextRequest) {
     // ═══ STEP 7: AUTO-QUEUE EMAILS for new orders (1/min cron sends them) ═══
     let emailsQueued = 0;
     if (insertedOrders.length > 0) {
+
+      // ── Safety: skip orders already in email_queue (prevents duplicates on re-upload)
+      const insertedIds = insertedOrders.map(o => o.order_id);
+      const alreadyQueued = await query<{ order_id: string }>(
+        `SELECT DISTINCT order_id FROM email_queue WHERE order_id = ANY($1::text[])`,
+        [insertedIds]
+      );
+      const alreadyQueuedSet = new Set(alreadyQueued.rows.map(r => r.order_id));
+      const toEmail = insertedOrders.filter(o => !alreadyQueuedSet.has(o.order_id));
+
       const emailRows: { orderId: string; status: string; to: string; subject: string; html: string; fromName: string }[] = [];
 
-      for (const order of insertedOrders) {
+      for (const order of toEmail) {
         const biz = order.business_id ? bizBrandingMap.get(order.business_id) : null;
         let logoUrl = biz?.logo_url || '';
         if (logoUrl && logoUrl.includes('drive.google.com')) {
