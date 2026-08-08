@@ -254,7 +254,7 @@ export async function POST(request: NextRequest) {
              order_total, is_cancelled, tracking_status,
              tracking_id, tracking_token, business_id, created_at, estimated_delivery
            ) VALUES ${placeholders}
-           ON CONFLICT DO NOTHING`,
+           ON CONFLICT (order_id, business_id) WHERE business_id IS NOT NULL DO NOTHING`,
           insertParams
         );
         newCount += result.rowCount ?? 0;
