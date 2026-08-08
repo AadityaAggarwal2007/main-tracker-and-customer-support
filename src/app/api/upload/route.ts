@@ -1,18 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { cleanCSVData, CleanedOrder } from '@/lib/csv-cleaner';
-import { query, queryOne, withTransaction } from '@/lib/db';
+import { query, queryOne } from '@/lib/db';
+import { generateTrackingEmail } from '@/lib/email-templates';
 import Papa from 'papaparse';
+import crypto from 'crypto';
 
 const BATCH_SIZE = 500;
 
-// Generate tracking ID: ST + 10 uppercase alphanumeric chars
 function generateTrackingId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let id = 'ST';
   for (let i = 0; i < 10; i++) id += chars[Math.floor(Math.random() * chars.length)];
   return id;
 }
+
+function generateTrackingToken(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://shiptrack.store';
 
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
@@ -48,26 +55,43 @@ export async function POST(request: NextRequest) {
 
     const { orders, stats } = cleanCSVData(parsed.data as Record<string, string>[]);
 
-    // ═══ AUTO-DETECT BRANDS → CREATE BUSINESSES ═══
+    // ═══ AUTO-DETECT BRANDS → CREATE/FIND BUSINESSES ═══
     const allBrands = new Set<string>();
     orders.forEach((o) => o.items.forEach((item) => { if (item.brand) allBrands.add(item.brand); }));
     const brandArr = Array.from(allBrands).filter((b) => b.length > 0);
 
+    // bizMap: lowercase brand name → business id
     const bizMap = new Map<string, string>();
+    // bizBrandingMap: business id → branding info for email generation
+    const bizBrandingMap = new Map<string, {
+      name: string; logo_url: string; support_email: string;
+      support_phone: string; tracking_domain: string | null; primary_color: string | null;
+    }>();
 
     if (brandArr.length > 0) {
-      const existingBiz = await query<{ id: string; name: string }>(
-        `SELECT id, name FROM businesses`
-      );
-      existingBiz.rows.forEach(b => bizMap.set(b.name.toLowerCase(), b.id));
+      const existingBiz = await query<{
+        id: string; name: string; logo_url: string; support_email: string;
+        support_phone: string; tracking_domain: string | null; primary_color: string | null;
+      }>(`SELECT id, name, logo_url, support_email, support_phone, tracking_domain, primary_color FROM businesses`);
+
+      existingBiz.rows.forEach(b => {
+        bizMap.set(b.name.toLowerCase(), b.id);
+        bizBrandingMap.set(b.id, b);
+      });
 
       for (const brand of brandArr) {
         if (!bizMap.has(brand.toLowerCase())) {
-          const newBiz = await queryOne<{ id: string }>(
-            `INSERT INTO businesses (name) VALUES ($1) RETURNING id`,
+          const newBiz = await queryOne<{
+            id: string; name: string; logo_url: string; support_email: string;
+            support_phone: string; tracking_domain: string | null; primary_color: string | null;
+          }>(
+            `INSERT INTO businesses (name) VALUES ($1) RETURNING id, name, logo_url, support_email, support_phone, tracking_domain, primary_color`,
             [brand]
           );
-          if (newBiz) bizMap.set(brand.toLowerCase(), newBiz.id);
+          if (newBiz) {
+            bizMap.set(brand.toLowerCase(), newBiz.id);
+            bizBrandingMap.set(newBiz.id, newBiz);
+          }
         }
       }
     }
@@ -78,32 +102,24 @@ export async function POST(request: NextRequest) {
       return null;
     };
 
-    // ═══ FETCH PROGRESSION SETTINGS for smart status calculation ═══
+    // ═══ FETCH PROGRESSION SETTINGS ═══
     const progResult = await query<{
       step_from: string; step_to: string; delay_minutes: number; step_order: number; is_enabled: boolean;
     }>(`SELECT step_from, step_to, delay_minutes, step_order, is_enabled FROM progression_settings ORDER BY step_order ASC`);
     const progSteps = progResult.rows;
 
-    // Calculate what status an order should be at based on its original creation date
     function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): string {
       if (isCancelled) return 'Cancelled';
       if (!createdAtStr || progSteps.length === 0) return 'Order Placed';
-
       const createdAt = new Date(createdAtStr);
       if (isNaN(createdAt.getTime())) return 'Order Placed';
-
       const minutesElapsed = (Date.now() - createdAt.getTime()) / 60000;
       let accumulated = 0;
       let currentStatus = 'Order Placed';
-
       for (const step of progSteps) {
         if (!step.is_enabled) continue;
         accumulated += step.delay_minutes;
-        if (minutesElapsed >= accumulated) {
-          currentStatus = step.step_to;
-        } else {
-          break;
-        }
+        if (minutesElapsed >= accumulated) { currentStatus = step.step_to; } else { break; }
       }
       return currentStatus;
     }
@@ -126,14 +142,23 @@ export async function POST(request: NextRequest) {
 
     // ═══ STEP 2: Batch-INSERT new orders ═══
     let newCount = 0;
+    // Track inserted orders for email queuing
+    const insertedOrders: Array<{
+      order_id: string; customer_email: string; customer_name: string;
+      tracking_id: string; tracking_token: string; order_total: number;
+      city: string; tracking_status: string; business_id: string | null;
+      items: CleanedOrder['items'];
+    }> = [];
+
     for (let i = 0; i < newOrders.length; i += BATCH_SIZE) {
       const batch = newOrders.slice(i, i + BATCH_SIZE);
 
       const insertValues = batch.map(order => {
         const businessId = getBusinessId(order);
         const trackingStatus = calcStatusFromDate(order.created_at, order.is_cancelled);
-        // Parse original order date — use it for created_at in DB so progression is accurate
         const originalDate = order.created_at ? new Date(order.created_at) : null;
+        const trackingId = generateTrackingId();
+        const trackingToken = generateTrackingToken();
         return {
           order_id: order.order_id,
           shopify_id: order.shopify_id,
@@ -151,14 +176,15 @@ export async function POST(request: NextRequest) {
           order_total: order.order_total,
           is_cancelled: order.is_cancelled,
           tracking_status: trackingStatus,
-          tracking_id: generateTrackingId(),
+          tracking_id: trackingId,
+          tracking_token: trackingToken,
           business_id: businessId,
           original_created_at: originalDate && !isNaN(originalDate.getTime()) ? originalDate.toISOString() : null,
+          items: order.items,
         };
       });
 
-      // Build multi-row INSERT
-      const colCount = 19;
+      const colCount = 20;
       const placeholders = insertValues.map(
         (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
@@ -171,7 +197,7 @@ export async function POST(request: NextRequest) {
           v.address_line1, v.address_line2, v.address_line3,
           v.city, v.state, v.pincode,
           v.order_total, v.is_cancelled, v.tracking_status,
-          v.tracking_id, v.business_id, v.original_created_at
+          v.tracking_id, v.tracking_token, v.business_id, v.original_created_at
         );
       });
 
@@ -183,17 +209,33 @@ export async function POST(request: NextRequest) {
              address_line1, address_line2, address_line3,
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
-             tracking_id, business_id, created_at
+             tracking_id, tracking_token, business_id, created_at
            ) VALUES ${placeholders}
-           ON CONFLICT (order_id) DO NOTHING`,
+           ON CONFLICT DO NOTHING`,
           insertParams
         );
         newCount += result.rowCount ?? 0;
+        // Track for email queuing
+        insertValues.forEach(v => {
+          if (!v.is_cancelled && v.customer_email && v.customer_email.includes('@')) {
+            insertedOrders.push({
+              order_id: v.order_id,
+              customer_email: v.customer_email,
+              customer_name: v.customer_name,
+              tracking_id: v.tracking_id,
+              tracking_token: v.tracking_token,
+              order_total: v.order_total,
+              city: v.city,
+              tracking_status: v.tracking_status,
+              business_id: v.business_id,
+              items: v.items,
+            });
+          }
+        });
       } catch (err) {
         console.error('Batch insert error:', err);
       }
     }
-
 
     // ═══ STEP 3: Parallel-UPDATE existing orders ═══
     let updatedCount = 0;
@@ -221,10 +263,7 @@ export async function POST(request: NextRequest) {
             pi++;
           }
           params.push(order.order_id);
-          return query(
-            `UPDATE orders SET ${sets.join(', ')} WHERE order_id = $${pi}`,
-            params
-          );
+          return query(`UPDATE orders SET ${sets.join(', ')} WHERE order_id = $${pi}`, params);
         })
       );
       updatedCount += results.filter(r => (r.rowCount ?? 0) > 0).length;
@@ -259,8 +298,8 @@ export async function POST(request: NextRequest) {
         params.push(item.order_id, item.brand, item.product_name, item.quantity, item.price);
       });
       await query(
-        `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`,
-        params
+        `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`
+        , params
       );
     }
 
@@ -283,29 +322,105 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ═══ STEP 7: Log (only on last chunk) ═══
-    if (isLastChunk) {
-      await query(
-        `INSERT INTO upload_logs (filename, total_rows, new_orders, updated_orders, skipped_rows, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [file.name, stats.total, newCount, updatedCount, stats.total - stats.unique, user.username]
-      );
+    // ═══ STEP 7: AUTO-QUEUE EMAILS for new orders (1/min cron sends them) ═══
+    let emailsQueued = 0;
+    if (insertedOrders.length > 0) {
+      const emailRows: { orderId: string; status: string; to: string; subject: string; html: string; fromName: string }[] = [];
+
+      for (const order of insertedOrders) {
+        const biz = order.business_id ? bizBrandingMap.get(order.business_id) : null;
+        let logoUrl = biz?.logo_url || '';
+        if (logoUrl && logoUrl.includes('drive.google.com')) {
+          logoUrl = logoUrl.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1');
+        }
+        const trackingBase = biz?.tracking_domain || BASE_URL;
+        const bizName = biz?.name || 'ShipTrack';
+
+        const emailResult = generateTrackingEmail(
+          {
+            customerName: order.customer_name,
+            orderId: order.order_id,
+            productNames: order.items.map(i => i.product_name).filter(Boolean),
+            trackingId: order.tracking_id,
+            courierPartner: '',
+            trackingUrl: `${trackingBase}/track/${order.tracking_token}`,
+            businessName: bizName,
+            businessLogoUrl: logoUrl || undefined,
+            primaryColor: biz?.primary_color || undefined,
+            supportEmail: biz?.support_email || '',
+            supportPhone: biz?.support_phone || '',
+            orderTotal: order.order_total,
+            city: order.city,
+          },
+          order.tracking_status  // Use the calculated stage (e.g. "Shipped", "In Transit")
+        );
+
+        if (!emailResult) continue;
+        emailRows.push({
+          orderId: order.order_id,
+          status: order.tracking_status,
+          to: order.customer_email,
+          subject: emailResult.subject,
+          html: emailResult.html,
+          fromName: bizName,
+        });
+      }
+
+      // Batch insert into email_queue
+      for (let i = 0; i < emailRows.length; i += BATCH_SIZE) {
+        const batch = emailRows.slice(i, i + BATCH_SIZE);
+        const colCount = 6;
+        const placeholders = batch.map(
+          (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
+        ).join(', ');
+        const params: unknown[] = [];
+        batch.forEach(r => {
+          params.push(r.orderId, r.status, r.to, r.subject, r.html, r.fromName);
+        });
+        try {
+          const result = await query(
+            `INSERT INTO email_queue (order_id, status_stage, to_email, subject, html, from_name)
+             VALUES ${placeholders}
+             ON CONFLICT DO NOTHING`,
+            params
+          );
+          emailsQueued += result.rowCount ?? 0;
+        } catch (err) {
+          console.error('Email queue insert error:', err);
+        }
+      }
     }
+
+    // ═══ STEP 8: Log (only on last chunk) ═══
+    if (isLastChunk) {
+      try {
+        await query(
+          `INSERT INTO upload_logs (filename, total_rows, new_orders, updated_orders, skipped_rows, uploaded_by)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [file.name, stats.total, newCount, updatedCount, stats.total - stats.unique, user.username]
+        );
+      } catch { /* upload_logs table might not exist */ }
+    }
+
+    const hoursLeft = Math.ceil(emailsQueued / 60);
 
     return NextResponse.json({
       success: true,
       chunk: chunkIndex,
       totalChunks,
       newOrderIds: newOrders.map((o) => o.order_id),
+      emailsQueued,
+      estimatedHours: hoursLeft,
       stats: {
         ...stats,
         newOrders: newCount,
         updatedOrders: updatedCount,
         brandsDetected: brandArr.length,
+        emailsAutoQueued: emailsQueued,
       },
     });
   } catch (err) {
     console.error('Upload error:', err);
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Upload failed', detail: String(err) }, { status: 500 });
   }
 }

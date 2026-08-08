@@ -234,9 +234,9 @@ export default function AdminDashboard() {
     if (!token) return;
     setLoadingQueue(true);
     try {
-      const res = await fetch('/api/draft-queue', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch('/api/send-email', { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
-      if (res.ok) setQueueStats(data);
+      if (res.ok) setQueueStats(data?.queue || data);
     } catch { /* ignore */ }
     finally { setLoadingQueue(false); }
   }, [token]);
@@ -341,28 +341,10 @@ export default function AdminDashboard() {
       }
 
       setUploadResult({ total: totalRows, unique: totalNew + totalUpdated, newOrders: totalNew, updatedOrders: totalUpdated });
-      showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated, ${totalBrands} brands detected`);
-      fetchOrders(); fetchBrands(); fetchBusinesses();
-
-      // Enqueue new orders for draft creation (non-blocking — Apps Script processes 5/min)
-      if (allNewOrderIds.length > 0) {
-        try {
-          const queueRes = await fetch('/api/draft-queue', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ orderIds: allNewOrderIds, status: 'Order Placed' }),
-          });
-          const queueData = await queueRes.json();
-          if (queueRes.ok && queueData.queued > 0) {
-            showAlert('success', `✅ ${totalNew} new orders uploaded! ${queueData.queued} queued for Gmail drafts (~${Math.ceil(queueData.queued / 5)} min to complete)`);
-          } else {
-            showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated`);
-          }
-          fetchQueueStats();
-        } catch {
-          showAlert('success', `Upload complete! ${totalNew} new, ${totalUpdated} updated`);
-        }
-      }
+      // Emails are auto-queued in the upload API — cron sends 1/min automatically
+      const hoursEst = Math.ceil(totalNew / 60);
+      showAlert('success', `✅ ${totalNew} new orders imported! Emails sending automatically (1/min) — done in ~${hoursEst} hours.`);
+      fetchOrders(); fetchBrands(); fetchBusinesses(); fetchQueueStats();
     } catch { showAlert('error', 'Upload failed'); }
     finally { setUploading(false); }
   };
@@ -527,13 +509,21 @@ export default function AdminDashboard() {
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
-  const sendEmail = (order: Order) => {
-    if (!order.customer_email) { showAlert('error', 'No email address'); return; }
-    const link = getTrackingLink(order.tracking_token);
-    const status = order.is_cancelled ? 'Cancelled' : order.tracking_status;
-    const subject = `Order ${order.order_id} — ${status}`;
-    const body = `Hi ${order.customer_name},\n\nYour order ${order.order_id} is now: ${status}\n\nTrack: ${link}\n\nTotal: ₹${Number(order.order_total).toFixed(0)}\nPayment: ${order.payment_method}`;
-    window.open(`mailto:${order.customer_email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
+  const sendEmail = async (order: Order) => {
+    if (!order.customer_email) { showAlert('error', 'No email address for this order'); return; }
+    try {
+      const res = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orderIds: [order.order_id], status: order.tracking_status || 'Order Placed' }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('success', data.message || 'Email queued — will send within 1 minute');
+      } else {
+        showAlert('error', data.error || 'Failed to queue email');
+      }
+    } catch { showAlert('error', 'Failed to queue email'); }
   };
 
   const toggleSelectAll = () => {
@@ -1077,13 +1067,13 @@ export default function AdminDashboard() {
                 </div>
               )}
 
-              {/* Draft Queue Status */}
+              {/* Email Queue Status */}
               <div className="tf-card" style={{ padding: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
                   <Mail size={15} style={{ color: 'var(--primary)' }} />
-                  <span style={{ fontSize: '0.8125rem', fontWeight: 600 }}>Gmail Draft Queue</span>
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 600 }}>Email Queue</span>
                   <span style={{ marginLeft: 'auto', fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'var(--primary-light)', color: 'var(--primary)', fontWeight: 600 }}>
-                    5 drafts / min
+                    1 email / min
                   </span>
                   <button
                     className="btn-icon"
@@ -1099,12 +1089,11 @@ export default function AdminDashboard() {
                 </div>
 
                 {queueStats ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
                     {[
-                      { label: 'Pending', value: queueStats.pending, color: 'var(--warning)' },
-                      { label: 'Processing', value: queueStats.processing, color: 'var(--info)' },
-                      { label: 'Done', value: queueStats.done, color: 'var(--success)' },
-                      { label: 'Failed', value: queueStats.failed, color: 'var(--danger)' },
+                      { label: 'Pending', value: queueStats.pending ?? 0, color: 'var(--warning)' },
+                      { label: 'Sent', value: queueStats.sent ?? 0, color: 'var(--success)' },
+                      { label: 'Failed', value: queueStats.failed ?? 0, color: 'var(--danger)' },
                     ].map((s) => (
                       <div key={s.label} style={{ padding: '0.625rem', background: 'var(--bg-subtle)', borderRadius: 'var(--radius-lg)', textAlign: 'center' }}>
                         <div style={{ fontSize: '1.25rem', fontWeight: 700, color: s.value > 0 ? s.color : 'var(--fg-muted)' }}>{s.value.toLocaleString()}</div>
@@ -1118,10 +1107,9 @@ export default function AdminDashboard() {
                   </p>
                 )}
 
-                {queueStats && queueStats.pending > 0 && (
+                {queueStats && (queueStats.pending ?? 0) > 0 && (
                   <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.75rem', textAlign: 'center' }}>
-                    ⏱️ Est. time to complete: ~{Math.ceil(queueStats.pending / 5)} min
-                    &nbsp;·&nbsp; Make sure the Apps Script queue trigger is running
+                    ⏱️ ~{Math.ceil((queueStats.pending ?? 0) / 60)} hours left &nbsp;·&nbsp; Sending automatically in background
                   </p>
                 )}
               </div>
@@ -1131,10 +1119,11 @@ export default function AdminDashboard() {
                 <div>
                   <p className="info-box-title">How it works</p>
                   <p className="info-box-text">
-                    Export your orders from Shopify as CSV, then upload here. Brands are <strong>auto-detected</strong> from the Vendor column and businesses are created automatically. Re-uploading updates existing orders without creating duplicates. New orders are <strong>queued for Gmail drafts</strong> — the Apps Script processes 5 per minute automatically.
+                    Export your orders from Shopify as CSV, then upload here. Brands are <strong>auto-detected</strong> from the Vendor column and panels are created automatically. Re-uploading updates existing orders without duplicates. Emails are <strong>queued automatically</strong> on upload and sent 1 per minute in the background — no clicking needed.
                   </p>
                 </div>
               </div>
+
             </div>
           )}
 
