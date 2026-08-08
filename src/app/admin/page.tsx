@@ -67,6 +67,7 @@ export default function AdminDashboard() {
   // Upload
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<Record<string, unknown> | null>(null);
+  const [uploadPanelId, setUploadPanelId] = useState<string>(''); // REQUIRED: panel for CSV
   const [dragOver, setDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, percent: 0 });
   const [showUploadEmailPrompt, setShowUploadEmailPrompt] = useState(false);
@@ -293,6 +294,7 @@ export default function AdminDashboard() {
 
   const handleFileUpload = async (file: File) => {
     if (!file || !file.name.endsWith('.csv')) { showAlert('error', 'Please upload a CSV file'); return; }
+    if (!uploadPanelId) { showAlert('error', '⚠️ Please select a panel first before uploading'); return; }
     setUploading(true);
     setUploadResult(null);
     setUploadProgress({ current: 0, total: 0, percent: 0 });
@@ -326,6 +328,7 @@ export default function AdminDashboard() {
         formData.append('file', chunkFile);
         formData.append('chunkIndex', i.toString());
         formData.append('totalChunks', chunks.length.toString());
+        formData.append('businessId', uploadPanelId); // PANEL LOCK — every chunk locked to selected panel
 
         const res = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData });
         const data = await res.json();
@@ -1019,7 +1022,36 @@ export default function AdminDashboard() {
                 <p className="page-subtitle">Import orders from Shopify CSV export</p>
               </div>
 
-              {/* Brands auto-detected from CSV */}
+              {/* ── PANEL SELECTOR — required before upload ── */}
+              <div className="tf-card" style={{ padding: '1rem' }}>
+                <label style={{ fontSize: '0.8125rem', fontWeight: 600, display: 'block', marginBottom: '0.5rem' }}>
+                  📂 Step 1 — Select which panel this CSV belongs to
+                </label>
+                <select
+                  value={uploadPanelId}
+                  onChange={e => setUploadPanelId(e.target.value)}
+                  style={{
+                    width: '100%', padding: '0.625rem 0.875rem', borderRadius: 'var(--radius-lg)',
+                    border: uploadPanelId ? '1.5px solid var(--success)' : '1.5px solid var(--warning)',
+                    background: 'var(--bg-subtle)', color: 'var(--fg)', fontSize: '0.9rem', cursor: 'pointer',
+                  }}
+                >
+                  <option value="">— Choose panel (required) —</option>
+                  {businesses.map(b => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+                {!uploadPanelId && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--warning)', marginTop: '0.375rem' }}>
+                    ⚠️ You must select a panel. All orders in the CSV will be locked to this panel.
+                  </p>
+                )}
+                {uploadPanelId && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--success)', marginTop: '0.375rem' }}>
+                    ✅ All orders in this CSV will go to: <strong>{businesses.find(b => b.id === uploadPanelId)?.name}</strong>
+                  </p>
+                )}
+              </div>
 
               {/* Drop zone */}
               <div

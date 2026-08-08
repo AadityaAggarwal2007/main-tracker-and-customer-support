@@ -33,6 +33,14 @@ export async function POST(request: NextRequest) {
     const chunkIndex = parseInt(formData.get('chunkIndex') as string || '0');
     const totalChunks = parseInt(formData.get('totalChunks') as string || '1');
     const isLastChunk = chunkIndex === totalChunks - 1;
+    // ── PANEL LOCK: user must select which panel this CSV belongs to ──
+    const forcedBusinessId = (formData.get('businessId') as string) || null;
+    if (!forcedBusinessId) {
+      return NextResponse.json(
+        { error: 'Please select a panel before uploading. Every CSV must be assigned to a specific panel.' },
+        { status: 400 }
+      );
+    }
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -96,10 +104,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const getBusinessId = (order: CleanedOrder): string | null => {
-      const brand = order.items[0]?.brand;
-      if (brand && bizMap.has(brand.toLowerCase())) return bizMap.get(brand.toLowerCase())!;
-      return null;
+    // ── PANEL LOCK: ALL orders go to the selected panel — no auto-detection
+    const getBusinessId = (_order: CleanedOrder): string | null => {
+      return forcedBusinessId; // Always use the panel selected by user
     };
 
     // ═══ FETCH PROGRESSION SETTINGS ═══
