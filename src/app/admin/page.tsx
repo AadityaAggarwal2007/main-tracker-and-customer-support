@@ -1440,7 +1440,7 @@ export default function AdminDashboard() {
                       <span style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'rgba(150,191,72,0.1)', color: '#96bf48', fontWeight: 600 }}>Optional</span>
                     </div>
                     <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
-                      Required only for importing <strong>Shopify Inbox</strong> conversations into Support Inbox. Orders via webhook work without this.
+                      Required only for syncing <strong>order notes</strong> and customer data into Support Inbox. Orders via webhook work without this.
                     </p>
 
                     {/* Steps */}
@@ -1458,13 +1458,13 @@ export default function AdminDashboard() {
                         {
                           step: 2,
                           title: 'Create a Custom App',
-                          desc: 'Click "Create an app" → give it any name (e.g. ShipTrack) → click Create app',
+                          desc: 'Click "Create an app" → give it any name (e.g. ShipTrack) → click Create app. Leave App URL and Redirect URLs blank — not needed for API token access.',
                           link: null, linkText: null,
                         },
                         {
                           step: 3,
                           title: 'Set API Scopes',
-                          desc: 'Click "Configure" → under Admin API access scopes, enable: read_orders  •  read_customers  •  read_customer_requests',
+                          desc: 'Click "Configure" → under Admin API access scopes, enable: read_orders  •  read_customers',
                           link: null, linkText: null,
                         },
                         {
