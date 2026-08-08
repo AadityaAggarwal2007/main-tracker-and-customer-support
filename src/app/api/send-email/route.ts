@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
         );
 
         if (!result) return null;
-        return { to: order.customer_email, subject: result.subject, html: result.html };
+        return { to: order.customer_email, subject: result.subject, html: result.html, fromName: order.biz_name || 'ShipTrack' };
       })
       .filter((e): e is NonNullable<typeof e> => e !== null);
 
