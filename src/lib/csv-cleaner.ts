@@ -16,6 +16,7 @@ export interface CleanedOrder {
   pincode: string;
   is_cancelled: boolean;
   order_total: number;
+  created_at: string; // original Shopify order date e.g. "2026-08-04 11:44:25 +0530"
   items: CleanedItem[];
 }
 
@@ -109,6 +110,7 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
         pincode: cleanString(row[CSV_COLUMN_MAP.pincode]),
         is_cancelled: !!cancelledAt,
         order_total: orderTotal,
+        created_at: cleanString(row[CSV_COLUMN_MAP.created_at]),
         items: [item],
       };
 

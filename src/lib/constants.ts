@@ -87,6 +87,7 @@ export const CSV_COLUMN_MAP = {
   product_name: 'Lineitem name',
   price: 'Lineitem price',
   cancelled_at: 'Cancelled at',
+  created_at: 'Created at',
   // ─── FIX: Use Shopify's actual order total (includes discounts/taxes) ───
   order_total: 'Total',
   discount_code: 'Discount Code',

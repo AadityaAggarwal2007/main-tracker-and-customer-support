@@ -78,6 +78,36 @@ export async function POST(request: NextRequest) {
       return null;
     };
 
+    // ═══ FETCH PROGRESSION SETTINGS for smart status calculation ═══
+    const progResult = await query<{
+      step_from: string; step_to: string; delay_minutes: number; step_order: number; is_enabled: boolean;
+    }>(`SELECT step_from, step_to, delay_minutes, step_order, is_enabled FROM progression_settings ORDER BY step_order ASC`);
+    const progSteps = progResult.rows;
+
+    // Calculate what status an order should be at based on its original creation date
+    function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): string {
+      if (isCancelled) return 'Cancelled';
+      if (!createdAtStr || progSteps.length === 0) return 'Order Placed';
+
+      const createdAt = new Date(createdAtStr);
+      if (isNaN(createdAt.getTime())) return 'Order Placed';
+
+      const minutesElapsed = (Date.now() - createdAt.getTime()) / 60000;
+      let accumulated = 0;
+      let currentStatus = 'Order Placed';
+
+      for (const step of progSteps) {
+        if (!step.is_enabled) continue;
+        accumulated += step.delay_minutes;
+        if (minutesElapsed >= accumulated) {
+          currentStatus = step.step_to;
+        } else {
+          break;
+        }
+      }
+      return currentStatus;
+    }
+
     // ═══ STEP 1: Batch-check existing orders ═══
     const allOrderIds = orders.map((o) => o.order_id);
     const existingOrderIds = new Set<string>();
@@ -98,28 +128,12 @@ export async function POST(request: NextRequest) {
     let newCount = 0;
     for (let i = 0; i < newOrders.length; i += BATCH_SIZE) {
       const batch = newOrders.slice(i, i + BATCH_SIZE);
-      const cols = 16; // number of columns per row
-      const valuePlaceholders = batch.map(
-        (_, j) => `(${Array.from({ length: cols }, (_, k) => `$${j * cols + k + 1}`).join(', ')})`
-      ).join(', ');
 
-      const params: unknown[] = [];
-      batch.forEach(order => {
-        const businessId = getBusinessId(order);
-        params.push(
-          order.order_id, order.shopify_id, order.payment_method, order.financial_status,
-          order.customer_name, order.customer_email, order.customer_mobile,
-          order.address_line1, order.address_line2, order.address_line3,
-          order.city, order.state, order.pincode,
-          order.order_total, order.is_cancelled,
-          generateTrackingId()
-        );
-      });
-
-      // For business_id, we handle it separately since it can be null
-      // Actually let's use a simpler approach: build individual INSERT values
       const insertValues = batch.map(order => {
         const businessId = getBusinessId(order);
+        const trackingStatus = calcStatusFromDate(order.created_at, order.is_cancelled);
+        // Parse original order date — use it for created_at in DB so progression is accurate
+        const originalDate = order.created_at ? new Date(order.created_at) : null;
         return {
           order_id: order.order_id,
           shopify_id: order.shopify_id,
@@ -136,14 +150,15 @@ export async function POST(request: NextRequest) {
           pincode: order.pincode,
           order_total: order.order_total,
           is_cancelled: order.is_cancelled,
-          tracking_status: order.is_cancelled ? 'Cancelled' : 'Order Placed',
+          tracking_status: trackingStatus,
           tracking_id: generateTrackingId(),
           business_id: businessId,
+          original_created_at: originalDate && !isNaN(originalDate.getTime()) ? originalDate.toISOString() : null,
         };
       });
 
-      // Build multi-row INSERT with correct column count
-      const colCount = 18;
+      // Build multi-row INSERT
+      const colCount = 19;
       const placeholders = insertValues.map(
         (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
@@ -156,7 +171,7 @@ export async function POST(request: NextRequest) {
           v.address_line1, v.address_line2, v.address_line3,
           v.city, v.state, v.pincode,
           v.order_total, v.is_cancelled, v.tracking_status,
-          v.tracking_id, v.business_id
+          v.tracking_id, v.business_id, v.original_created_at
         );
       });
 
@@ -168,8 +183,9 @@ export async function POST(request: NextRequest) {
              address_line1, address_line2, address_line3,
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
-             tracking_id, business_id
-           ) VALUES ${placeholders}`,
+             tracking_id, business_id, created_at
+           ) VALUES ${placeholders}
+           ON CONFLICT (order_id) DO NOTHING`,
           insertParams
         );
         newCount += result.rowCount ?? 0;
@@ -177,6 +193,7 @@ export async function POST(request: NextRequest) {
         console.error('Batch insert error:', err);
       }
     }
+
 
     // ═══ STEP 3: Parallel-UPDATE existing orders ═══
     let updatedCount = 0;
