@@ -15,6 +15,7 @@ interface TemplateData {
   trackingUrl: string;
   businessName: string;
   businessLogoUrl?: string;
+  primaryColor?: string;  // per-panel brand color
   supportEmail: string;
   supportPhone: string;
   estimatedDelivery?: string;
@@ -76,9 +77,10 @@ const STATUS_CONFIG: Record<string, { emoji: string; subject: string; headline: 
 };
 
 function wrapInLayout(data: TemplateData, innerContent: string): string {
+  const brandColor = data.primaryColor || BRAND_COLOR;
   const logoSection = data.businessLogoUrl
     ? `<img src="${data.businessLogoUrl}" alt="${data.businessName}" style="height:40px;max-width:160px;object-fit:contain;" />`
-    : `<span style="font-size:20px;font-weight:700;color:${BRAND_COLOR};">${data.businessName}</span>`;
+    : `<span style="font-size:20px;font-weight:700;color:${brandColor};">${data.businessName}</span>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -189,7 +191,7 @@ export function generateTrackingEmail(
 
     <!-- CTA Button -->
     <div style="text-align:center;margin:28px 0 8px;">
-      <a href="${data.trackingUrl}" style="display:inline-block;padding:14px 32px;background-color:${BRAND_COLOR};color:white;text-decoration:none;border-radius:8px;font-size:15px;font-weight:600;letter-spacing:0.3px;">
+      <a href="${data.trackingUrl}" style="display:inline-block;padding:14px 32px;background-color:${data.primaryColor || BRAND_COLOR};color:white;text-decoration:none;border-radius:8px;font-size:15px;font-weight:600;letter-spacing:0.3px;">
         ${config.buttonText} →
       </a>
     </div>

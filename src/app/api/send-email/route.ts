@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
       order_items: { product_name: string }[];
       biz_name: string; biz_logo_url: string;
       biz_support_email: string; biz_support_phone: string;
-      biz_tracking_domain: string | null; // per-business tracking URL override
+      biz_tracking_domain: string | null;
+      biz_primary_color: string | null;
     }
 
     const allOrders: OrderRow[] = [];
@@ -50,7 +51,8 @@ export async function POST(request: NextRequest) {
            ) AS order_items,
            b.name AS biz_name, b.logo_url AS biz_logo_url,
            b.support_email AS biz_support_email, b.support_phone AS biz_support_phone,
-           b.tracking_domain AS biz_tracking_domain
+           b.tracking_domain AS biz_tracking_domain,
+           b.primary_color AS biz_primary_color
          FROM orders o
          LEFT JOIN order_items oi ON oi.order_id = o.order_id
          LEFT JOIN businesses b ON b.id = o.business_id
@@ -111,6 +113,7 @@ export async function POST(request: NextRequest) {
             trackingUrl: `${order.biz_tracking_domain || BASE_URL}/track/${order.tracking_token}`,
             businessName: order.biz_name || 'ShipTrack',
             businessLogoUrl: logoUrl || undefined,
+            primaryColor: order.biz_primary_color || undefined,
             supportEmail: order.biz_support_email || '',
             supportPhone: order.biz_support_phone || '',
             estimatedDelivery: order.estimated_delivery || undefined,
