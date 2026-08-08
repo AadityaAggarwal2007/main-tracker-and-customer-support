@@ -29,10 +29,16 @@ export interface CleanedItem {
 
 function normalizePhone(phone: string): string {
   if (!phone) return '';
+  // Remove all non-digit characters
   let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length > 10 && cleaned.startsWith('91')) {
-    cleaned = cleaned.slice(2);
+  // Remove leading zeros
+  cleaned = cleaned.replace(/^0+/, '');
+  // Strip country code 91 ONLY if the remaining digits are exactly 10
+  if (cleaned.startsWith('91') && cleaned.length > 10) {
+    const stripped = cleaned.slice(2);
+    if (stripped.length === 10) cleaned = stripped;
   }
+  // Always return last 10 digits
   return cleaned.slice(-10);
 }
 
@@ -84,6 +90,7 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
 
       const phone =
         normalizePhone(cleanString(row[CSV_COLUMN_MAP.phone])) ||
+        normalizePhone(cleanString(row[CSV_COLUMN_MAP.shipping_phone])) ||
         normalizePhone(cleanString(row[CSV_COLUMN_MAP.billing_phone]));
 
       const paymentMethod = cleanString(row[CSV_COLUMN_MAP.payment_method]);

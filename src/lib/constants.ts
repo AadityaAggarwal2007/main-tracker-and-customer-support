@@ -76,6 +76,7 @@ export const CSV_COLUMN_MAP = {
   customer_name_fallback: 'Shipping Name',
   phone: 'Phone',
   billing_phone: 'Billing Phone',
+  shipping_phone: 'Shipping Phone',
   address_line1: 'Shipping Address1',
   address_line2: 'Shipping Address2',
   address_line3: 'Shipping Company',
