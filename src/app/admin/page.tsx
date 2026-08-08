@@ -289,7 +289,7 @@ export default function AdminDashboard() {
     }, 400);
   };
 
-  /* ═══ CSV UPLOAD (chunked — works on Vercel Hobby 10s limit) ═══ */
+  /* ═══ CSV UPLOAD (chunked — VPS-safe, handles multiline quoted fields) ═══ */
   const CHUNK_SIZE = 500; // rows per chunk
 
   const handleFileUpload = async (file: File) => {
@@ -300,23 +300,38 @@ export default function AdminDashboard() {
     setUploadProgress({ current: 0, total: 0, percent: 0 });
 
     try {
-      // 1. Read and parse CSV on the client
+      // 1. Read CSV text
       const csvText = await file.text();
-      const lines = csvText.split('\n');
-      const header = lines[0];
-      const dataLines = lines.slice(1).filter(l => l.trim().length > 0);
-      const totalRows = dataLines.length;
 
-      // 2. Split into chunks
+      // 2. Parse CLIENT-SIDE with PapaParse — correctly handles multiline quoted fields
+      //    (e.g. Notes field with embedded newlines from payment gateways)
+      const Papa = (await import('papaparse')).default;
+      const parsed = Papa.parse<Record<string, string>>(csvText, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        relaxQuotes: true,
+        relaxColumnCount: true,
+      });
+
+      if (!parsed.data || parsed.data.length === 0) {
+        showAlert('error', 'CSV is empty or could not be parsed'); return;
+      }
+
+      const allRows = parsed.data;
+      const totalRows = allRows.length;
+      const headers = parsed.meta?.fields || [];
+
+      // 3. Chunk by ROWS (not by raw lines) — each chunk is re-serialized to clean CSV
       const chunks: string[] = [];
-      for (let i = 0; i < dataLines.length; i += CHUNK_SIZE) {
-        const chunkLines = dataLines.slice(i, i + CHUNK_SIZE);
-        chunks.push(header + '\n' + chunkLines.join('\n'));
+      for (let i = 0; i < allRows.length; i += CHUNK_SIZE) {
+        const chunkRows = allRows.slice(i, i + CHUNK_SIZE);
+        // Re-serialize to CSV with PapaParse (quotes handled correctly)
+        chunks.push(Papa.unparse(chunkRows, { columns: headers }));
       }
 
       setUploadProgress({ current: 0, total: chunks.length, percent: 0 });
 
-      // 3. Send chunks sequentially
+      // 4. Send chunks sequentially
       let totalNew = 0, totalUpdated = 0, totalBrands = 0;
       const allNewOrderIds: string[] = [];
 
@@ -358,6 +373,7 @@ export default function AdminDashboard() {
       setUploadResult({ total: totalRows, unique: totalNew + totalUpdated, newOrders: totalNew, updatedOrders: totalUpdated });
       // Emails are auto-queued in the upload API — cron sends 1/min automatically
       const hoursEst = Math.ceil(totalNew / 60);
+
       showAlert('success', `✅ ${totalNew} new orders imported! Emails sending automatically (1/min) — done in ~${hoursEst} hours.`);
       fetchOrders(); fetchBrands(); fetchBusinesses(); fetchQueueStats();
     } catch { showAlert('error', 'Upload failed'); }
