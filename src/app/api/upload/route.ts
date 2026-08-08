@@ -255,6 +255,8 @@ export async function POST(request: NextRequest) {
     }
 
     // ═══ STEP 3: Parallel-UPDATE existing orders ═══
+    // NOTE: business_id is NEVER overwritten — only set if currently NULL
+    // This prevents orders from jumping between panels on re-upload
     let updatedCount = 0;
     for (let i = 0; i < existingOrders.length; i += 50) {
       const batch = existingOrders.slice(i, i + 50);
@@ -275,7 +277,8 @@ export async function POST(request: NextRequest) {
           ];
           let pi = 14;
           if (businessId) {
-            sets.push(`business_id = $${pi}`);
+            // COALESCE: only set business_id if currently NULL (never overwrite existing panel)
+            sets.push(`business_id = COALESCE(business_id, $${pi})`);
             params.push(businessId);
             pi++;
           }
