@@ -51,12 +51,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ sent: 0, message: 'No pending emails' });
     }
 
-    // Get default business for branding
+    // Get branding for THIS order's panel — fall back to default only if no business_id
     const biz = await queryOne<{
       name: string; logo_url: string; support_email: string; support_phone: string;
     }>(
-      `SELECT name, logo_url, support_email, support_phone
-       FROM businesses WHERE is_default = true LIMIT 1`
+      order.business_id
+        ? `SELECT name, logo_url, support_email, support_phone
+           FROM businesses WHERE id = $1 LIMIT 1`
+        : `SELECT name, logo_url, support_email, support_phone
+           FROM businesses WHERE is_default = true LIMIT 1`,
+      order.business_id ? [order.business_id] : []
     );
 
     const bizName = biz?.name || 'ShipTrack';
