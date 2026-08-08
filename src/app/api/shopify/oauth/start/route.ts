@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
   const nonce = crypto.randomBytes(16).toString('hex');
   const state = Buffer.from(JSON.stringify({ businessId, nonce })).toString('base64');
 
-  const scopes = 'read_orders,read_products,read_content';
+  const scopes = 'read_orders,read_customers';
   const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/shopify/oauth/callback`;
 
   const authUrl = `https://${shop}/admin/oauth/authorize?` + new URLSearchParams({
