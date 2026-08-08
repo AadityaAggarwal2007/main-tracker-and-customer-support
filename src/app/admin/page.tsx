@@ -1432,6 +1432,148 @@ export default function AdminDashboard() {
                     </p>
                   </div>
 
+                  {/* Shopify API Connect card — optional, for Inbox sync */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <ShoppingBag size={16} style={{ color: '#96bf48' }} />
+                      <span style={{ fontWeight: 700 }}>Connect Shopify API</span>
+                      <span style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem', borderRadius: '9999px', background: 'rgba(150,191,72,0.1)', color: '#96bf48', fontWeight: 600 }}>Optional</span>
+                    </div>
+                    <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
+                      Required only for importing <strong>Shopify Inbox</strong> conversations into Support Inbox. Orders via webhook work without this.
+                    </p>
+
+                    {/* Steps */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', marginBottom: '1.25rem' }}>
+                      {[
+                        {
+                          step: 1,
+                          title: 'Open Shopify App Development',
+                          desc: 'Go to your Shopify Admin → Settings → Apps → Develop apps',
+                          link: activeBusiness?.shopify_domain
+                            ? `https://${activeBusiness.shopify_domain}/admin/settings/apps/development`
+                            : 'https://admin.shopify.com/settings/apps/development',
+                          linkText: 'Open Develop Apps →',
+                        },
+                        {
+                          step: 2,
+                          title: 'Create a Custom App',
+                          desc: 'Click "Create an app" → give it any name (e.g. ShipTrack) → click Create app',
+                          link: null, linkText: null,
+                        },
+                        {
+                          step: 3,
+                          title: 'Set API Scopes',
+                          desc: 'Click "Configure" → under Admin API access scopes, enable: read_orders  •  read_customers  •  read_customer_requests',
+                          link: null, linkText: null,
+                        },
+                        {
+                          step: 4,
+                          title: 'Install & Copy Token',
+                          desc: 'Click Save → click "Install app" → go to API credentials tab → copy the Admin API access token',
+                          link: null, linkText: null,
+                        },
+                        {
+                          step: 5,
+                          title: 'Paste Below & Connect',
+                          desc: 'Enter your store domain and paste the token below, then click Connect.',
+                          link: null, linkText: null,
+                        },
+                      ].map(({ step, title, desc, link, linkText }) => (
+                        <div key={step} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start', padding: '0.75rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                          <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(150,191,72,0.2)', color: '#96bf48', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.75rem', flexShrink: 0 }}>
+                            {step}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.8125rem', marginBottom: '0.125rem' }}>{title}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{desc}</div>
+                            {link && (
+                              <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#96bf48', fontWeight: 600, display: 'inline-block', marginTop: '0.25rem' }}>
+                                {linkText}
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Input fields */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+                      <div>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--fg-muted)', display: 'block', marginBottom: '0.375rem' }}>
+                          Shopify Store Domain
+                        </label>
+                        <input
+                          id="shopify-domain-input"
+                          className="tf-input"
+                          placeholder="yourstore.myshopify.com"
+                          defaultValue={activeBusiness?.shopify_domain || ''}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--fg-muted)', display: 'block', marginBottom: '0.375rem' }}>
+                          Admin API Access Token
+                        </label>
+                        <input
+                          id="shopify-token-input"
+                          className="tf-input"
+                          type="password"
+                          placeholder="shpat_xxxxxxxxxxxxxxxxxxxx"
+                          defaultValue=""
+                          style={{ width: '100%' }}
+                        />
+                        {activeBusiness?.is_shopify_connected && (
+                          <div style={{ fontSize: '0.6875rem', color: '#22c55e', marginTop: '0.375rem', fontWeight: 600 }}>
+                            ✅ Shopify connected — leave blank to keep existing token
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      className="btn btn-sm"
+                      style={{ background: '#96bf48', color: '#fff', border: 'none' }}
+                      id="shopify-connect-btn"
+                      onClick={async () => {
+                        const domainInput = (document.getElementById('shopify-domain-input') as HTMLInputElement)?.value?.trim();
+                        const tokenInput = (document.getElementById('shopify-token-input') as HTMLInputElement)?.value?.trim();
+                        const btn = document.getElementById('shopify-connect-btn') as HTMLButtonElement;
+                        if (!domainInput) { showAlert('error', 'Enter your Shopify store domain'); return; }
+                        if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
+                        btn.textContent = 'Connecting...';
+                        btn.disabled = true;
+                        try {
+                          const token = localStorage.getItem('auth_token') || '';
+                          const body: Record<string, unknown> = {
+                            id: activePanelId,
+                            shopifyDomain: domainInput,
+                          };
+                          if (tokenInput) body.shopifyApiToken = tokenInput;
+                          const res = await fetch('/api/businesses', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                            body: JSON.stringify(body),
+                          });
+                          if (res.ok) {
+                            showAlert('success', '✅ Shopify API connected! Go to Support Inbox → click 🛍️ to import conversations.');
+                            fetchBusinesses();
+                          } else {
+                            const err = await res.json().catch(() => ({}));
+                            showAlert('error', err.error || 'Failed to connect Shopify');
+                          }
+                        } catch {
+                          showAlert('error', 'Connection failed');
+                        } finally {
+                          btn.textContent = 'Connect Shopify';
+                          btn.disabled = false;
+                        }
+                      }}
+                    >
+                      {activeBusiness?.is_shopify_connected ? '🔄 Update Shopify Credentials' : '🔗 Connect Shopify'}
+                    </button>
+                  </div>
+
                 </>
               )}
 
