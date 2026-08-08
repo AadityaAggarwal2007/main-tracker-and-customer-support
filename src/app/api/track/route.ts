@@ -1,30 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 
+// Helper: fetch business branding by id, or fall back to default/first
+async function getBusiness(businessId: unknown) {
+  if (businessId) {
+    const biz = await queryOne(
+      `SELECT name, logo_url, support_email, support_phone
+       FROM businesses WHERE id = $1 LIMIT 1`,
+      [businessId]
+    );
+    if (biz) return biz;
+  }
+  // fallback to default panel
+  const def = await queryOne(
+    `SELECT name, logo_url, support_email, support_phone
+     FROM businesses WHERE is_default = true LIMIT 1`
+  );
+  if (def) return def;
+  // last resort: first business
+  return queryOne(
+    `SELECT name, logo_url, support_email, support_phone
+     FROM businesses ORDER BY created_at ASC LIMIT 1`
+  );
+}
+
 // GET - public tracking by token or orderId+phone
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const token   = searchParams.get('token');
   const orderId = searchParams.get('orderId');
   const phone   = searchParams.get('phone');
-
-  // Always fetch the default business — this is what customers see
-  let business = await queryOne(
-    `SELECT name, logo_url, support_email, support_phone
-     FROM businesses
-     WHERE is_default = true
-     LIMIT 1`
-  );
-
-  // Fallback: first business if no default set
-  if (!business) {
-    business = await queryOne(
-      `SELECT name, logo_url, support_email, support_phone
-       FROM businesses
-       ORDER BY created_at ASC
-       LIMIT 1`
-    );
-  }
 
   if (token) {
     // ── Token-based tracking ──────────────────────────────────
@@ -50,6 +55,8 @@ export async function GET(request: NextRequest) {
     if (!order) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
+
+    const business = await getBusiness(order.business_id);
 
     const history = await query(
       `SELECT status, created_at, notes
@@ -98,6 +105,8 @@ export async function GET(request: NextRequest) {
     // Strip customer_mobile from response
     const { customer_mobile, ...safeOrder } = order;
     void customer_mobile;
+
+    const business = await getBusiness(order.business_id);
 
     const history = await query(
       `SELECT status, created_at, notes
