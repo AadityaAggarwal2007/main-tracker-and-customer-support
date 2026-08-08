@@ -272,7 +272,8 @@ export async function POST(request: NextRequest) {
                 existingOrder.tracking_token || '',
                 existingOrder.order_total || orderTotal,
                 existingOrder.city || city,
-                lineItems
+                lineItems,
+                businessId || undefined  // ← pass panel so email uses correct branding
               );
             }
           }
@@ -338,7 +339,8 @@ export async function POST(request: NextRequest) {
       try {
         emailSent = await sendAndLogEmail(
           orderId, customerEmail, customerName,
-          trackingId, trackingToken, orderTotal, city, lineItems
+          trackingId, trackingToken, orderTotal, city, lineItems,
+          businessId || undefined  // ← pass panel so email uses correct branding
         );
       } catch (emailErr) {
         console.error('Shopify webhook: Email send failed (order still created):', emailErr);

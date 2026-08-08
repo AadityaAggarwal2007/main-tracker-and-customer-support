@@ -1,0 +1,12 @@
+#!/usr/bin/expect -f
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no root@200.141.13.66
+expect "password:"
+send "akx#.2F0khYvfXpi\r"
+expect "# "
+send "sudo -u postgres psql -d tracking_crm -c \"SELECT b.id, b.name, b.tracking_domain, b.is_shopify_connected, b.shopify_webhook_id, COUNT(o.id) AS order_count FROM businesses b LEFT JOIN orders o ON o.business_id = b.id GROUP BY b.id, b.name, b.tracking_domain, b.is_shopify_connected, b.shopify_webhook_id ORDER BY order_count DESC;\"\r"
+expect "# "
+send "sudo -u postgres psql -d tracking_crm -c \"SELECT state, COUNT(*) FROM email_queue GROUP BY state ORDER BY state;\"\r"
+expect "# "
+send "exit\r"
+expect eof
