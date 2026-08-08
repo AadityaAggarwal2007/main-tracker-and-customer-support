@@ -96,10 +96,17 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
       const paymentMethod = cleanString(row[CSV_COLUMN_MAP.payment_method]);
       const cancelledAt = cleanString(row[CSV_COLUMN_MAP.cancelled_at]);
 
-      // ═══ FIX: Use Shopify's "Total" column (actual order total with discounts) ═══
-      // Fall back to line item price only if Total column is missing
-      const shopifyTotal = parseFloat(cleanString(row[CSV_COLUMN_MAP.order_total])) || 0;
-      const orderTotal = shopifyTotal > 0 ? shopifyTotal : item.price * item.quantity;
+      // ═══ FIX: Try multiple column name variations for order total ═══
+      // Shopify exports differ: some use 'Total', others 'Subtotal', 'Total Price', etc.
+      const TOTAL_COLUMNS = ['Total', 'Subtotal', 'Total Price', 'Order Total', 'Grand Total',
+                             'total', 'subtotal', 'total_price', 'order_total', 'Gross Sales'];
+      let shopifyTotal = 0;
+      for (const col of TOTAL_COLUMNS) {
+        const v = parseFloat(cleanString(row[col]));
+        if (v > 0) { shopifyTotal = v; break; }
+      }
+      // Last resort: use line item price × quantity
+      const orderTotal = shopifyTotal > 0 ? shopifyTotal : (item.price * item.quantity);
 
       const order: CleanedOrder = {
         order_id: orderId,
@@ -127,9 +134,10 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
 
   const allOrders = Array.from(orderMap.values());
 
-  // ── Filter out zero-price orders (free/test orders, continuation rows) ──
-  const orders = allOrders.filter((o) => o.order_total > 0);
-  const skipped = allOrders.length - orders.length;
+  // ── Only skip rows with NO order_id at all — don't filter on total ──
+  // (Previous filter `order_total > 0` silently dropped ALL orders if column names differ)
+  const orders = allOrders; // keep everything — zero-total orders are better than missing orders
+  const skipped = 0; // skipped at parse level (no order_id)
   const cancelled = orders.filter((o) => o.is_cancelled).length;
 
   return {

@@ -333,8 +333,17 @@ export default function AdminDashboard() {
         const res = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData });
         const data = await res.json();
 
-        if (!res.ok) {
-          showAlert('error', `Chunk ${i + 1}/${chunks.length} failed: ${data.error}`);
+        if (!res.ok || data.success === false) {
+          // If column mismatch — show what columns were found vs expected
+          if (data.detectedColumns) {
+            showAlert('error',
+              `❌ CSV column mismatch — detected: [${data.detectedColumns.slice(0,5).join(', ')}…]. ` +
+              `Expected Shopify export format (Name, Billing Name, Total, etc.). ` +
+              `${data.hint || ''}`
+            );
+          } else {
+            showAlert('error', `Chunk ${i + 1}/${chunks.length} failed: ${data.error}`);
+          }
           break;
         }
 

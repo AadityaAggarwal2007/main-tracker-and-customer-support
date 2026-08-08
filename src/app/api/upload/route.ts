@@ -61,7 +61,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ── Debug: capture detected column headers to show in response ──
+    const detectedColumns = parsed.meta?.fields || Object.keys((parsed.data as Record<string, string>[])[0] || {});
+
     const { orders, stats } = cleanCSVData(parsed.data as Record<string, string>[]);
+
+    // ── If 0 orders parsed, return early with debug info ──
+    if (orders.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'No orders could be read from this CSV. The column names may not match the expected Shopify format.',
+        detectedColumns,
+        expectedColumns: ['Name', 'Billing Name', 'Total', 'Shipping Address1', 'Shipping City', 'Lineitem price'],
+        hint: 'Make sure you are exporting a Shopify Orders CSV (Orders → Export → CSV for Excel).',
+        stats,
+      }, { status: 422 });
+    }
 
     // ═══ AUTO-DETECT BRANDS → CREATE/FIND BUSINESSES ═══
     const allBrands = new Set<string>();
