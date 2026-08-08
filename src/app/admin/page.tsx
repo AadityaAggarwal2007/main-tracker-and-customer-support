@@ -1334,7 +1334,7 @@ export default function AdminDashboard() {
                           </div>
                           <a
                             href={shopifyForm.domain
-                              ? `/api/shopify/oauth/start?shop=${encodeURIComponent(shopifyForm.domain)}&businessId=${activePanelId}`
+                              ? `/api/shopify/oauth/start?shop=${encodeURIComponent(shopifyForm.domain)}&businessId=${activePanelId}&token=${encodeURIComponent(token)}`
                               : '#'}
                             style={{
                               display: 'inline-flex', alignItems: 'center', gap: '0.5rem',

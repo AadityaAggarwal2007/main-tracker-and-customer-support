@@ -1,18 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthFromRequest } from '@/lib/auth';
+import { getAuthFromRequest, verifyToken } from '@/lib/auth';
 import crypto from 'crypto';
 
-// GET /api/shopify/oauth/start?shop=mystore.myshopify.com&businessId=uuid
+// GET /api/shopify/oauth/start?shop=mystore.myshopify.com&businessId=uuid&token=xxx
 // Starts the Shopify OAuth flow — redirects to Shopify authorization page
 export async function GET(request: NextRequest) {
-  const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.redirect(new URL('/login', request.url));
+  const { searchParams } = new URL(request.url);
+  const queryToken = searchParams.get('token') || '';
+
+  // Accept token from query param (browser link navigation) OR Authorization header
+  let user = getAuthFromRequest(request);
+  if (!user && queryToken) {
+    user = verifyToken(queryToken);
   }
 
-  const { searchParams } = new URL(request.url);
+  if (!user || user.role !== 'admin') {
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/login`);
+  }
+
   let shop = searchParams.get('shop') || '';
   const businessId = searchParams.get('businessId') || '';
+
 
   if (!shop) {
     return NextResponse.json({ error: 'shop parameter required (e.g. mystore.myshopify.com)' }, { status: 400 });
