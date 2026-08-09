@@ -230,7 +230,8 @@ export default function SupportPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        showAlert('success', `✅ Shopify sync done — ${data.imported} new tickets imported (${data.total} conversations found)`);
+        showAlert('success', `✅ Shopify sync done — ${data.imported} new tickets imported, ${data.updated ?? 0} updated`);
+
         fetchTickets();
       } else {
         showAlert('error', data.error || 'Shopify sync failed');
