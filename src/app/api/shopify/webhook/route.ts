@@ -183,16 +183,26 @@ export async function POST(request: NextRequest) {
     // Capture which Shopify store this order came from
     const sourceStore = request.headers.get('x-shopify-shop-domain') || shopifyOrder.domain || 'unknown';
 
-    // 8. Resolve business_id — MUST come from webhook URL (?b=uuid)
-    //    If not provided, reject — we never auto-create panels from webhook
-    const resolvedBusinessId: string | null = businessId || null;
-    if (!resolvedBusinessId) {
-      console.error('Webhook rejected: no ?b= panel ID in URL. Register webhook with ?b=YOUR_PANEL_ID');
-      return NextResponse.json(
-        { error: 'Webhook URL missing panel ID. Add ?b=YOUR_PANEL_ID to the webhook URL in Shopify.' },
-        { status: 400 }
+    // 8. Resolve business_id — prefer ?b= param, fall back to shop domain
+    const shopDomain = request.headers.get('x-shopify-shop-domain') || shopifyOrder.domain || '';
+    let resolvedBusinessId: string | null = businessId || null;
+
+    if (!resolvedBusinessId && shopDomain) {
+      const bizByDomain = await queryOne<{ id: string }>(
+        `SELECT id FROM businesses WHERE shopify_domain = $1 LIMIT 1`,
+        [shopDomain]
       );
+      resolvedBusinessId = bizByDomain?.id || null;
+      if (resolvedBusinessId) {
+        console.log(`Webhook: resolved business ${resolvedBusinessId} via shop domain ${shopDomain}`);
+      }
     }
+
+    if (!resolvedBusinessId) {
+      console.warn(`Webhook ignored: no ?b= and no matching shop domain (${shopDomain}). Register webhook with ?b=YOUR_PANEL_ID`);
+      return NextResponse.json({ skipped: true, reason: 'no panel ID' });
+    }
+
 
 
     // 9. Check if order already exists (dedup by order_id + source_store)
