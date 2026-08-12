@@ -182,7 +182,10 @@ export async function POST(request: NextRequest) {
     // 7. Financial info
     const orderTotal = parseFloat(shopifyOrder.total_price || '0');
     const financialStatus = shopifyOrder.financial_status || 'pending';
-    const paymentMethod = shopifyOrder.gateway || 'COD';
+    const rawGateway = shopifyOrder.gateway || '';
+    const paymentMethod = rawGateway === 'Cash on Delivery (COD)' || rawGateway === 'manual' || financialStatus === 'pending'
+      ? 'COD'
+      : rawGateway || (financialStatus === 'paid' ? 'Prepaid' : 'COD');
     const isCancelled = shopifyOrder.cancelled_at ? true : false;
 
     // Capture which Shopify store this order came from

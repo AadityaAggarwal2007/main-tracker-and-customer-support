@@ -95,7 +95,10 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
         normalizePhone(cleanString(row[CSV_COLUMN_MAP.shipping_phone])) ||
         normalizePhone(cleanString(row[CSV_COLUMN_MAP.billing_phone]));
 
-      const paymentMethod = cleanString(row[CSV_COLUMN_MAP.payment_method]);
+      const rawPayment = cleanString(row[CSV_COLUMN_MAP.payment_method]);
+      const financialStatus = cleanString(row[CSV_COLUMN_MAP.financial_status]) || 'paid';
+      const paymentMethod = rawPayment
+        || (financialStatus === 'paid' ? 'Prepaid' : 'COD');
       const cancelledAt = cleanString(row[CSV_COLUMN_MAP.cancelled_at]);
 
       // ═══ FIX: Try multiple column name variations for order total ═══
@@ -113,8 +116,8 @@ export function cleanCSVData(rawRows: Record<string, string>[]): {
       const order: CleanedOrder = {
         order_id: orderId,
         shopify_id: cleanString(row[CSV_COLUMN_MAP.shopify_id]),
-        payment_method: paymentMethod || 'COD',
-        financial_status: cleanString(row[CSV_COLUMN_MAP.financial_status]) || 'paid',
+        payment_method: paymentMethod,
+        financial_status: financialStatus,
         customer_name: customerName,
         customer_email: cleanString(row[CSV_COLUMN_MAP.email]),
         customer_mobile: phone,
