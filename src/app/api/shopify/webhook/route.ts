@@ -31,13 +31,18 @@ function generateTrackingToken(): string {
 function normalizePhone(phone: string): string {
   if (!phone) return '';
   let cleaned = phone.replace(/\D/g, '');
+  if (!cleaned) return '';
   cleaned = cleaned.replace(/^0+/, '');
-  // Only strip 91 if remaining is exactly 10 digits
+  if (!cleaned) return '';
+  // Strip country code 91 when total digits > 10 (91 is always the country code then)
   if (cleaned.startsWith('91') && cleaned.length > 10) {
-    const stripped = cleaned.slice(2);
-    if (stripped.length === 10) cleaned = stripped;
+    cleaned = cleaned.slice(2);
   }
-  return cleaned.slice(-10);
+  // Indian mobile numbers are 10 digits — return last 10
+  if (cleaned.length > 10) {
+    cleaned = cleaned.slice(-10);
+  }
+  return cleaned;
 }
 
 function verifyShopifyWebhook(rawBody: string, hmacHeader: string, secret: string): boolean {

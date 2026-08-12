@@ -50,7 +50,6 @@ export async function POST(request: NextRequest) {
     const parsed = Papa.parse(csvText, {
       header: true,
       skipEmptyLines: 'greedy',
-      relaxQuotes: true,
       relaxColumnCount: true,
     });
 
@@ -135,20 +134,24 @@ export async function POST(request: NextRequest) {
       .filter(s => s.is_enabled)
       .reduce((sum, s) => sum + s.delay_minutes, 0);
 
-    function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): string {
-      if (isCancelled) return 'Cancelled';
-      if (!createdAtStr || progSteps.length === 0) return 'Order Placed';
+    function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): { status: string; enteredAt: Date | null } {
+      if (isCancelled) return { status: 'Cancelled', enteredAt: null };
+      if (!createdAtStr || progSteps.length === 0) return { status: 'Order Placed', enteredAt: null };
       const createdAt = new Date(createdAtStr);
-      if (isNaN(createdAt.getTime())) return 'Order Placed';
+      if (isNaN(createdAt.getTime())) return { status: 'Order Placed', enteredAt: null };
       const minutesElapsed = (Date.now() - createdAt.getTime()) / 60000;
       let accumulated = 0;
       let currentStatus = 'Order Placed';
+      let statusEnteredAt = createdAt;
       for (const step of progSteps) {
         if (!step.is_enabled) continue;
         accumulated += step.delay_minutes;
-        if (minutesElapsed >= accumulated) { currentStatus = step.step_to; } else { break; }
+        if (minutesElapsed >= accumulated) {
+          currentStatus = step.step_to;
+          statusEnteredAt = new Date(createdAt.getTime() + accumulated * 60000);
+        } else { break; }
       }
-      return currentStatus;
+      return { status: currentStatus, enteredAt: statusEnteredAt };
     }
 
     // Calculate estimated delivery date from order creation date
@@ -194,7 +197,7 @@ export async function POST(request: NextRequest) {
 
       const insertValues = batch.map(order => {
         const businessId = getBusinessId(order);
-        const trackingStatus = calcStatusFromDate(order.created_at, order.is_cancelled);
+        const { status: trackingStatus, enteredAt: statusEnteredAt } = calcStatusFromDate(order.created_at, order.is_cancelled);
         const originalDate = order.created_at ? new Date(order.created_at) : null;
         const validOriginalDate = originalDate && !isNaN(originalDate.getTime()) ? originalDate : null;
         const estimatedDelivery = validOriginalDate ? calcEstimatedDelivery(order.created_at) : null;
@@ -222,11 +225,12 @@ export async function POST(request: NextRequest) {
           business_id: businessId,
           original_created_at: validOriginalDate ? validOriginalDate.toISOString() : null,
           estimated_delivery: estimatedDelivery,
+          status_updated_at: statusEnteredAt ? statusEnteredAt.toISOString() : null,
           items: order.items,
         };
       });
 
-      const colCount = 21;
+      const colCount = 22;
       const placeholders = insertValues.map(
         (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
@@ -240,7 +244,7 @@ export async function POST(request: NextRequest) {
           v.city, v.state, v.pincode,
           v.order_total, v.is_cancelled, v.tracking_status,
           v.tracking_id, v.tracking_token, v.business_id,
-          v.original_created_at, v.estimated_delivery
+          v.original_created_at, v.estimated_delivery, v.status_updated_at
         );
       });
 
@@ -252,7 +256,7 @@ export async function POST(request: NextRequest) {
              address_line1, address_line2, address_line3,
              city, state, pincode,
              order_total, is_cancelled, tracking_status,
-             tracking_id, tracking_token, business_id, created_at, estimated_delivery
+             tracking_id, tracking_token, business_id, created_at, estimated_delivery, status_updated_at
            ) VALUES ${placeholders}
            ON CONFLICT (order_id, business_id) WHERE business_id IS NOT NULL DO NOTHING`,
           insertParams

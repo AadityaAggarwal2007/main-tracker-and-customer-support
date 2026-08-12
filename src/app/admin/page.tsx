@@ -42,6 +42,7 @@ export default function AdminDashboard() {
   // Orders
   const [orders, setOrders] = useState<Order[]>([]);
   const [totalOrders, setTotalOrders] = useState(0);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
@@ -164,7 +165,7 @@ export default function AdminDashboard() {
         cache: 'no-store',
       });
       const data = await res.json();
-      if (res.ok) { setOrders(data.orders); setTotalOrders(data.total); }
+      if (res.ok) { setOrders(data.orders); setTotalOrders(data.total); if (data.statusCounts) setStatusCounts(data.statusCounts); }
     } catch { showAlert('error', 'Failed to load orders'); }
     finally { setLoading(false); }
   }, [token, page, limit, search, statusFilter, brandFilter, storeFilter, dateFrom, dateTo, activePanelId]);
@@ -533,7 +534,9 @@ export default function AdminDashboard() {
   const getTrackingLink = (trackingToken: string) => `${window.location.origin}/track/${trackingToken}`;
 
   const sendWhatsApp = (order: Order) => {
-    const phone = order.customer_mobile.startsWith('91') ? order.customer_mobile : '91' + order.customer_mobile;
+    const digits = order.customer_mobile.replace(/\D/g, '');
+    // Indian numbers: always 91 + 10 digits. If already 12 digits starting with 91, use as-is.
+    const phone = (digits.length === 12 && digits.startsWith('91')) ? digits : '91' + digits.slice(-10);
     const link = getTrackingLink(order.tracking_token);
     const status = order.is_cancelled ? 'Cancelled' : order.tracking_status;
     const message = `Hi ${order.customer_name},\n\nYour order *${order.order_id}* is now: *${status}*\n\n📦 Track your order here:\n${link}\n\nThank you for shopping with us! 🙏`;
@@ -806,9 +809,7 @@ export default function AdminDashboard() {
                   📊 All <span style={{ fontWeight: 700, color: 'var(--fg)' }}>{totalOrders}</span>
                 </button>
                 {TRACKING_STAGES_WITH_SPECIAL.map((stage) => {
-                  const count = stage === 'Cancelled'
-                    ? orders.filter((o) => o.is_cancelled).length
-                    : orders.filter((o) => o.tracking_status === stage && !o.is_cancelled).length;
+                  const count = statusCounts[stage] || 0;
                   return (
                     <button key={stage} onClick={() => { setStatusFilter(statusFilter === stage ? '' : stage); setPage(1); }}
                       style={{
@@ -1888,7 +1889,7 @@ export default function AdminDashboard() {
                 <div><p className="detail-field-label">Pincode</p><p className="detail-field-value">{detailOrder.pincode}</p></div>
                 <div className="detail-field-full">
                   <p className="detail-field-label">Address</p>
-                  <p className="detail-field-value">{[detailOrder.address_line1, detailOrder.address_line2, detailOrder.address_line3].filter(Boolean).join(', ')}</p>
+                  <p className="detail-field-value">{[detailOrder.address_line1, detailOrder.address_line2].filter(Boolean).join(', ')}</p>
                 </div>
               </div>
 

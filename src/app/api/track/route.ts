@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+
 // Helper: fetch business branding by id, or fall back to default/first
 async function getBusiness(businessId: unknown) {
   if (businessId) {
@@ -66,7 +68,9 @@ export async function GET(request: NextRequest) {
       [order.order_id]
     );
 
-    return NextResponse.json({ order, business, history: history.rows });
+    const res = NextResponse.json({ order, business, history: history.rows });
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    return res;
   }
 
   if (orderId && phone) {
@@ -116,7 +120,9 @@ export async function GET(request: NextRequest) {
       [order.order_id]
     );
 
-    return NextResponse.json({ order: safeOrder, business, history: history.rows });
+    const res = NextResponse.json({ order: safeOrder, business, history: history.rows });
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    return res;
   }
 
   return NextResponse.json({ error: 'Provide token or orderId+phone' }, { status: 400 });

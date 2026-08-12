@@ -29,17 +29,19 @@ export interface CleanedItem {
 
 function normalizePhone(phone: string): string {
   if (!phone) return '';
-  // Remove all non-digit characters
   let cleaned = phone.replace(/\D/g, '');
-  // Remove leading zeros
+  if (!cleaned) return '';
   cleaned = cleaned.replace(/^0+/, '');
-  // Strip country code 91 ONLY if the remaining digits are exactly 10
+  if (!cleaned) return '';
+  // Strip country code 91 when total digits > 10 (91 is always the country code then)
   if (cleaned.startsWith('91') && cleaned.length > 10) {
-    const stripped = cleaned.slice(2);
-    if (stripped.length === 10) cleaned = stripped;
+    cleaned = cleaned.slice(2);
   }
-  // Always return last 10 digits
-  return cleaned.slice(-10);
+  // Indian mobile numbers are 10 digits — return last 10
+  if (cleaned.length > 10) {
+    cleaned = cleaned.slice(-10);
+  }
+  return cleaned;
 }
 
 function cleanString(val: unknown): string {

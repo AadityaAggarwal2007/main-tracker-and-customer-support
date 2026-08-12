@@ -146,11 +146,51 @@ export async function GET(request: NextRequest) {
     [...params, limit, offset]
   );
 
+  // Status counts for KPI pills — uses panel/date/search filters but NOT status filter
+  // so all stage counts are visible regardless of which status tab is active
+  const countConditions: string[] = [];
+  const countParams: unknown[] = [];
+  let cpIdx = 1;
+
+  if (search) {
+    const looksLikeOrderId = search.startsWith('#') || /^\d+$/.test(search);
+    if (looksLikeOrderId) {
+      const searchId = search.startsWith('#') ? search : `#${search}`;
+      countConditions.push(`(o.order_id = $${cpIdx} OR o.order_id ILIKE $${cpIdx + 1})`);
+      countParams.push(searchId, `${searchId}%`);
+      cpIdx += 2;
+    } else {
+      countConditions.push(`(o.order_id ILIKE $${cpIdx} OR o.customer_name ILIKE $${cpIdx} OR o.customer_mobile ILIKE $${cpIdx} OR o.customer_email ILIKE $${cpIdx})`);
+      countParams.push(`%${search}%`);
+      cpIdx++;
+    }
+  }
+  if (dateFrom) { countConditions.push(`o.created_at >= $${cpIdx}`); countParams.push(`${dateFrom}T00:00:00`); cpIdx++; }
+  if (dateTo) { countConditions.push(`o.created_at <= $${cpIdx}`); countParams.push(`${dateTo}T23:59:59`); cpIdx++; }
+  if (store) { countConditions.push(`o.source_store = $${cpIdx}`); countParams.push(store); cpIdx++; }
+  if (effectiveBusinessIds.length === 1) { countConditions.push(`o.business_id = $${cpIdx}`); countParams.push(effectiveBusinessIds[0]); cpIdx++; }
+  else if (effectiveBusinessIds.length > 1) { countConditions.push(`o.business_id = ANY($${cpIdx}::uuid[])`); countParams.push(effectiveBusinessIds); cpIdx++; }
+  if (brand && brandOrderIds) { countConditions.push(`o.order_id = ANY($${cpIdx}::text[])`); countParams.push(brandOrderIds); cpIdx++; }
+
+  const countWhere = countConditions.length > 0 ? `WHERE ${countConditions.join(' AND ')}` : '';
+  const statusCountsResult = await query<{ tracking_status: string; is_cancelled: boolean; cnt: string }>(
+    `SELECT tracking_status, is_cancelled, COUNT(*) as cnt FROM orders o ${countWhere} GROUP BY tracking_status, is_cancelled`,
+    countParams
+  );
+  const statusCounts: Record<string, number> = {};
+  let cancelledCount = 0;
+  for (const row of statusCountsResult.rows) {
+    if (row.is_cancelled) { cancelledCount += parseInt(row.cnt); }
+    else { statusCounts[row.tracking_status] = (statusCounts[row.tracking_status] || 0) + parseInt(row.cnt); }
+  }
+  statusCounts['Cancelled'] = cancelledCount;
+
   const response = NextResponse.json({
     orders: ordersResult.rows,
     total,
     page,
     limit,
+    statusCounts,
   });
   response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
   return response;
