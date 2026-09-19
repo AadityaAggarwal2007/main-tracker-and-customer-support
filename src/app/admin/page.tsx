@@ -30,6 +30,14 @@ interface Business {
   is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null;
   is_shopify_connected: boolean; shopify_domain: string | null;
 }
+// What deleting a panel would destroy — Tracker rows plus the chat-support site
+interface PanelImpact {
+  id: string; name: string; isDefault: boolean;
+  isShopifyConnected: boolean; shopifyDomain: string | null;
+  orders: number; tickets: number;
+  chatSites: number; chatConversations: number; chatMessages: number;
+  teamMembers: number; teamMembersLosingAccess: number;
+}
 type TabType = 'orders' | 'upload' | 'team' | 'settings';
 
 export default function AdminDashboard() {
@@ -107,6 +115,13 @@ export default function AdminDashboard() {
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
   const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '', trackingDomain: '', primaryColor: '#4F46E5' });
   const [savingBrand, setSavingBrand] = useState(false);
+
+  // Delete panel (Tracker + chat support)
+  const [deletePanelTarget, setDeletePanelTarget] = useState<Business | null>(null);
+  const [deleteImpact, setDeleteImpact] = useState<PanelImpact | null>(null);
+  const [deleteImpactLoading, setDeleteImpactLoading] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingPanel, setDeletingPanel] = useState(false);
 
   // Shopify connect
   const [shopifyForm, setShopifyForm] = useState({ domain: '', apiToken: '' });
@@ -493,6 +508,55 @@ export default function AdminDashboard() {
       if (res.ok) { showAlert('success', 'Shopify disconnected'); fetchBusinesses(); }
       else { showAlert('error', 'Disconnect failed'); }
     } catch { showAlert('error', 'Disconnect failed'); }
+  };
+
+  /* ═══ DELETE PANEL (Tracker + chat support) ═══ */
+  const openDeletePanel = async (biz: Business) => {
+    setDeletePanelTarget(biz);
+    setDeleteImpact(null);
+    setDeleteConfirmText('');
+    setDeleteImpactLoading(true);
+    try {
+      const res = await fetch(`/api/businesses?impactId=${biz.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (res.ok) setDeleteImpact(data.impact);
+      else showAlert('error', data.error || 'Could not load panel details');
+    } catch { showAlert('error', 'Could not load panel details'); }
+    finally { setDeleteImpactLoading(false); }
+  };
+
+  const handleDeletePanel = async () => {
+    if (!deletePanelTarget) return;
+    setDeletingPanel(true);
+    try {
+      const res = await fetch(
+        `/api/businesses?id=${deletePanelTarget.id}&confirmName=${encodeURIComponent(deletePanelTarget.name)}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      if (!res.ok) { showAlert('error', data.error || 'Delete failed'); return; }
+
+      const d = data.deleted;
+      const parts = [`Panel "${data.panel}" deleted`];
+      if (d.orders) parts.push(plural(d.orders, 'order'));
+      if (d.tickets) parts.push(plural(d.tickets, 'ticket'));
+      if (d.chatSites) parts.push(`chat site (${plural(d.chatConversations, 'conversation')})`);
+      if (d.newDefault) parts.push(`"${d.newDefault}" is now the default panel`);
+      if (d.deactivatedUsers?.length) parts.push(`deactivated ${d.deactivatedUsers.join(', ')} — no panels left`);
+      showAlert('success', parts.join(' · '));
+
+      // Leaving the active panel pointed at a deleted id would filter every list to nothing
+      if (activePanelId === deletePanelTarget.id) {
+        setActivePanelId('');
+        localStorage.removeItem('active_panel_id');
+      }
+      setDeletePanelTarget(null);
+      setDeleteImpact(null);
+      setDeleteConfirmText('');
+      fetchBusinesses();
+      fetchOrders();
+    } catch { showAlert('error', 'Delete failed'); }
+    finally { setDeletingPanel(false); }
   };
 
   /* ═══ PANEL ACCESS ═══ */
@@ -1232,17 +1296,35 @@ export default function AdminDashboard() {
                   <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--fg-muted)' }}>All Panels</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
                     {businesses.map(biz => (
-                      <button key={biz.id} onClick={() => switchPanel(biz.id)} style={{
-                        display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.375rem 0.75rem',
+                      <div key={biz.id} style={{
+                        display: 'flex', alignItems: 'center',
                         borderRadius: '9999px', border: activePanelId === biz.id ? '2px solid var(--primary)' : '1px solid var(--border)',
                         background: activePanelId === biz.id ? 'var(--primary-light)' : 'var(--card-bg)',
-                        fontSize: '0.75rem', fontWeight: 500, cursor: 'pointer',
-                        color: activePanelId === biz.id ? 'var(--primary)' : 'var(--fg)',
+                        overflow: 'hidden',
                       }}>
-                        {biz.is_shopify_connected && <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>}
-                        {biz.name}
-                        {activePanelId === biz.id && <Check size={10} />}
-                      </button>
+                        <button onClick={() => switchPanel(biz.id)} style={{
+                          display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.375rem 0.75rem',
+                          border: 'none', background: 'transparent',
+                          fontSize: '0.75rem', fontWeight: 500, cursor: 'pointer',
+                          color: activePanelId === biz.id ? 'var(--primary)' : 'var(--fg)',
+                        }}>
+                          {biz.is_shopify_connected && <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>}
+                          {biz.name}
+                          {activePanelId === biz.id && <Check size={10} />}
+                        </button>
+                        {user?.role === 'admin' && (
+                          <button
+                            onClick={() => openDeletePanel(biz)}
+                            title={`Delete panel "${biz.name}"`}
+                            style={{
+                              display: 'flex', alignItems: 'center', padding: '0.375rem 0.5rem 0.375rem 0.25rem',
+                              border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)',
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -2049,8 +2131,94 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+      {/* Delete Panel Modal — removes the panel from the Tracker and from chat support */}
+      {deletePanelTarget && (
+        <div className="modal-overlay" onClick={() => { if (!deletingPanel) { setDeletePanelTarget(null); setDeleteImpact(null); setDeleteConfirmText(''); } }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title" style={{ color: 'var(--danger)' }}>Delete panel &ldquo;{deletePanelTarget.name}&rdquo;</h3>
+                <p className="modal-subtitle">This removes the panel everywhere. It cannot be undone.</p>
+              </div>
+              <button className="btn-icon" disabled={deletingPanel} onClick={() => { setDeletePanelTarget(null); setDeleteImpact(null); setDeleteConfirmText(''); }}><X size={16} /></button>
+            </div>
+
+            <div className="space-y-4">
+              {deleteImpactLoading && (
+                <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Checking what this panel holds…
+                </p>
+              )}
+
+              {deleteImpact && (
+                <>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: '0.5rem', overflow: 'hidden' }}>
+                    <div style={{ padding: '0.5rem 0.75rem', background: 'var(--bg-subtle, rgba(0,0,0,0.03))', fontSize: '0.75rem', fontWeight: 700 }}>
+                      Tracker
+                    </div>
+                    <div style={{ padding: '0.625rem 0.75rem', fontSize: '0.8125rem', display: 'grid', gap: '0.25rem' }}>
+                      <div>{plural(deleteImpact.orders, 'order')} — and all order items, status history, email logs and queued drafts</div>
+                      <div>{plural(deleteImpact.tickets, 'support ticket')} — and all ticket messages</div>
+                      {deleteImpact.isShopifyConnected && (
+                        <div>Shopify webhook for {deleteImpact.shopifyDomain || 'this store'} is removed</div>
+                      )}
+                    </div>
+                    <div style={{ padding: '0.5rem 0.75rem', background: 'var(--bg-subtle, rgba(0,0,0,0.03))', fontSize: '0.75rem', fontWeight: 700, borderTop: '1px solid var(--border)' }}>
+                      Chat support
+                    </div>
+                    <div style={{ padding: '0.625rem 0.75rem', fontSize: '0.8125rem' }}>
+                      {deleteImpact.chatSites > 0
+                        ? `The linked chat site, ${plural(deleteImpact.chatConversations, 'conversation')} and ${plural(deleteImpact.chatMessages, 'message')}`
+                        : 'No chat site is linked to this panel'}
+                    </div>
+                  </div>
+
+                  {deleteImpact.isDefault && (
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>
+                      This is the default panel — the oldest remaining panel becomes the default for tracking pages and emails.
+                    </p>
+                  )}
+                  {deleteImpact.teamMembersLosingAccess > 0 && (
+                    <p style={{ fontSize: '0.75rem', color: 'var(--danger)' }}>
+                      {plural(deleteImpact.teamMembersLosingAccess, 'team member')} will be deactivated — this is their only panel.
+                    </p>
+                  )}
+                </>
+              )}
+
+              <div className="form-group">
+                <label className="form-label">Type <strong>{deletePanelTarget.name}</strong> to confirm</label>
+                <input
+                  className="form-input"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder={deletePanelTarget.name}
+                  autoFocus
+                />
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn btn-outline" disabled={deletingPanel} onClick={() => { setDeletePanelTarget(null); setDeleteImpact(null); setDeleteConfirmText(''); }}>Cancel</button>
+                <button
+                  className="btn"
+                  style={{ background: 'var(--danger)', color: '#fff' }}
+                  disabled={deletingPanel || deleteImpactLoading || deleteConfirmText.trim() !== deletePanelTarget.name.trim()}
+                  onClick={handleDeletePanel}
+                >
+                  {deletingPanel ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Deleting…</> : <><Trash2 size={14} /> Delete panel permanently</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/* ═══ "3 orders" / "1 order" ═══ */
+function plural(count: number, noun: string): string {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
 }
 
 /* ═══ STAT CARD COMPONENT ═══ */
