@@ -27,22 +27,28 @@ export async function GET(request: NextRequest) {
 
     // Chat support lives in this same database (sites.tracker_business_id -> businesses.id),
     // so its rows are counted here too.
+    //
+    // Every id is compared as text on both sides. The two apps disagree about
+    // types for the same id: businesses.id is uuid, while the chat tables come
+    // from Prisma `String` columns and are text. Comparing a text column to a
+    // uuid parameter is a hard error in Postgres (operator does not exist:
+    // text = uuid), so nothing here assumes which one a column is.
     const counts = await queryOne<Record<string, string>>(
       `SELECT
-         (SELECT count(*) FROM orders          WHERE business_id = $1::uuid) AS orders,
-         (SELECT count(*) FROM support_tickets WHERE business_id = $1::uuid) AS tickets,
-         (SELECT count(*) FROM sites           WHERE tracker_business_id = $1::uuid) AS chat_sites,
+         (SELECT count(*) FROM orders          WHERE business_id::text = $1::text) AS orders,
+         (SELECT count(*) FROM support_tickets WHERE business_id::text = $1::text) AS tickets,
+         (SELECT count(*) FROM sites           WHERE tracker_business_id::text = $1::text) AS chat_sites,
          (SELECT count(*) FROM conversations c
             JOIN sites s ON s.id = c.site_id
-           WHERE s.tracker_business_id = $1::uuid) AS chat_conversations,
+           WHERE s.tracker_business_id::text = $1::text) AS chat_conversations,
          (SELECT count(*) FROM messages m
             JOIN conversations c ON c.id = m.conversation_id
             JOIN sites s ON s.id = c.site_id
-           WHERE s.tracker_business_id = $1::uuid) AS chat_messages,
+           WHERE s.tracker_business_id::text = $1::text) AS chat_messages,
          (SELECT count(*) FROM team_users
-           WHERE business_ids @> ARRAY[$1]::uuid[]) AS team_members,
+           WHERE business_ids::text[] @> ARRAY[$1]::text[]) AS team_members,
          (SELECT count(*) FROM team_users
-           WHERE business_ids @> ARRAY[$1]::uuid[] AND cardinality(business_ids) = 1) AS team_members_losing_access`,
+           WHERE business_ids::text[] @> ARRAY[$1]::text[] AND cardinality(business_ids) = 1) AS team_members_losing_access`,
       [impactId]
     );
 
@@ -250,23 +256,33 @@ export async function DELETE(request: NextRequest) {
         `SELECT
            (SELECT count(*) FROM conversations c
               JOIN sites s ON s.id = c.site_id
-             WHERE s.tracker_business_id = $1::uuid) AS conversations,
+             WHERE s.tracker_business_id::text = $1::text) AS conversations,
            (SELECT count(*) FROM messages m
               JOIN conversations c ON c.id = m.conversation_id
               JOIN sites s ON s.id = c.site_id
-             WHERE s.tracker_business_id = $1::uuid) AS messages`,
+             WHERE s.tracker_business_id::text = $1::text) AS messages`,
         [id]
       );
-      const chatSites = (await client.query(`DELETE FROM sites WHERE tracker_business_id = $1::uuid`, [id])).rowCount ?? 0;
+      const chatSites = (await client.query(`DELETE FROM sites WHERE tracker_business_id::text = $1::text`, [id])).rowCount ?? 0;
 
       // ── Team access ─────────────────────────────────────────────
       // An empty business_ids array is read as "all panels" at login, so a
       // member whose only panel was this one is deactivated rather than
       // silently promoted to every panel.
       const stripped = await client.query<{ id: string; username: string; business_ids: string[] | null }>(
+        // array_remove() is polymorphic and the driver types $1 as text, so it
+        // would need a cast matching the column's element type. Unnesting and
+        // comparing as text avoids that guess; business_ids[1:0] is an empty
+        // array of whatever type the column is, and is used because array_agg
+        // over no rows returns NULL — which login reads as "all panels".
         `UPDATE team_users
-            SET business_ids = array_remove(business_ids, $1::uuid)
-          WHERE business_ids @> ARRAY[$1]::uuid[]
+            SET business_ids = COALESCE(
+                  (SELECT array_agg(v ORDER BY ord)
+                     FROM unnest(business_ids) WITH ORDINALITY AS u(v, ord)
+                    WHERE v::text <> $1::text),
+                  business_ids[1:0]
+                )
+          WHERE business_ids::text[] @> ARRAY[$1]::text[]
         RETURNING id, username, business_ids`,
         [id]
       );
@@ -274,7 +290,7 @@ export async function DELETE(request: NextRequest) {
       let deactivatedUsers: string[] = [];
       if (strandedIds.length > 0) {
         const deact = await client.query<{ username: string }>(
-          `UPDATE team_users SET is_active = false WHERE id = ANY($1::uuid[]) RETURNING username`,
+          `UPDATE team_users SET is_active = false WHERE id::text = ANY($1::text[]) RETURNING username`,
           [strandedIds]
         );
         deactivatedUsers = deact.rows.map((r) => r.username);
