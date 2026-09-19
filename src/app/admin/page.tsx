@@ -33,6 +33,11 @@ interface Business {
 // A mailbox this panel answers from. The app password is write-only — it is
 // sent when connecting and never returned.
 interface PanelEmailAccount { id: string; email: string; created_at: string; }
+// The chat site behind a panel — one row, created the first time chat is used
+interface PanelChatSite {
+  id: string; widgetKey: string; aiEnabled: boolean;
+  systemPrompt: string | null; domain: string; conversations: number;
+}
 // What deleting a panel would destroy — Tracker rows plus the chat-support site
 interface PanelImpact {
   id: string; name: string; isDefault: boolean;
@@ -118,6 +123,12 @@ export default function AdminDashboard() {
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
   const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '', trackingDomain: '', primaryColor: '#4F46E5' });
   const [savingBrand, setSavingBrand] = useState(false);
+
+  // Chat widget settings for this panel
+  const [chatSite, setChatSite] = useState<PanelChatSite | null>(null);
+  const [promptDraft, setPromptDraft] = useState('');
+  const [savingChat, setSavingChat] = useState(false);
+  const [copiedSnippet, setCopiedSnippet] = useState(false);
 
   // Delete panel (Tracker + chat support)
   const [deletePanelTarget, setDeletePanelTarget] = useState<Business | null>(null);
@@ -572,6 +583,47 @@ export default function AdminDashboard() {
     } catch { showAlert('error', 'Could not disconnect that mailbox'); }
   };
 
+  /* ═══ CHAT WIDGET (per panel) ═══ */
+  const fetchChatSite = useCallback(async () => {
+    if (!token || !activePanelId) { setChatSite(null); setPromptDraft(''); return; }
+    try {
+      const res = await fetch(`/api/panel-chat?businessId=${activePanelId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setChatSite(data.site);
+        setPromptDraft(data.site?.systemPrompt || '');
+      }
+    } catch { /* leave the card as it was */ }
+  }, [token, activePanelId]);
+
+  useEffect(() => { fetchChatSite(); }, [fetchChatSite]);
+
+  const saveChatSettings = async (patch: Record<string, unknown>) => {
+    if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
+    setSavingChat(true);
+    try {
+      const res = await fetch('/api/panel-chat', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: activePanelId, ...patch }),
+      });
+      const data = await res.json();
+      if (res.ok) { showAlert('success', 'Chat settings saved'); fetchChatSite(); }
+      else showAlert('error', data.error || 'Could not save those settings');
+    } catch { showAlert('error', 'Could not save those settings'); }
+    finally { setSavingChat(false); }
+  };
+
+  // Existing storefront snippets point at the support subdomain, so new ones
+  // must match — otherwise the same widget would be served from two origins.
+  const widgetOrigin = process.env.NEXT_PUBLIC_WIDGET_ORIGIN
+    || (typeof window !== 'undefined' ? window.location.origin : '');
+  const embedSnippet = chatSite
+    ? `<script src="${widgetOrigin}/widget.js" data-site-key="${chatSite.widgetKey}" data-title="Chat with us" defer></script>`
+    : '';
+
   /* ═══ DELETE PANEL (Tracker + chat support) ═══ */
   const openDeletePanel = async (biz: Business) => {
     setDeletePanelTarget(biz);
@@ -872,14 +924,14 @@ export default function AdminDashboard() {
               {item.label}
             </button>
           ))}
-          {/* Support Inbox */}
+          {/* Chat Support — chat widget conversations and email in one inbox */}
           <button
             className="nav-btn"
-            onClick={() => router.push('/admin/support')}
+            onClick={() => router.push('/admin/chat')}
             style={{ borderTop: '1px solid var(--border)', marginTop: '0.25rem', paddingTop: '0.75rem' }}
           >
             <MessageCircle size={18} />
-            Support Inbox
+            Chat Support
           </button>
         </nav>
 
@@ -1777,6 +1829,123 @@ export default function AdminDashboard() {
                       <strong> Mail already in the inbox is left alone</strong> — answering starts with the
                       next email that arrives.
                     </p>
+                  </div>
+
+                  {/* ── Chat widget ── */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <MessageCircle size={16} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontWeight: 700 }}>Chat Widget</span>
+                      {chatSite && chatSite.conversations > 0 && (
+                        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)' }}>
+                          {chatSite.conversations.toLocaleString()} conversations so far
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+                      Paste this into the store&rsquo;s theme and customers get a chat bubble answered by
+                      the same AI that answers email. Conversations land in <strong>Chat Support</strong>.
+                    </p>
+
+                    {!chatSite && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', margin: 0 }}>
+                          Chat is not set up for this panel yet.
+                        </p>
+                        <button className="btn btn-primary btn-sm" disabled={savingChat}
+                          onClick={() => saveChatSettings({ aiEnabled: true })}>
+                          {savingChat
+                            ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Setting up…</>
+                            : <><Plus size={14} /> Set up chat</>}
+                        </button>
+                      </div>
+                    )}
+
+                    {chatSite && (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                          <button
+                            className="btn-icon"
+                            title={chatSite.aiEnabled ? 'AI is answering' : 'AI is off'}
+                            disabled={savingChat}
+                            onClick={() => saveChatSettings({ aiEnabled: !chatSite.aiEnabled })}
+                            style={{ color: chatSite.aiEnabled ? 'var(--success)' : 'var(--fg-muted)' }}
+                          >
+                            {chatSite.aiEnabled ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}
+                          </button>
+                          <div>
+                            <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>
+                              {chatSite.aiEnabled ? 'AI answers automatically' : 'AI is off — everything waits for a person'}
+                            </div>
+                            <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                              Refunds, cancellations and store policy are always held for a person either way.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label">Embed code — paste before &lt;/body&gt; in the Shopify theme</label>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                            <textarea
+                              className="form-input"
+                              readOnly
+                              rows={2}
+                              value={embedSnippet}
+                              onFocus={(e) => e.target.select()}
+                              style={{ flex: 1, height: 'auto', fontFamily: 'monospace', fontSize: '0.6875rem', resize: 'vertical' }}
+                            />
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => {
+                                navigator.clipboard.writeText(embedSnippet).then(
+                                  () => { setCopiedSnippet(true); setTimeout(() => setCopiedSnippet(false), 2000); },
+                                  () => showAlert('error', 'Could not copy — select the text instead')
+                                );
+                              }}
+                            >
+                              {copiedSnippet ? <><Check size={14} /> Copied</> : 'Copy'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label">Custom instructions (optional)</label>
+                          <textarea
+                            className="form-input"
+                            rows={3}
+                            placeholder="Leave blank to use the standard support prompt, which already refuses to invent policy, shipping times or stock."
+                            value={promptDraft}
+                            onChange={(e) => setPromptDraft(e.target.value)}
+                            style={{ height: 'auto', resize: 'vertical' }}
+                          />
+                          <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+                            This replaces the standard prompt entirely — anything you leave out, the AI no longer knows to avoid.
+                          </p>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                          <button
+                            className="btn btn-primary"
+                            disabled={savingChat || promptDraft === (chatSite.systemPrompt || '')}
+                            onClick={() => saveChatSettings({ systemPrompt: promptDraft })}
+                          >
+                            {savingChat
+                              ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</>
+                              : <><Check size={14} /> Save instructions</>}
+                          </button>
+                          <button
+                            className="btn btn-outline"
+                            disabled={savingChat}
+                            onClick={() => {
+                              if (!confirm('Generate a new key? The widget stops working on every store using the old embed code until they paste the new one.')) return;
+                              saveChatSettings({ regenerateKey: true });
+                            }}
+                          >
+                            Regenerate key
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                 </>

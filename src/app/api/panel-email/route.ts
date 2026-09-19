@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
+import { ensureSiteForPanel } from '@/lib/chat/site';
 import Imap from 'imap';
 
 // ── Email support for a panel ──────────────────────────────────
@@ -104,41 +105,6 @@ function checkMailbox(user: string, password: string): Promise<MailboxCheck> {
   });
 }
 
-// The chat site that carries this panel's mailboxes, created if missing.
-// tracker_business_id is text on the chat side and uuid on ours, so every
-// comparison here is made as text.
-async function ensureSiteId(businessId: string, mailboxForDomain: string): Promise<string> {
-  const existing = await queryOne<{ id: string }>(
-    `SELECT id FROM sites WHERE tracker_business_id::text = $1::text`,
-    [businessId]
-  );
-  if (existing) return existing.id;
-
-  const biz = await queryOne<{ name: string; shopify_domain: string | null }>(
-    `SELECT name, shopify_domain FROM businesses WHERE id = $1`,
-    [businessId]
-  );
-
-  // A panel with no Shopify store still needs something readable in the chat
-  // dashboard's site list, so fall back to the mailbox's own domain.
-  const domain =
-    biz?.shopify_domain ||
-    mailboxForDomain.split('@')[1] ||
-    'email-only';
-
-  // id and widget_key are generated here rather than leaning on the column
-  // defaults Prisma happens to have created on the chat-support tables.
-  const created = await queryOne<{ id: string }>(
-    `INSERT INTO sites (id, name, domain, widget_key, ai_enabled, tracker_business_id, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, $1, $2, gen_random_uuid()::text, true, $3::text, now(), now())
-     ON CONFLICT (tracker_business_id) DO UPDATE SET updated_at = now()
-     RETURNING id`,
-    [biz?.name || 'Panel', domain, businessId]
-  );
-
-  return created!.id;
-}
-
 // ── GET /api/panel-email?businessId= ───────────────────────────
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
@@ -232,7 +198,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: check.error }, { status: 400 });
     }
 
-    const siteId = await ensureSiteId(businessId, address);
+    const site = await ensureSiteForPanel(businessId, address);
 
     // last_uid is the mailbox as it stands right now, so answering begins with
     // the next email to arrive rather than the entire history.
@@ -240,7 +206,7 @@ export async function POST(request: NextRequest) {
       `INSERT INTO site_emails (id, site_id, email, app_password, last_uid, created_at)
        VALUES (gen_random_uuid()::text, $1, $2, $3, $4, now())
        RETURNING id, email, created_at`,
-      [siteId, address, secret, check.lastUid]
+      [site.id, address, secret, check.lastUid]
     );
 
     return NextResponse.json({ account });
