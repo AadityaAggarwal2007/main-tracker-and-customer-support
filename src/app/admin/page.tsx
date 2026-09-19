@@ -30,6 +30,9 @@ interface Business {
   is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null;
   is_shopify_connected: boolean; shopify_domain: string | null;
 }
+// A mailbox this panel answers from. The app password is write-only — it is
+// sent when connecting and never returned.
+interface PanelEmailAccount { id: string; email: string; created_at: string; }
 // What deleting a panel would destroy — Tracker rows plus the chat-support site
 interface PanelImpact {
   id: string; name: string; isDefault: boolean;
@@ -126,6 +129,12 @@ export default function AdminDashboard() {
   // Shopify connect
   const [shopifyForm, setShopifyForm] = useState({ domain: '', apiToken: '' });
   const [connectingShopify, setConnectingShopify] = useState(false);
+
+  // Email support — mailboxes the AI answers for this panel
+  const [panelEmails, setPanelEmails] = useState<PanelEmailAccount[]>([]);
+  const [loadingPanelEmails, setLoadingPanelEmails] = useState(false);
+  const [newPanelEmail, setNewPanelEmail] = useState({ email: '', appPassword: '' });
+  const [addingPanelEmail, setAddingPanelEmail] = useState(false);
 
 
   // Auto-Progression
@@ -508,6 +517,59 @@ export default function AdminDashboard() {
       if (res.ok) { showAlert('success', 'Shopify disconnected'); fetchBusinesses(); }
       else { showAlert('error', 'Disconnect failed'); }
     } catch { showAlert('error', 'Disconnect failed'); }
+  };
+
+  /* ═══ EMAIL SUPPORT (per panel) ═══ */
+  const fetchPanelEmails = useCallback(async () => {
+    if (!token || !activePanelId) { setPanelEmails([]); return; }
+    setLoadingPanelEmails(true);
+    try {
+      const res = await fetch(`/api/panel-email?businessId=${activePanelId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setPanelEmails(res.ok ? (data.accounts || []) : []);
+    } catch { setPanelEmails([]); }
+    finally { setLoadingPanelEmails(false); }
+  }, [token, activePanelId]);
+
+  useEffect(() => { fetchPanelEmails(); }, [fetchPanelEmails]);
+
+  const handleAddPanelEmail = async () => {
+    if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
+    setAddingPanelEmail(true);
+    try {
+      const res = await fetch('/api/panel-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          businessId: activePanelId,
+          email: newPanelEmail.email,
+          appPassword: newPanelEmail.appPassword,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('success', `${data.account.email} connected — incoming email will be answered`);
+        setNewPanelEmail({ email: '', appPassword: '' });
+        fetchPanelEmails();
+      } else {
+        showAlert('error', data.error || 'Could not connect that mailbox');
+      }
+    } catch { showAlert('error', 'Could not connect that mailbox'); }
+    finally { setAddingPanelEmail(false); }
+  };
+
+  const handleRemovePanelEmail = async (acc: PanelEmailAccount) => {
+    if (!confirm(`Stop answering email sent to ${acc.email}?`)) return;
+    try {
+      const res = await fetch(`/api/panel-email?businessId=${activePanelId}&id=${acc.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) { showAlert('success', `${acc.email} disconnected`); fetchPanelEmails(); }
+      else showAlert('error', 'Could not disconnect that mailbox');
+    } catch { showAlert('error', 'Could not disconnect that mailbox'); }
   };
 
   /* ═══ DELETE PANEL (Tracker + chat support) ═══ */
@@ -1619,6 +1681,103 @@ export default function AdminDashboard() {
                     </p>
                   </div>
 
+                  {/* ── Email Support ── */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <Mail size={16} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontWeight: 700 }}>Email Support</span>
+                      <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontSize: '0.625rem', padding: '0.125rem 0.375rem', borderRadius: 4 }}>
+                        Answered by AI
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+                      Connect the mailbox customers write to. Every incoming email is read and answered
+                      the same way the chat is — order status and tracking go out on their own, and
+                      anything about refunds, cancellations or store policy is held for a person instead.
+                      This works whether or not the panel is connected to Shopify.
+                    </p>
+
+                    {/* Connected mailboxes */}
+                    {panelEmails.length > 0 && (
+                      <div style={{ display: 'grid', gap: '0.5rem', marginBottom: '1rem' }}>
+                        {panelEmails.map(acc => (
+                          <div key={acc.id} style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.5rem',
+                          }}>
+                            <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>
+                            <span style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{acc.email}</span>
+                            <button
+                              className="btn-icon"
+                              style={{ marginLeft: 'auto', color: 'var(--danger)' }}
+                              title={`Disconnect ${acc.email}`}
+                              onClick={() => handleRemovePanelEmail(acc)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {panelEmails.length === 0 && !loadingPanelEmails && (
+                      <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', marginBottom: '1rem' }}>
+                        No mailbox connected yet — email to this panel is not being answered.
+                      </p>
+                    )}
+
+                    {/* How to get an app password */}
+                    <div style={{ background: 'var(--primary-light)', borderRadius: '0.5rem', padding: '0.75rem', marginBottom: '1rem' }}>
+                      <p style={{ fontSize: '0.6875rem', fontWeight: 700, marginBottom: '0.375rem' }}>
+                        Gmail needs an App Password — your normal password will not work
+                      </p>
+                      <ol style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', paddingLeft: '1rem', lineHeight: 1.7, margin: 0 }}>
+                        <li>Turn on 2-Step Verification for that Google account</li>
+                        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)' }}>myaccount.google.com/apppasswords</a></li>
+                        <li>Create one named e.g. &ldquo;ShipTrack&rdquo; and copy the 16 characters</li>
+                        <li>Paste it below — spaces are fine</li>
+                      </ol>
+                    </div>
+
+                    {/* Add form */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.5rem', alignItems: 'end' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Email address</label>
+                        <input
+                          className="form-input"
+                          type="email"
+                          placeholder="support@yourstore.com"
+                          value={newPanelEmail.email}
+                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, email: e.target.value })}
+                        />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">App password</label>
+                        <input
+                          className="form-input"
+                          type="password"
+                          placeholder="abcd efgh ijkl mnop"
+                          value={newPanelEmail.appPassword}
+                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, appPassword: e.target.value })}
+                        />
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        disabled={addingPanelEmail || !newPanelEmail.email.trim() || !newPanelEmail.appPassword.trim()}
+                        onClick={handleAddPanelEmail}
+                      >
+                        {addingPanelEmail
+                          ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Checking…</>
+                          : <><Plus size={14} /> Connect</>}
+                      </button>
+                    </div>
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
+                      We sign in once to check the password before saving it. Replies are sent from this
+                      same address, and the conversations appear in the chat dashboard inbox.
+                      <strong> Mail already in the inbox is left alone</strong> — answering starts with the
+                      next email that arrives.
+                    </p>
+                  </div>
 
                 </>
               )}
