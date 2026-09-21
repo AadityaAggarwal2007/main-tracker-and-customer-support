@@ -36,6 +36,16 @@
   function generateId() { return 'v_' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+  // Escape first, then wrap bare URLs in real anchors. The URL match stops
+  // before any trailing punctuation, so a full stop written straight after a
+  // tracking link stays outside the href and the link still opens.
+  function linkify(s) {
+    return escapeHtml(s).replace(
+      /(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+  }
+
   var css = [
     // Wrapped in :where() so the reset carries zero specificity. As `#_cw_root *`
     // it scored (1,0,0) and beat every `._cw_class` rule below, silently zeroing
@@ -401,7 +411,7 @@
 
     div.innerHTML =
       (sameSender ? '' : '<div class="_cw_label">' + label + '</div>') +
-      '<div class="_cw_bubble">' + escapeHtml(msg.content) + '</div>' +
+      '<div class="_cw_bubble">' + linkify(msg.content) + '</div>' +
       '<div class="_cw_time">' + formatTime(msg.createdAt) + '</div>';
     messagesEl.insertBefore(div, typingEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;

@@ -15,6 +15,15 @@ export function buildEmailHtml(text: string, storeName: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    // Wrap bare URLs in real anchors. Mail clients auto-link plain text by
+    // guessing where the URL ends, and a full stop written straight after a
+    // tracking link was being swallowed into the href — which made the link
+    // unopenable. The URL match deliberately stops before any trailing
+    // punctuation, so the sentence keeps its full stop and the link still works.
+    .replace(
+      /(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/g,
+      '<a href="$1" style="color:#2563eb;word-break:break-all;">$1</a>'
+    )
     .replace(/\n/g, '<br>');
 
   return `<!DOCTYPE html>
