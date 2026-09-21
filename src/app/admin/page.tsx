@@ -128,6 +128,11 @@ export default function AdminDashboard() {
   const [chatSite, setChatSite] = useState<PanelChatSite | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [savingChat, setSavingChat] = useState(false);
+  // Conversations parked for a person. Polled for the sidebar badge: an
+  // escalated EMAIL reply is never auto-sent, so this queue going unwatched
+  // means those customers sit in silence.
+  const [humanNeeded, setHumanNeeded] = useState(0);
+  const [emailWaiting, setEmailWaiting] = useState(0);
   const [copiedSnippet, setCopiedSnippet] = useState(false);
 
   // Delete panel (Tracker + chat support)
@@ -284,6 +289,26 @@ export default function AdminDashboard() {
   useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); fetchProgressionSteps(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats, fetchProgressionSteps]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
   useEffect(() => { if (activeTab === 'team') fetchTeamUsers(); }, [activeTab, fetchTeamUsers]);
+
+  // Sidebar badge: refresh on load, on panel switch, and every 30s.
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    const load = async () => {
+      try {
+        const qs = activePanelId ? `?businessId=${activePanelId}` : '';
+        const r = await fetch(`/api/chat/pending${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!alive) return;
+        setHumanNeeded(d.humanNeeded || 0);
+        setEmailWaiting(d.emailWaiting || 0);
+      } catch { /* badge is advisory; a failed poll just leaves the last count */ }
+    };
+    load();
+    const t = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(t); };
+  }, [token, activePanelId]);
   useEffect(() => { if (activeTab === 'settings') fetchProgressionSteps(); }, [activeTab, fetchProgressionSteps]);
   useEffect(() => { fetchEmailedOrders(); }, [fetchEmailedOrders]);
   // Auto-refresh email stats every 30 seconds
@@ -931,7 +956,24 @@ export default function AdminDashboard() {
             style={{ borderTop: '1px solid var(--border)', marginTop: '0.25rem', paddingTop: '0.75rem' }}
           >
             <MessageCircle size={18} />
-            Chat Support
+            <span style={{ flex: 1, textAlign: 'left' }}>Chat Support</span>
+            {humanNeeded > 0 && (
+              <span
+                title={
+                  emailWaiting > 0
+                    ? `${humanNeeded} waiting for a person — ${emailWaiting} by email, and those customers get no reply until you answer`
+                    : `${humanNeeded} waiting for a person`
+                }
+                style={{
+                  minWidth: 20, height: 20, padding: '0 6px', borderRadius: 9999,
+                  background: 'var(--danger, #ef4444)', color: '#fff',
+                  fontSize: '0.6875rem', fontWeight: 700,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                {humanNeeded}
+              </span>
+            )}
           </button>
         </nav>
 
