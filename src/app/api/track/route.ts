@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
+import { buildJourney, JourneyOrder } from '@/lib/journey';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
          o.order_id, o.customer_name, o.tracking_status, o.tracking_id,
          o.courier_partner, o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
-         o.state, o.pincode, o.created_at, o.business_id,
+         o.state, o.pincode, o.created_at, o.business_id, o.delivered_at,
          COALESCE(
            json_agg(
              json_build_object('id', oi.id, 'product_name', oi.product_name,
@@ -68,7 +69,9 @@ export async function GET(request: NextRequest) {
       [order.order_id]
     );
 
-    const res = NextResponse.json({ order, business, history: history.rows });
+    const journey = buildJourney(order as unknown as JourneyOrder);
+
+    const res = NextResponse.json({ order, business, history: history.rows, journey });
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     return res;
   }
@@ -82,7 +85,7 @@ export async function GET(request: NextRequest) {
          o.order_id, o.customer_name, o.tracking_status, o.tracking_id,
          o.courier_partner, o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
-         o.state, o.pincode, o.created_at, o.customer_mobile, o.business_id,
+         o.state, o.pincode, o.created_at, o.customer_mobile, o.business_id, o.delivered_at,
          COALESCE(
            json_agg(
              json_build_object('id', oi.id, 'product_name', oi.product_name,
@@ -120,7 +123,9 @@ export async function GET(request: NextRequest) {
       [order.order_id]
     );
 
-    const res = NextResponse.json({ order: safeOrder, business, history: history.rows });
+    const journey = buildJourney(order as unknown as JourneyOrder);
+
+    const res = NextResponse.json({ order: safeOrder, business, history: history.rows, journey });
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     return res;
   }

@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { cleanCSVData, CleanedOrder } from '@/lib/csv-cleaner';
 import { query, queryOne } from '@/lib/db';
 import { generateTrackingEmail } from '@/lib/email-templates';
+import { JOURNEY, expectedIndexForAge, AUTO_DELIVER_DAY } from '@/lib/journey';
 import Papa from 'papaparse';
 import crypto from 'crypto';
 
@@ -123,43 +124,30 @@ export async function POST(request: NextRequest) {
       return forcedBusinessId; // Always use the panel selected by user
     };
 
-    // ═══ FETCH PROGRESSION SETTINGS ═══
-    const progResult = await query<{
-      step_from: string; step_to: string; delay_minutes: number; step_order: number; is_enabled: boolean;
-    }>(`SELECT step_from, step_to, delay_minutes, step_order, is_enabled FROM progression_settings ORDER BY step_order ASC`);
-    const progSteps = progResult.rows;
-
-    // Total minutes from Order Placed → Delivered (the full pipeline)
-    const totalDeliveryMinutes = progSteps
-      .filter(s => s.is_enabled)
-      .reduce((sum, s) => sum + s.delay_minutes, 0);
+    // ═══ 12-DAY JOURNEY ENGINE (src/lib/journey.ts) — single source of truth ═══
+    // Initial stage is derived purely from the order's own date, so an order
+    // placed on the 17th is already at the correct stage the moment it lands,
+    // and the progress-orders cron carries it forward from there.
+    const DAY_MS_UP = 24 * 60 * 60 * 1000;
 
     function calcStatusFromDate(createdAtStr: string, isCancelled: boolean): { status: string; enteredAt: Date | null } {
       if (isCancelled) return { status: 'Cancelled', enteredAt: null };
-      if (!createdAtStr || progSteps.length === 0) return { status: 'Order Placed', enteredAt: null };
+      if (!createdAtStr) return { status: 'Order Placed', enteredAt: null };
       const createdAt = new Date(createdAtStr);
       if (isNaN(createdAt.getTime())) return { status: 'Order Placed', enteredAt: null };
-      const minutesElapsed = (Date.now() - createdAt.getTime()) / 60000;
-      let accumulated = 0;
-      let currentStatus = 'Order Placed';
-      let statusEnteredAt = createdAt;
-      for (const step of progSteps) {
-        if (!step.is_enabled) continue;
-        accumulated += step.delay_minutes;
-        if (minutesElapsed >= accumulated) {
-          currentStatus = step.step_to;
-          statusEnteredAt = new Date(createdAt.getTime() + accumulated * 60000);
-        } else { break; }
-      }
-      return { status: currentStatus, enteredAt: statusEnteredAt };
+      const ageDays = Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / DAY_MS_UP));
+      const idx = expectedIndexForAge(ageDays);
+      const def = JOURNEY[idx];
+      const enteredAt = new Date(createdAt.getTime() + def.startDay * DAY_MS_UP);
+      return { status: def.status, enteredAt };
     }
 
-    // Calculate estimated delivery date from order creation date
+    // Estimated delivery = the standard 12-day window end (day 13).
     function calcEstimatedDelivery(createdAtStr: string): string | null {
-      if (!createdAtStr || totalDeliveryMinutes === 0) return null;
+      if (!createdAtStr) return null;
       const createdAt = new Date(createdAtStr);
       if (isNaN(createdAt.getTime())) return null;
-      return new Date(createdAt.getTime() + totalDeliveryMinutes * 60000).toISOString();
+      return new Date(createdAt.getTime() + AUTO_DELIVER_DAY * DAY_MS_UP).toISOString();
     }
 
     // ═══ STEP 1: Batch-check existing orders — SCOPED TO THIS PANEL ═══

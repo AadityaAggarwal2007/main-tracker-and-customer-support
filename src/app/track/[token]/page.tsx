@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Package, Loader2, AlertCircle, ArrowLeft, MapPin, Truck, ClipboardCheck, PackageCheck, CheckCircle } from 'lucide-react';
+import { Package, Loader2, AlertCircle, ArrowLeft, Truck } from 'lucide-react';
+import { JourneyStepper, JourneyNoticeBanner, JourneyEta, JourneyActivity, Journey } from '@/components/JourneyView';
 
 interface OrderItem { brand: string; product_name: string; quantity: number; price: number; }
 interface TrackingOrder {
@@ -29,63 +30,11 @@ const getStatusColor = (status: string, isCancelled: boolean) => {
   return '#F97316';
 };
 
-const getSteps = (status: string) => {
-  const baseSteps = [
-    { label: 'Order\nBooked', key: 'booked', Icon: ClipboardCheck },
-    { label: 'Pickup\nCompleted', key: 'pickup', Icon: PackageCheck },
-    { label: 'In-Transit', key: 'transit', Icon: Truck },
-    { label: 'Out For\nDelivery', key: 'out', Icon: MapPin },
-  ];
-
-  const s = status.toLowerCase();
-  if (s.includes('undelivered') || s.includes('failed')) {
-    return [
-      ...baseSteps,
-      { label: 'Undelivered', key: 'undelivered', Icon: AlertCircle },
-      { label: 'Delivered', key: 'delivered', Icon: CheckCircle },
-    ];
-  } else if (s.includes('rto')) {
-    return [
-      ...baseSteps,
-      { label: 'RTO In Transit', key: 'rto', Icon: AlertCircle },
-      { label: 'Returned', key: 'returned', Icon: Package },
-    ];
-  } else {
-    return [
-      ...baseSteps,
-      { label: 'Delivered', key: 'delivered', Icon: CheckCircle },
-    ];
-  }
-};
-
-const getStepIndex = (status: string, steps: any[]) => {
-  const s = status.toLowerCase();
-  if (s === 'order placed' || s === 'processing') return 0;
-  if (s === 'packed' || s === 'shipped') return 1;
-  if (s === 'in transit') return 2;
-  if (s === 'out for delivery') return 3;
-  
-  if (s.includes('undelivered') || s.includes('failed')) {
-    return steps.findIndex(x => x.key === 'undelivered');
-  }
-  if (s.includes('rto')) {
-    return steps.findIndex(x => x.key === 'rto');
-  }
-  if (s === 'returned') {
-    return steps.findIndex(x => x.key === 'returned');
-  }
-  if (s === 'delivered') {
-    return steps.findIndex(x => x.key === 'delivered');
-  }
-  
-  return -1;
-};
-
 export default function TrackingTokenPage({ params }: { params: { token: string } }) {
   const { token } = params;
   const [order, setOrder] = useState<TrackingOrder | null>(null);
   const [business, setBusiness] = useState<Business | null>(null);
-  const [history, setHistory] = useState<TrackingHistory[]>([]);
+  const [journey, setJourney] = useState<Journey | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -95,7 +44,7 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
         const r = await fetch(`/api/track?token=${token}`);
         const d = await r.json();
         if (!r.ok) setError(d.error || 'Order not found');
-        else { setOrder(d.order); setBusiness(d.business || null); setHistory(d.history || []); }
+        else { setOrder(d.order); setBusiness(d.business || null); setJourney(d.journey || null); }
       } catch { setError('Something went wrong'); }
       finally { setLoading(false); }
     })();
@@ -108,19 +57,13 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
     return u.includes('drive.google.com') ? u.replace(/\/file\/d\/([^/]+).*/, '/uc?export=view&id=$1') : u;
   })();
 
-  const displayStatus = order ? getDisplayStatus(order.tracking_status, order.is_cancelled) : '';
-  const statusColor = order ? getStatusColor(order.tracking_status, order.is_cancelled) : '#F97316';
-
-  const fmt = (iso: string) => {
-    const d = new Date(iso);
-    return {
-      date: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-      time: d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }),
-    };
-  };
-
-  const steps = order ? getSteps(order.tracking_status) : [];
-  const currentStepIndex = order ? getStepIndex(order.tracking_status, steps) : -1;
+  const displayStatus = journey ? journey.currentLabel : (order ? getDisplayStatus(order.tracking_status, order.is_cancelled) : '');
+  const statusColor = (() => {
+    if (order?.is_cancelled || journey?.mode === 'cancelled') return '#EF4444';
+    if (journey?.delivered) return '#10B981';
+    if (journey?.notice?.level === 'warn' || journey?.mode === 'failed' || journey?.mode === 'rto') return '#F97316';
+    return order ? getStatusColor(order.tracking_status, order.is_cancelled) : '#F97316';
+  })();
 
   if (loading) {
     return (
@@ -196,7 +139,14 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
 
       {/* ── BODY ── */}
       <main style={{ maxWidth: '1200px', width: '100%', margin: '0 auto', padding: '24px 16px', flex: 1, boxSizing: 'border-box' }}>
-        
+
+        {/* ── HONEST STATUS BANNER ── */}
+        {journey?.notice && (
+          <div style={{ marginBottom: '16px' }}>
+            <JourneyNoticeBanner journey={journey} />
+          </div>
+        )}
+
         {/* ── TWO-COLUMN GRID ── */}
         <div className="tracking-dashboard-grid">
 
@@ -209,15 +159,8 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
               <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: statusColor }}>{displayStatus}</p>
             </div>
 
-            {/* Estimated Delivery */}
-            {order.estimated_delivery && (
-              <div className="st-card">
-                <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Estimated Delivery by</p>
-                <p style={{ margin: 0, fontSize: '22px', fontWeight: 800, color: '#0F172A' }}>
-                  {new Date(order.estimated_delivery).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })}
-                </p>
-              </div>
-            )}
+            {/* Estimated / Expected Delivery */}
+            {journey && <JourneyEta journey={journey} />}
 
             {/* Order Details */}
             <div className="st-card">
@@ -282,120 +225,19 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
 
             {/* Timeline */}
             <div style={{ flex: 1, overflowY: 'auto', maxHeight: '350px', paddingRight: '4px' }}>
-              {history.length > 0 ? history.map((h, i) => {
-                const { date, time } = fmt(h.created_at);
-                const isLast = i === history.length - 1;
-                return (
-                  <div key={i} style={{ display: 'flex', gap: '14px' }}>
-                    {/* Date/time */}
-                    <div style={{ width: '70px', flexShrink: 0, textAlign: 'right', paddingTop: '2px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>{date}</div>
-                      <div style={{ fontSize: '12px', color: '#64748B', marginTop: '1px' }}>{time}</div>
-                    </div>
-                    {/* Dot + line */}
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
-                      <div style={{
-                        width: '10px', height: '10px', borderRadius: '50%',
-                        background: isLast ? '#22C55E' : '#1E293B',
-                        marginTop: '6px', zIndex: 10,
-                        boxShadow: isLast ? '0 0 0 3px rgba(34, 197, 94, 0.2)' : 'none'
-                      }} />
-                      {!isLast && <div style={{ width: '2px', flex: 1, background: '#E2E8F0', minHeight: '36px', margin: '4px 0' }} />}
-                    </div>
-                    {/* Activity */}
-                    <div style={{ paddingBottom: '20px', flex: 1 }}>
-                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#1E293B', lineHeight: 1.4 }}>
-                        Activity: {h.status}
-                      </div>
-                      {h.notes && h.notes.trim() && !h.notes.startsWith('Status updated') && !h.notes.startsWith('CSV import') && (
-                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
-                          Location: {h.notes}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              }) : (
-                <p style={{ fontSize: '14px', color: '#94A3B8', margin: 0 }}>No activity yet — updates will appear here.</p>
-              )}
+              {journey
+                ? <JourneyActivity journey={journey} />
+                : <p style={{ fontSize: '14px', color: '#94A3B8', margin: 0 }}>No activity yet — updates will appear here.</p>}
             </div>
           </div>
         </div>
 
-        {/* ── STEPPER ── */}
-        <div className="st-card" style={{ marginTop: '16px', padding: '32px 24px' }}>
-          {/* Desktop Stepper */}
-          <div className="st-stepper-desktop">
-            <div className="st-stepper-desktop-container">
-              {steps.map((step, idx) => {
-                const isCompleted = idx < currentStepIndex;
-                const isCurrent = idx === currentStepIndex;
-                const isActive = isCompleted || isCurrent;
-                const Icon = step.Icon;
-                
-                return (
-                  <div key={idx} className={`st-stepper-step ${isCompleted ? 'completed' : ''}`}>
-                    <div style={{
-                      width: '52px', height: '52px', borderRadius: '50%',
-                      background: '#FFFFFF',
-                      border: `2px solid ${isActive ? '#1E293B' : '#CBD5E1'}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
-                      color: isActive ? '#F97316' : '#94A3B8',
-                      zIndex: 10
-                    }}>
-                      <Icon size={22} strokeWidth={1.75} />
-                    </div>
-                    <div style={{
-                      fontSize: '13px', marginTop: '10px', textAlign: 'center',
-                      fontWeight: isActive ? 600 : 500,
-                      color: isActive ? '#1E293B' : '#94A3B8',
-                      lineHeight: 1.4, whiteSpace: 'pre-line'
-                    }}>{step.label}</div>
-                  </div>
-                );
-              })}
-            </div>
+        {/* ── JOURNEY STEPPER ── */}
+        {journey && journey.mode === 'normal' && (
+          <div style={{ marginTop: '16px' }}>
+            <JourneyStepper journey={journey} />
           </div>
-
-          {/* Mobile Stepper */}
-          <div className="st-stepper-mobile">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-              {steps.map((step, idx) => {
-                const isCompleted = idx < currentStepIndex;
-                const isCurrent = idx === currentStepIndex;
-                const isActive = isCompleted || isCurrent;
-                const Icon = step.Icon;
-                
-                return (
-                  <div key={idx} className={`st-stepper-mobile-step ${isCompleted ? 'completed' : ''}`}>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
-                      <div style={{
-                        width: '44px', height: '44px', borderRadius: '50%',
-                        background: '#FFFFFF',
-                        border: `2px solid ${isActive ? '#1E293B' : '#CBD5E1'}`,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
-                        color: isActive ? '#F97316' : '#94A3B8',
-                        zIndex: 10
-                      }}>
-                        <Icon size={18} strokeWidth={1.75} />
-                      </div>
-                    </div>
-                    <div style={{ paddingTop: '10px' }}>
-                      <span style={{
-                        fontSize: '14px',
-                        fontWeight: isActive ? 600 : 500,
-                        color: isActive ? '#1E293B' : '#94A3B8',
-                        whiteSpace: 'pre-line'
-                      }}>{step.label.replace('\n', ' ')}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Home search button */}
         <div style={{ textAlign: 'center', marginTop: '24px' }}>

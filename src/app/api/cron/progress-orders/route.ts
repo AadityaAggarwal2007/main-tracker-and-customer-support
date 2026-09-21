@@ -1,17 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query, queryOne } from '@/lib/db';
+import { query } from '@/lib/db';
+import {
+  JOURNEY,
+  DELIVERED_INDEX,
+  AUTO_DELIVER_DAY,
+  expectedIndexForAge,
+  statusToIndex,
+} from '@/lib/journey';
 
 export const dynamic = 'force-dynamic';
 
-// ═══════════════════════════════════════════════
-// CRON: Auto-Progress Orders
-// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// CRON: Advance orders along the 12-day journey (deterministic — NO AI)
+// ═══════════════════════════════════════════════════════════════════════
 // Called every minute by Linux cron (on VPS).
-// Finds orders whose current stage timer has expired
-// and advances them to the next stage.
-// ═══════════════════════════════════════════════
+//
+// The 12-day expected journey (src/lib/journey.ts) is the single source of
+// truth: each order's stage is derived purely from how many days have passed
+// since it was placed. We never invent a courier scan — the intermediate
+// stages are the honest EXPECTED framework, surfaced as such on the track
+// page. Delivered is auto-marked on day 13 (business rule) with delivered_at
+// left NULL, so the UI can still distinguish it from a team-confirmed
+// delivery.
+//
+// Only ever advances FORWARD, never regresses, and never touches cancelled /
+// RTO / failed / manually-set special states.
+// ═══════════════════════════════════════════════════════════════════════
 
 const CRON_SECRET = process.env.DRAFT_QUEUE_SECRET || '';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+interface Candidate {
+  order_id: string;
+  tracking_status: string;
+  created_at: string;
+}
 
 export async function GET(request: NextRequest) {
   const key = request.nextUrl.searchParams.get('key') || '';
@@ -20,58 +43,65 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1. Fetch all enabled progression steps
-    const stepsResult = await query(
-      `SELECT * FROM progression_settings WHERE is_enabled = true ORDER BY step_order ASC`
+    // Pull every order still on its journey. Delivered / cancelled are terminal.
+    const result = await query<Candidate>(
+      `SELECT order_id, tracking_status, created_at
+         FROM orders
+        WHERE is_cancelled = false
+          AND COALESCE(tracking_status, '') <> 'Delivered'
+        LIMIT 2000`
     );
 
-    const steps = stepsResult.rows;
-    if (steps.length === 0) {
-      return NextResponse.json({ message: 'No progression steps enabled', progressed: 0 });
+    const now = Date.now();
+    // Bucket order_ids by the canonical status they should advance TO.
+    const buckets = new Map<string, string[]>();
+
+    for (const o of result.rows) {
+      const currentIndex = statusToIndex(o.tracking_status);
+      // Skip special / unknown states (Stuck, RTO, Delivery Failed, etc.) —
+      // those are handled by the team, not the schedule.
+      if (currentIndex === null) continue;
+
+      const created = new Date(o.created_at).getTime();
+      if (Number.isNaN(created)) continue;
+      const ageDays = Math.max(0, Math.floor((now - created) / DAY_MS));
+
+      const targetIndex = expectedIndexForAge(ageDays); // includes Delivered at day 13
+      if (targetIndex <= currentIndex) continue; // only move forward
+
+      const targetStatus = JOURNEY[targetIndex].status;
+      if (!buckets.has(targetStatus)) buckets.set(targetStatus, []);
+      buckets.get(targetStatus)!.push(o.order_id);
     }
 
     let totalProgressed = 0;
 
-    // 2. For each step, batch-progress ready orders in ONE query (much faster)
-    for (const step of steps) {
-      const cutoffTime = new Date(Date.now() - step.delay_minutes * 60 * 1000).toISOString();
+    for (const [targetStatus, orderIds] of buckets) {
+      if (orderIds.length === 0) continue;
+      const targetIndex = JOURNEY.findIndex((s) => s.status === targetStatus);
+      const isDelivered = targetIndex === DELIVERED_INDEX;
 
-      // Get IDs of orders ready to progress
-      const readyResult = await query<{ order_id: string }>(
-        `SELECT order_id FROM orders
-         WHERE tracking_status = $1
-           AND is_cancelled = false
-           AND status_updated_at <= $2
-         LIMIT 100`,
-        [step.step_from, cutoffTime]
-      );
-
-      const readyOrders = readyResult.rows;
-      if (readyOrders.length === 0) continue;
-
-      const orderIds = readyOrders.map(o => o.order_id);
-
-      // 3. Batch-update all ready orders at once (single SQL statement)
+      // Advance the orders. Auto-delivery deliberately leaves delivered_at
+      // NULL — that column is reserved for a verified team confirmation.
       await query(
         `UPDATE orders
-         SET tracking_status = $1, status_updated_at = NOW()
-         WHERE order_id = ANY($2::text[])`,
-        [step.step_to, orderIds]
+            SET tracking_status = $1, status_updated_at = NOW(), updated_at = NOW()
+          WHERE order_id = ANY($2::text[])`,
+        [targetStatus, orderIds]
       );
 
-      // 4. Batch-insert tracking history (single INSERT with multiple rows)
-      const valuePlaceholders = orderIds.map(
-        (_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`
-      ).join(', ');
+      // Honest history note — never phrased as a confirmed courier scan.
+      const note = isDelivered
+        ? `Auto-completed on day ${AUTO_DELIVER_DAY} of the expected journey (not a verified courier confirmation).`
+        : `Expected journey advanced to "${targetStatus}". No verified courier scan — framework stage.`;
+      const changedBy = 'journey-engine';
 
+      const valuePlaceholders = orderIds
+        .map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`)
+        .join(', ');
       const historyParams: unknown[] = [];
-      orderIds.forEach(orderId => {
-        historyParams.push(
-          orderId,
-          step.step_to,
-          'auto-progression',
-          `Auto-progressed from "${step.step_from}" after ${step.delay_minutes} minutes`
-        );
+      orderIds.forEach((orderId) => {
+        historyParams.push(orderId, targetStatus, changedBy, note);
       });
 
       await query(
@@ -89,6 +119,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     console.error('Progress orders cron error:', err);
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Cron failed', detail: String(err) }, { status: 500 });
   }
 }

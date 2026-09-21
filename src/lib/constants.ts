@@ -1,15 +1,21 @@
+// Canonical 12-day journey stages (see src/lib/journey.ts).
 export const TRACKING_STAGES = [
   'Order Placed',
   'Processing',
   'Packed',
   'Shipped',
   'In Transit',
+  'Reached State',
+  'Reached City',
+  'Local Hub',
   'Out for Delivery',
   'Delivered',
 ] as const;
 
 export const TRACKING_STAGES_WITH_SPECIAL = [
   ...TRACKING_STAGES,
+  'Delivery Failed',
+  'Stuck',
   'Cancelled',
   'RTO',
 ] as const;
@@ -22,8 +28,13 @@ export const STAGE_COLORS: Record<string, string> = {
   'Packed': '#a855f7',
   'Shipped': '#3b82f6',
   'In Transit': '#0ea5e9',
+  'Reached State': '#06b6d4',
+  'Reached City': '#14b8a6',
+  'Local Hub': '#10b981',
   'Out for Delivery': '#f59e0b',
   'Delivered': '#22c55e',
+  'Delivery Failed': '#ef4444',
+  'Stuck': '#eab308',
   'Cancelled': '#ef4444',
   'RTO': '#f97316',
 };
@@ -33,9 +44,14 @@ export const STAGE_ICONS: Record<string, string> = {
   'Processing': '⚙️',
   'Packed': '📦',
   'Shipped': '🚚',
-  'In Transit': '✈️',
+  'In Transit': '🛣️',
+  'Reached State': '📍',
+  'Reached City': '📍',
+  'Local Hub': '🏢',
   'Out for Delivery': '🏍️',
   'Delivered': '✅',
+  'Delivery Failed': '⚠️',
+  'Stuck': '⏳',
   'Cancelled': '❌',
   'RTO': '↩️',
 };
@@ -57,8 +73,13 @@ export function getStatusColorClass(status: string): string {
     'Packed': 'status-pill-packed',
     'Shipped': 'status-pill-shipped',
     'In Transit': 'status-pill-transit',
+    'Reached State': 'status-pill-transit',
+    'Reached City': 'status-pill-transit',
+    'Local Hub': 'status-pill-transit',
     'Out for Delivery': 'status-pill-out',
     'Delivered': 'status-pill-delivered',
+    'Delivery Failed': 'status-pill-cancelled',
+    'Stuck': 'status-pill-rto',
     'Cancelled': 'status-pill-cancelled',
     'RTO': 'status-pill-rto',
   };
