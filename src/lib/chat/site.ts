@@ -14,11 +14,12 @@ export interface PanelSite {
   ai_enabled: boolean;
   system_prompt: string | null;
   tracker_business_id: string | null;
+  cod_available: boolean | null;
 }
 
 export async function siteForPanel(businessId: string): Promise<PanelSite | null> {
   return queryOne<PanelSite>(
-    `SELECT id, name, domain, widget_key, ai_enabled, system_prompt, tracker_business_id
+    `SELECT id, name, domain, widget_key, ai_enabled, system_prompt, tracker_business_id, cod_available
        FROM sites WHERE tracker_business_id::text = $1::text`,
     [businessId]
   );

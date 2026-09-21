@@ -36,7 +36,7 @@ interface PanelEmailAccount { id: string; email: string; created_at: string; }
 // The chat site behind a panel — one row, created the first time chat is used
 interface PanelChatSite {
   id: string; widgetKey: string; aiEnabled: boolean;
-  systemPrompt: string | null; domain: string; conversations: number;
+  systemPrompt: string | null; codAvailable: boolean | null; domain: string; conversations: number;
 }
 // What deleting a panel would destroy — Tracker rows plus the chat-support site
 interface PanelImpact {
@@ -1880,6 +1880,35 @@ export default function AdminDashboard() {
                             <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
                               Refunds, cancellations and store policy are always held for a person either way.
                             </div>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label">Cash on Delivery</label>
+                          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+                            Customers ask this constantly and the answer differs per store. Until you pick one,
+                            the agent will not answer COD questions at all — it offers to have the team confirm instead.
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            {([
+                              { v: true,  label: 'COD available' },
+                              { v: false, label: 'No COD' },
+                              { v: null,  label: "Don't answer" },
+                            ] as { v: boolean | null; label: string }[]).map((opt) => (
+                              <button
+                                key={String(opt.v)}
+                                className="btn btn-sm"
+                                disabled={savingChat}
+                                onClick={() => saveChatSettings({ codAvailable: opt.v })}
+                                style={{
+                                  background: chatSite.codAvailable === opt.v ? 'var(--accent)' : 'transparent',
+                                  color: chatSite.codAvailable === opt.v ? '#fff' : 'var(--fg-muted)',
+                                  border: '1px solid var(--border)',
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
                           </div>
                         </div>
 

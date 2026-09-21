@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
       widgetKey: site.widget_key,
       aiEnabled: site.ai_enabled,
       systemPrompt: site.system_prompt,
+      codAvailable: site.cod_available,
       domain: site.domain,
       conversations: Number(counts?.conversations ?? 0),
     },
@@ -52,7 +53,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const { businessId, aiEnabled, systemPrompt, regenerateKey } = await request.json();
+    const { businessId, aiEnabled, systemPrompt, codAvailable, regenerateKey } = await request.json();
     if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
 
     const biz = await queryOne<{ id: string }>(`SELECT id FROM businesses WHERE id = $1`, [businessId]);
@@ -65,6 +66,12 @@ export async function PATCH(request: NextRequest) {
     let pi = 1;
 
     if (aiEnabled !== undefined) { sets.push(`ai_enabled = $${pi++}`); params.push(Boolean(aiEnabled)); }
+    // Tri-state: null means "not configured", so the agent stays silent on COD
+    // rather than guessing. Only true/false are an actual answer.
+    if (codAvailable !== undefined) {
+      sets.push(`cod_available = $${pi++}`);
+      params.push(codAvailable === null ? null : Boolean(codAvailable));
+    }
     if (systemPrompt !== undefined) {
       // An empty box means "use the default prompt", not "answer with nothing".
       sets.push(`system_prompt = $${pi++}`);
@@ -79,9 +86,9 @@ export async function PATCH(request: NextRequest) {
     sets.push(`updated_at = now()`);
     params.push(site.id);
 
-    const updated = await queryOne<{ widget_key: string; ai_enabled: boolean; system_prompt: string | null }>(
+    const updated = await queryOne<{ widget_key: string; ai_enabled: boolean; system_prompt: string | null; cod_available: boolean | null }>(
       `UPDATE sites SET ${sets.join(', ')} WHERE id = $${pi}
-       RETURNING widget_key, ai_enabled, system_prompt`,
+       RETURNING widget_key, ai_enabled, system_prompt, cod_available`,
       params
     );
 
@@ -92,6 +99,7 @@ export async function PATCH(request: NextRequest) {
         widgetKey: updated!.widget_key,
         aiEnabled: updated!.ai_enabled,
         systemPrompt: updated!.system_prompt,
+        codAvailable: updated!.cod_available,
       },
     });
   } catch (err) {

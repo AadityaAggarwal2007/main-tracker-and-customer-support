@@ -128,6 +128,7 @@ interface MailboxRow {
   id: string; email: string; app_password: string; last_uid: number;
   site_id: string; site_name: string; ai_enabled: boolean;
   system_prompt: string | null; tracker_business_id: string | null;
+  cod_available: boolean | null;
 }
 
 interface ConversationRow {
@@ -256,7 +257,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // customer hears nothing rather than being told something unverified.
         if (account.ai_enabled && conversation.status === 'ai_handling') {
           try {
-            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id);
+            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email');
 
             // The same hidden tool context the widget path stores. Without it the
             // next email in this thread rebuilds the history with no record of
@@ -385,7 +386,7 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
   const accounts = await query<MailboxRow>(
     `SELECT se.id, se.email, se.app_password, se.last_uid,
             s.id AS site_id, s.name AS site_name, s.ai_enabled,
-            s.system_prompt, s.tracker_business_id
+            s.system_prompt, s.tracker_business_id, s.cod_available
        FROM site_emails se
        JOIN sites s ON s.id = se.site_id
       ORDER BY se.created_at ASC`

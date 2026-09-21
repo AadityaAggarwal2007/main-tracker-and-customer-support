@@ -30,11 +30,12 @@ export interface WidgetSite {
   ai_enabled: boolean;
   system_prompt: string | null;
   tracker_business_id: string | null;
+  cod_available: boolean | null;
 }
 
 export async function siteByKey(siteKey: string): Promise<WidgetSite | null> {
   return queryOne<WidgetSite>(
-    `SELECT id, name, ai_enabled, system_prompt, tracker_business_id
+    `SELECT id, name, ai_enabled, system_prompt, tracker_business_id, cod_available
        FROM sites WHERE widget_key = $1`,
     [siteKey]
   );
