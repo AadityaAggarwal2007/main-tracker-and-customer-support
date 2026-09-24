@@ -173,10 +173,10 @@ function fillText(tpl: string, state?: string | null, city?: string | null): str
 }
 
 /** Believable per-stage timestamp: order time + the stage's day offset, at a
- *  stable "business hour" so the feed looks organic. Never in the future. */
-function eventTime(base: number, def: JourneyStageDef, i: number, now: number): number {
-  const t = base + def.startDay * DAY_MS + (9 * 60 + i * 47) * 60 * 1000;
-  return Math.min(t, now);
+ *  stable "business hour" so the feed looks organic. Strictly increasing across
+ *  stages by construction, because startDay is strictly increasing. */
+function eventTime(base: number, def: JourneyStageDef, i: number): number {
+  return base + def.startDay * DAY_MS + (9 * 60 + i * 47) * 60 * 1000;
 }
 
 function buildEvents(
@@ -185,24 +185,32 @@ function buildEvents(
   const base = new Date(order.created_at).getTime();
   if (Number.isNaN(base)) return [];
   const lastIdx = delivered ? DELIVERED_INDEX : currentIndex;
+  const nowMs = now.getTime();
+
+  // Every timestamp comes from ONE clock: the order's own date plus the stage
+  // schedule. It used to anchor the newest event to status_updated_at (the
+  // moment the cron happened to flip the row), which is a completely unrelated
+  // clock — so the newest event could land BEFORE an older synthetic one and
+  // the feed showed a parcel shipped before it was packed.
+  const times: number[] = [];
+  for (let i = 0; i <= lastIdx; i++) {
+    times.push(Math.min(eventTime(base, JOURNEY[i], i), nowMs));
+  }
+  // Clamping to "now" can flatten the tail, so walk back and keep it ascending.
+  for (let i = times.length - 2; i >= 0; i--) {
+    if (times[i] >= times[i + 1]) times[i] = times[i + 1] - 60_000;
+  }
+
   const events: JourneyEvent[] = [];
   for (let i = 0; i <= lastIdx; i++) {
     const def = JOURNEY[i];
     const copy = EVENT_COPY[def.key];
     if (!copy) continue;
-    let timeISO: string;
-    if (i === lastIdx && order.status_updated_at && !delivered) {
-      // Anchor the latest stage to when it actually flipped.
-      const su = new Date(order.status_updated_at).getTime();
-      timeISO = new Date(Number.isNaN(su) ? eventTime(base, def, i, now.getTime()) : Math.min(su, now.getTime())).toISOString();
-    } else {
-      timeISO = new Date(eventTime(base, def, i, now.getTime())).toISOString();
-    }
     events.push({
       key: def.key,
       title: fillText(copy.title, order.state, order.city),
       location: fillText(copy.location, order.state, order.city),
-      timeISO,
+      timeISO: new Date(times[i]).toISOString(),
     });
   }
   return events;
