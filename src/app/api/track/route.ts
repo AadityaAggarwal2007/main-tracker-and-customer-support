@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
          o.courier_partner, o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
          o.state, o.pincode, o.created_at, o.business_id, o.delivered_at,
+         b.origin_city,
          COALESCE(
            json_agg(
              json_build_object('id', oi.id, 'product_name', oi.product_name,
@@ -49,9 +50,10 @@ export async function GET(request: NextRequest) {
            ) FILTER (WHERE oi.id IS NOT NULL), '[]'::json
          ) AS order_items
        FROM orders o
+       LEFT JOIN businesses b ON b.id = o.business_id
        LEFT JOIN order_items oi ON oi.order_id = o.order_id
        WHERE o.tracking_token = $1
-       GROUP BY o.id`,
+       GROUP BY o.id, b.origin_city`,
       [token]
     );
 
@@ -86,6 +88,7 @@ export async function GET(request: NextRequest) {
          o.courier_partner, o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
          o.state, o.pincode, o.created_at, o.customer_mobile, o.business_id, o.delivered_at,
+         b.origin_city,
          COALESCE(
            json_agg(
              json_build_object('id', oi.id, 'product_name', oi.product_name,
@@ -93,9 +96,10 @@ export async function GET(request: NextRequest) {
            ) FILTER (WHERE oi.id IS NOT NULL), '[]'::json
          ) AS order_items
        FROM orders o
+       LEFT JOIN businesses b ON b.id = o.business_id
        LEFT JOIN order_items oi ON oi.order_id = o.order_id
        WHERE o.order_id = $1
-       GROUP BY o.id`,
+       GROUP BY o.id, b.origin_city`,
       [orderId]
     );
 

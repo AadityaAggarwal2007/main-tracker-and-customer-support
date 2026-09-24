@@ -38,16 +38,17 @@ export interface JourneyStageDef {
 
 // Canonical customer journey, in order. Indexes 0..9.
 export const JOURNEY: JourneyStageDef[] = [
-  { key: 'placed',     status: 'Order Placed',     baseLabel: 'Order Placed',          icon: 'ClipboardCheck', estimated: false, startDay: 0 },
-  { key: 'processing', status: 'Processing',       baseLabel: 'Processing',            icon: 'Cog',            estimated: false, startDay: 1 },
-  { key: 'packed',     status: 'Packed',           baseLabel: 'Packed',                icon: 'PackageCheck',   estimated: false, startDay: 2 },
-  { key: 'shipped',    status: 'Shipped',          baseLabel: 'Shipped',               icon: 'Truck',          estimated: false, startDay: 3 },
-  { key: 'transit',    status: 'In Transit',       baseLabel: 'In Transit',            icon: 'Navigation',     estimated: true,  startDay: 4 },
-  { key: 'state',      status: 'Reached State',    baseLabel: 'Reached {STATE}',       icon: 'MapPin',         estimated: true,  startDay: 6 },
-  { key: 'city',       status: 'Reached City',     baseLabel: 'Reached {CITY}',        icon: 'MapPin',         estimated: true,  startDay: 7 },
-  { key: 'hub',        status: 'Local Hub',        baseLabel: 'At Local Delivery Hub', icon: 'Building2',      estimated: true,  startDay: 8 },
-  { key: 'ofd',        status: 'Out for Delivery', baseLabel: 'Out for Delivery',      icon: 'Bike',           estimated: true,  startDay: 9 },
-  { key: 'delivered',  status: 'Delivered',        baseLabel: 'Delivered',             icon: 'CheckCircle',    estimated: false, startDay: AUTO_DELIVER_DAY },
+  { key: 'placed',     status: 'Order Placed',        baseLabel: 'Order Placed',          icon: 'ClipboardCheck', estimated: false, startDay: 0 },
+  { key: 'processing', status: 'Processing',          baseLabel: 'Processing',            icon: 'Cog',            estimated: false, startDay: 1 },
+  { key: 'packed',     status: 'Packed',              baseLabel: 'Packed',                icon: 'PackageCheck',   estimated: false, startDay: 2 },
+  { key: 'shipped',    status: 'Shipped',             baseLabel: 'Shipped',               icon: 'Truck',          estimated: false, startDay: 3 },
+  { key: 'firstscan',  status: 'Shipment Picked Up',  baseLabel: 'Picked Up',             icon: 'PackageCheck',   estimated: true,  startDay: 4 },
+  { key: 'transit',    status: 'In Transit',          baseLabel: 'In Transit',            icon: 'Navigation',     estimated: true,  startDay: 5 },
+  { key: 'state',      status: 'Reached State',       baseLabel: 'Reached {STATE}',       icon: 'MapPin',         estimated: true,  startDay: 6 },
+  { key: 'city',       status: 'Reached City',        baseLabel: 'Reached {CITY}',        icon: 'MapPin',         estimated: true,  startDay: 7 },
+  { key: 'hub',        status: 'Local Hub',           baseLabel: 'At Local Delivery Hub', icon: 'Building2',      estimated: true,  startDay: 8 },
+  { key: 'ofd',        status: 'Out for Delivery',    baseLabel: 'Out for Delivery',      icon: 'Bike',           estimated: true,  startDay: 9 },
+  { key: 'delivered',  status: 'Delivered',           baseLabel: 'Delivered',             icon: 'CheckCircle',    estimated: false, startDay: AUTO_DELIVER_DAY },
 ];
 
 export const DELIVERED_INDEX = JOURNEY.length - 1; // 9
@@ -60,12 +61,13 @@ const STATUS_TO_INDEX: Record<string, number> = {
   'processing': 1, 'order processing': 1,
   'packed': 2, 'order packed': 2, 'pickup': 2, 'pickup completed': 2, 'ready to ship': 2,
   'shipped': 3, 'order shipped': 3, 'dispatched': 3, 'manifested': 3,
-  'in transit': 4, 'in-transit': 4, 'first scan': 4, 'shipment picked up': 4, 'picked up': 4,
-  'reached state': 5, 'destination state': 5,
-  'reached city': 6, 'destination city': 6,
-  'local hub': 7, 'local delivery facility': 7, 'reached local delivery facility': 7,
-  'out for delivery': 8, 'out for delivery ': 8, 'ofd': 8,
-  'delivered': 9,
+  'shipment picked up': 4, 'first scan': 4, 'picked up': 4,
+  'in transit': 5, 'in-transit': 5,
+  'reached state': 6, 'destination state': 6,
+  'reached city': 7, 'destination city': 7,
+  'local hub': 8, 'local delivery facility': 8, 'reached local delivery facility': 8,
+  'out for delivery': 9, 'ofd': 9,
+  'delivered': 10,
 };
 
 export function statusToIndex(status: string | null | undefined): number | null {
@@ -107,6 +109,8 @@ export interface JourneyOrder {
   status_updated_at?: string | Date | null;
   state?: string | null;
   city?: string | null;
+  /** City the panel ships FROM (businesses.origin_city). Null = stay generic. */
+  origin_city?: string | null;
   estimated_delivery?: string | Date | null;
   delivered_at?: string | Date | null; // set ONLY by team confirmation (verified)
 }
@@ -154,20 +158,27 @@ export interface JourneyResult {
 // Customer-facing copy for each stage's activity row. Reads like a real
 // courier feed; {STATE}/{CITY} are filled from the order's own address.
 const EVENT_COPY: Record<string, { title: string; location: string }> = {
-  placed:     { title: 'Order Placed',                    location: 'Order confirmed' },
-  processing: { title: 'Order Processing',                location: 'Seller facility' },
-  packed:     { title: 'Packed & Ready to Ship',          location: 'Seller facility' },
-  shipped:    { title: 'Shipment Picked Up',              location: 'Origin hub' },
-  transit:    { title: 'In Transit',                      location: 'On the way to {STATE}' },
-  state:      { title: 'Reached {STATE}',                 location: '{STATE}' },
-  city:       { title: 'Reached {CITY}',                  location: '{CITY}' },
-  hub:        { title: 'Arrived at Local Delivery Hub',   location: '{CITY}' },
-  ofd:        { title: 'Out for Delivery',                location: '{CITY}' },
-  delivered:  { title: 'Delivered',                       location: '{CITY}' },
+  placed:     { title: 'Order Placed',                  location: 'Order confirmed' },
+  processing: { title: 'Order Processing',              location: '{ORIGIN}' },
+  packed:     { title: 'Packed & Ready to Ship',        location: '{ORIGIN}' },
+  shipped:    { title: 'Shipped',                       location: 'Handed over to courier, {ORIGIN}' },
+  firstscan:  { title: 'Shipment Picked Up',            location: '{ORIGIN}' },
+  // Spec §5: never invent an intermediate hub. Origin -> destination state only.
+  transit:    { title: 'In Transit',                    location: '{ORIGIN} to {STATE}' },
+  state:      { title: 'Reached {STATE}',               location: '{STATE}' },
+  city:       { title: 'Reached {CITY}',                location: '{CITY}' },
+  hub:        { title: 'Arrived at Local Delivery Hub', location: '{CITY}' },
+  ofd:        { title: 'Out for Delivery',              location: '{CITY}' },
+  delivered:  { title: 'Delivered',                     location: '{CITY}' },
 };
 
-function fillText(tpl: string, state?: string | null, city?: string | null): string {
+function fillText(
+  tpl: string, state?: string | null, city?: string | null, origin?: string | null,
+): string {
+  // No origin configured -> a generic warehouse, never a guessed city.
+  const originText = origin && origin.trim() ? `${titleCase(origin.trim())} warehouse` : 'Seller warehouse';
   return tpl
+    .replace('{ORIGIN}', originText)
     .replace('{STATE}', state && state.trim() ? titleCase(state.trim()) : 'destination state')
     .replace('{CITY}', city && city.trim() ? titleCase(city.trim()) : 'destination city');
 }
@@ -224,8 +235,8 @@ function buildEvents(
     if (!copy) continue;
     events.push({
       key: def.key,
-      title: fillText(copy.title, order.state, order.city),
-      location: fillText(copy.location, order.state, order.city),
+      title: fillText(copy.title, order.state, order.city, order.origin_city),
+      location: fillText(copy.location, order.state, order.city, order.origin_city),
       timeISO: new Date(times[i]).toISOString(),
     });
   }

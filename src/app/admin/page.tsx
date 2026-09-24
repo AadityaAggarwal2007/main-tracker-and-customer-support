@@ -27,7 +27,7 @@ interface AuthUser { username: string; displayName: string; role: 'admin' | 'man
 interface TeamUser { id: string; username: string; display_name: string; role: string; is_active: boolean; last_login: string; created_at: string; business_ids: string[] | null; }
 interface Business {
   id: string; name: string; logo_url: string; support_email: string; support_phone: string;
-  is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null;
+  is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null; origin_city: string | null;
   is_shopify_connected: boolean; shopify_domain: string | null;
 }
 // A mailbox this panel answers from. The app password is write-only — it is
@@ -121,7 +121,7 @@ export default function AdminDashboard() {
   // Businesses / Brand Settings
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
-  const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '', trackingDomain: '', primaryColor: '#4F46E5' });
+  const [brandForm, setBrandForm] = useState({ name: '', logoUrl: '', supportEmail: '', supportPhone: '', trackingDomain: '', primaryColor: '#4F46E5', originCity: '' });
   const [savingBrand, setSavingBrand] = useState(false);
 
   // Chat widget settings for this panel
@@ -327,7 +327,7 @@ export default function AdminDashboard() {
       setBrandForm({
         name: biz.name, logoUrl: biz.logo_url || '',
         supportEmail: biz.support_email || '', supportPhone: biz.support_phone || '',
-        trackingDomain: biz.tracking_domain || '', primaryColor: biz.primary_color || '#4F46E5',
+        trackingDomain: biz.tracking_domain || '', primaryColor: biz.primary_color || '#4F46E5', originCity: biz.origin_city || '',
       });
     }
   }, [businesses, activePanelId]);
@@ -1547,6 +1547,14 @@ export default function AdminDashboard() {
                         <input className="form-input" value={brandForm.supportPhone} onChange={(e) => setBrandForm({ ...brandForm, supportPhone: e.target.value })} placeholder="+91 98765 43210" />
                       </div>
                       <div className="form-group">
+                        <label className="form-label">🏭 Ship-from City (warehouse)</label>
+                        <input className="form-input" value={brandForm.originCity} onChange={(e) => setBrandForm({ ...brandForm, originCity: e.target.value })} placeholder="Delhi" />
+                        <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+                          Shown as the origin on the customer&apos;s tracking feed (&quot;Picked Up — Delhi warehouse&quot;).
+                          Leave blank and it just says &quot;Seller warehouse&quot; — it will never guess a city.
+                        </p>
+                      </div>
+                      <div className="form-group">
                         <label className="form-label">📧 Tracking Domain (fixes IP bug)</label>
                         <input className="form-input" value={brandForm.trackingDomain} onChange={(e) => setBrandForm({ ...brandForm, trackingDomain: e.target.value })} placeholder="https://track.yourbrand.com" />
                         <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
@@ -1565,6 +1573,7 @@ export default function AdminDashboard() {
                             supportEmail: brandForm.supportEmail || null,
                             supportPhone: brandForm.supportPhone || null,
                             trackingDomain: brandForm.trackingDomain || null,
+                            originCity: brandForm.originCity || null,
                             primaryColor: brandForm.primaryColor || '#4F46E5',
                           };
                           const res = await fetch('/api/businesses', {

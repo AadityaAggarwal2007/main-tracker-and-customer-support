@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor } = await request.json();
+    const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor, originCity } = await request.json();
 
     if (!name) {
       return NextResponse.json({ error: 'Business name is required' }, { status: 400 });
@@ -142,6 +142,8 @@ export async function PATCH(request: NextRequest) {
     if (isDefault !== undefined)      { sets.push(`is_default = $${pi++}`);      params.push(isDefault); }
     if (trackingDomain !== undefined) { sets.push(`tracking_domain = $${pi++}`); params.push(trackingDomain || null); }
     if (primaryColor !== undefined)   { sets.push(`primary_color = $${pi++}`);   params.push(primaryColor); }
+    // City the panel ships FROM — shown as the origin on the tracking feed.
+    if (originCity !== undefined)     { sets.push(`origin_city = $${pi++}`);     params.push(originCity || null); }
 
     if (sets.length === 0) {
       return NextResponse.json({ success: true });
