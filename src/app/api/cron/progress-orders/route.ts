@@ -43,20 +43,55 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Pull every order still on its journey. Delivered / cancelled are terminal.
-    const result = await query<Candidate>(
-      `SELECT order_id, tracking_status, created_at
-         FROM orders
-        WHERE is_cancelled = false
-          AND COALESCE(tracking_status, '') <> 'Delivered'
-        LIMIT 2000`
-    );
+    // Sweep EVERY order still on its journey, in deterministic pages.
+    //
+    // This used to be a bare `LIMIT 2000` with no ORDER BY. Once the store
+    // passed 2000 live orders, each run saw an arbitrary subset and Postgres
+    // was free to return the same ones every time — so a tail of orders was
+    // never advanced at all and their stored stage silently fell behind their
+    // real age (718 of 3274 were stuck by up to 3 stages when this was found).
+    // Keyset pagination on (created_at, order_id) is stable here because
+    // neither column is modified by the update below.
+    const PAGE = 1000;
+    const MAX_PAGES = 500; // safety valve: 500k orders per run
+    const rows: Candidate[] = [];
+    let cursorAt: string | null = null;
+    let cursorId: string | null = null;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = cursorAt === null
+        ? await query<Candidate>(
+            `SELECT order_id, tracking_status, created_at
+               FROM orders
+              WHERE is_cancelled = false
+                AND COALESCE(tracking_status, '') <> 'Delivered'
+              ORDER BY created_at, order_id
+              LIMIT $1`,
+            [PAGE]
+          )
+        : await query<Candidate>(
+            `SELECT order_id, tracking_status, created_at
+               FROM orders
+              WHERE is_cancelled = false
+                AND COALESCE(tracking_status, '') <> 'Delivered'
+                AND (created_at, order_id) > ($1::timestamptz, $2::text)
+              ORDER BY created_at, order_id
+              LIMIT $3`,
+            [cursorAt, cursorId, PAGE]
+          );
+      if (res.rows.length === 0) break;
+      rows.push(...res.rows);
+      const last = res.rows[res.rows.length - 1];
+      cursorAt = last.created_at;
+      cursorId = last.order_id;
+      if (res.rows.length < PAGE) break;
+    }
 
     const now = Date.now();
     // Bucket order_ids by the canonical status they should advance TO.
     const buckets = new Map<string, string[]>();
 
-    for (const o of result.rows) {
+    for (const o of rows) {
       const currentIndex = statusToIndex(o.tracking_status);
       // Skip special / unknown states (Stuck, RTO, Delivery Failed, etc.) —
       // those are handled by the team, not the schedule.
@@ -76,19 +111,15 @@ export async function GET(request: NextRequest) {
 
     let totalProgressed = 0;
 
-    for (const [targetStatus, orderIds] of buckets) {
-      if (orderIds.length === 0) continue;
+    // Written in chunks: a single history INSERT binds 4 params per order, and
+    // a full catch-up sweep can move thousands at once, which would otherwise
+    // run into Postgres's 65535 bind-parameter ceiling.
+    const WRITE_CHUNK = 500;
+
+    for (const [targetStatus, allIds] of buckets) {
+      if (allIds.length === 0) continue;
       const targetIndex = JOURNEY.findIndex((s) => s.status === targetStatus);
       const isDelivered = targetIndex === DELIVERED_INDEX;
-
-      // Advance the orders. Auto-delivery deliberately leaves delivered_at
-      // NULL — that column is reserved for a verified team confirmation.
-      await query(
-        `UPDATE orders
-            SET tracking_status = $1, status_updated_at = NOW(), updated_at = NOW()
-          WHERE order_id = ANY($2::text[])`,
-        [targetStatus, orderIds]
-      );
 
       // Honest history note — never phrased as a confirmed courier scan.
       const note = isDelivered
@@ -96,24 +127,38 @@ export async function GET(request: NextRequest) {
         : `Expected journey advanced to "${targetStatus}". No verified courier scan — framework stage.`;
       const changedBy = 'journey-engine';
 
-      const valuePlaceholders = orderIds
-        .map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`)
-        .join(', ');
-      const historyParams: unknown[] = [];
-      orderIds.forEach((orderId) => {
-        historyParams.push(orderId, targetStatus, changedBy, note);
-      });
+      for (let off = 0; off < allIds.length; off += WRITE_CHUNK) {
+        const orderIds = allIds.slice(off, off + WRITE_CHUNK);
 
-      await query(
-        `INSERT INTO tracking_history (order_id, status, changed_by, notes) VALUES ${valuePlaceholders}`,
-        historyParams
-      );
+        // Advance the orders. Auto-delivery deliberately leaves delivered_at
+        // NULL — that column is reserved for a verified team confirmation.
+        await query(
+          `UPDATE orders
+              SET tracking_status = $1, status_updated_at = NOW(), updated_at = NOW()
+            WHERE order_id = ANY($2::text[])`,
+          [targetStatus, orderIds]
+        );
 
-      totalProgressed += orderIds.length;
+        const valuePlaceholders = orderIds
+          .map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`)
+          .join(', ');
+        const historyParams: unknown[] = [];
+        orderIds.forEach((orderId) => {
+          historyParams.push(orderId, targetStatus, changedBy, note);
+        });
+
+        await query(
+          `INSERT INTO tracking_history (order_id, status, changed_by, notes) VALUES ${valuePlaceholders}`,
+          historyParams
+        );
+
+        totalProgressed += orderIds.length;
+      }
     }
 
     return NextResponse.json({
       success: true,
+      scanned: rows.length,
       progressed: totalProgressed,
       timestamp: new Date().toISOString(),
     });
