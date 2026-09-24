@@ -22,9 +22,6 @@ function escapeLike(v: string): string {
 }
 
 // Names are matched with a regex, so anything the customer types must be inert.
-function escapeRegex(v: string): string {
-  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function normalizeOrderId(orderId?: string | null): string | null {
   if (!orderId) return null;
@@ -35,12 +32,11 @@ function normalizeOrderId(orderId?: string | null): string | null {
   return trimmed;
 }
 
+// Only these two. Name / email / full phone are deliberately not accepted —
+// see the comment on lookupOrder.
 export interface OrderLookupArgs {
   order_id?: string;
-  email?: string;
-  phone?: string;
   phone_last4?: string;
-  name?: string;
 }
 
 export interface FoundOrder {
@@ -73,60 +69,47 @@ interface OrderRow {
   products: string[] | null;
 }
 
-// Look up an order by order_id, email, phone, or last 4 digits of phone.
+// Look up an order. The ONLY accepted identifiers are the order ID AND the
+// last 4 digits of the phone on the order — both, together.
+//
+// Name, email and full phone were removed deliberately. Each caused a real
+// problem: a name is a substring match, so "Raj" pulled back Suraj and Rajan
+// and "a" matched 7,312 of 7,946 orders; last-4 on its own collides massively
+// (4,783 of 7,946 orders sit in colliding last-4 groups) and once showed one
+// customer another's order; and order IDs are sequential, so an order number
+// alone lets anyone walk #1200, #1201, #1202 and read strangers' details.
+//
+// Order ID + last-4 together is the same rule the public /track page uses, and
+// it also keeps names, emails and full numbers out of the model and the logs.
+//
 // trackerBusinessId scopes the lookup to one panel's orders.
 export async function lookupOrder(
-  { order_id, email, phone, phone_last4, name }: OrderLookupArgs,
+  { order_id, phone_last4 }: OrderLookupArgs,
   trackerBusinessId?: string | null
 ): Promise<OrderLookupResult> {
   const normalizedOrderId = normalizeOrderId(order_id);
-  const normalizedPhone = normalizePhone(phone);
-  const normalizedEmail = email ? email.toLowerCase().trim() : null;
-  const normalizedName = name ? name.trim() : null;
-
-  // Last-4 is only ever taken from an explicit phone_last4. Deriving it from a
-  // full phone number used to OR it into the query, so a customer who gave their
-  // real number also matched every stranger whose number ended the same way —
-  // 4,783 of 7,946 orders sit in colliding last-4 groups, and one customer was
-  // shown another's order because of it. On its own it identifies nobody, so it
-  // is honoured only alongside a name.
   const rawLast4 = phone_last4 ? phone_last4.replace(/\D/g, '').slice(-4) : null;
-  const last4 = rawLast4 && rawLast4.length === 4 && normalizedName ? rawLast4 : null;
+  const last4 = rawLast4 && rawLast4.length === 4 ? rawLast4 : null;
 
-  // Email and phone identify one person. A name does not: it is matched as a
-  // substring, so "Raj" pulled back Suraj PATIL and Rajan, and "a" pulled back
-  // 7,312 of 7,946 orders. Because the clauses used to be OR'd, a customer who
-  // mistyped their phone still matched on name alone and was shown a stranger's
-  // order. A strong identifier, once given, now has to match.
-  const hasStrongIdentifier = Boolean(normalizedEmail || normalizedPhone);
-  const hasPersonalIdentifier = Boolean(hasStrongIdentifier || last4 || normalizedName);
-
-  if (normalizedName && !hasStrongIdentifier && !last4 && !normalizedOrderId) {
+  if (!normalizedOrderId && !last4) {
     return {
       found: false,
       needs_verification: true,
-      message: 'A name on its own matches many different customers. Ask for the email or phone number on the order, then look up again.',
+      message: 'Ask the customer for their order ID and the last 4 digits of the phone number on the order. Both are needed.',
     };
   }
-
-  if (rawLast4 && !normalizedName && !normalizedEmail && !normalizedPhone) {
+  if (!normalizedOrderId) {
     return {
       found: false,
       needs_verification: true,
-      message: 'Last 4 digits alone match many different customers. Ask for the name on the order and look up again with both.',
+      message: 'Last 4 digits alone match many different customers. Ask for the order ID as well, then look up again with both.',
     };
   }
-
-  if (!normalizedOrderId && !hasPersonalIdentifier) {
-    return { found: false, message: 'Please provide a name, last 4 digits of phone, email, or order ID.' };
-  }
-
-  // Order IDs are sequential and guessable, so one on its own is not proof of ownership.
-  if (!hasPersonalIdentifier) {
+  if (!last4) {
     return {
       found: false,
       needs_verification: true,
-      message: 'An order number alone is not enough to confirm identity. Ask the customer for the name, email, or last 4 digits of the phone number on the order, then look up again with both.',
+      message: 'An order number alone is not proof of ownership. Ask for the last 4 digits of the phone number on the order, then look up again with both.',
     };
   }
 
@@ -157,22 +140,14 @@ export async function lookupOrder(
        FROM orders o
        LEFT JOIN order_items oi ON oi.order_id = o.order_id
        LEFT JOIN businesses b ON b.id = o.business_id
-       WHERE ($1::text IS NULL OR o.order_id ILIKE $1)
-       -- If an email or phone was supplied it must match. Previously these were
-       -- OR'd with the name, so a wrong number was silently ignored.
-       AND (
-         ($2::text IS NULL AND $3::text IS NULL)
-         OR ($2::text IS NOT NULL AND LOWER(o.customer_email) = $2)
-         OR ($3::text IS NOT NULL AND o.customer_mobile = $3)
-       )
-       AND ($5::text IS NULL OR RIGHT(o.customer_mobile, 4) = $5)
-       -- Name only ever narrows, and matches at a word start so "Raj" no longer
-       -- matches "Suraj".
-       AND ($6::text IS NULL OR o.customer_name ~* ('(^|[[:space:]])' || $6))
+       -- Both identifiers are mandatory (guarded above), so both are plain
+       -- equality checks — nothing here is optional or OR'd any more.
+       WHERE o.order_id ILIKE $1
+       AND RIGHT(o.customer_mobile, 4) = $2
        -- The panel id arrives from sites.tracker_business_id, which is text on
        -- the chat side while orders.business_id is uuid, so both are compared
        -- as text rather than casting the parameter and risking a type error.
-       AND ($4::text IS NULL OR o.business_id::text = $4::text)
+       AND ($3::text IS NULL OR o.business_id::text = $3::text)
        GROUP BY
          o.order_id, o.customer_name, o.customer_email, o.customer_mobile,
          o.tracking_status, o.tracking_id, o.tracking_token, o.courier_partner, o.estimated_delivery,
@@ -180,20 +155,13 @@ export async function lookupOrder(
          o.payment_method, b.name, b.tracking_domain
        ORDER BY o.created_at DESC
        LIMIT 3`,
-      [
-        normalizedOrderId ? escapeLike(normalizedOrderId) : null,
-        normalizedEmail,
-        normalizedPhone,
-        trackerBusinessId || null,
-        last4,
-        normalizedName ? escapeRegex(normalizedName) : null,
-      ]
+      [escapeLike(normalizedOrderId), last4, trackerBusinessId || null]
     );
 
     if (result.rows.length === 0) {
       return {
         found: false,
-        message: 'No order found with those details. Please double-check the order ID or try your registered email/phone.',
+        message: 'No order found with that order ID and those last 4 digits. Ask the customer to check both.',
       };
     }
 

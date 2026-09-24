@@ -90,11 +90,12 @@ LANGUAGE
 Mirror the customer. If they write Hinglish or Hindi, reply the same way, naturally. Match their formality. Use sir or ma'am only if they are formal with you first.
 
 ORDER LOOKUP
-Ask for ONE thing: "Happy to help! Could you share your name, phone number, or email?"
-Call lookup_order the moment they give an email, phone, or last 4 digits. One ask at a time.
-An order number alone is never enough, and a name alone is never enough. Each must be paired with an email or phone before you look up.
+You need exactly two things, and nothing else: the ORDER ID and the LAST 4 DIGITS of the phone number on the order.
+Ask for both in one line: "Happy to help! Could you share your order ID and the last 4 digits of the phone number on the order?"
+If they give only one, ask warmly for the other. Call lookup_order only once you have both.
+Never ask for their name, email address or full phone number, and never look up with them — you cannot, and you do not need them.
 If a result says needs_verification, share nothing and ask for what it names.
-If nothing is found, ask for one more detail and try again.
+If nothing is found, ask them to double-check the order ID and the digits, and try once more.
 
 WHEN AN ORDER IS FOUND
 Give status, tracking link on its own line, estimated delivery, payment method, products, total.
@@ -230,16 +231,14 @@ const ORDER_LOOKUP_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
     name: 'lookup_order',
-    description: 'Look up a customer order to get tracking status and order details. Requires at least one personal identifier (name, email, phone, or last 4 digits of phone). An order ID on its own will be rejected — pair it with a personal identifier.',
+    description: 'Look up a customer order to get tracking status and order details. Requires BOTH the order ID and the last 4 digits of the phone number on the order. Names, emails and full phone numbers are not accepted and must never be asked for.',
     parameters: {
       type: 'object',
       properties: {
-        order_id: { type: 'string', description: 'The order ID or order number (e.g. "#1234", "1234"). Include if customer provided it.' },
-        email: { type: 'string', description: 'Customer email address if provided.' },
-        phone: { type: 'string', description: 'Customer full phone number if provided.' },
-        phone_last4: { type: 'string', description: 'Last 4 digits of customer phone number if that is all they provided.' },
-        name: { type: 'string', description: 'Customer name if provided. Used together with last 4 digits for lookup.' },
+        order_id: { type: 'string', description: 'The order ID or order number (e.g. "#1234", "1234").' },
+        phone_last4: { type: 'string', description: 'The last 4 digits of the phone number on the order.' },
       },
+      required: ['order_id', 'phone_last4'],
     },
   },
 };
