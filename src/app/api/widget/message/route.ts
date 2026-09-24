@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     let aiMessage: StoredMessage | null = null;
     if (conversation.status === 'ai_handling' && site.ai_enabled) {
       try {
-        const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available);
+        const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id);
 
         // Store the tool exchange as hidden messages so the next turn still
         // knows which order was looked up.

@@ -131,6 +131,10 @@ export default function AdminDashboard() {
   // Conversations parked for a person. Polled for the sidebar badge: an
   // escalated EMAIL reply is never auto-sent, so this queue going unwatched
   // means those customers sit in silence.
+  // Saved answers (Q&A) the agent must reuse verbatim.
+  const [faqs, setFaqs] = useState<{ id: string; question: string; answer: string; is_enabled: boolean }[]>([]);
+  const [faqDraft, setFaqDraft] = useState({ question: '', answer: '' });
+  const [faqBusy, setFaqBusy] = useState(false);
   const [humanNeeded, setHumanNeeded] = useState(0);
   const [emailWaiting, setEmailWaiting] = useState(0);
   const [copiedSnippet, setCopiedSnippet] = useState(false);
@@ -624,6 +628,42 @@ export default function AdminDashboard() {
   }, [token, activePanelId]);
 
   useEffect(() => { fetchChatSite(); }, [fetchChatSite]);
+
+  const fetchFaqs = useCallback(async () => {
+    if (!token || !activePanelId) { setFaqs([]); return; }
+    try {
+      const r = await fetch(`/api/panel-faq?businessId=${activePanelId}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const d = await r.json();
+      setFaqs(d.faqs || []);
+    } catch { /* leave the last list on screen */ }
+  }, [token, activePanelId]);
+
+  useEffect(() => { fetchFaqs(); }, [fetchFaqs]);
+
+  const faqRequest = async (method: string, body?: unknown, qs = '') => {
+    setFaqBusy(true);
+    try {
+      const r = await fetch(`/api/panel-faq${qs}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { showAlert('error', d.error || 'Could not save'); return false; }
+      await fetchFaqs();
+      return true;
+    } catch { showAlert('error', 'Could not save'); return false; }
+    finally { setFaqBusy(false); }
+  };
+
+  const addFaq = async () => {
+    if (!faqDraft.question.trim() || !faqDraft.answer.trim()) { showAlert('error', 'Write both the question and the answer'); return; }
+    if (await faqRequest('POST', { businessId: activePanelId, ...faqDraft })) {
+      setFaqDraft({ question: '', answer: '' });
+      showAlert('success', 'Saved — the agent will use this on the next message');
+    }
+  };
 
   const saveChatSettings = async (patch: Record<string, unknown>) => {
     if (!activePanelId) { showAlert('error', 'Select a panel first'); return; }
@@ -1931,6 +1971,63 @@ export default function AdminDashboard() {
                             <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
                               Refunds, cancellations and store policy are always held for a person either way.
                             </div>
+                          </div>
+                        </div>
+
+                        {/* ── SAVED ANSWERS (Q&A) ── */}
+                        <div className="form-group">
+                          <label className="form-label">💬 Saved Answers ({faqs.length})</label>
+                          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+                            Write a question and the exact answer you want given. The agent uses your wording
+                            instead of working it out itself, including when the customer asks it differently or in
+                            Hindi. Edits apply to the very next message — no restart needed.
+                          </div>
+
+                          {faqs.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                              {faqs.map((f) => (
+                                <div key={f.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem 0.75rem', opacity: f.is_enabled ? 1 : 0.5 }}>
+                                  <input
+                                    className="form-input"
+                                    style={{ fontWeight: 600, marginBottom: '0.375rem' }}
+                                    defaultValue={f.question}
+                                    onBlur={(e) => { if (e.target.value.trim() !== f.question) faqRequest('PATCH', { businessId: activePanelId, id: f.id, question: e.target.value }); }}
+                                  />
+                                  <textarea
+                                    className="form-input"
+                                    rows={2}
+                                    defaultValue={f.answer}
+                                    onBlur={(e) => { if (e.target.value.trim() !== f.answer) faqRequest('PATCH', { businessId: activePanelId, id: f.id, answer: e.target.value }); }}
+                                  />
+                                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.375rem' }}>
+                                    <button className="btn btn-sm" disabled={faqBusy}
+                                      onClick={() => faqRequest('PATCH', { businessId: activePanelId, id: f.id, isEnabled: !f.is_enabled })}
+                                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>
+                                      {f.is_enabled ? 'Turn off' : 'Turn on'}
+                                    </button>
+                                    <button className="btn btn-sm" disabled={faqBusy}
+                                      onClick={() => { if (confirm('Delete this saved answer?')) faqRequest('DELETE', undefined, `?businessId=${activePanelId}&id=${f.id}`); }}
+                                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--danger, #ef4444)' }}>
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: '0.75rem' }}>
+                            <input className="form-input" style={{ marginBottom: '0.375rem' }}
+                              placeholder="Question — e.g. Jhumka box ke saath earrings aayenge?"
+                              value={faqDraft.question}
+                              onChange={(e) => setFaqDraft({ ...faqDraft, question: e.target.value })} />
+                            <textarea className="form-input" rows={2}
+                              placeholder="Answer — exactly what the agent should say"
+                              value={faqDraft.answer}
+                              onChange={(e) => setFaqDraft({ ...faqDraft, answer: e.target.value })} />
+                            <button className="btn btn-sm btn-primary" style={{ marginTop: '0.375rem' }} disabled={faqBusy} onClick={addFaq}>
+                              + Add saved answer
+                            </button>
                           </div>
                         </div>
 

@@ -257,7 +257,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // customer hears nothing rather than being told something unverified.
         if (account.ai_enabled && conversation.status === 'ai_handling') {
           try {
-            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email');
+            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email', account.site_id);
 
             // The same hidden tool context the widget path stores. Without it the
             // next email in this thread rebuilds the history with no record of

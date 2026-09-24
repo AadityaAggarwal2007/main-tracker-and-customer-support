@@ -157,10 +157,47 @@ Call categorize_conversation once when the issue is clear: wrong_tracking (bad o
 // the answer differs per store and a wrong "no COD" costs a sale.
 export type Channel = 'chat' | 'email';
 
+/** A merchant-written answer. The agent reuses it verbatim. */
+export interface SavedAnswer { question: string; answer: string }
+
+// Hard cap so one panel cannot balloon the prompt. ~12k chars is roughly
+// 3k tokens, which V4 Flash's 1M window swallows easily, but it keeps the
+// per-message cost predictable.
+const FAQ_CHAR_BUDGET = 12000;
+
+function savedAnswersSection(faqs: SavedAnswer[]): string {
+  if (!faqs.length) return '';
+  const lines: string[] = [];
+  let used = 0;
+  for (const f of faqs) {
+    const q = (f.question || '').trim();
+    const a = (f.answer || '').trim();
+    if (!q || !a) continue;
+    const block = `Q: ${q}\nA: ${a}`;
+    if (used + block.length > FAQ_CHAR_BUDGET) break;
+    used += block.length;
+    lines.push(block);
+  }
+  if (!lines.length) return '';
+  return `
+
+SAVED ANSWERS — USE THESE WORD FOR WORD
+The store owner wrote these answers. They override anything you would otherwise
+say or assume. When the customer asks something that means the same thing as one
+of these questions — even in different words, in Hindi, or misspelt — reply with
+that saved answer. Say it naturally in the customer's language, but do not change
+what it actually says, do not add conditions to it, and do not soften it.
+If two could apply, use the more specific one. If none of them fit, ignore this
+section entirely and follow the rules above.
+
+${lines.join('\n\n')}`;
+}
+
 export function buildSystemPrompt(
   basePrompt: string | null,
   codAvailable: boolean | null | undefined,
   channel: Channel = 'chat',
+  faqs: SavedAnswer[] = [],
 ): string {
   const base = basePrompt || DEFAULT_SYSTEM_PROMPT;
   let cod: string;
@@ -186,7 +223,7 @@ Never mention chat, this window, or replying instantly. Do not ask them to "hold
 You are in a chat box, so keep it to one or two short sentences per message, the way a person texts.
 No greetings block, no sign-off, no email formatting.`;
 
-  return base + '\n\nSTORE FACTS\n' + cod + '\n\n' + tone;
+  return base + '\n\nSTORE FACTS\n' + cod + savedAnswersSection(faqs) + '\n\n' + tone;
 }
 
 const ORDER_LOOKUP_TOOL: ChatCompletionTool = {
@@ -317,7 +354,8 @@ export async function getAIResponse(
   siteSystemPrompt: string | null,
   trackerBusinessId: string | null,
   codAvailable?: boolean | null,
-  channel: Channel = 'chat'
+  channel: Channel = 'chat',
+  siteId?: string | null
 ): Promise<AIResult> {
   // Newest first, then flipped back into reading order.
   const recent = await query<StoredMessage>(
@@ -333,7 +371,24 @@ export async function getAIResponse(
     [conversationId, HISTORY_WINDOW]
   );
 
-  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel);
+  // Saved answers are read fresh on every message, so an edit in Panel
+  // Settings takes effect on the very next reply with no redeploy.
+  let faqs: SavedAnswer[] = [];
+  if (siteId) {
+    try {
+      const r = await query<SavedAnswer>(
+        `SELECT question, answer FROM site_faqs
+          WHERE site_id = $1 AND is_enabled = true
+          ORDER BY sort_order, created_at`,
+        [siteId]
+      );
+      faqs = r.rows;
+    } catch (err) {
+      // A broken FAQ read must never take the whole reply down.
+      console.error('[AI] saved answers lookup failed:', (err as Error)?.message);
+    }
+  }
+  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs);
 
   // Build chat history — include tool results stored in metadata
   const chatMessages: ChatCompletionMessageParam[] = [];
