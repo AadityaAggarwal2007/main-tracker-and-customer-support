@@ -172,11 +172,27 @@ function fillText(tpl: string, state?: string | null, city?: string | null): str
     .replace('{CITY}', city && city.trim() ? titleCase(city.trim()) : 'destination city');
 }
 
-/** Believable per-stage timestamp: order time + the stage's day offset, at a
- *  stable "business hour" so the feed looks organic. Strictly increasing across
- *  stages by construction, because startDay is strictly increasing. */
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const WORK_START_MS = 10 * 60 * 60 * 1000; // 10:00 IST
+
+/**
+ * Believable per-stage timestamp.
+ *
+ * Stage 0 is the order's REAL placement time, because the Order Details card
+ * shows that same value ("Order Placed On") — deriving it any other way made
+ * the card and the feed disagree on screen.
+ *
+ * Later stages land in a working window on their scheduled day (10:00 IST
+ * onwards, 47 minutes apart) instead of inheriting the order's time-of-day.
+ * That offset used to put "Packed & Ready to Ship" at 3:43 am, which no
+ * warehouse does. Strictly increasing across stages because startDay is.
+ */
 function eventTime(base: number, def: JourneyStageDef, i: number): number {
-  return base + def.startDay * DAY_MS + (9 * 60 + i * 47) * 60 * 1000;
+  if (i === 0) return base;
+  const onDay = base + def.startDay * DAY_MS;
+  // Floor to IST midnight, expressed in UTC ms, then add the working offset.
+  const istMidnight = Math.floor((onDay + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
+  return istMidnight + WORK_START_MS + i * 47 * 60 * 1000;
 }
 
 function buildEvents(

@@ -174,7 +174,7 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
                   <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{order.order_id}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F1F5F9', paddingBottom: '10px' }}>
-                  <span style={{ fontSize: '14px', color: '#64748B' }}>Order Shipped On</span>
+                  <span style={{ fontSize: '14px', color: '#64748B' }}>Order Placed On</span>
                   <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>
                     {new Date(order.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
                     {new Date(order.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
