@@ -1,4 +1,5 @@
 import { query } from '@/lib/db';
+import { AUTO_DELIVER_DAY } from '@/lib/journey';
 
 // ── Order lookup for the support AI ────────────────────────────
 // Ported from the chat-support app's tracker-db.js. It already spoke raw SQL
@@ -173,6 +174,18 @@ export async function lookupOrder(
         ? `${trackingBase}/track/${row.tracking_token}`
         : null;
 
+      // Orders created by the Shopify webhook never get estimated_delivery
+      // written, so the agent used to say "I can't give you a delivery date".
+      // The track page already falls back to the day-13 end of the window;
+      // do the same here so there is always a date to quote.
+      let eta: string | Date | null = row.estimated_delivery || null;
+      if (!eta && row.created_at) {
+        const placed = new Date(row.created_at).getTime();
+        if (!Number.isNaN(placed)) {
+          eta = new Date(placed + AUTO_DELIVER_DAY * 24 * 60 * 60 * 1000).toISOString();
+        }
+      }
+
       const rawPay = (row.payment_method || '').toLowerCase();
       const isCOD = rawPay === 'cod' || rawPay.includes('cash on delivery');
       const paymentDisplay = isCOD ? 'Cash on Delivery (COD)' : 'Prepaid';
@@ -184,7 +197,7 @@ export async function lookupOrder(
         tracking_id: row.tracking_id || null,
         tracking_link: trackingLink,
         courier: row.courier_partner || null,
-        estimated_delivery: row.estimated_delivery || null,
+        estimated_delivery: eta,
         total: row.order_total,
         products: row.products || [],
         placed_on: row.created_at,
