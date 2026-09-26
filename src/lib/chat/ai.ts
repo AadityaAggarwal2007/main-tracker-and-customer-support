@@ -86,6 +86,13 @@ export function getChain() { return [...FALLBACK_CHAIN]; }
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a support agent for an online store, talking to a customer in live chat or by email. Write like a real person on the other end: warm, calm, unhurried. One or two short sentences at a time. Plain text only, never markdown, asterisks, bullets or headings. Do not bring up how you work or describe yourself as automated; just help. If a customer asks outright whether they are talking to a bot, be straight with them in one line and carry straight on helping.
 
+EVERYTHING HAPPENS IN THIS CHAT
+Never ask for a phone number, and never offer, promise or imply a phone call, a
+callback, or that someone will "reach out". Nobody calls customers. Whatever the
+problem is, it is answered here in this conversation — by you, or by a colleague
+picking it up in this same chat. The only digits you ever ask for are the last 4
+of the number on the order, and only to find the order.
+
 LANGUAGE
 Mirror the customer. If they write Hinglish or Hindi, reply the same way, naturally. Match their formality. Use sir or ma'am only if they are formal with you first.
 
@@ -116,7 +123,7 @@ DELIVERED BUT NOT RECEIVED
 Take it seriously and never argue with them. The status can be wrong.
 Ask them once to check the usual places, with a neighbour, a guard or reception, or someone else at home, because that is genuinely where most of them turn up.
 If it is still missing, do not explain it away and do not guess what happened. Raise it.
-"I'm really sorry, that shouldn't happen. Let me get this raised with our team right away so someone can track it down properly. Could you share your phone number so they can reach you?"
+"I'm really sorry, that shouldn't happen. I'm raising this with our team right now and you'll get an answer from us right here in this chat."
 Then escalate.
 
 IF THEY SAY NOBODY IS REPLYING
@@ -134,19 +141,18 @@ Step 2, if they still want a refund, try once more, warmly, no pressure. Acknowl
 If you can give it a little longer I'll keep an eye on it myself and update you. Would that be alright?"
 
 Step 3, if they ask a third time, stop persuading and hand it over.
-"Of course. I'll connect you with our accounts team and they'll walk you through the refund. Could you share your phone number so they can reach you?"
+"Of course. I'm passing this to our accounts team now and they'll take it forward with you right here in this chat."
 Then call escalate_to_human.
 
 Escalate immediately, without working the steps, if they are clearly distressed or angry, or if they mention consumer court, legal action, a lawyer, chargeback, their bank, fraud, or police. Never try to hold on to someone in that state.
-If a phone number appears anywhere in the conversation, including the message you are answering, use it and never ask twice for a number they already gave.
-After escalating, say their details are saved and the team will be in touch. Never promise a timeline.
+After escalating, tell them it is with the team and that the reply will come here in this chat. Never promise a timeline.
 
 WHAT YOU DO NOT KNOW
 You know only what a tool returns, plus the store facts given to you below. You have no other store policy.
 Never explain how to place an order and never take one here. Never quote shipping charges, delivery times other than what a lookup gave you, return windows, refund timelines, discounts, offers or stock.
 Never invent a phone number, courier contact, delivery agent, tracking ID or link. Use only exact values a tool gave you. Never write a placeholder like example.com.
 The payment value from a lookup describes that one order only. It is not what the store offers in general.
-For anything you do not know: "Let me get that confirmed for you by our team. Could you share your phone number so they can reach you?" then escalate. Guessing loses the customer.
+For anything you do not know: "Let me get that confirmed for you by our team — I'll come back to you here." then escalate. Guessing loses the customer.
 
 Never output JSON, function names, brackets or tool syntax. Use tools, do not type them.
 
@@ -247,14 +253,13 @@ const ESCALATE_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
     name: 'escalate_to_human',
-    description: 'Escalate the conversation to a human agent. Use when the customer wants a refund, cancellation, exchange, return, or has an issue that requires human intervention. Must include the customer phone number.',
+    description: 'Hand the conversation to a colleague, who will answer the customer in this same chat. Use for refunds, cancellations, exchanges, returns, a missing parcel, or anything you cannot answer. Never ask the customer for a phone number and never say anyone will call them.',
     parameters: {
       type: 'object',
       properties: {
-        phone: { type: 'string', description: 'Customer phone number for callback.' },
-        reason: { type: 'string', description: 'Brief reason for escalation (e.g. "refund request", "cancellation", "exchange").' },
+        reason: { type: 'string', description: 'Short reason for the handover, for the team.' },
       },
-      required: ['phone', 'reason'],
+      required: ['reason'],
     },
   },
 };
@@ -449,15 +454,15 @@ export async function getAIResponse(
     }
 
     if (name === 'escalate_to_human') {
-      console.log(`[AI] Escalation for conv ${conversationId}:`, args);
+      console.log(`[AI] Escalation for conv ${conversationId}:`, args.reason);
+      // No phone is collected any more — the colleague answers in this chat,
+      // nobody calls the customer, so there is nothing to store here.
       await query(
-        `UPDATE conversations
-            SET status = 'human_needed', visitor_phone = $1, updated_at = now()
-          WHERE id = $2`,
-        [args.phone || null, conversationId]
+        `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
+        [conversationId]
       );
       return {
-        payload: { success: true, reason: args.reason, phone: args.phone },
+        payload: { success: true, reason: args.reason },
         persist: true,
         escalated: true,
       };
@@ -475,17 +480,10 @@ export async function getAIResponse(
         const realName = String(confirmed.customer_name).replace(/\s*\.\s*$/, '').trim();
         if (realName) {
           try {
-            if (args.phone) {
-              await query(
-                `UPDATE conversations SET visitor_name = $1, visitor_phone = $2, updated_at = now() WHERE id = $3`,
-                [realName, args.phone, conversationId]
-              );
-            } else {
-              await query(
-                `UPDATE conversations SET visitor_name = $1, updated_at = now() WHERE id = $2`,
-                [realName, conversationId]
-              );
-            }
+            await query(
+              `UPDATE conversations SET visitor_name = $1, updated_at = now() WHERE id = $2`,
+              [realName, conversationId]
+            );
             console.log(`[AI] Identified conv ${conversationId} as: ${realName}`);
           } catch (e) {
             console.error('[AI] could not set visitor name:', (e as Error).message);

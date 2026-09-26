@@ -17,3 +17,10 @@ CREATE TABLE IF NOT EXISTS site_faqs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_site_faqs_site ON site_faqs (site_id, sort_order);
+
+-- The app connects as tracker_user, not postgres. A NEW table gets no grants
+-- automatically, so without this the API returns "permission denied for table
+-- site_faqs" and every save silently fails. (ALTER TABLE ADD COLUMN on an
+-- existing table inherits its grants, which is why earlier migrations did not
+-- need this.)
+GRANT SELECT, INSERT, UPDATE, DELETE ON site_faqs TO tracker_user;
