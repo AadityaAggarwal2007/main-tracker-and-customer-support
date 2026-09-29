@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'crypto';
 import { NextRequest } from 'next/server';
 import { queryOne, query } from './db';
 
@@ -8,21 +9,58 @@ export interface AuthUser {
   businessIds: string[] | null; // null = all panels (admin), string[] = specific panels only
 }
 
-// Simple token-based auth using base64 encoded credentials
+// ── Login tokens ───────────────────────────────────────────────
+// A token is signed, so nobody can write their own. Until 2026-09-29 tokens
+// were plain base64 JSON, and anyone could make an admin token by hand.
+//   v1.<base64url payload>.<base64url HMAC-SHA256 of "v1.<payload>">
+// The key is AUTH_TOKEN_SECRET, which lives only in /etc/tracker/.env. Without
+// it (or with a short one) no token is issued or accepted: login fails closed
+// instead of falling back to unsigned tokens. Changing the secret signs
+// everyone out.
+const TOKEN_VERSION = 'v1';
+const TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+const ROLES: AuthUser['role'][] = ['admin', 'manager', 'viewer'];
+
+function tokenSecret(): string | null {
+  const secret = process.env.AUTH_TOKEN_SECRET || '';
+  return secret.length >= 32 ? secret : null;
+}
+
+function signature(body: string, secret: string): Buffer {
+  return createHmac('sha256', secret).update(body).digest();
+}
+
 export function generateToken(username: string, role: string, businessIds: string[] | null = null): string {
-  const payload = JSON.stringify({ username, role, businessIds, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 });
-  return Buffer.from(payload).toString('base64');
+  const secret = tokenSecret();
+  if (!secret) throw new Error('AUTH_TOKEN_SECRET is missing or shorter than 32 characters; refusing to issue a login token');
+
+  const payload = Buffer.from(
+    JSON.stringify({ username, role, businessIds, exp: Date.now() + TOKEN_LIFETIME_MS })
+  ).toString('base64url');
+  const body = `${TOKEN_VERSION}.${payload}`;
+  return `${body}.${signature(body, secret).toString('base64url')}`;
 }
 
 export function verifyToken(token: string): AuthUser | null {
+  const secret = tokenSecret();
+  if (!secret || typeof token !== 'string') return null;
+
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== TOKEN_VERSION) return null;
+
+  const given = Buffer.from(parts[2], 'base64url');
+  const expected = signature(`${parts[0]}.${parts[1]}`, secret);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+
   try {
-    const payload = JSON.parse(Buffer.from(token, 'base64').toString());
-    if (payload.exp < Date.now()) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    if (typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
+    if (typeof payload.username !== 'string' || !ROLES.includes(payload.role)) return null;
     return {
       username: payload.username,
       displayName: payload.username,
       role: payload.role,
-      businessIds: payload.businessIds ?? null,
+      businessIds: Array.isArray(payload.businessIds) ? payload.businessIds : null,
     };
   } catch {
     return null;

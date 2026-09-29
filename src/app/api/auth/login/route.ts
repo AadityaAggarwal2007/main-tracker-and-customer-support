@@ -19,7 +19,9 @@ export async function POST(request: NextRequest) {
       token: result.token,
       user: result.user,
     });
-  } catch {
+  } catch (err) {
+    // Most likely AUTH_TOKEN_SECRET missing from /etc/tracker/.env.
+    console.error('[auth] login failed:', (err as Error).message);
     return NextResponse.json({ error: 'Authentication failed' }, { status: 500 });
   }
 }

@@ -179,6 +179,16 @@ export default function AdminDashboard() {
     // Restore last active panel
     const savedPanel = localStorage.getItem('active_panel_id') || '';
     setActivePanelId(savedPanel);
+    // An expired token, or one from before tokens were signed, is refused by
+    // every API — send the person to log in again instead of showing nothing.
+    fetch('/api/auth/session', { headers: { Authorization: `Bearer ${savedToken}` } })
+      .then(res => {
+        if (res.status !== 401) return;
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        router.push('/login');
+      })
+      .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
 
   const hasPermission = (perm: string) => {

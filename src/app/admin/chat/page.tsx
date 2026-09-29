@@ -184,6 +184,7 @@ export default function ChatSupportPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadsRef = useRef(new Map<string, XMLHttpRequest>());
   const dragDepthRef = useRef(0);
+  const composerRef = useRef<HTMLDivElement>(null);
   const fileKeyRef = useRef(0);
 
   const showAlert = (type: 'success' | 'error', message: string) => {
@@ -199,6 +200,16 @@ export default function ChatSupportPage() {
     setToken(t);
     setUser(JSON.parse(u));
     setActivePanelId(localStorage.getItem('active_panel_id') || '');
+    // An expired token, or one from before tokens were signed, is refused by
+    // every API — send the person to log in again instead of showing nothing.
+    fetch('/api/auth/session', { headers: { Authorization: `Bearer ${t}` } })
+      .then(res => {
+        if (res.status !== 401) return;
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        router.push('/login');
+      })
+      .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
 
   /* ═══ PANELS ═══ */
@@ -426,6 +437,10 @@ export default function ChatSupportPage() {
     const keepPage = (e: DragEvent) => {
       if (!draggingFiles(e)) return;
       e.preventDefault();
+      // Only the composer takes files; everywhere else shows a no-drop cursor.
+      if (e.type === 'dragover' && e.dataTransfer && !composerRef.current?.contains(e.target as Node)) {
+        e.dataTransfer.dropEffect = 'none';
+      }
       if (e.type === 'drop') { dragDepthRef.current = 0; setDragOver(false); }
     };
     window.addEventListener('dragover', keepPage);
@@ -752,6 +767,7 @@ export default function ChatSupportPage() {
                 {/* Composer */}
                 {activeConv.status !== 'resolved' && canReply && (
                   <div
+                    ref={composerRef}
                     style={{ borderTop: '1px solid var(--border)', padding: '0.75rem 1rem', position: 'relative' }}
                     onDragEnter={e => {
                       if (!draggingFiles(e)) return;
