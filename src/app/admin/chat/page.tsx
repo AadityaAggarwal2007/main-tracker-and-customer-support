@@ -4,8 +4,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
-  MessageCircle, User, Phone, Bot, Inbox,
+  MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
+  Download, ExternalLink, RotateCw,
 } from 'lucide-react';
+import {
+  ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
+  TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
+} from '@/lib/chat/attachment-rules';
 
 /* ═══════════ TYPES ═══════════ */
 interface AuthUser { username: string; displayName: string; role: 'admin' | 'manager' | 'viewer'; businessIds: string[] | null; }
@@ -32,8 +37,25 @@ interface ChatMessage {
   id: string;
   sender: 'visitor' | 'ai' | 'agent';
   content: string;
-  metadata: { withheld?: string; emailed?: boolean; agent?: string } | null;
+  metadata: {
+    withheld?: string; emailed?: boolean; agent?: string;
+    attachments?: StoredAttachment[]; captionless?: boolean;
+  } | null;
   created_at: string;
+}
+
+// A file in the composer, from the moment it is picked until the reply is sent.
+// It uploads straight away, so a failure shows on the file itself.
+interface PendingFile {
+  key: string;
+  file: File;
+  name: string;
+  size: number;
+  previewUrl: string | null;
+  status: 'uploading' | 'ready' | 'failed';
+  progress: number;
+  error?: string;
+  id?: string;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -84,6 +106,52 @@ function renderWithLinks(text: string) {
   );
 }
 
+const draggingFiles = (e: { dataTransfer: DataTransfer | null }) =>
+  !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+
+// Files inside a sent message: images as clickable previews, anything else as a
+// card with open and download links.
+function MessageAttachments({ files, onImageLoad }: {
+  files: StoredAttachment[];
+  onImageLoad?: (img: HTMLImageElement) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem', whiteSpace: 'normal' }}>
+      {files.map(f => f.kind === 'image' ? (
+        <a key={f.id} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{ display: 'block', lineHeight: 0 }}>
+          <img
+            src={f.url} alt={f.name} loading="lazy"
+            onLoad={e => onImageLoad?.(e.currentTarget)}
+            style={{ display: 'block', width: 220, maxWidth: '100%', height: 'auto', maxHeight: 240, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--muted)' }}
+          />
+        </a>
+      ) : (
+        <div key={f.id} style={{
+          display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0, maxWidth: 280,
+          padding: '0.5rem 0.625rem', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)',
+        }}>
+          <FileText size={18} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <a href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{
+              display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--fg)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {f.name}
+            </a>
+            <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>{formatFileSize(f.size)}</div>
+          </div>
+          <a href={f.url} target="_blank" rel="noopener noreferrer" className="btn-icon" title="Open" aria-label={`Open ${f.name}`} style={{ width: 28, height: 28 }}>
+            <ExternalLink size={14} />
+          </a>
+          <a href={`${f.url}?download=1`} className="btn-icon" title="Download" aria-label={`Download ${f.name}`} style={{ width: 28, height: 28 }}>
+            <Download size={14} />
+          </a>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ChatSupportPage() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -102,9 +170,21 @@ export default function ChatSupportPage() {
   const [sending, setSending] = useState(false);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [fileError, setFileError] = useState('');
+  const [sendBlocked, setSendBlocked] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  const pendingRef = useRef<PendingFile[]>([]);
+  pendingRef.current = pendingFiles;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadsRef = useRef(new Map<string, XMLHttpRequest>());
+  const dragDepthRef = useRef(0);
+  const fileKeyRef = useRef(0);
 
   const showAlert = (type: 'success' | 'error', message: string) => {
     setAlert({ type, message });
@@ -182,9 +262,23 @@ export default function ChatSupportPage() {
     return () => clearInterval(id);
   }, [token, fetchConversations, fetchThread]);
 
+  const pinUntilRef = useRef(0);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    pinUntilRef.current = Date.now() + 2000;
   }, [messages.length]);
+
+  // An image has no height until it loads, so the scroll above stops short of
+  // it. Follow it down while that scroll is still settling, or if the agent is
+  // at the bottom anyway — not when they have scrolled up to read.
+  const keepThreadPinned = (img: HTMLImageElement) => {
+    const box = threadRef.current;
+    if (!box) return;
+    const gap = box.scrollHeight - box.scrollTop - box.clientHeight;
+    if (Date.now() < pinUntilRef.current || gap <= img.offsetHeight + 80) {
+      bottomRef.current?.scrollIntoView();
+    }
+  };
 
   /* ═══ ACTIONS ═══ */
   const changeStatus = async (status: string) => {
@@ -205,19 +299,172 @@ export default function ChatSupportPage() {
     } catch { showAlert('error', 'Could not update that conversation'); }
   };
 
+  /* ═══ ATTACHMENTS ═══ */
+  const updateFile = (key: string, patch: Partial<PendingFile>) =>
+    setPendingFiles(list => list.map(p => (p.key === key ? { ...p, ...patch } : p)));
+
+  // XMLHttpRequest rather than fetch, because only it reports upload progress.
+  const uploadFile = useCallback((key: string, file: File, conversationId: string) => {
+    const xhr = new XMLHttpRequest();
+    uploadsRef.current.set(key, xhr);
+
+    const form = new FormData();
+    form.append('conversationId', conversationId);
+    form.append('file', file);
+
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) updateFile(key, { progress: Math.round((e.loaded / e.total) * 100) });
+    };
+    xhr.onload = () => {
+      uploadsRef.current.delete(key);
+      let data: { attachment?: { id: string; name: string }; error?: string } | null = null;
+      try { data = JSON.parse(xhr.responseText); } catch { /* not JSON, e.g. a proxy error page */ }
+      if (xhr.status >= 200 && xhr.status < 300 && data?.attachment?.id) {
+        updateFile(key, { status: 'ready', progress: 100, id: data.attachment.id, name: data.attachment.name, error: undefined });
+      } else {
+        updateFile(key, {
+          status: 'failed',
+          error: data?.error || (xhr.status === 413 ? 'File size exceeds the allowed limit.' : 'Upload failed'),
+        });
+      }
+    };
+    xhr.onerror = () => {
+      uploadsRef.current.delete(key);
+      updateFile(key, { status: 'failed', error: 'Upload failed — check your connection' });
+    };
+    xhr.onabort = () => { uploadsRef.current.delete(key); };
+
+    xhr.open('POST', '/api/chat/attachments');
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.send(form);
+  }, [token]);
+
+  const forgetFile = (p: PendingFile, deleteUpload: boolean) => {
+    uploadsRef.current.get(p.key)?.abort();
+    if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+    if (deleteUpload && p.id) {
+      fetch(`/api/chat/attachments/${p.id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => { /* an unsent upload is cleared after a day anyway */ });
+    }
+  };
+
+  const addFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    if (!activeId || activeConv?.status !== 'agent_handling') {
+      setFileError('Take over the conversation to attach files.');
+      return;
+    }
+    if (sending) {
+      setFileError('Wait for the reply to finish sending.');
+      return;
+    }
+
+    const problems: string[] = [];
+    const added: PendingFile[] = [];
+    let count = pendingRef.current.length;
+    let total = pendingRef.current.reduce((n, p) => n + p.size, 0);
+
+    for (const file of files) {
+      const problem = checkBrowserFile(file)
+        ?? (count >= MAX_ATTACHMENTS_PER_MESSAGE ? TOO_MANY_MESSAGE : null)
+        ?? (total + file.size > MAX_ATTACHMENT_TOTAL_BYTES ? TOTAL_TOO_LARGE_MESSAGE : null);
+      if (problem) { problems.push(`${file.name}: ${problem}`); continue; }
+
+      count += 1;
+      total += file.size;
+      added.push({
+        key: `f${++fileKeyRef.current}`,
+        file,
+        name: file.name,
+        size: file.size,
+        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+        status: 'uploading',
+        progress: 0,
+      });
+    }
+
+    setFileError(problems.join(' · '));
+    if (added.length > 0) {
+      setPendingFiles(list => [...list, ...added]);
+      added.forEach(p => uploadFile(p.key, p.file, activeId));
+    }
+  };
+
+  const removeFile = (key: string) => {
+    const p = pendingRef.current.find(x => x.key === key);
+    if (p) forgetFile(p, true);
+    setPendingFiles(list => list.filter(x => x.key !== key));
+    setFileError('');
+  };
+
+  const retryFile = (key: string) => {
+    const p = pendingRef.current.find(x => x.key === key);
+    if (!p || p.status !== 'failed' || !activeId) return;
+    updateFile(key, { status: 'uploading', progress: 0, error: undefined });
+    uploadFile(key, p.file, activeId);
+  };
+
+  // Files are uploaded against one conversation, so they do not follow the
+  // agent to another one.
+  useEffect(() => {
+    pendingRef.current.forEach(p => forgetFile(p, true));
+    setPendingFiles([]);
+    setFileError('');
+    setSendBlocked(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  useEffect(() => () => {
+    pendingRef.current.forEach(p => forgetFile(p, false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A file dropped anywhere else on the page would make the browser open it
+  // and leave the inbox.
+  useEffect(() => {
+    const keepPage = (e: DragEvent) => {
+      if (!draggingFiles(e)) return;
+      e.preventDefault();
+      if (e.type === 'drop') { dragDepthRef.current = 0; setDragOver(false); }
+    };
+    window.addEventListener('dragover', keepPage);
+    window.addEventListener('drop', keepPage);
+    return () => {
+      window.removeEventListener('dragover', keepPage);
+      window.removeEventListener('drop', keepPage);
+    };
+  }, []);
+
   const sendReply = async () => {
-    if (!activeId || !draft.trim() || sending) return;
+    if (!activeId || sending) return;
+    const text = draft.trim();
+    const files = pendingRef.current;
+    // Enter still works while a file is not ready; it explains instead of sending.
+    if (files.some(p => p.status !== 'ready')) { setSendBlocked(true); return; }
+    if (!text && files.length === 0) return;
+
     setSending(true);
     try {
       const res = await fetch('/api/chat/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ conversationId: activeId, content: draft.trim() }),
+        body: JSON.stringify({
+          conversationId: activeId,
+          content: text,
+          ...(files.length > 0 ? { attachmentIds: files.map(p => p.id) } : {}),
+        }),
       });
       const data = await res.json();
+      // On failure the text and files stay in the composer, ready to send again.
       if (!res.ok) { showAlert('error', data.error || 'Could not send that reply'); return; }
 
       setDraft('');
+      const sentKeys = new Set(files.map(p => p.key));
+      files.forEach(p => forgetFile(p, false));
+      setPendingFiles(list => list.filter(p => !sentKeys.has(p.key)));
+      setFileError('');
+      setSendBlocked(false);
       if (data.emailed === false) {
         showAlert('error', 'Saved, but the email did not go out — check the mailbox settings');
       }
@@ -243,6 +490,12 @@ export default function ChatSupportPage() {
 
   const canReply = user.role !== 'viewer';
   const unreadTotal = conversations.reduce((n, c) => n + (c.unread_count || 0), 0);
+  // Worked out from the files each time, so it goes away as soon as they are ready.
+  const sendHint = !sendBlocked ? ''
+    : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
+    : pendingFiles.some(p => p.status === 'failed') ? 'Retry or remove the file that failed before sending.'
+    : '';
+  const composerNotice = [fileError, sendHint].filter(Boolean).join(' · ');
 
   return (
     <div className="admin-layout">
@@ -450,10 +703,14 @@ export default function ChatSupportPage() {
                 </div>
 
                 {/* Messages */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div ref={threadRef} style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {messages.map(msg => {
                     const mine = msg.sender !== 'visitor';
                     const withheld = msg.metadata?.withheld;
+                    const attached = msg.metadata?.attachments;
+                    const files = Array.isArray(attached) ? attached : [];
+                    // A files-only reply carries a text stand-in for older views; the files say it here.
+                    const showText = !(files.length > 0 && msg.metadata?.captionless);
                     return (
                       <div key={msg.id} style={{
                         alignSelf: mine ? 'flex-start' : 'flex-end',
@@ -471,7 +728,9 @@ export default function ChatSupportPage() {
                           border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
                           opacity: withheld ? 0.65 : 1,
                         }}>
-                          {renderWithLinks(msg.content)}
+                          {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
+                          {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
+                          {showText && renderWithLinks(msg.content)}
                         </div>
                         {withheld && (
                           <span style={{
@@ -492,7 +751,44 @@ export default function ChatSupportPage() {
 
                 {/* Composer */}
                 {activeConv.status !== 'resolved' && canReply && (
-                  <div style={{ borderTop: '1px solid var(--border)', padding: '0.75rem 1rem' }}>
+                  <div
+                    style={{ borderTop: '1px solid var(--border)', padding: '0.75rem 1rem', position: 'relative' }}
+                    onDragEnter={e => {
+                      if (!draggingFiles(e)) return;
+                      e.preventDefault();
+                      dragDepthRef.current += 1;
+                      setDragOver(true);
+                    }}
+                    onDragOver={e => {
+                      if (!draggingFiles(e)) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                    }}
+                    onDragLeave={e => {
+                      if (!draggingFiles(e)) return;
+                      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+                      if (dragDepthRef.current === 0) setDragOver(false);
+                    }}
+                    onDrop={e => {
+                      if (!draggingFiles(e)) return;
+                      e.preventDefault();
+                      dragDepthRef.current = 0;
+                      setDragOver(false);
+                      addFiles(Array.from(e.dataTransfer.files));
+                    }}
+                  >
+                    {dragOver && (
+                      <div style={{
+                        position: 'absolute', inset: '0.375rem', zIndex: 2, pointerEvents: 'none',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.375rem',
+                        border: '1.5px dashed var(--primary)', borderRadius: 'var(--radius-lg)',
+                        background: 'var(--primary-light)', color: 'var(--primary)',
+                        fontSize: '0.8125rem', fontWeight: 600,
+                      }}>
+                        <Paperclip size={15} />
+                        {activeConv.status === 'agent_handling' ? 'Drop file here' : 'Take over to attach files'}
+                      </div>
+                    )}
                     {activeConv.status !== 'agent_handling' && (
                       <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
                         {activeConv.status === 'human_needed'
@@ -500,7 +796,88 @@ export default function ChatSupportPage() {
                           : 'The AI is handling this — take over to reply yourself.'}
                       </p>
                     )}
+                    {pendingFiles.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem', scrollbarWidth: 'thin' }}>
+                        {pendingFiles.map(p => (
+                          <div key={p.key} style={{
+                            position: 'relative', flex: '0 0 auto', width: 210, maxWidth: '100%', overflow: 'hidden',
+                            display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.375rem 0.375rem 0.375rem 0.5rem',
+                            borderRadius: 'var(--radius)',
+                            border: `1px solid ${p.status === 'failed' ? 'var(--danger)' : 'var(--border)'}`,
+                            background: p.status === 'failed' ? 'var(--danger-light)' : 'var(--bg-subtle)',
+                          }}>
+                            {p.previewUrl ? (
+                              <img src={p.previewUrl} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                            ) : (
+                              <div style={{
+                                width: 36, height: 36, borderRadius: 6, flexShrink: 0,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                background: 'var(--primary-light)', color: 'var(--primary)',
+                              }}>
+                                <FileText size={18} />
+                              </div>
+                            )}
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div title={p.name} style={{ fontSize: '0.75rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {p.name}
+                              </div>
+                              <div title={p.error} style={{
+                                fontSize: '0.6875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                color: p.status === 'failed' ? 'var(--danger)' : 'var(--fg-muted)',
+                              }}>
+                                {p.status === 'uploading' ? `Uploading… ${p.progress}%`
+                                  : p.status === 'failed' ? p.error
+                                  : formatFileSize(p.size)}
+                              </div>
+                            </div>
+                            {p.status === 'failed' && (
+                              <button type="button" className="btn-icon" title="Try again" aria-label={`Retry ${p.name}`}
+                                onClick={() => retryFile(p.key)} style={{ width: 24, height: 24, flexShrink: 0 }}>
+                                <RotateCw size={14} />
+                              </button>
+                            )}
+                            <button type="button" className="btn-icon" title="Remove" aria-label={`Remove ${p.name}`}
+                              onClick={() => removeFile(p.key)} disabled={sending} style={{ width: 24, height: 24, flexShrink: 0 }}>
+                              <X size={14} />
+                            </button>
+                            {p.status === 'uploading' && (
+                              <div style={{
+                                position: 'absolute', left: 0, bottom: 0, height: 2,
+                                width: `${p.progress}%`, background: 'var(--primary)', transition: 'width 0.2s',
+                              }} />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {composerNotice && (
+                      <p role="alert" style={{ fontSize: '0.6875rem', color: 'var(--danger)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <AlertCircle size={12} style={{ flexShrink: 0 }} /> {composerNotice}
+                      </p>
+                    )}
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        accept={ATTACHMENT_ACCEPT}
+                        style={{ display: 'none' }}
+                        onChange={e => {
+                          addFiles(Array.from(e.target.files || []));
+                          e.target.value = '';
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        title="Attach files — JPG, PNG, WEBP, GIF or PDF, up to 10 MB each"
+                        aria-label="Attach files"
+                        disabled={activeConv.status !== 'agent_handling' || sending || pendingFiles.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+                        onClick={() => fileInputRef.current?.click()}
+                        style={{ padding: 0, width: '2.5rem', flexShrink: 0 }}
+                      >
+                        <Paperclip size={16} />
+                      </button>
                       <textarea
                         className="form-input"
                         rows={2}
@@ -517,7 +894,11 @@ export default function ChatSupportPage() {
                       />
                       <button
                         className="btn btn-primary"
-                        disabled={!draft.trim() || sending || activeConv.status !== 'agent_handling'}
+                        disabled={
+                          sending || activeConv.status !== 'agent_handling'
+                          || pendingFiles.some(p => p.status !== 'ready')
+                          || (!draft.trim() && pendingFiles.length === 0)
+                        }
                         onClick={sendReply}
                       >
                         {sending

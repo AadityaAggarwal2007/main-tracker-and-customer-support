@@ -26,6 +26,7 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 | Customer tracking page | `src/app/track/`, `src/app/track/[token]/`, `src/lib/journey.ts`, `src/components/JourneyView.tsx` |
 | Chat inbox for staff | `src/app/admin/chat/page.tsx`, `src/app/api/chat/*` |
 | Chat widget on merchants' storefronts | `public/widget.js`, `src/app/api/widget/*`, `src/lib/chat/widget-api.ts` |
+| Files agents attach to replies | `src/lib/chat/attachment-rules.ts` (types + limits), `src/app/api/chat/attachments/*` (upload/remove), `src/app/api/widget/files/[id]` (serves sent files), table `chat_attachments` (`chat-attachments.sql`) |
 | AI replies (model chain, tools, base prompt) | `src/lib/chat/ai.ts` — `DEFAULT_SYSTEM_PROMPT`, `buildSystemPrompt`, `FALLBACK_CHAIN` |
 | Order lookup used by the AI | `src/lib/chat/orders.ts` |
 | Email support (IMAP poll, threading, held drafts) | `src/lib/chat/email.ts`, `src/app/api/cron/chat-email-poll` |
@@ -189,7 +190,8 @@ psql -d tracking_crm -c "CREATE ROLE tracker_user"   # supabase-chat-faq.sql gra
 for f in supabase-schema.sql supabase-businesses.sql supabase-multi-panel.sql \
          supabase-progression.sql supabase-draft-queue.sql supabase-email-logs.sql \
          supabase-support.sql supabase-journey.sql supabase-origin-city.sql \
-         chat-tables.sql supabase-chat-cod.sql supabase-chat-faq.sql chat-settings.sql; do
+         chat-tables.sql supabase-chat-cod.sql supabase-chat-faq.sql chat-settings.sql \
+         chat-attachments.sql; do
   psql -d tracking_crm -v ON_ERROR_STOP=1 -f "$f" || break
 done
 ```

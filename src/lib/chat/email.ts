@@ -94,10 +94,11 @@ function stripQuotedReply(text: string): string {
 
 // ── Send via Gmail SMTP ────────────────────────────────────────────────────
 async function sendEmailReply({
-  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references,
+  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments,
 }: {
   fromEmail: string; appPassword: string; toEmail: string; subject: string;
   htmlBody: string; textBody: string; replyToMessageId?: string | null; references?: string | null;
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
 }): Promise<void> {
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -121,6 +122,7 @@ async function sendEmailReply({
     html: htmlBody,
     text: textBody,
     headers,
+    attachments,
   });
 }
 
@@ -401,7 +403,11 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
 }
 
 // ── Send an agent reply from the inbox ────────────────────────────────────
-export async function sendAgentEmailReply(conversationId: string, content: string): Promise<void> {
+export async function sendAgentEmailReply(
+  conversationId: string,
+  content: string,
+  attachmentIds: string[] = []
+): Promise<void> {
   const conv = await queryOne<{
     visitor_id: string; source: string; email_thread_id: string | null;
     site_name: string; from_email: string | null; app_password: string | null;
@@ -432,6 +438,19 @@ export async function sendAgentEmailReply(conversationId: string, content: strin
   const visitorEmail = conv.visitor_id.replace('email:', '');
   const subject = conv.subject || 'Your enquiry';
 
+  // Files the agent attached in the inbox go out as real email attachments.
+  let attachments: { filename: string; content: Buffer; contentType: string }[] | undefined;
+  if (attachmentIds.length > 0) {
+    const files = await query<{ file_name: string; mime_type: string; data: Buffer }>(
+      `SELECT file_name, mime_type, data
+         FROM chat_attachments
+        WHERE id = ANY($1::text[]) AND conversation_id = $2
+        ORDER BY array_position($1::text[], id)`,
+      [attachmentIds, conversationId]
+    );
+    attachments = files.rows.map(f => ({ filename: f.file_name, content: f.data, contentType: f.mime_type }));
+  }
+
   const html = buildEmailHtml(content, conv.site_name);
   await sendEmailReply({
     fromEmail: conv.from_email,
@@ -442,5 +461,6 @@ export async function sendAgentEmailReply(conversationId: string, content: strin
     textBody: content,
     replyToMessageId: conv.email_thread_id,
     references: conv.email_thread_id,
+    attachments,
   });
 }

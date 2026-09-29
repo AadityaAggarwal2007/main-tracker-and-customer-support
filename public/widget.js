@@ -172,6 +172,15 @@
     '}',
     '._cw_agent ._cw_bubble { border-left: 3px solid ' + ACCENT + '; }',
     '._cw_bubble a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }',
+    '._cw_files { display: flex; flex-direction: column; gap: 6px; white-space: normal; }',
+    '._cw_files._cw_gap { margin-bottom: 8px; }',
+    '._cw_bubble a._cw_img { display: block; line-height: 0; text-decoration: none; }',
+    '._cw_img img { display: block; width: 220px; max-width: 100%; height: auto; max-height: 240px; object-fit: cover; border-radius: 12px; background: #e9e9ec; }',
+    '._cw_file { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; min-width: 0; }',
+    '._cw_file svg { width: 22px; height: 22px; flex-shrink: 0; fill: #71717a; }',
+    '._cw_file_meta { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }',
+    '._cw_bubble a._cw_file_name { font-size: 13px; font-weight: 500; color: #18181b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }',
+    '._cw_file_links { font-size: 11.5px; color: #71717a; }',
     '._cw_label { font-size: 11px; color: #8a8a8f; margin-bottom: 5px; padding: 0 6px; font-weight: 500; letter-spacing: 0.01em; }',
     '._cw_time { font-size: 10.5px; color: #b4b4b8; margin-top: 5px; padding: 0 6px; }',
     '#_cw_typing {',
@@ -383,6 +392,41 @@
     .catch(function() {});
   }
 
+  var FILE_ICON = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>';
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  // Files a support agent sent: images as previews that open full size, other
+  // files as a card with open and download links. Only our own file URLs are
+  // rendered.
+  function renderFiles(files) {
+    var out = '';
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!f || typeof f.url !== 'string' || !/^\/api\/widget\/files\/[a-f0-9]{64}$/.test(f.url)) continue;
+      var url = escapeHtml(SERVER_URL + f.url);
+      var name = escapeHtml(String(f.name || 'file'));
+      if (f.kind === 'image') {
+        out += '<a class="_cw_img" href="' + url + '" target="_blank" rel="noopener noreferrer">' +
+          '<img src="' + url + '" alt="' + name + '" loading="lazy"></a>';
+      } else {
+        out += '<div class="_cw_file">' + FILE_ICON +
+          '<div class="_cw_file_meta">' +
+            '<a class="_cw_file_name" href="' + url + '" target="_blank" rel="noopener noreferrer" title="' + name + '">' + name + '</a>' +
+            '<span class="_cw_file_links">' + formatSize(Number(f.size) || 0) + ' · ' +
+              '<a href="' + url + '" target="_blank" rel="noopener noreferrer">Open</a> · ' +
+              '<a href="' + url + '?download=1">Download</a>' +
+            '</span>' +
+          '</div></div>';
+      }
+    }
+    return out;
+  }
+
   function formatTime(ts) {
     var d = new Date(ts);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -409,12 +453,29 @@
     var sameSender = prev && prev.classList && prev.classList.contains('_cw_msg') && prev.classList.contains(cls);
     if (sameSender) div.classList.add('_cw_same');
 
+    // A files-only reply also carries a text stand-in for older views; the
+    // files themselves say it here.
+    var files = (msg.metadata && Array.isArray(msg.metadata.attachments)) ? renderFiles(msg.metadata.attachments) : '';
+    var showText = !(files && msg.metadata.captionless);
+    if (files) files = '<div class="_cw_files' + (showText ? ' _cw_gap' : '') + '">' + files + '</div>';
+
     div.innerHTML =
       (sameSender ? '' : '<div class="_cw_label">' + label + '</div>') +
-      '<div class="_cw_bubble">' + linkify(msg.content) + '</div>' +
+      '<div class="_cw_bubble">' + files + (showText ? linkify(msg.content) : '') + '</div>' +
       '<div class="_cw_time">' + formatTime(msg.createdAt) + '</div>';
     messagesEl.insertBefore(div, typingEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    // An image has no height until it loads, so follow it down once it does:
+    // while the scroll above is still settling, or if the customer is at the
+    // bottom anyway — not when they have scrolled up to read.
+    state.pinUntil = Date.now() + 2000;
+    var imgs = div.getElementsByTagName('img');
+    for (var j = 0; j < imgs.length; j++) {
+      imgs[j].addEventListener('load', function () {
+        var gap = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+        if (Date.now() < state.pinUntil || gap <= this.offsetHeight + 80) messagesEl.scrollTop = messagesEl.scrollHeight;
+      });
+    }
     if (msg.createdAt) {
       state.lastTs = msg.createdAt;
       try { localStorage.setItem('_cw_ts_' + SITE_KEY, state.lastTs); } catch(e) {}
