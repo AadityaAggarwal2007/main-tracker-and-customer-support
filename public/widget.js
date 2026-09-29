@@ -495,7 +495,14 @@
     }
   }
 
-  function renderMessage(msg) {
+  // For messages from /messages (history and polls): shown, and `since` moves on.
+  function renderMessage(msg) { showMessage(msg, true); }
+
+  // moveSince is false for the reply to the visitor's own send. That reply is
+  // newer than anything the team did while the AI was writing (an agent's
+  // reply, an edit, a deletion), so moving `since` to it would skip those. The
+  // next poll fetches from the old `since`; messages already shown are skipped.
+  function showMessage(msg, moveSince) {
     var existing = document.querySelector('[data-id="' + msg.id + '"]');
     if (existing || msg.deleted) {
       // Already shown: the team may have edited or deleted it since.
@@ -507,7 +514,7 @@
         existing.querySelector('._cw_time').textContent = timeText(msg);
         followImages(existing);
       }
-      advanceTs(msg);
+      if (moveSince) advanceTs(msg);
       return;
     }
 
@@ -530,7 +537,7 @@
     messagesEl.insertBefore(div, typingEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     followImages(div);
-    advanceTs(msg);
+    if (moveSince) advanceTs(msg);
     if ((msg.sender === 'ai' || msg.sender === 'agent') && !state.phoneSaved) {
       state.aiResponseCount = (state.aiResponseCount || 0) + 1;
       if (state.aiResponseCount === 1) setTimeout(showSaveBanner, 800);
@@ -623,19 +630,22 @@
   function pollMessages() {
     if (!state.conversationId || state.sending) return;
     var url = '/messages/' + state.conversationId + '?siteKey=' + encodeURIComponent(SITE_KEY);
-    if (state.lastTs) url += '&since=' + encodeURIComponent(state.lastTs);
+    // changes=1: also send what the team edited or deleted since then.
+    if (state.lastTs) url += '&since=' + encodeURIComponent(state.lastTs) + '&changes=1';
     api(url)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.messages && data.messages.length > 0) {
+        // Only replies this chat has not shown yet count as unread; a poll can
+        // repeat messages or carry edits and deletions of old ones.
+        var newCount = data.messages.filter(function(m) {
+          return m.sender !== 'visitor' && !m.deleted && !document.querySelector('[data-id="' + m.id + '"]');
+        }).length;
         showTyping(false);
         data.messages.forEach(renderMessage);
-        if (!state.open) {
-          var newCount = data.messages.filter(function(m) { return m.sender !== 'visitor'; }).length;
-          if (newCount > 0) {
-            badge.style.display = 'flex';
-            badge.textContent = parseInt(badge.textContent || '0') + newCount;
-          }
+        if (!state.open && newCount > 0) {
+          badge.style.display = 'flex';
+          badge.textContent = parseInt(badge.textContent || '0') + newCount;
         }
       }
       if (data.status) state.status = data.status;
@@ -669,11 +679,10 @@
     .then(function(data) {
       var tmp = document.querySelector('[data-id="' + tempId + '"]');
       if (tmp && data.message) tmp.dataset.id = data.message.id;
-      if (data.message) advanceTs(data.message);
       // Always stop the indicator. Leaving it spinning on a missing reply looks
       // like the chat died, which reads worse than any error would.
       showTyping(false);
-      if (data.aiResponse) renderMessage(data.aiResponse);
+      if (data.aiResponse) showMessage(data.aiResponse, false);
       state.sending = false;
       if (callback) callback();
     })

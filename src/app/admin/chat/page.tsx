@@ -819,7 +819,8 @@ export default function ChatSupportPage() {
       // The typed text stays in the editor on any failure.
       if (!res.ok) { failed(res.status < 500 && data.error ? `Unable to update message: ${data.error}` : undefined); return; }
       replaceMessage(data.message);
-      setEditing(null);
+      // Only this message's editor closes; another one opened meanwhile stays.
+      setEditing(e => (e && e.id === id ? null : e));
       showAlert('success', 'Message updated');
       fetchConversations(true);
     } catch { failed(); }
