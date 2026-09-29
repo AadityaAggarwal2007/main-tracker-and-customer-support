@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
-import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
+import { cleanOutgoingText } from '@/lib/chat/plain-text';
 import {
   ATTACHMENT_ID_PATTERN, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, AttachmentKind, attachmentUrl,
@@ -30,8 +30,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const { conversationId, content, attachmentIds } = await request.json();
-    // Pasted **bold** would reach the customer as literal asterisks.
-    const text = stripMarkdownEmphasis(content == null ? '' : String(content));
+    // Pasted **bold** would reach the customer as literal asterisks, and the
+    // store's name is often typed as it is spelled in its web address.
+    const text = cleanOutgoingText(content == null ? '' : String(content));
     const hasText = text.trim() !== '';
     const fileIds: unknown[] = Array.isArray(attachmentIds) ? attachmentIds : [];
 
