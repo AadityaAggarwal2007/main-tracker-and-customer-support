@@ -595,14 +595,21 @@ export function consecutiveAsks(rows: GuardRow[], knownIds: (string | null | und
 
 // ── Handing over ───────────────────────────────────────────────
 // Says nothing about any order and promises no call: the team answers here.
+// Neutral wording: H5/H6 hand over when the customer has shared nothing.
 const HAND_OVER = {
-  en: "Thanks for sharing those. I've passed this to our team and they'll reply to you right here in this chat.",
-  hinglish: 'Thank you, details mil gayi. Maine aapki chat team ko de di hai, woh yahin is chat mein reply karenge.',
-  hi: 'धन्यवाद, जानकारी मिल गई है। मैंने आपकी चैट हमारी टीम को दे दी है, वे यहीं इसी चैट में आपको जवाब देंगे।',
+  en: "I've passed your chat to our team, and they'll reply to you right here in this chat.",
+  hinglish: 'Maine aapki chat hamari team ko de di hai, woh yahin is chat mein aapko reply karenge.',
+  hi: 'मैंने आपकी चैट हमारी टीम को दे दी है, वे यहीं इसी चैट में आपको जवाब देंगे।',
 };
+// What earlier deploys sent, so those hand-overs still count as ours.
+const OLD_HAND_OVER = [
+  "Thanks for sharing those. I've passed this to our team and they'll reply to you right here in this chat.",
+  'Thank you, details mil gayi. Maine aapki chat team ko de di hai, woh yahin is chat mein reply karenge.',
+  'धन्यवाद, जानकारी मिल गई है। मैंने आपकी चैट हमारी टीम को दे दी है, वे यहीं इसी चैट में आपको जवाब देंगे।',
+];
 
 function lastHandBackIndex(rows: GuardRow[]): number {
-  const ours = Object.values(HAND_OVER);
+  const ours = [...Object.values(HAND_OVER), ...OLD_HAND_OVER];
   for (let i = rows.length - 1; i >= 0; i--) {
     const r = rows[i];
     if (isVisibleReply(r) && (r.sender === 'agent' || ours.includes(r.content || ''))) return i;

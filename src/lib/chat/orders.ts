@@ -217,7 +217,9 @@ export async function lookupOrder(
     if (result.rows.length === 0) {
       return {
         found: false,
-        message: 'No order found with that order ID and those last 4 digits. Ask the customer to check both.',
+        // Seen live: with the old "ask them to check both" the model just
+        // asked for the details again without saying nothing had matched.
+        message: 'No order matched that order ID together with those last 4 digits. Tell the customer plainly that you could not find an order with both, and ask them to double-check the order ID and the last 4 digits of the phone number on the order.',
       };
     }
 
