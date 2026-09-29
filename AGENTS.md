@@ -98,8 +98,8 @@ command. Do not force-push `main`.
 ## Things that live only on the VPS (not in this repo)
 
 - `/etc/tracker/.env` — all secrets
-- The crontab that calls `http://localhost:3000/api/cron/*?key=<secret>` every
-  minute (`crontab -l`). `vps-setup/4-setup-cron.sh` is the original and may be out of date.
+- The crontab that calls `http://localhost:3000/api/cron/*` every minute
+  (`?key=` = `DRAFT_QUEUE_SECRET`, `?secret=` = `CRON_SECRET`) (`crontab -l`). `vps-setup/4-setup-cron.sh` is the original and may be out of date.
 - Nginx config and SSL certificates
 - The database and its data
 
