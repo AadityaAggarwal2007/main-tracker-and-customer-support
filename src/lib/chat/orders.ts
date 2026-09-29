@@ -70,8 +70,8 @@ interface OrderRow {
   products: string[] | null;
 }
 
-// Look up an order. The ONLY accepted identifiers are the order ID AND the
-// last 4 digits of the phone on the order — both, together.
+// Look up an order. The ONLY accepted identifiers are the order ID (or its
+// tracking ID) AND the last 4 digits of the phone on the order — both, together.
 //
 // Name, email and full phone were removed deliberately. Each caused a real
 // problem: a name is a substring match, so "Raj" pulled back Suraj and Rajan
@@ -142,8 +142,11 @@ export async function lookupOrder(
        LEFT JOIN order_items oi ON oi.order_id = o.order_id
        LEFT JOIN businesses b ON b.id = o.business_id
        -- Both identifiers are mandatory (guarded above), so both are plain
-       -- equality checks — nothing here is optional or OR'd any more.
-       WHERE o.order_id ILIKE $1
+       -- equality checks. The first may be the order ID or the tracking ID:
+       -- customers copy the ST… tracking ID off the track page and send that.
+       -- It is random rather than sequential, so it is no weaker than the
+       -- order ID, and the last-4 check below still applies either way.
+       WHERE (o.order_id ILIKE $1 OR o.tracking_id ILIKE $1)
        AND RIGHT(o.customer_mobile, 4) = $2
        -- The panel id arrives from sites.tracker_business_id, which is text on
        -- the chat side while orders.business_id is uuid, so both are compared

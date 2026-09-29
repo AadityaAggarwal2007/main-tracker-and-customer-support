@@ -335,11 +335,11 @@ const ORDER_LOOKUP_TOOL: ChatCompletionTool = {
   type: 'function',
   function: {
     name: 'lookup_order',
-    description: 'Look up a customer order to get tracking status and order details. Requires BOTH the order ID and the last 4 digits of the phone number on the order. Names, emails and full phone numbers are not accepted and must never be asked for.',
+    description: 'Look up a customer order to get tracking status and order details. Requires BOTH the order ID (or tracking ID) and the last 4 digits of the phone number on the order. Call it as soon as the customer has given both, even across separate messages. Names, emails and full phone numbers are not accepted and must never be asked for.',
     parameters: {
       type: 'object',
       properties: {
-        order_id: { type: 'string', description: 'The order ID or order number (e.g. "#1234", "1234").' },
+        order_id: { type: 'string', description: 'The order ID or order number (e.g. "#1234", "1234"), or the tracking ID (e.g. "STAB12CD34EF").' },
         phone_last4: { type: 'string', description: 'The last 4 digits of the phone number on the order.' },
       },
       required: ['order_id', 'phone_last4'],
