@@ -94,8 +94,18 @@ repo, because the repo is public. Test access with:
 ssh -o BatchMode=yes -o ConnectTimeout=5 shiptrack-vps true
 ```
 
-If that fails, do not try other ways in. Give the developer the same commands
-to paste into the Hostinger web console instead, and ask for the output.
+If that fails, the connection is not set up yet. Ask the developer to run this
+**in his own Terminal, not through you**, and type the VPS IP and root password
+when it asks (once only):
+
+```bash
+bash vps-setup/connect.sh
+```
+
+Never ask for the root password, and never use one pasted into the chat. If
+one is pasted, tell him to change it, because the chat history keeps it.
+Do not try other ways in; until SSH works, give him commands to paste into the
+Hostinger web console and ask for the output.
 
 The same server also runs other apps (Add ERP, the old chat-support server) and
 a shared PostgreSQL. Touch only `/var/www/tracker`, the `tracker` PM2 app, the
