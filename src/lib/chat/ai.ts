@@ -9,8 +9,9 @@ import { query, queryOne } from '@/lib/db';
 import { lookupOrder, lookupVerifiedOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
-  asksAgainAfterFailedLookups, findPendingLookup, handOverReply, lastReplyReasked, mentionsAnotherOrder,
-  normId, normaliseDigits, reasksForOrderDetails, typedByVisitor, type LookupOutcome,
+  asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId,
+  lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, typedByVisitor,
+  type LookupOutcome,
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
 
@@ -61,6 +62,24 @@ function isRetryable(err: unknown): boolean {
   const status = (err as { status?: number })?.status;
   return status !== 401 && status !== 403;
 }
+
+// A model that answered with no text and no tool call. It is a model failure
+// like any other (502, so isRetryable passes it on): the next model gets the
+// request instead of the customer getting a blank bubble or a filler line.
+class BlankReplyError extends Error {
+  status = 502;
+  constructor(model: string, finish: string | null | undefined) {
+    super(`blank reply (finish=${finish})`);
+    console.log(`[AI] ${model} sent a blank reply (finish=${finish})`);
+  }
+}
+
+// On 2026-09-29 deepseek-v4-flash sometimes spent all of max_tokens=600 on
+// reasoning (usage 7877/600, finish=length) and sent only whitespace, which
+// went out as 71 blank replies in a day. A normal turn reasons for ~30 tokens
+// and only generated tokens are billed, so the headroom costs nothing until
+// it is needed.
+const MAX_REPLY_TOKENS = 1500;
 
 // One round to call a tool, one to react to the result, one spare. Beyond that
 // the model is looping rather than converging.
@@ -298,13 +317,20 @@ customer's own order, answer from the lookup.
 ${lines.join('\n\n')}`;
 }
 
+// A panel's own prompt replaces DEFAULT_SYSTEM_PROMPT, lookup rules and all.
+// Vastora's asks for "Order ID or registered mobile number", which the lookup
+// cannot use, and says nothing about when to look up, so on 2026-09-29 the bot
+// asked for the order ID over and over. ~120 tokens on an ~8k-token prompt.
+const PANEL_LOOKUP_RULES = `ORDER LOOKUP (overrides anything above about finding orders)
+To look up an order you need the order ID (or the ST tracking ID) and the last 4 digits of the phone number on the order. Ask for both in one line. Never ask for a full phone number, name or email; they cannot be used. Once the customer has given both, even in separate messages, call lookup_order. Never ask again for something they already gave. If they do not have the order ID, tell them it is in their order confirmation message; if they still cannot find it, escalate.`;
+
 export function buildSystemPrompt(
   basePrompt: string | null,
   codAvailable: boolean | null | undefined,
   channel: Channel = 'chat',
   faqs: SavedAnswer[] = [],
 ): string {
-  const base = basePrompt || DEFAULT_SYSTEM_PROMPT;
+  const base = basePrompt ? basePrompt + '\n\n' + PANEL_LOOKUP_RULES : DEFAULT_SYSTEM_PROMPT;
   let cod: string;
   if (codAvailable === true) {
     cod = 'Cash on Delivery IS available at this store. If they ask, confirm it plainly and warmly. Do not quote any COD fee or limit, you do not know those.';
@@ -403,7 +429,7 @@ function dropOrphanedToolCalls(msgs: ChatCompletionMessageParam[]): ChatCompleti
       }
       const kept = m.tool_calls.filter((tc) => answered.has(tc.id));
       if (kept.length) out.push({ ...m, tool_calls: kept });
-      else if (m.content) out.push({ role: 'assistant', content: m.content as string });
+      else if ((m.content as string | null)?.trim()) out.push({ role: 'assistant', content: m.content as string });
       continue;
     }
 
@@ -430,7 +456,9 @@ function dropOrphanedToolCalls(msgs: ChatCompletionMessageParam[]): ChatCompleti
 // customer yet.
 export const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. Could you send that again?';
 
-// Sent when a model answers with no text at all. Not an answer either.
+// Sent when a model answered with no text at all, until 2026-09-30; a blank
+// reply now moves on to the next model (BlankReplyError). Kept so the rows it
+// left in old chats do not count as a question the customer is answering.
 const EMPTY_REPLY = "I'm here to help! How can I assist you?";
 
 // Appended for the one H4 retry only, never stored or sent every message.
@@ -544,6 +572,10 @@ export async function getAIResponse(
           content: m.content || null,
           tool_calls: m.metadata.tool_calls,
         } as ChatCompletionMessageParam);
+      } else if (m.sender === 'ai' && !(m.content || '').trim()) {
+        // A blank reply stored before BlankReplyError: the customer got
+        // nothing, and the model must not take it as a way to answer.
+        continue;
       } else {
         chatMessages.push({ role: 'assistant', content: m.content || '' });
       }
@@ -639,6 +671,10 @@ export async function getAIResponse(
   const lookupOutcomes: LookupOutcome[] = [];
   // Set while the H4 retry runs: it may only restate orders already found.
   let h4Retry = false;
+  // Unlike the two above, not per model: once escalate_to_human has set the
+  // chat to human_needed, a fallback model after a blank reply must still
+  // report the escalation, or email sends the draft it should hold.
+  let escalatedThisRequest = false;
 
   // When a model dies partway through a conversation we retry the whole exchange
   // on the next model, which would otherwise re-run tools that already had side
@@ -653,6 +689,7 @@ export async function getAIResponse(
       result = await runTool(tc);
       toolCache.set(cacheKey, result);
     }
+    if (result.escalated) escalatedThisRequest = true;
     if (result.lookup) {
       lookupOutcomes.push(result.lookup);
       if (result.lookup.typed) typedLookupRan = true;
@@ -795,7 +832,7 @@ export async function getAIResponse(
     const messages: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPrompt }, ...history, ...extra];
     lastRunMessages = messages;
     let toolCallMeta: ToolCallMeta | null = null;
-    let escalated = false;
+    let escalated = escalatedThisRequest;
     let nudged = false;
     typedLookupRan = false;
     lookupOutcomes.length = 0;
@@ -809,7 +846,7 @@ export async function getAIResponse(
         messages,
         tools: [ORDER_LOOKUP_TOOL, ESCALATE_TOOL, CATEGORIZE_TOOL],
         tool_choice: toolChoice,
-        max_tokens: 600,
+        max_tokens: MAX_REPLY_TOKENS,
       });
       let response;
       try {
@@ -833,11 +870,10 @@ export async function getAIResponse(
       }
 
       if (!toolCalls.length) {
-        return {
-          content: stripMarkdown(message?.content || EMPTY_REPLY),
-          toolCallMeta,
-          escalated,
-        };
+        // Whitespace is no reply: stored, it showed as a blank bubble.
+        const content = stripMarkdown(message?.content || '');
+        if (!content) throw new BlankReplyError(model, response.choices[0]?.finish_reason);
+        return { content, toolCallMeta, escalated };
       }
 
       messages.push(message as ChatCompletionMessageParam);
@@ -865,18 +901,16 @@ export async function getAIResponse(
     }
 
     // Spent the tool budget — take the tools away and ask plainly for prose.
-    const closing = await getClient().chat.completions.create({ model, messages, max_tokens: 600 });
-    return {
-      content: stripMarkdown(closing.choices[0]?.message?.content || EMPTY_REPLY),
-      toolCallMeta,
-      escalated,
-    };
+    const closing = await getClient().chat.completions.create({ model, messages, max_tokens: MAX_REPLY_TOKENS });
+    const content = stripMarkdown(closing.choices[0]?.message?.content || '');
+    if (!content) throw new BlankReplyError(model, closing.choices[0]?.finish_reason);
+    return { content, toolCallMeta, escalated };
   };
 
   // The same status change escalate_to_human makes, with a fixed reply that
   // says nothing about any order. Callers treat it as an escalation: the widget
   // stops answering, and email holds the draft for the team.
-  const handOver = async (why: 'H1' | 'H3' | 'H4', result: AIResult): Promise<AIResult> => {
+  const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6', result: AIResult): Promise<AIResult> => {
     await query(
       `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
       [conversationId]
@@ -921,9 +955,9 @@ export async function getAIResponse(
     if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
     // A model that escalated itself has already handed over.
     if (!result.escalated) {
-      // H1: they typed both and no lookup with those values happened, or one
-      // did and the model then said nothing (the filler is not the result).
-      if (pending && (!typedLookupRan || result.content === EMPTY_REPLY)) return handOver('H1', result);
+      // H1: they typed both and no lookup with those values happened. (A
+      // model that then said nothing no longer gets here: see BlankReplyError.)
+      if (pending && !typedLookupRan) return handOver('H1', result);
       // H3: asking yet again after lookups that keep coming back not found.
       if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
       // H4: the order is verified and in view, yet the reply asks for the
@@ -957,6 +991,18 @@ export async function getAIResponse(
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
         return retry;
+      }
+      const known = Array.from(knownOrderIds);
+      const ask = reasksForOrderDetails(result.content, known);
+      // H5: asking for the order ID again although they have told us they do
+      // not have it. The prompt says to point them to the order confirmation
+      // message once and then escalate; models keep asking instead.
+      // H6: this would be the third ask in a row with no lookup at all.
+      // When a lookup ran this turn, H3/H4 decide instead of either: asking
+      // to double-check after one miss is what the prompt allows.
+      if (!lookupOutcomes.length) {
+        if (ask.orderId && keptAskingForMissingOrderId(guardRows, known)) return handOver('H5', result);
+        if ((ask.orderId || ask.last4) && consecutiveAsks(guardRows, known) >= 2) return handOver('H6', result);
       }
     }
     return result;

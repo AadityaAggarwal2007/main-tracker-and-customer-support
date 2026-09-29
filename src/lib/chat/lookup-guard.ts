@@ -481,6 +481,118 @@ export function lastReplyReasked(rows: GuardRow[], knownIds: (string | null | un
   return false;
 }
 
+// ── Asking round in circles ────────────────────────────────────
+// On 2026-09-29 a panel whose own prompt asks for "Order ID or registered
+// mobile number" had the bot ask for the order ID four times in one chat
+// while the customer sent their phone number twice and said twice they did
+// not have the ID. No lookup ever ran, so H1-H4 never saw it. The owner's
+// rule: the chat never repeats itself, and when the bot cannot help, a
+// person takes over.
+const NO_ORDER_ID = [
+  /\b(?:don'?t|dont|dnt|do not|doesn'?t|does not) (?:have|hav|know)\b/,   // I don't have, dont know
+  /\bnot have\b|\bno order ?(?:id|number|no)\b|\blost it\b/,
+  /\b(?:can'?t|cant|cannot|can not|couldn'?t|could not|unable to) (?:find|locate|see)\b/,
+  /\b(?:didn'?t|didnt|did not|never) (?:get|got|receive)\b/,
+  /\b(?:nahi|nhi|nahin|nai) (?:hai|he|h)\b/,                                // nahi hai, nhi h
+  /\b(?:pata|pta) (?:nahi|nhi|nahin)\b|\b(?:nahi|nhi|nahin) (?:pata|pta)\b/, // pata nahi, nhi pta
+  /\bmere pa?as (?:nahi|nhi|nahin)\b|\byaa?d (?:nahi|nhi|nahin)\b/,          // mere paas nahi, yaad nahi
+  /\b(?:nahi|nhi|nahin) (?:mila|aa?ya)\b|\bmila (?:nahi|nhi|nahin)\b/,       // nahi mila, nahi aaya
+  /नहीं है|पता नहीं|नहीं पता|मेरे पास नहीं|नहीं मिल|नहीं आया|याद नहीं/,
+];
+// The order ID, or the order confirmation message it comes in: "I never got
+// the order confirmation" is the "still cannot find it" the prompt means.
+const NAMES_ORDER_ID = [...ASKS_ORDER_ID, /\bid\b/, /\bconfirmation\b|कन्फर्मेशन/];
+// Without the words "order ID" these are as often about the parcel ("order
+// nahi mila", "I didn't get my order"), the phone ("phone number nahi hai") or
+// something else they were sent ("I don't have the tracking link").
+const ABOUT_SOMETHING_ELSE = /\b(?:orders?|parcels?|packages?|products?|items?|deliver\w*|sa+ma+n|phone|mobile|mob|digits?|last ?(?:4|four)|links?|track\w*|status|sms|e-?mails?|mails?|messages?|msgs?|otp|invoice|bill)\b|ऑर्डर|आर्डर|पार्सल|सामान|डिलीवरी|फ़ोन|फोन|मोबाइल/;
+
+/**
+ * Whether a visitor message says they do not have, cannot find or do not
+ * know their order ID. It has to be about the ID: the "don't have" and the
+ * order ID sit in the same part of a sentence, or the message is short (8
+ * words at most) and answers our message asking for it (askedForId). A
+ * message that gives an order ID ("parcel nahi mila, order id 1234 hai") is
+ * about the parcel, not the ID.
+ */
+export function saysNoOrderId(text: string | null | undefined, askedForId: boolean): boolean {
+  const t = prep(text || '').toLowerCase().replace(/[’`]/g, "'");
+  if (!NO_ORDER_ID.some((re) => re.test(t))) return false;
+  if (tokensIn(text || '', 0, false, false).some((tok) => tok.id)) return false;
+  const clauses = t.split(/[.?!,;।\n]|\b(?:but|lekin)\b/);
+  if (clauses.some((c) => NO_ORDER_ID.some((re) => re.test(c)) && NAMES_ORDER_ID.some((re) => re.test(c)))) return true;
+  if (ABOUT_SOMETHING_ELSE.test(t)) return false;
+  const words = t.match(/[a-z0-9'ऀ-ॿ]+/g) || [];
+  return askedForId && words.length <= 8;
+}
+
+// The hint the prompt tells the model to give ("it's in your order
+// confirmation message, please check"). It asks for nothing new: it opens the
+// "if they still cannot find it" window rather than counting as asking again.
+const isConfirmationHint = (content: string | null) => /\bconfirmation\b|कन्फर्मेशन/.test((content || '').toLowerCase());
+
+// What a short "pata nahi" answers: our ask for the order ID, or the hint,
+// which splits the request from the words "order ID".
+function askedForOrderId(content: string | null, knownIds: (string | null | undefined)[]): boolean {
+  if (reasksForOrderDetails(content, knownIds).orderId) return true;
+  return isConfirmationHint(content) && asksForOrderDetails(content).orderId;
+}
+
+/**
+ * The customer has told us they do not have their order ID, and we kept
+ * asking for it: since the last order found, a person last answering or our
+ * last hand-over, they said so twice, or once and a reply of ours after that
+ * (other than the hint) still asked for the order ID. An order ID they typed
+ * or a lookup after that starts the count again: they found it. ai.ts asks
+ * this only of a reply that asks for the order ID yet again.
+ */
+export function keptAskingForMissingOrderId(rows: GuardRow[], knownIds: (string | null | undefined)[]): boolean {
+  const from = Math.max(lastFoundIndex(rows), lastHandBackIndex(rows));
+  let asked = false;
+  let said = 0;
+  let askedAfter = false;
+  rows.forEach((r, i) => {
+    if (i > from && r.sender === 'tool_result') {
+      said = 0;
+      askedAfter = false;
+    } else if (isVisibleReply(r)) {
+      asked = askedForOrderId(r.content, knownIds);
+      if (said && !isConfirmationHint(r.content) && reasksForOrderDetails(r.content, knownIds).orderId) askedAfter = true;
+    } else if (r.sender === 'visitor' && i > from) {
+      if (saysNoOrderId(r.content, asked)) said++;
+      else if (tokensIn(r.content || '', i, asked, false).some((tok) => tok.id)) {
+        said = 0;
+        askedAfter = false;
+      }
+    }
+  });
+  return said >= 2 || askedAfter;
+}
+
+/**
+ * How many of our replies in a row, counting back from the latest, asked for
+ * the order ID or last 4 (the confirmation hint aside) and got a visitor
+ * message back, with no lookup and no person answering in between. 2 means
+ * the next ask would be the third.
+ */
+export function consecutiveAsks(rows: GuardRow[], knownIds: (string | null | undefined)[]): number {
+  let count = 0;
+  let answered = false;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.sender === 'tool_result') break;
+    if (r.sender === 'visitor') { answered = true; continue; }
+    if (!isVisibleReply(r)) continue;
+    if (r.sender === 'agent') break;
+    const ask = reasksForOrderDetails(r.content, knownIds);
+    // The hint is new help, not the same question again.
+    if (!(ask.orderId || ask.last4) || !answered || isConfirmationHint(r.content)) break;
+    count++;
+    answered = false;
+  }
+  return count;
+}
+
 // ── Handing over ───────────────────────────────────────────────
 // Says nothing about any order and promises no call: the team answers here.
 const HAND_OVER = {
