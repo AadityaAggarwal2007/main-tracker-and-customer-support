@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 import { normalizePhone } from '@/lib/chat/orders';
-import { VISIBLE_MESSAGE_SQL, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
+import { VISIBLE_MESSAGE_SQL, clientIp, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,13 +38,13 @@ function tooManyAttempts(key: string): boolean {
 // POST /api/widget/resume — pick up a conversation on another device
 export async function POST(request: NextRequest) {
   try {
-    const { siteKey, phone } = await request.json();
+    const { siteKey, phone, visitorId } = await request.json();
     if (!siteKey || !phone) return widgetJson({ error: 'siteKey and phone required' }, 400);
 
     const site = await siteByKey(siteKey);
     if (!site) return widgetJson({ error: 'Invalid site key' }, 404);
 
-    const caller = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+    const caller = clientIp(request);
     if (tooManyAttempts(`${siteKey}:${caller}`)) {
       return widgetJson({ error: 'Too many attempts. Please try again later.' }, 429);
     }
@@ -65,6 +65,27 @@ export async function POST(request: NextRequest) {
     );
 
     if (!conversation) return widgetJson({ found: false });
+
+    // A phone number alone is not the order ID + last 4 the AI needs before it
+    // talks about an order. A chat verified on one device therefore stops
+    // being verified when it is picked up on another, so ai.ts no longer
+    // re-serves that order there; a fresh lookup in the chat verifies it
+    // again. The same browser (same visitorId) keeps its verification. Older
+    // widgets send no visitorId and are treated as another device.
+    try {
+      const cleared = await query(
+        `UPDATE conversations
+            SET verified_order_id = NULL, verified_at = NULL, verified_via = NULL
+          WHERE id = $1
+            AND verified_order_id IS NOT NULL
+            AND visitor_id IS DISTINCT FROM $2`,
+        [conversation.id, typeof visitorId === 'string' && visitorId ? visitorId : null]
+      );
+      if (cleared.rowCount) console.log(`[widget] resumed conv ${conversation.id} on another device, verification cleared`);
+    } catch (err) {
+      // Before chat-verified.sql is applied the columns do not exist yet.
+      console.error('[widget] resume verification reset failed:', (err as Error)?.message);
+    }
 
     const messages = await query(
       `SELECT id, conversation_id, sender, content, metadata, created_at

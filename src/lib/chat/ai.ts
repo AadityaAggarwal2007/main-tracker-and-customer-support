@@ -6,11 +6,11 @@ import type {
   ChatCompletionToolChoiceOption,
 } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
-import { lookupOrder } from './orders';
+import { lookupOrder, lookupVerifiedOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
-  asksAgainAfterFailedLookups, findPendingLookup, handOverReply, normaliseDigits, typedByVisitor,
-  type LookupOutcome,
+  asksAgainAfterFailedLookups, findPendingLookup, handOverReply, lastReplyReasked, mentionsAnotherOrder,
+  normId, normaliseDigits, reasksForOrderDetails, typedByVisitor, type LookupOutcome,
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
 
@@ -433,6 +433,9 @@ export const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. C
 // Sent when a model answers with no text at all. Not an answer either.
 const EMPTY_REPLY = "I'm here to help! How can I assist you?";
 
+// Appended for the one H4 retry only, never stored or sent every message.
+const VERIFIED_NOTE = "(Note from the system, not the customer: this customer's order is already verified - it is in the lookup above. Do not ask for the order ID or phone digits again. Answer their last message using that order.)";
+
 function stripMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '$1')   // bold
@@ -555,6 +558,72 @@ export async function getAIResponse(
 
   const history = dropOrphanedToolCalls(chatMessages);
 
+  // ── The order this chat already verified ──────────────────────
+  // Set by the widget's verify form (order ID + full phone) or by an earlier
+  // found lookup in this chat. A long chat scrolls that lookup out of the
+  // history window, and a form-verified chat never had one, so the model would
+  // ask for the order ID and last 4 all over again. Only this conversation's
+  // own verified order, only within its panel, and only when it is missing
+  // from the window (it costs tokens on every message).
+  let verifiedOrderId: string | null = null;
+  try {
+    const v = await queryOne<{ verified_order_id: string | null }>(
+      `SELECT verified_order_id FROM conversations WHERE id = $1`,
+      [conversationId]
+    );
+    verifiedOrderId = v?.verified_order_id || null;
+  } catch (err) {
+    // Before chat-verified.sql is applied the column does not exist yet.
+    console.error('[AI] verified order read failed:', (err as Error)?.message);
+  }
+
+  // Every order a found lookup in the window returned: its ID and tracking ID
+  // (normalised with normId). verifiedIds: the same two for the verified order.
+  const knownOrderIds = new Set<string>();
+  const verifiedIds = new Set<string>(verifiedOrderId ? [normId(verifiedOrderId)] : []);
+  const noteFoundOrders = (content: unknown) => {
+    let r: { found?: boolean; orders?: { order_id?: string; tracking_id?: string | null }[] } | null = null;
+    try { r = JSON.parse(String(content || '')); } catch { return false; }
+    if (r?.found !== true || !Array.isArray(r.orders)) return false;
+    let hasVerified = false;
+    for (const o of r.orders) {
+      if (o?.order_id) knownOrderIds.add(normId(o.order_id));
+      if (o?.tracking_id) knownOrderIds.add(normId(o.tracking_id));
+      if (verifiedOrderId && o?.order_id === verifiedOrderId) {
+        hasVerified = true;
+        if (o.tracking_id) verifiedIds.add(normId(o.tracking_id));
+      }
+    }
+    return hasVerified;
+  };
+  let verifiedInView = false;
+  for (const m of history) {
+    if (m.role === 'tool' && noteFoundOrders(m.content)) verifiedInView = true;
+  }
+  let verifiedResult: Awaited<ReturnType<typeof lookupVerifiedOrder>> | null = null;
+  if (verifiedOrderId && !verifiedInView) {
+    const verified = await lookupVerifiedOrder(verifiedOrderId, trackerBusinessId || null);
+    verifiedResult = verified;
+    if (verified.found) {
+      noteFoundOrders(JSON.stringify(verified));
+      verifiedInView = true;
+      // Never stored, and not in guardRows, so the guard never takes it for
+      // a lookup the customer asked for.
+      history.unshift(
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'verified_order',
+            type: 'function',
+            function: { name: 'lookup_order', arguments: JSON.stringify({ order_id: verifiedOrderId }) },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'verified_order', content: JSON.stringify(verified) },
+      );
+    }
+  }
+
   // Since 2026-09-28 the model often answers an order ID and last 4 sent in
   // separate messages by asking for them again, and nothing ever broke that
   // loop. When the customer has typed both and we have not looked them up yet,
@@ -568,6 +637,8 @@ export async function getAIResponse(
   // lookups again, so a fallback model is judged on what its own run used.
   let typedLookupRan = false;
   const lookupOutcomes: LookupOutcome[] = [];
+  // Set while the H4 retry runs: it may only restate orders already found.
+  let h4Retry = false;
 
   // When a model dies partway through a conversation we retry the whole exchange
   // on the next model, which would otherwise re-run tools that already had side
@@ -637,6 +708,27 @@ export async function getAIResponse(
       for (const k of ['order_id', 'phone_last4'] as const) {
         if (typeof args[k] === 'string') args[k] = normaliseDigits(args[k]);
       }
+      // The order this chat already proved it owns. The model copies the
+      // injected call above (order ID only) to refresh the status, and
+      // lookupOrder would answer needs_verification and make it ask the
+      // verified customer for their digits again.
+      if (verifiedOrderId && verifiedIds.has(normId(args.order_id))) {
+        verifiedResult = verifiedResult || await lookupVerifiedOrder(verifiedOrderId, trackerBusinessId || null);
+        if (verifiedResult.found) {
+          console.log(`[AI] Verified order re-read for conv ${conversationId}`);
+          return { payload: verifiedResult, persist: true, lookup: { found: true, needs_verification: false, typed: true } };
+        }
+      }
+      // The H4 retry is told not to ask for digits, so it must not look up an
+      // order nobody proved in this chat with digits it did not collect now.
+      if (h4Retry && !knownOrderIds.has(normId(args.order_id))) {
+        const refused = {
+          found: false,
+          needs_verification: true,
+          message: 'Only the order already verified in this chat can be looked up now. Answer about that order.',
+        };
+        return { payload: refused, persist: false, lookup: { ...refused, typed: false } };
+      }
       console.log(`[AI] Order lookup for conv ${conversationId}:`, args);
       const result = await lookupOrder(args, trackerBusinessId || null);
       const needsVerification = 'needs_verification' in result && !!result.needs_verification;
@@ -647,6 +739,12 @@ export async function getAIResponse(
       // are talking to, so stop calling them "Visitor" in the inbox. Only the
       // real order holder's name is used — never anything the visitor typed.
       const confirmed = result.found ? result.orders[0] : null;
+      if (result.found) {
+        for (const o of result.orders) {
+          knownOrderIds.add(normId(o.order_id));
+          if (o.tracking_id) knownOrderIds.add(normId(o.tracking_id));
+        }
+      }
       if (confirmed?.customer_name) {
         const realName = String(confirmed.customer_name).replace(/\s*\.\s*$/, '').trim();
         if (realName) {
@@ -662,14 +760,40 @@ export async function getAIResponse(
         }
       }
 
+      // Proved in this chat: moves it from Visitors to Customers in the inbox
+      // and keeps this order in view for the rest of the chat. The first order
+      // proved stays the verified one: a second order looked up later does not
+      // replace it (nor a form-verified one, whose verified_via says 'form').
+      if (confirmed?.order_id) {
+        try {
+          await query(
+            `UPDATE conversations
+                SET verified_order_id = COALESCE(verified_order_id, $1),
+                    verified_at = COALESCE(verified_at, now()),
+                    verified_via = COALESCE(verified_via, 'chat')
+              WHERE id = $2`,
+            [confirmed.order_id, conversationId]
+          );
+        } catch (e) {
+          console.error('[AI] could not mark conversation verified:', (e as Error).message);
+        }
+      }
+
       return { payload: result, persist: true, lookup };
     }
 
     return { payload: { error: `Unknown tool: ${name}` }, persist: false };
   };
 
-  const runWithModel = async (model: string): Promise<AIResult> => {
-    const messages: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPrompt }, ...history];
+  // The messages the last runWithModel ended on (its tool exchange included),
+  // which the H4 retry carries on from.
+  let lastRunMessages: ChatCompletionMessageParam[] = [];
+
+  // extra: messages after the history (only the H4 retry passes any); that
+  // retry is never forced, the forced lookup already ran in the first run.
+  const runWithModel = async (model: string, extra: ChatCompletionMessageParam[] = []): Promise<AIResult> => {
+    const messages: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPrompt }, ...history, ...extra];
+    lastRunMessages = messages;
     let toolCallMeta: ToolCallMeta | null = null;
     let escalated = false;
     let nudged = false;
@@ -679,7 +803,7 @@ export async function getAIResponse(
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       // Only the first round is forced, so the model can still react to the
       // result (or escalate) in the rounds after it. No extra API call.
-      const forced = !!pending && round === 0;
+      const forced = !!pending && round === 0 && !extra.length;
       const ask = (toolChoice: ChatCompletionToolChoiceOption) => getClient().chat.completions.create({
         model,
         messages,
@@ -752,13 +876,32 @@ export async function getAIResponse(
   // The same status change escalate_to_human makes, with a fixed reply that
   // says nothing about any order. Callers treat it as an escalation: the widget
   // stops answering, and email holds the draft for the team.
-  const handOver = async (why: 'H1' | 'H3', result: AIResult): Promise<AIResult> => {
+  const handOver = async (why: 'H1' | 'H3' | 'H4', result: AIResult): Promise<AIResult> => {
     await query(
       `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
       [conversationId]
     );
     console.log(`[AI] Guard hand-over for conv ${conversationId}: ${why}`);
     return { content: handOverReply(guardRows), toolCallMeta: result.toolCallMeta, escalated: true };
+  };
+
+  // Asking for the order ID or last 4 once the order is known, unless the
+  // customer's latest message is about some other order.
+  const latestVisitor = [...recent.rows].reverse().find((r) => r.sender === 'visitor')?.content || '';
+  const asksAgain = (reply: string) => {
+    const ask = reasksForOrderDetails(reply, Array.from(knownOrderIds));
+    return (ask.orderId || ask.last4) && !mentionsAnotherOrder(latestVisitor, Array.from(knownOrderIds));
+  };
+  // H4 is for the verified order only. It stays off while the customer is
+  // busy with some other order: a lookup this turn that did not find one (a
+  // typo in the second order's ID is theirs to fix), or, when nothing was
+  // found this turn, our last reply already asking for another order's details
+  // and the customer answering it ("1400", then "5678").
+  const h4Applies = () => {
+    const foundNow = lookupOutcomes.some((o) => o.found === true);
+    if (lookupOutcomes.some((o) => o.found !== true)) return false;
+    if (!foundNow && lastReplyReasked(guardRows, Array.from(knownOrderIds))) return false;
+    return verifiedInView || foundNow;
   };
 
   let lastErr: unknown = null;
@@ -783,6 +926,38 @@ export async function getAIResponse(
       if (pending && (!typedLookupRan || result.content === EMPTY_REPLY)) return handOver('H1', result);
       // H3: asking yet again after lookups that keep coming back not found.
       if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
+      // H4: the order is verified and in view, yet the reply asks for the
+      // order ID or last 4 anyway. Ask the same model once more with a note;
+      // if it still asks, a person takes over. Not when the customer has just
+      // brought up a different order, which is a fair reason to ask.
+      if (h4Applies() && asksAgain(result.content)) {
+        console.log(`[AI] Guard retry for conv ${conversationId}: H4`);
+        const firstRun = lastRunMessages.slice(1 + history.length);
+        let retry: AIResult | null = null;
+        // This model, then once more on the next one if the provider hiccups.
+        const retryModels = [model, ...attemptOrder().filter((m) => m !== model)].slice(0, 2);
+        h4Retry = true;
+        try {
+          for (const m of retryModels) {
+            try {
+              retry = await runWithModel(m, [...firstRun, { role: 'user', content: VERIFIED_NOTE }]);
+              break;
+            } catch (err) {
+              console.error(`[AI] H4 retry on ${m} failed:`, (err as Error)?.message);
+              if (!isRetryable(err)) break;
+            }
+          }
+        } finally {
+          h4Retry = false;
+        }
+        if (!retry) return handOver('H4', result);
+        // The first run's lookup still has to be stored if the retry used none.
+        retry.toolCallMeta = retry.toolCallMeta || result.toolCallMeta;
+        retry.content = stripMarkdownEmphasis(retry.content);
+        if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
+        if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
+        return retry;
+      }
     }
     return result;
   }

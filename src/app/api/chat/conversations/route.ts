@@ -8,6 +8,9 @@ export const dynamic = 'force-dynamic';
 // The inbox list. Scoped to the panels this user may see, because the chat
 // tables know nothing about ShipTrack's roles on their own.
 //
+// ?segment=visitors|customers splits unverified chats from verified ones
+// (conversations.verified_order_id, see chat-verified.sql).
+//
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
 export async function GET(request: NextRequest) {
@@ -18,6 +21,10 @@ export async function GET(request: NextRequest) {
   const businessId = searchParams.get('businessId') || '';
   const status = searchParams.get('status') || '';
   const category = searchParams.get('category') || '';
+  // Visitors = chats that have not proved which order they own; Customers =
+  // chats verified by the widget form or a found lookup. Left out, as the
+  // status tabs do, it lists everyone.
+  const segment = searchParams.get('segment') || '';
   const limit = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
 
   const conditions: string[] = [];
@@ -38,6 +45,8 @@ export async function GET(request: NextRequest) {
 
   if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
   if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
+  if (segment === 'visitors') conditions.push('c.verified_order_id IS NULL');
+  else if (segment === 'customers') conditions.push('c.verified_order_id IS NOT NULL');
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit);
@@ -45,6 +54,7 @@ export async function GET(request: NextRequest) {
   const result = await query(
     `SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
             c.unread_count, c.last_message_at, c.created_at,
+            c.verified_order_id, c.verified_via,
             s.id AS site_id, s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name,
             (SELECT m.content

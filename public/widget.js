@@ -22,7 +22,7 @@
   var state = {
     open: false, view: 'welcome', conversationId: null, visitorId: null,
     lastTs: null, pollTimer: null, typing: false, status: 'ai_handling',
-    sending: false, phoneSaved: false, aiResponseCount: 0
+    sending: false, phoneSaved: false, aiResponseCount: 0, verifying: false
   };
 
   try {
@@ -103,6 +103,43 @@
     '  opacity: 0.8; transition: opacity 0.15s, background 0.15s;',
     '}',
     '#_cw_expand:hover, #_cw_close:hover { opacity: 1; background: rgba(255,255,255,0.18); }',
+
+    // Pre-chat form: a customer proves an order (Order ID + full phone) before
+    // chatting, or carries on as a visitor. Shown only when there is no chat yet.
+    '#_cw_verify {',
+    '  padding: 18px 18px 14px; display: none; flex-direction: column; gap: 12px;',
+    '  overflow-y: auto; flex: 1;',
+    '}',
+    '#_cw_verify_title { font-size: 17px; font-weight: 700; color: #111; letter-spacing: -0.02em; line-height: 1.3; }',
+    '#_cw_verify_sub { font-size: 13px; color: #555; line-height: 1.5; margin-top: -6px; }',
+    '._cw_vfield { display: flex; flex-direction: column; gap: 5px; }',
+    '._cw_vlabel { font-size: 12px; font-weight: 600; color: #444; }',
+    '._cw_vinput {',
+    '  width: 100%; border: 1.5px solid #e5e5e5; border-radius: 12px; padding: 10px 14px;',
+    '  font-size: 14px; outline: none; font-family: inherit; color: #1a1a1a; background: #fff;',
+    '  transition: border-color 0.2s;',
+    '}',
+    '._cw_vinput:focus { border-color: #bbb; }',
+    '._cw_vinput::placeholder { color: #aaa; }',
+    '#_cw_verify_err { font-size: 12px; color: #d33; line-height: 1.4; display: none; }',
+    '#_cw_verify_btn {',
+    '  background: ' + ACCENT + '; color: white; border: none; border-radius: 24px; padding: 11px 16px;',
+    '  font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; width: 100%;',
+    '  transition: opacity 0.15s;',
+    '}',
+    '#_cw_verify_btn:disabled { opacity: 0.6; cursor: default; }',
+    '#_cw_verify_or { font-size: 11px; color: #aaa; text-align: center; }',
+    '#_cw_visitor_btn {',
+    '  background: #fff; color: #333; border: 1.5px solid #e5e5e5; border-radius: 24px; padding: 10px 16px;',
+    '  font-size: 14px; font-weight: 500; cursor: pointer; font-family: inherit; width: 100%;',
+    '  transition: background 0.15s, border-color 0.15s;',
+    '}',
+    '#_cw_visitor_btn:hover { background: #fafafa; border-color: #ddd; }',
+    '#_cw_verify_resume { background: none; border: none; font-size: 12px; color: #999; cursor: pointer; padding: 0; font-family: inherit; align-self: center; }',
+    '#_cw_verify_resume:hover { color: #555; text-decoration: underline; }',
+    '#_cw_verify_disclaimer { font-size: 11px; color: #999; line-height: 1.4; padding: 8px 0 0; border-top: 1px solid #f0f0f0; }',
+    '#_cw_verify_disclaimer a { color: #888; text-decoration: underline; }',
+    '._cw_note ._cw_bubble { border-left: 3px solid #22c55e; }',
 
     '#_cw_welcome {',
     '  padding: 18px 18px 14px; display: flex; flex-direction: column; gap: 10px;',
@@ -221,6 +258,8 @@
     '@media (max-width: 768px) {',
     '  #_cw_btn { bottom: 70px; right: 16px; }',
     '  #_cw_panel { bottom: 126px; right: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 150px); border-radius: 16px; }',
+    // 16px stops phones zooming the page when a form field gets focus.
+    '  ._cw_vinput { font-size: 16px; }',
     '}',
 
     '#_cw_save_banner { margin: 0 14px 10px; background: #f9fafb; border: 1px solid #efefef; border-radius: 12px; padding: 12px 14px; display: none; flex-direction: column; gap: 8px; flex-shrink: 0; }',
@@ -267,6 +306,24 @@
         '</div>' +
         '<button id="_cw_expand" aria-label="Expand"><svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>' +
         '<button id="_cw_close" aria-label="Close"><svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>' +
+      '</div>' +
+      '<div id="_cw_verify">' +
+        '<div id="_cw_verify_title">Verify yourself and continue a chat</div>' +
+        '<div id="_cw_verify_sub">Your Order ID is in your order confirmation message.</div>' +
+        '<div class="_cw_vfield">' +
+          '<label class="_cw_vlabel" for="_cw_verify_oid">Order ID</label>' +
+          '<input id="_cw_verify_oid" class="_cw_vinput" type="text" maxlength="40" autocomplete="off" placeholder="e.g. #1234 or tracking ID" />' +
+        '</div>' +
+        '<div class="_cw_vfield">' +
+          '<label class="_cw_vlabel" for="_cw_verify_ph">Complete phone number</label>' +
+          '<input id="_cw_verify_ph" class="_cw_vinput" type="tel" inputmode="numeric" maxlength="20" autocomplete="tel" placeholder="+91 98765 43210" />' +
+        '</div>' +
+        '<div id="_cw_verify_err" role="alert"></div>' +
+        '<button id="_cw_verify_btn" type="button">Verify &amp; continue</button>' +
+        '<div id="_cw_verify_or">or</div>' +
+        '<button id="_cw_visitor_btn" type="button">Continue with a visitor</button>' +
+        '<button id="_cw_verify_resume" type="button">Already chatted with us? Resume →</button>' +
+        '<div id="_cw_verify_disclaimer">This chat is powered by AI and may make mistakes. Your messages are visible to the store. Your phone number is used to find your order and to let you resume this chat. See <a href="#" target="_blank">privacy policy</a>.</div>' +
       '</div>' +
       '<div id="_cw_welcome">' +
         '<div id="_cw_welcome_greeting">' + escapeHtml(GREETING) + '</div>' +
@@ -316,6 +373,13 @@
   var closeBtn = document.getElementById('_cw_close');
   var expandBtn = document.getElementById('_cw_expand');
   var welcomeView = document.getElementById('_cw_welcome');
+  var verifyView = document.getElementById('_cw_verify');
+  var verifyOid = document.getElementById('_cw_verify_oid');
+  var verifyPh = document.getElementById('_cw_verify_ph');
+  var verifyBtn = document.getElementById('_cw_verify_btn');
+  var verifyErr = document.getElementById('_cw_verify_err');
+  var visitorBtn = document.getElementById('_cw_visitor_btn');
+  var verifyResume = document.getElementById('_cw_verify_resume');
   var chatView = document.getElementById('_cw_chat');
   var welcomeInput = document.getElementById('_cw_welcome_input');
   var welcomeSend = document.getElementById('_cw_welcome_send');
@@ -369,7 +433,7 @@
     if (err) err.style.display = 'none';
     api('/resume', {
       method: 'POST',
-      body: JSON.stringify({ siteKey: SITE_KEY, phone: phone }),
+      body: JSON.stringify({ siteKey: SITE_KEY, phone: phone, visitorId: state.visitorId }),
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -451,6 +515,7 @@
   function switchToChat() {
     state.view = 'chat';
     welcomeView.style.display = 'none';
+    verifyView.style.display = 'none';
     chatView.style.display = 'flex';
     panel.style.height = '480px';
     input.focus();
@@ -562,6 +627,8 @@
       if (state.conversationId) {
         switchToChat();
         startPolling();
+      } else if (state.view === 'verify') {
+        verifyOid.focus();
       } else {
         welcomeInput.focus();
       }
@@ -704,6 +771,104 @@
     doSendMessage(content);
   }
 
+  /* ── Pre-chat form ── */
+
+  // The chat as it was before the form: the welcome view, where the first
+  // message creates the conversation.
+  function showWelcome() {
+    state.view = 'welcome';
+    verifyView.style.display = 'none';
+    welcomeView.style.display = 'flex';
+    welcomeInput.focus();
+  }
+
+  function showVerify() {
+    state.view = 'verify';
+    welcomeView.style.display = 'none';
+    verifyView.style.display = 'flex';
+  }
+
+  function verifyError(text) {
+    verifyErr.textContent = text;
+    verifyErr.style.display = text ? 'block' : 'none';
+  }
+
+  // Shown in this browser only: never sent, never stored.
+  function showVerifiedNote(orderId, firstName) {
+    var div = document.createElement('div');
+    div.className = '_cw_msg _cw_ai _cw_note';
+    div.setAttribute('data-id', 'tmp_verified');
+    var label = document.createElement('div');
+    label.className = '_cw_label';
+    label.textContent = 'Support';
+    var bubble = document.createElement('div');
+    bubble.className = '_cw_bubble';
+    bubble.textContent = (firstName ? 'Hi ' + firstName + '! ' : '') +
+      'Verified \u2713 Order ' + orderId + '. How can we help you today?';
+    div.appendChild(label);
+    div.appendChild(bubble);
+    messagesEl.insertBefore(div, typingEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function submitVerify() {
+    if (state.verifying) return;
+    var orderId = verifyOid.value.replace(/^\s+|\s+$/g, '');
+    var phone = normalizePhone(verifyPh.value);
+    verifyOid.style.borderColor = orderId ? '' : '#e55';
+    verifyPh.style.borderColor = phone.length === 10 ? '' : '#e55';
+    if (!orderId || phone.length !== 10) return;
+    verifyError('');
+    state.verifying = true;
+    verifyBtn.disabled = true;
+    verifyBtn.textContent = 'Verifying\u2026';
+
+    function done(message) {
+      state.verifying = false;
+      verifyBtn.disabled = false;
+      verifyBtn.textContent = 'Verify & continue';
+      if (message) verifyError(message);
+    }
+
+    api('/verify', {
+      method: 'POST',
+      body: JSON.stringify({ siteKey: SITE_KEY, visitorId: state.visitorId, orderId: orderId, phone: phone }),
+    })
+    .then(function(r) {
+      return r.json().then(
+        function(data) { return { status: r.status, data: data || {} }; },
+        function() { return { status: r.status, data: {} }; }
+      );
+    })
+    .then(function(res) {
+      var data = res.data;
+      if (data.verified === true && data.conversationId) {
+        done('');
+        state.conversationId = data.conversationId;
+        if (data.status) state.status = data.status;
+        state.phoneSaved = true;
+        try {
+          localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId);
+          localStorage.setItem('_cw_phone_' + SITE_KEY, phone);
+        } catch(e) {}
+        verifyPh.value = '';
+        switchToChat();
+        showVerifiedNote(String(data.orderId || orderId), data.firstName ? String(data.firstName) : '');
+        startPolling();
+      } else if (res.status === 429 || data.error === 'too_many_attempts') {
+        done('Too many attempts. Please try again later or continue as a visitor.');
+      } else if (data.error === 'not_found') {
+        done('We couldn\'t find an order with these details. Please check your Order ID and phone number.');
+      } else {
+        done('Something went wrong. Please try again or continue as a visitor.');
+      }
+    })
+    .catch(function(err) {
+      console.error('[ChatWidget] verify error', err);
+      done('Something went wrong. Please try again or continue as a visitor.');
+    });
+  }
+
   function sendFromWelcome(content) {
     if (!content) return;
     welcomeInput.value = '';
@@ -736,6 +901,25 @@
   for (var i = 0; i < actionBtns.length; i++) {
     actionBtns[i].addEventListener('click', function() { sendFromWelcome(this.textContent); });
   }
+
+  // Pre-chat form
+  verifyBtn.addEventListener('click', submitVerify);
+  visitorBtn.addEventListener('click', function() { verifyError(''); showWelcome(); });
+  // Picking up an earlier chat lives in the welcome view: open it there.
+  verifyResume.addEventListener('click', function() {
+    verifyError('');
+    showWelcome();
+    var form = document.getElementById('_cw_resume_form');
+    var ph = document.getElementById('_cw_resume_ph');
+    if (form) form.style.display = 'flex';
+    if (ph) ph.focus();
+  });
+  verifyOid.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); submitVerify(); } });
+  verifyPh.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); submitVerify(); } });
+  verifyOid.addEventListener('input', function() { this.style.borderColor = ''; });
+  verifyPh.addEventListener('input', function() { this.style.borderColor = ''; });
+  // A visitor with a chat already never sees the form.
+  if (!state.conversationId) showVerify();
 
   // Resume by phone
   var resumeToggle = document.getElementById('_cw_resume_toggle');

@@ -24,6 +24,17 @@ export function widgetPreflight(): NextResponse {
   return new NextResponse(null, { status: 204, headers: WIDGET_CORS });
 }
 
+// The caller's address, for rate limits. nginx sets X-Real-IP to $remote_addr,
+// which the client cannot choose. X-Forwarded-For keeps whatever the client
+// sent and only appends the real address, so its FIRST entry is attacker
+// controlled; when it is all we have, the LAST entry (nginx's) is used.
+export function clientIp(request: Request): string {
+  const real = request.headers.get('x-real-ip')?.trim();
+  if (real) return real;
+  const forwarded = (request.headers.get('x-forwarded-for') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return forwarded[forwarded.length - 1] || 'unknown';
+}
+
 export interface WidgetSite {
   id: string;
   name: string;
@@ -56,6 +67,37 @@ export async function conversationForSite(
     `SELECT id, site_id, status FROM conversations WHERE id = $1 AND site_id = $2`,
     [conversationId, siteId]
   );
+}
+
+// The visitor's open conversation on this site, or a new one. Shared by
+// /api/widget/conversation (first message) and /api/widget/verify (the
+// "Verify yourself" form), so both land in the same chat for the same visitor.
+export async function getOrCreateVisitorConversation(
+  siteId: string,
+  visitorId: string,
+  visitorName?: string | null
+): Promise<{ id: string; status: string }> {
+  let conversation = await queryOne<{ id: string; status: string }>(
+    `SELECT id, status FROM conversations
+      WHERE site_id = $1 AND visitor_id = $2 AND status <> 'resolved'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [siteId, visitorId]
+  );
+
+  if (!conversation) {
+    conversation = await queryOne<{ id: string; status: string }>(
+      `INSERT INTO conversations
+         (id, site_id, visitor_id, visitor_name, status, source, category,
+          unread_count, last_message_at, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'ai_handling', 'chat', 'others',
+               0, now(), now(), now())
+       RETURNING id, status`,
+      [siteId, visitorId, visitorName || 'Visitor']
+    );
+  }
+
+  return conversation!;
 }
 
 // tool_result rows, hidden tool bookkeeping and empty AI placeholders are

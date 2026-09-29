@@ -30,6 +30,7 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 | Editing/deleting sent messages (⋯ menu in the inbox) | `src/lib/chat/message-rules.ts` (who may change what), `src/app/api/chat/messages/[id]` (details, edit, soft delete), `messages.edited_*`/`deleted_*` + table `message_revisions` (`chat-message-edits.sql`). A deleted message must stay out of the widget, the AI history and the conversation list. |
 | AI replies (model chain, tools, base prompt) | `src/lib/chat/ai.ts` — `DEFAULT_SYSTEM_PROMPT`, `buildSystemPrompt`, `FALLBACK_CHAIN` |
 | Order lookup used by the AI | `src/lib/chat/orders.ts`; `src/lib/chat/lookup-guard.ts` forces the lookup once ID + last 4 are typed, or hands over |
+| Verified chats (widget "Verify yourself" form, Visitors/Customers in the inbox) | `src/app/api/widget/verify` (order ID + full phone via `verifyOrderByPhone`, only within the site's panel; failures limited per visitor, per IP from `clientIp` = nginx's X-Real-IP, per order and per phone), `conversations.verified_order_id`/`verified_at`/`verified_via` (`chat-verified.sql`), also set by a found `lookup_order`. `ai.ts` keeps the verified order in view (`lookupVerifiedOrder`, never stored) and H4 in `getAIResponse` stops it asking for the order ID/last 4 again unless the customer brings up another order (`mentionsAnotherOrder`, `reasksForOrderDetails`). `/api/widget/resume` clears the verification when a chat is picked up on another device (a phone number alone is not order ID + last 4). `/api/chat/conversations?segment=visitors\|customers`. |
 | Email support (IMAP poll, threading, held drafts) | `src/lib/chat/email.ts`, `src/app/api/cron/chat-email-poll` |
 | Order status emails | `src/lib/smtp-client.ts`, `src/lib/email-templates.ts`, `src/app/api/cron/*` |
 | Shopify OAuth + webhooks | `src/app/api/shopify/*` |
@@ -192,7 +193,7 @@ for f in supabase-schema.sql supabase-businesses.sql supabase-multi-panel.sql \
          supabase-progression.sql supabase-draft-queue.sql supabase-email-logs.sql \
          supabase-support.sql supabase-journey.sql supabase-origin-city.sql \
          chat-tables.sql supabase-chat-cod.sql supabase-chat-faq.sql chat-settings.sql \
-         chat-attachments.sql chat-message-edits.sql; do
+         chat-attachments.sql chat-message-edits.sql chat-verified.sql; do
   psql -d tracking_crm -v ON_ERROR_STOP=1 -f "$f" || break
 done
 ```

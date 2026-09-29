@@ -278,7 +278,7 @@ function bestPair(tokens: Token[]): { id: Token; l4: Token } | null {
   return null;
 }
 
-const normId = (s: unknown) => normaliseDigits(String(s ?? '')).toLowerCase().replace(/[#\s]/g, '');
+export const normId = (s: unknown) => normaliseDigits(String(s ?? '')).toLowerCase().replace(/[#\s]/g, '');
 const last4Of = (s: unknown) => normaliseDigits(String(s ?? '')).replace(/\D/g, '').slice(-4);
 
 interface TriedLookup { order_id: string; last4: string; callId: string }
@@ -407,6 +407,78 @@ export function asksAgainAfterFailedLookups(reply: string, rows: GuardRow[], thi
   if (!pair) return false;
   return failed.some((f) => samePair(f.call, pair.id.value, pair.l4.digits)
     && (pair.id.row > f.row || pair.l4.row > f.row));
+}
+
+// ── Once the order is verified ─────────────────────────────────
+// A chat that has proved which order it owns (the widget's verify form, or a
+// lookup that came back found) must not be asked for the order ID or the
+// phone digits again. The one fair reason to ask is the customer bringing up
+// a different order, which is what this spots. When unsure it says "another
+// order", so the reply that asks is let through rather than overridden.
+// The words count only next to an order noun: "any new update?", "koi naya
+// update" and "naya address" are about the same order.
+const OTHER_WORD = String.raw`(?:another|other|second|2nd|new|first|1st|previous|old|older|earlier|dusra|doosra|dusri|doosri|dusre|doosre|naya|nayi|naye|pehla|pehle|pehli|pahla|pahle|purana|purane|purani|ek aur|aur ek)`;
+const ORDER_NOUN = String.raw`(?:orders?|parcels?|packages?|items?|products?|shipments?|one)`;
+const ANOTHER_ORDER = new RegExp(String.raw`\b${OTHER_WORD}\b(?: [^ ]+){0,2}? ${ORDER_NOUN}\b|\b(?:orders?|parcels?) (?:[^ ]+ )?(?:aur|bhi) ek\b`, 'i');
+const ANOTHER_ORDER_HI = /(?:दूसरा|दूसरी|दूसरे|एक और|नया|नई|नए|पहला|पहले|पहली|पुराना|पुराने|पुरानी)(?: [^ ]+){0,2}? (?:ऑर्डर|आर्डर|पार्सल|order|parcel)/;
+
+/**
+ * Whether the customer's latest message talks about an order other than the
+ * verified one: "another order" / "dusra order" / "दूसरा ऑर्डर", or an order ID
+ * or tracking ID that is not one of knownIds (the verified order's ID and its
+ * tracking ID). A 4-5 digit number in a short message with words ("1400 ka
+ * status batao") counts as an ID too. A number on its own ("3335") does not:
+ * it is as likely their last 4, and when our last reply asked for another
+ * order's details ai.ts already lets the next ask through.
+ */
+export function mentionsAnotherOrder(text: string | null | undefined, knownIds: string | (string | null | undefined)[]): boolean {
+  const content = text || '';
+  const t = prep(content);
+  if (ANOTHER_ORDER.test(t) || ANOTHER_ORDER_HI.test(t)) return true;
+  const known = new Set((Array.isArray(knownIds) ? knownIds : [knownIds]).filter(Boolean).map(normId));
+  const withWords = /[A-Za-z\u0900-\u0965\u0970-\u097F]/.test(t);
+  return tokensIn(content, 0, withWords, false).some((tok) => tok.id && !known.has(normId(tok.value)));
+}
+
+/**
+ * Stricter than asksForOrderDetails, for a chat whose order is already known:
+ * the request and the "order ID" / "last 4" words must sit in the same
+ * sentence, so the closing "Anything else I can help with?" does not turn an
+ * answer into a question. A reply that quotes one of knownIds (the order ID
+ * or tracking ID) is giving the order ID, not asking for it; it can still ask
+ * for the last 4.
+ */
+export function reasksForOrderDetails(reply: string | null | undefined, knownIds: (string | null | undefined)[]): { orderId: boolean; last4: boolean } {
+  const text = normaliseDigits(reply || '').toLowerCase().slice(0, 4000);
+  const sentences = text.match(/[^.?!।\n]+[.?!।]*/g) || [];
+  let orderId = false;
+  let last4 = false;
+  for (const sentence of sentences) {
+    if (!REQUEST.test(sentence)) continue;
+    if (ASKS_ORDER_ID.some((re) => re.test(sentence))) orderId = true;
+    if (ASKS_LAST4.some((re) => re.test(sentence))) last4 = true;
+  }
+  if (orderId) {
+    const flat = text.replace(/[#\s]/g, ' ');
+    const quotes = knownIds.filter(Boolean).map(normId).some((id) => !!id
+      && new RegExp(`(?:^|[^a-z0-9])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`).test(flat));
+    if (quotes) orderId = false;
+  }
+  return { orderId, last4 };
+}
+
+/**
+ * Whether our last message the customer saw asked for order details in the
+ * strict sense above: in a verified chat that ask was allowed (another
+ * order), so the customer's next message is likely answering it.
+ */
+export function lastReplyReasked(rows: GuardRow[], knownIds: (string | null | undefined)[]): boolean {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (!isVisibleReply(rows[i])) continue;
+    const ask = reasksForOrderDetails(rows[i].content, knownIds);
+    return ask.orderId || ask.last4;
+  }
+  return false;
 }
 
 // ── Handing over ───────────────────────────────────────────────

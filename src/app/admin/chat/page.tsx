@@ -6,7 +6,7 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
-  Menu, ChevronLeft,
+  Menu, ChevronLeft, Users, UserCheck,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import {
@@ -33,6 +33,10 @@ interface Conversation {
   tracker_business_id: string | null;
   panel_name: string | null;
   last_message: string | null;
+  // Set once the customer proved an order (the widget's form, or order ID +
+  // last 4 in the chat). Unset = a visitor.
+  verified_order_id?: string | null;
+  verified_via?: string | null;
 }
 
 interface ChatMessage {
@@ -109,6 +113,32 @@ const WITHHELD_LABELS: Record<string, string> = {
 };
 
 const POLL_MS = 3000;
+
+// The inbox tabs. All and Customers show verified customers only, Visitors the
+// rest; the status tabs show everyone, whatever they have verified.
+type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved';
+const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: string; segment: '' | 'visitors' | 'customers' }[] = [
+  { v: 'all', label: 'All', icon: Inbox, status: '', segment: 'customers' },
+  { v: 'visitors', label: 'Visitors', icon: Users, status: '', segment: 'visitors' },
+  { v: 'customers', label: 'Customers', icon: UserCheck, status: '', segment: 'customers' },
+  { v: 'human_needed', label: 'Needs you', icon: AlertCircle, status: 'human_needed', segment: '' },
+  { v: 'agent_handling', label: 'You are on it', icon: User, status: 'agent_handling', segment: '' },
+  { v: 'ai_handling', label: 'AI handling', icon: Bot, status: 'ai_handling', segment: '' },
+  { v: 'resolved', label: 'Closed', icon: Check, status: 'resolved', segment: '' },
+];
+
+// Green "Verified" tag for a customer who proved their order.
+function VerifiedBadge({ orderId }: { orderId?: string | null }) {
+  return (
+    <span title={orderId ? `Verified order ${orderId}` : 'Verified customer'} style={{
+      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
+      display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+      background: '#dcfce7', color: '#15803d',
+    }}>
+      <UserCheck size={10} /> Verified{orderId ? ` · ${orderId}` : ''}
+    </span>
+  );
+}
 
 function timeAgo(iso: string | null): string {
   if (!iso) return '';
@@ -425,7 +455,10 @@ export default function ChatSupportPage() {
 
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activePanelId, setActivePanelId] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [tab, setTab] = useState<InboxTab>('all');
+  const tabDef = INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0];
+  const statusFilter = tabDef.status;
+  const segment = tabDef.segment;
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -501,6 +534,7 @@ export default function ChatSupportPage() {
       const params = new URLSearchParams();
       if (activePanelId) params.set('businessId', activePanelId);
       if (statusFilter) params.set('status', statusFilter);
+      if (segment) params.set('segment', segment);
       const res = await fetch(`/api/chat/conversations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -508,7 +542,7 @@ export default function ChatSupportPage() {
       if (res.ok) setConversations(data.conversations || []);
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter]);
+  }, [token, activePanelId, statusFilter, segment]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -922,6 +956,12 @@ export default function ChatSupportPage() {
 
   const canReply = user.role !== 'viewer';
   const unreadTotal = conversations.reduce((n, c) => n + (c.unread_count || 0), 0);
+  // The thread's own answer carries the verified fields, so the header stays
+  // right after the chat drops out of the Visitors list; the list row is the
+  // fallback while the thread is still loading.
+  const activeVerifiedOrder = !activeConv ? null
+    : activeConv.verified_order_id !== undefined ? activeConv.verified_order_id
+    : conversations.find(c => c.id === activeConv.id)?.verified_order_id ?? null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -965,17 +1005,11 @@ export default function ChatSupportPage() {
 
         {/* Status filters */}
         <nav style={{ padding: '0.5rem' }}>
-          {([
-            { v: '', label: 'All', icon: Inbox },
-            { v: 'human_needed', label: 'Needs you', icon: AlertCircle },
-            { v: 'agent_handling', label: 'You are on it', icon: User },
-            { v: 'ai_handling', label: 'AI handling', icon: Bot },
-            { v: 'resolved', label: 'Closed', icon: Check },
-          ] as const).map(s => (
+          {INBOX_TABS.map(s => (
             <button
-              key={s.v || 'all'}
-              onClick={() => { setStatusFilter(s.v); setActiveId(null); setSidebarOpen(false); }}
-              className={`nav-btn ${statusFilter === s.v ? 'active' : ''}`}
+              key={s.v}
+              onClick={() => { setTab(s.v); setActiveId(null); setSidebarOpen(false); }}
+              className={`nav-btn ${tab === s.v ? 'active' : ''}`}
               style={{ width: '100%' }}
             >
               <s.icon size={16} /> {s.label}
@@ -1033,10 +1067,21 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  <p>Nothing here yet.</p>
-                  <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
-                    Chats from the widget and email to a connected mailbox both land here.
-                  </p>
+                  {segment === 'customers' ? (
+                    <>
+                      <p>No verified customers yet.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        Chats from people who have not verified an order, and most email threads, are under Visitors.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>Nothing here yet.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        Chats from the widget and email to a connected mailbox both land here.
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -1057,6 +1102,7 @@ export default function ChatSupportPage() {
                     <span style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {c.visitor_name || 'Visitor'}
                     </span>
+                    {c.verified_order_id && <VerifiedBadge />}
                     {c.unread_count > 0 && (
                       <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700 }}>
                         {c.unread_count}
@@ -1127,6 +1173,7 @@ export default function ChatSupportPage() {
                       }}>
                         {STATUS_LABELS[activeConv.status]}
                       </span>
+                      {activeVerifiedOrder && <VerifiedBadge orderId={activeVerifiedOrder} />}
                     </div>
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
                       <span>{activeConv.panel_name || activeConv.site_name}</span>
