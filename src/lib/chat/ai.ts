@@ -730,16 +730,16 @@ export async function getAIResponse(
     }
 
     if (name === 'lookup_order') {
-      // A forced call must not guess: digits the customer never sent are
-      // turned back without touching the database.
+      // A forced call must not guess, and the model does fill in the wrong
+      // values even when forced (seen live: order_id "1234", phone_last4 ""
+      // after "#999999" then "1234"). The customer typed both, so look up the
+      // pair the guard read from their messages instead; lookupOrder still
+      // needs both to match. The call is rewritten to what actually ran, so
+      // the stored exchange marks this pair as tried and repeat misses reach H3.
       if (pending && !typedByVisitor(args, guardRows)) {
-        console.log(`[AI] Guard refused an untyped lookup for conv ${conversationId}`);
-        const refused = {
-          found: false,
-          needs_verification: true,
-          message: 'Ask the customer to confirm the order ID and the last 4 digits of the phone number on the order.',
-        };
-        return { payload: refused, persist: true, lookup: { ...refused, typed: false } };
+        console.log(`[AI] Guard used the typed pair for conv ${conversationId}`);
+        args = { order_id: pending.identifier, phone_last4: pending.last4 };
+        tc.function.arguments = JSON.stringify(args);
       }
       // ३३३५ is how some customers type 3335, and the model copies it as is.
       for (const k of ['order_id', 'phone_last4'] as const) {
