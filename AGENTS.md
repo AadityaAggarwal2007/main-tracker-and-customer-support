@@ -29,7 +29,7 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 | Files agents attach to replies | `src/lib/chat/attachment-rules.ts` (types + limits), `src/app/api/chat/attachments/*` (upload/remove), `src/app/api/widget/files/[id]` (serves sent files), table `chat_attachments` (`chat-attachments.sql`) |
 | Editing/deleting sent messages (⋯ menu in the inbox) | `src/lib/chat/message-rules.ts` (who may change what), `src/app/api/chat/messages/[id]` (details, edit, soft delete), `messages.edited_*`/`deleted_*` + table `message_revisions` (`chat-message-edits.sql`). A deleted message must stay out of the widget, the AI history and the conversation list. |
 | AI replies (model chain, tools, base prompt) | `src/lib/chat/ai.ts` — `DEFAULT_SYSTEM_PROMPT`, `buildSystemPrompt`, `FALLBACK_CHAIN` |
-| Order lookup used by the AI | `src/lib/chat/orders.ts` |
+| Order lookup used by the AI | `src/lib/chat/orders.ts`; `src/lib/chat/lookup-guard.ts` forces the lookup once ID + last 4 are typed, or hands over |
 | Email support (IMAP poll, threading, held drafts) | `src/lib/chat/email.ts`, `src/app/api/cron/chat-email-poll` |
 | Order status emails | `src/lib/smtp-client.ts`, `src/lib/email-templates.ts`, `src/app/api/cron/*` |
 | Shopify OAuth + webhooks | `src/app/api/shopify/*` |

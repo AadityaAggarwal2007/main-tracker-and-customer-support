@@ -29,6 +29,9 @@ function normalizeOrderId(orderId?: string | null): string | null {
   const trimmed = orderId.trim();
   // Accept with or without # prefix
   if (/^\d+$/.test(trimmed)) return `#${trimmed}`;
+  // Customers put a # in front of the ST… tracking ID too; tracking_id has none.
+  const tracking = trimmed.match(/^#\s*(ST[A-Z0-9]{10})$/i);
+  if (tracking) return tracking[1];
   if (trimmed.startsWith('#')) return trimmed;
   return trimmed;
 }

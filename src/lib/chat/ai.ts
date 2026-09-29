@@ -3,10 +3,15 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
   ChatCompletionTool,
+  ChatCompletionToolChoiceOption,
 } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { lookupOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
+import {
+  asksAgainAfterFailedLookups, findPendingLookup, handOverReply, normaliseDigits, typedByVisitor,
+  type LookupOutcome,
+} from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
 
 // ── The support AI ─────────────────────────────────────────────
@@ -425,6 +430,9 @@ function dropOrphanedToolCalls(msgs: ChatCompletionMessageParam[]): ChatCompleti
 // customer yet.
 export const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. Could you send that again?';
 
+// Sent when a model answers with no text at all. Not an answer either.
+const EMPTY_REPLY = "I'm here to help! How can I assist you?";
+
 function stripMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '$1')   // bold
@@ -453,7 +461,7 @@ export interface AIResult {
 interface StoredMessage {
   sender: string;
   content: string | null;
-  metadata: { tool_calls?: ChatCompletionMessageToolCall[]; tool_call_id?: string } | null;
+  metadata: { tool_calls?: ChatCompletionMessageToolCall[]; tool_call_id?: string; hidden?: boolean; withheld?: string } | null;
 }
 
 export async function getAIResponse(
@@ -547,18 +555,37 @@ export async function getAIResponse(
 
   const history = dropOrphanedToolCalls(chatMessages);
 
+  // Since 2026-09-28 the model often answers an order ID and last 4 sent in
+  // separate messages by asking for them again, and nothing ever broke that
+  // loop. When the customer has typed both and we have not looked them up yet,
+  // the first round must call lookup_order, only with values they typed, and a
+  // reply that still is not a real lookup goes to a person (see lookup-guard.ts).
+  // The busy apology and the empty-reply filler ask for nothing, so they must
+  // not hide the question the customer is still answering.
+  const guardRows = recent.rows.filter((r) => r.content !== AI_BUSY_REPLY && r.content !== EMPTY_REPLY);
+  const pending = findPendingLookup(guardRows);
+  // Per model: runWithModel resets them, and executeTool records cached
+  // lookups again, so a fallback model is judged on what its own run used.
+  let typedLookupRan = false;
+  const lookupOutcomes: LookupOutcome[] = [];
+
   // When a model dies partway through a conversation we retry the whole exchange
   // on the next model, which would otherwise re-run tools that already had side
   // effects — escalating twice, or writing the category again. Results are cached
   // per request so a mid-conversation switch replays them instead.
-  const toolCache = new Map<string, { payload: unknown; persist: boolean; escalated?: boolean }>();
+  const toolCache = new Map<string, { payload: unknown; persist: boolean; escalated?: boolean; lookup?: LookupOutcome & { typed: boolean } }>();
 
   const executeTool = async (tc: ChatCompletionMessageToolCall) => {
     const cacheKey = tc.function.name + ':' + (tc.function.arguments || '');
-    const cached = toolCache.get(cacheKey);
-    if (cached) return cached;
-    const result = await runTool(tc);
-    toolCache.set(cacheKey, result);
+    let result = toolCache.get(cacheKey);
+    if (!result) {
+      result = await runTool(tc);
+      toolCache.set(cacheKey, result);
+    }
+    if (result.lookup) {
+      lookupOutcomes.push(result.lookup);
+      if (result.lookup.typed) typedLookupRan = true;
+    }
     return result;
   };
 
@@ -595,8 +622,26 @@ export async function getAIResponse(
     }
 
     if (name === 'lookup_order') {
+      // A forced call must not guess: digits the customer never sent are
+      // turned back without touching the database.
+      if (pending && !typedByVisitor(args, guardRows)) {
+        console.log(`[AI] Guard refused an untyped lookup for conv ${conversationId}`);
+        const refused = {
+          found: false,
+          needs_verification: true,
+          message: 'Ask the customer to confirm the order ID and the last 4 digits of the phone number on the order.',
+        };
+        return { payload: refused, persist: true, lookup: { ...refused, typed: false } };
+      }
+      // ३३३५ is how some customers type 3335, and the model copies it as is.
+      for (const k of ['order_id', 'phone_last4'] as const) {
+        if (typeof args[k] === 'string') args[k] = normaliseDigits(args[k]);
+      }
       console.log(`[AI] Order lookup for conv ${conversationId}:`, args);
       const result = await lookupOrder(args, trackerBusinessId || null);
+      const needsVerification = 'needs_verification' in result && !!result.needs_verification;
+      // Only a lookup that reached the database counts as having looked.
+      const lookup = { found: result.found, needs_verification: needsVerification, typed: !needsVerification };
 
       // A successful lookup is the first point at which we actually know who we
       // are talking to, so stop calling them "Visitor" in the inbox. Only the
@@ -617,7 +662,7 @@ export async function getAIResponse(
         }
       }
 
-      return { payload: result, persist: true };
+      return { payload: result, persist: true, lookup };
     }
 
     return { payload: { error: `Unknown tool: ${name}` }, persist: false };
@@ -628,22 +673,44 @@ export async function getAIResponse(
     let toolCallMeta: ToolCallMeta | null = null;
     let escalated = false;
     let nudged = false;
+    typedLookupRan = false;
+    lookupOutcomes.length = 0;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await getClient().chat.completions.create({
+      // Only the first round is forced, so the model can still react to the
+      // result (or escalate) in the rounds after it. No extra API call.
+      const forced = !!pending && round === 0;
+      const ask = (toolChoice: ChatCompletionToolChoiceOption) => getClient().chat.completions.create({
         model,
         messages,
         tools: [ORDER_LOOKUP_TOOL, ESCALATE_TOOL, CATEGORIZE_TOOL],
-        tool_choice: 'auto',
+        tool_choice: toolChoice,
         max_tokens: 600,
       });
+      let response;
+      try {
+        response = await ask(forced ? { type: 'function', function: { name: 'lookup_order' } } : 'auto');
+      } catch (err) {
+        // A provider that does not take a named tool_choice answers 400. Ask
+        // unforced rather than lose the model; H1 still covers a reply without
+        // a lookup.
+        if (!forced || (err as { status?: number })?.status !== 400) throw err;
+        console.log(`[AI] ${model} refused a forced lookup_order, asking unforced`);
+        response = await ask('auto');
+      }
 
       const message = response.choices[0]?.message;
       const toolCalls = message?.tool_calls || [];
 
+      // Why a lookup did not happen, without logging what the customer wrote.
+      if ((!toolCalls.length && !message?.content?.trim())
+        || (forced && !toolCalls.some((tc) => tc.function?.name === 'lookup_order'))) {
+        console.log(`[AI] no lookup: conv=${conversationId} model=${response.model} finish=${response.choices[0]?.finish_reason} usage=${response.usage?.prompt_tokens}/${response.usage?.completion_tokens}`);
+      }
+
       if (!toolCalls.length) {
         return {
-          content: stripMarkdown(message?.content || "I'm here to help! How can I assist you?"),
+          content: stripMarkdown(message?.content || EMPTY_REPLY),
           toolCallMeta,
           escalated,
         };
@@ -676,26 +743,48 @@ export async function getAIResponse(
     // Spent the tool budget — take the tools away and ask plainly for prose.
     const closing = await getClient().chat.completions.create({ model, messages, max_tokens: 600 });
     return {
-      content: stripMarkdown(closing.choices[0]?.message?.content || "I'm here to help! How can I assist you?"),
+      content: stripMarkdown(closing.choices[0]?.message?.content || EMPTY_REPLY),
       toolCallMeta,
       escalated,
     };
   };
 
+  // The same status change escalate_to_human makes, with a fixed reply that
+  // says nothing about any order. Callers treat it as an escalation: the widget
+  // stops answering, and email holds the draft for the team.
+  const handOver = async (why: 'H1' | 'H3', result: AIResult): Promise<AIResult> => {
+    await query(
+      `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
+      [conversationId]
+    );
+    console.log(`[AI] Guard hand-over for conv ${conversationId}: ${why}`);
+    return { content: handOverReply(guardRows), toolCallMeta: result.toolCallMeta, escalated: true };
+  };
+
   let lastErr: unknown = null;
   for (const model of attemptOrder()) {
+    let result: AIResult;
     try {
-      const result = await runWithModel(model);
-      if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
-      // stripMarkdown misses a ** left without its partner.
-      result.content = stripMarkdownEmphasis(result.content);
-      if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
-      return result;
+      result = await runWithModel(model);
     } catch (err) {
       lastErr = err;
       console.error(`[AI] ${model} failed:`, (err as { status?: number })?.status || '', (err as Error)?.message);
       if (!isRetryable(err)) break;
+      continue;
     }
+    if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
+    // stripMarkdown misses a ** left without its partner.
+    result.content = stripMarkdownEmphasis(result.content);
+    if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
+    // A model that escalated itself has already handed over.
+    if (!result.escalated) {
+      // H1: they typed both and no lookup with those values happened, or one
+      // did and the model then said nothing (the filler is not the result).
+      if (pending && (!typedLookupRan || result.content === EMPTY_REPLY)) return handOver('H1', result);
+      // H3: asking yet again after lookups that keep coming back not found.
+      if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
+    }
+    return result;
   }
 
   // Every model is down. The customer must never see a stack trace, a provider
