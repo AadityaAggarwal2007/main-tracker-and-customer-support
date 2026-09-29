@@ -9,7 +9,7 @@ import { query, queryOne } from '@/lib/db';
 import { lookupOrder, lookupVerifiedOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
-  asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId,
+  asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply,
   lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, typedByVisitor,
   type LookupOutcome,
 } from './lookup-guard';
@@ -770,7 +770,7 @@ export async function getAIResponse(
       const result = await lookupOrder(args, trackerBusinessId || null);
       const needsVerification = 'needs_verification' in result && !!result.needs_verification;
       // Only a lookup that reached the database counts as having looked.
-      const lookup = { found: result.found, needs_verification: needsVerification, typed: !needsVerification };
+      const lookup = { found: result.found, needs_verification: needsVerification, typed: !needsVerification, order_id: args.order_id };
 
       // A successful lookup is the first point at which we actually know who we
       // are talking to, so stop calling them "Visitor" in the inbox. Only the
@@ -960,6 +960,17 @@ export async function getAIResponse(
       if (pending && !typedLookupRan) return handOver('H1', result);
       // H3: asking yet again after lookups that keep coming back not found.
       if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
+      // The lookup ran and matched nothing, yet the reply only asks for the
+      // details again (seen live even with a plain not-found result), so the
+      // customer never learns the pair was wrong. Say it for the model.
+      const misses = lookupOutcomes.filter((o) => o.found === false && !o.needs_verification);
+      if (misses.length && !lookupOutcomes.some((o) => o.found)) {
+        const again = reasksForOrderDetails(result.content, Array.from(knownOrderIds));
+        if (again.orderId || again.last4) {
+          result.content = notFoundReply(guardRows, misses[misses.length - 1].order_id || '');
+          return result;
+        }
+      }
       // H4: the order is verified and in view, yet the reply asks for the
       // order ID or last 4 anyway. Ask the same model once more with a note;
       // if it still asks, a person takes over. Not when the customer has just

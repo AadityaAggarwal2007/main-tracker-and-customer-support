@@ -24,7 +24,7 @@ export interface GuardRow {
 export interface PendingLookup { identifier: string; last4: string }
 
 /** What a lookup made during this request came back with. */
-export interface LookupOutcome { found?: boolean; needs_verification?: boolean }
+export interface LookupOutcome { found?: boolean; needs_verification?: boolean; order_id?: string }
 
 // Customers typing in Hindi send ३३३५ as often as 3335.
 export function normaliseDigits(text: string): string {
@@ -621,15 +621,32 @@ const HINGLISH = /\b(?:hai|kya|mera|meri|nahi|nahin|kab|kar|aapka|bhai)\b|\borde
 // Devanagari letters, not its digits (०-९), which say nothing about language.
 const DEVANAGARI = /[ऀ-॥॰-ॿ]/;
 
-export function handOverReply(rows: GuardRow[]): string {
-  // The message that triggers a hand-over is usually just "3335", so the
-  // language comes from the latest one with words in it.
-  let latest = '';
-  for (let i = rows.length - 1; i >= 0 && !latest; i--) {
+// The language to answer in. The message that triggers a guard reply is
+// usually just "3335", and "last 4 digit 4321" says little either, so the
+// last few messages with words in them are read, not only the latest.
+function replyLanguage(rows: GuardRow[]): 'en' | 'hinglish' | 'hi' {
+  const recent: string[] = [];
+  for (let i = rows.length - 1; i >= 0 && recent.length < 3; i--) {
     const c = rows[i].sender === 'visitor' ? rows[i].content || '' : '';
-    if (/[A-Za-z]/.test(c) || DEVANAGARI.test(c)) latest = c;
+    if (/[A-Za-z]/.test(c) || DEVANAGARI.test(c)) recent.push(c);
   }
-  if (DEVANAGARI.test(latest)) return HAND_OVER.hi;
-  if (HINGLISH.test(latest)) return HAND_OVER.hinglish;
-  return HAND_OVER.en;
+  if (recent.some((c) => DEVANAGARI.test(c))) return 'hi';
+  if (recent.some((c) => HINGLISH.test(c))) return 'hinglish';
+  return 'en';
+}
+
+export function handOverReply(rows: GuardRow[]): string {
+  return HAND_OVER[replyLanguage(rows)];
+}
+
+// After a lookup that found nothing the model tends to just ask for the
+// details again without saying nothing matched, so ai.ts says it instead.
+// Only the order ID the customer typed is repeated, never the digits.
+export function notFoundReply(rows: GuardRow[], orderId: string): string {
+  const id = orderId ? ' ' + orderId : '';
+  switch (replyLanguage(rows)) {
+    case 'hi': return `ऑर्डर आईडी${id} और इन आखिरी 4 अंकों से कोई ऑर्डर नहीं मिला। कृपया दोनों एक बार जाँच कर दोबारा भेजें।`;
+    case 'hinglish': return `Order ID${id} aur in last 4 digits se koi order nahi mila. Kripya dono ek baar check karke dobara bhejiye.`;
+    default: return `I couldn't find an order with order ID${id} and those last 4 digits. Could you please double-check both and send them again?`;
+  }
 }
