@@ -6,6 +6,7 @@ import type {
 } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { lookupOrder } from './orders';
+import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 
 // ── The support AI ─────────────────────────────────────────────
 // Ported from the chat-support app's ai.js. The system prompt, the tool
@@ -418,6 +419,11 @@ function dropOrphanedToolCalls(msgs: ChatCompletionMessageParam[]): ChatCompleti
   return out;
 }
 
+// Said when every model is down, and by the widget route when the AI call
+// itself throws. Not a real reply, so it does not count as having talked to the
+// customer yet.
+export const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. Could you send that again?';
+
 function stripMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '$1')   // bold
@@ -491,7 +497,27 @@ export async function getAIResponse(
       console.error('[AI] saved answers lookup failed:', (err as Error)?.message);
     }
   }
-  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs);
+  // Anything we already said here counts — the AI's own replies or a team
+  // member's — except the busy apology and drafts the customer never got. Asked
+  // of the whole conversation, not the history window, which a long chat
+  // scrolls the first greeting out of.
+  const replied = await queryOne<{ yes: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM messages
+        WHERE conversation_id = $1
+          AND sender IN ('ai', 'agent')
+          AND deleted_at IS NULL
+          AND COALESCE(metadata->>'hidden', 'false') <> 'true'
+          AND COALESCE(metadata->>'withheld', '') = ''
+          AND btrim(content) <> ''
+          AND content <> $2
+     ) AS yes`,
+    [conversationId, AI_BUSY_REPLY]
+  );
+  const alreadyReplied = !!replied?.yes;
+
+  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs)
+    + (alreadyReplied ? ALREADY_REPLIED_NOTE : '');
 
   // Build chat history — include tool results stored in metadata
   const chatMessages: ChatCompletionMessageParam[] = [];
@@ -660,6 +686,7 @@ export async function getAIResponse(
     try {
       const result = await runWithModel(model);
       if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
+      if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
       return result;
     } catch (err) {
       lastErr = err;
@@ -672,7 +699,7 @@ export async function getAIResponse(
   // name, or silence, so answer like a busy human and invite them to continue.
   console.error('[AI] Every model failed:', (lastErr as Error)?.message);
   return {
-    content: 'Sorry, that took longer than expected on my end. Could you send that again?',
+    content: AI_BUSY_REPLY,
     toolCallMeta: null,
     allFailed: true,
   };

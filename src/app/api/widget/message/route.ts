@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
-import { getAIResponse } from '@/lib/chat/ai';
+import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
             `INSERT INTO messages (id, conversation_id, sender, content, created_at)
              VALUES (gen_random_uuid()::text, $1, 'ai', $2, now())
              RETURNING id, conversation_id, sender, content, metadata, created_at`,
-            [conversationId, 'Sorry, that took longer than expected on my end. Could you send that again?']
+            [conversationId, AI_BUSY_REPLY]
           );
         } catch (saveErr) {
           console.error('[widget] fallback save failed:', (saveErr as Error).message);
