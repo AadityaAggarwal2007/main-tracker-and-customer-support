@@ -3,6 +3,7 @@ import { PoolClient } from 'pg';
 import { getAuthFromRequest, AuthUser } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, isOurMessage } from '@/lib/chat/message-rules';
+import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
 
 export const dynamic = 'force-dynamic';
@@ -103,7 +104,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
   try {
     const { content } = await request.json();
-    const text = typeof content === 'string' ? content.trim() : '';
+    const text = typeof content === 'string' ? stripMarkdownEmphasis(content).trim() : '';
     if (text.length > MAX_MESSAGE_LENGTH) {
       return NextResponse.json({ error: `A message can be at most ${MAX_MESSAGE_LENGTH} characters.` }, { status: 400 });
     }

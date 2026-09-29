@@ -38,10 +38,11 @@
 
   // Escape first, then wrap bare URLs in real anchors. The URL match stops
   // before any trailing punctuation, so a full stop written straight after a
-  // tracking link stays outside the href and the link still opens.
+  // tracking link stays outside the href and the link still opens. It also
+  // stops at an asterisk: "**https://…/abc**" pasted as bold opens the page.
   function linkify(s) {
     return escapeHtml(s).replace(
-      /(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/g,
+      /(https?:\/\/[^\s<>"'*]*[^\s<>"'*.,;:!?)\]])/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
     );
   }

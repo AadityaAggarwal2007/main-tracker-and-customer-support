@@ -119,8 +119,9 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+// A link stops at an asterisk, so "**https://…/abc**" still opens the page.
 function renderWithLinks(text: string) {
-  return text.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
+  return text.split(/(https?:\/\/[^\s*]+)/g).map((part, i) =>
     /^https?:\/\//.test(part)
       ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'underline', wordBreak: 'break-all' }}>{part}</a>
       : <span key={i}>{part}</span>
