@@ -68,7 +68,7 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 1. `git pull origin main` — always start from the latest code.
 2. Find the cause before changing code. Make the smallest fix that solves it.
    If the cause is only visible on the live server (errors, cron runs, data),
-   ask for output using the read-only commands in "Seeing what production is doing".
+   look there with the read-only commands in "Working on the VPS".
 3. Check it:
    - `npx tsc --noEmit` — the repo already has **20 type errors** (in
      `admin/page.tsx`, `api/businesses`, `api/resync`, `api/upload`, `csv-cleaner.ts`).
@@ -78,51 +78,81 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
    - Run it (`npm run dev`) and try the change if a local database is available.
 4. Commit with a message that says what changed for the user and why, then
    `git push origin main`.
-5. **End every reply that pushed code with a Deploy block**, in exactly this shape,
-   so the developer can paste it into the Hostinger VPS web console:
+5. Deploy it to the VPS as described in "Working on the VPS": ask the developer
+   first, run it, check the app came back, and report in plain words.
 
-   ```
-   ── Deploy ──
-   1. (only if a new env var)   nano /etc/tracker/.env   → add:  NAME=value
-   2. (only if a new SQL file)  cd /var/www/tracker && git pull origin main && sudo -u postgres psql -d tracking_crm -f <file>.sql
-   3. cd /var/www/tracker && bash vps-setup/5-deploy.sh
-   Check: pm2 logs tracker --lines 50 --nostream
-   ```
+**To undo a bad deploy:** `git revert <sha>`, push, and deploy again.
+Do not force-push `main`.
 
-   Leave out steps 1–2 when they are not needed. Say in plain words what the
-   developer should see afterwards.
-   `5-deploy.sh` pulls from GitHub, copies `/etc/tracker/.env`, runs `npm ci`,
-   builds and reloads PM2.
-   You never know a secret's value. For a new env var, name it, say where the
-   value comes from (which dashboard, or "ask the owner"), and add it to
-   `.env.example` with no value. An env-only change still needs step 3, because
-   `NEXT_PUBLIC_*` values are baked in at build time.
+## Working on the VPS
 
-**To undo a bad deploy:** `git revert <sha>`, push, and run the same deploy
-command. Do not force-push `main`.
-
-## Seeing what production is doing
-
-You cannot reach the VPS. When you need to, give the developer read-only
-commands to paste into the web console and ask for the output. Use only
-commands like these:
+The developer's machine reaches the server over SSH as the alias `shiptrack-vps`
+(set in his `~/.ssh/config`). The server's address is never written in this
+repo, because the repo is public. Test access with:
 
 ```bash
-pm2 ls                                              # is the app up, restarts
-pm2 logs tracker --lines 100 --nostream             # recent app output + errors
-tail -n 100 /var/log/tracker-err.log                # older errors
-tail -n 50 /var/log/tracker-cron.log                # cron runs
-crontab -l                                          # which crons exist
-cd /var/www/tracker && git log -1 --oneline && git status -sb   # what code is live
-grep -o '^[A-Z_]*=' /etc/tracker/.env               # env var NAMES only
-sudo -u postgres psql -d tracking_crm -c "SELECT ... LIMIT 20"  # read-only queries
+ssh -o BatchMode=yes -o ConnectTimeout=5 shiptrack-vps true
 ```
 
-- Never ask for secret values: no `cat /etc/tracker/.env`, and no `grep` that prints values.
-- SQL you ask for must be `SELECT` only. Anything that writes is a fix and follows
-  the Deploy block (new `.sql` file in Git, owner's OK if it changes existing rows).
-- Select only the columns you need. Avoid pulling customer names, phones or
-  addresses into the chat unless the bug is about them.
+If that fails, do not try other ways in. Give the developer the same commands
+to paste into the Hostinger web console instead, and ask for the output.
+
+The same server also runs other apps (Add ERP, the old chat-support server) and
+a shared PostgreSQL. Touch only `/var/www/tracker`, the `tracker` PM2 app, the
+tracker lines of the crontab, and the `tracking_crm` database.
+
+### Look freely — read-only, no need to ask
+
+```bash
+ssh shiptrack-vps 'pm2 ls'                                          # app up? restarts?
+ssh shiptrack-vps 'pm2 logs tracker --lines 100 --nostream'         # recent output + errors
+ssh shiptrack-vps 'tail -n 100 /var/log/tracker-err.log'            # older errors
+ssh shiptrack-vps 'tail -n 50 /var/log/tracker-cron.log'            # cron runs
+ssh shiptrack-vps 'crontab -l'                                      # which crons exist
+ssh shiptrack-vps 'cd /var/www/tracker && git log -1 --oneline && git status -sb'  # what code is live
+ssh shiptrack-vps "grep -o '^[A-Z_]*=' /etc/tracker/.env"           # env var NAMES only
+ssh shiptrack-vps "sudo -u postgres psql -d tracking_crm -c 'SELECT ... LIMIT 20'" # SELECT only
+```
+
+Select only the columns you need. Do not pull customer names, phones or
+addresses into the chat unless the bug is about them.
+
+### Ask first, then run
+
+Say what you are about to run and why, and wait for a yes in chat:
+
+1. **New SQL file** (before the deploy, only if the fix added one):
+   `ssh shiptrack-vps 'cd /var/www/tracker && git pull origin main && sudo -u postgres psql -d tracking_crm -v ON_ERROR_STOP=1 -f <file>.sql'`
+2. **Deploy:** `ssh shiptrack-vps 'cd /var/www/tracker && bash vps-setup/5-deploy.sh'`
+   It pulls from GitHub, copies `/etc/tracker/.env`, runs `npm ci`, builds and
+   reloads PM2.
+3. **Check:** `pm2 ls` and `pm2 logs tracker --lines 50 --nostream` as above.
+   Then tell the developer what changed, which commit is live, and what he
+   should see in the app.
+
+### New environment variables
+
+You never see or set a secret's value. Name the variable, say where its value
+comes from (which dashboard, or "ask the owner"), and add `NAME=` with no value
+to `.env.example`. The developer adds the value himself:
+
+```bash
+ssh -t shiptrack-vps nano /etc/tracker/.env
+```
+
+Then deploy. An env-only change still needs a deploy, because `NEXT_PUBLIC_*`
+values are baked in at build time.
+
+### Never
+
+- Print secret values: no `cat`/`less`/`head` of `/etc/tracker/.env` or
+  `.env.production.local`, no `env`, `printenv` or `pm2 env`.
+- Edit files on the server. Every change goes through Git, so the server
+  always matches `main` (`git status` clean).
+- Run SQL that writes, except a committed `.sql` file. Anything that changes
+  or deletes existing rows needs the owner's OK in plain words.
+- Touch other apps, Nginx, the firewall, SSH settings, users, packages, or
+  reboot, unless the owner asks.
 
 ## Things that live only on the VPS (not in this repo)
 
