@@ -7,7 +7,7 @@ import type {
 import { query, queryOne } from '@/lib/db';
 import { lookupOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
-import { cleanOutgoingText } from './plain-text';
+import { stripMarkdownEmphasis } from './plain-text';
 
 // ── The support AI ─────────────────────────────────────────────
 // Ported from the chat-support app's ai.js. The system prompt, the tool
@@ -687,8 +687,8 @@ export async function getAIResponse(
     try {
       const result = await runWithModel(model);
       if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
-      // stripMarkdown misses a ** left without its partner; the store name is also checked.
-      result.content = cleanOutgoingText(result.content);
+      // stripMarkdown misses a ** left without its partner.
+      result.content = stripMarkdownEmphasis(result.content);
       if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
       return result;
     } catch (err) {
