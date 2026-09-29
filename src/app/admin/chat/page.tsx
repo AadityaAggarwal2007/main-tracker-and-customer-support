@@ -6,6 +6,7 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
+  Menu, ChevronLeft,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import {
@@ -162,8 +163,8 @@ function MessageActions({ msg, open, up, canChange, onToggle, onEdit, onDelete, 
         <MoreHorizontal size={16} />
       </button>
       {open && (
-        <div role="menu" style={{
-          position: 'absolute', left: 0, zIndex: 20, minWidth: 176,
+        <div role="menu" className="msg-menu" style={{
+          position: 'absolute', zIndex: 20, minWidth: 176,
           ...(up ? { bottom: '100%', marginBottom: 4 } : { top: '100%', marginTop: 4 }),
           padding: '0.25rem', borderRadius: 'var(--radius)', background: 'var(--card-bg)',
           border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)',
@@ -433,6 +434,7 @@ export default function ChatSupportPage() {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [menu, setMenu] = useState<{ id: string; up: boolean } | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string; saving: boolean; error: string } | null>(null);
@@ -559,6 +561,30 @@ export default function ChatSupportPage() {
       bottomRef.current?.scrollIntoView();
     }
   };
+
+  /* ═══ PHONE LAYOUT ═══ */
+  // On a phone the open conversation replaces the list (see .chat-shell in
+  // globals.css). Opening one adds a history entry, so the phone's own back
+  // gesture returns to the list instead of leaving the inbox. Next.js copies
+  // its router state into entries added this way, so going back does not
+  // reload the page.
+  const openConversation = (id: string) => {
+    if (!activeIdRef.current && window.matchMedia('(max-width: 767px)').matches) {
+      window.history.pushState({ chatThread: true }, '');
+    }
+    setActiveId(id);
+  };
+
+  const closeConversation = () => {
+    if (window.history.state?.chatThread) window.history.back();
+    else setActiveId(null);
+  };
+
+  useEffect(() => {
+    const onBack = () => { if (activeIdRef.current) setActiveId(null); };
+    window.addEventListener('popstate', onBack);
+    return () => window.removeEventListener('popstate', onBack);
+  }, []);
 
   /* ═══ ACTIONS ═══ */
   const changeStatus = async (status: string) => {
@@ -904,8 +930,9 @@ export default function ChatSupportPage() {
 
   return (
     <div className="admin-layout">
-      {/* ── Sidebar ── */}
-      <aside className="sidebar">
+      {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
             <MessageCircle size={15} /> Chat Support
@@ -924,6 +951,7 @@ export default function ChatSupportPage() {
               setActivePanelId(e.target.value);
               localStorage.setItem('active_panel_id', e.target.value);
               setActiveId(null);
+              setSidebarOpen(false);
             }}
             style={{ width: '100%', marginTop: '0.25rem', padding: '0.375rem', borderRadius: 6, border: '1px solid var(--border)', fontSize: '0.8125rem', background: 'var(--card-bg)', color: 'var(--fg)' }}
           >
@@ -945,7 +973,7 @@ export default function ChatSupportPage() {
           ] as const).map(s => (
             <button
               key={s.v || 'all'}
-              onClick={() => { setStatusFilter(s.v); setActiveId(null); }}
+              onClick={() => { setStatusFilter(s.v); setActiveId(null); setSidebarOpen(false); }}
               className={`nav-btn ${statusFilter === s.v ? 'active' : ''}`}
               style={{ width: '100%' }}
             >
@@ -965,7 +993,7 @@ export default function ChatSupportPage() {
       </aside>
 
       {/* ── Main ── */}
-      <main className="main-content">
+      <main className="main-content chat-main">
         {alert && (
           <div className={`toast toast-${alert.type}`} style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 9999 }}>
             {alert.type === 'success' ? <Check size={16} /> : <AlertCircle size={16} />}
@@ -973,9 +1001,20 @@ export default function ChatSupportPage() {
           </div>
         )}
 
-        <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+        {/* Top bar below 1024px, where the sidebar is a slide-in menu */}
+        <div className="mobile-header">
+          <button type="button" className="btn-icon" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>
+            <Menu size={20} />
+          </button>
+          <span className="mobile-header-title">Chat Support</span>
+          {unreadTotal > 0 && (
+            <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{unreadTotal} unread</span>
+          )}
+        </div>
+
+        <div className={`chat-shell${activeId ? ' thread-open' : ''}`}>
           {/* Conversation list */}
-          <div style={{ width: 320, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          <div className="chat-list">
             <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: '0.875rem' }}>
               Conversations
               <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
@@ -1003,7 +1042,7 @@ export default function ChatSupportPage() {
               {conversations.map(c => (
                 <button
                   key={c.id}
-                  onClick={() => setActiveId(c.id)}
+                  onClick={() => openConversation(c.id)}
                   style={{
                     display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
                     padding: '0.75rem 1rem', border: 'none',
@@ -1049,8 +1088,8 @@ export default function ChatSupportPage() {
           </div>
 
           {/* Thread */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            {!activeConv && (
+          <div className="chat-thread">
+            {!activeConv && !activeId && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-muted)' }}>
                 <MessageCircle size={40} style={{ opacity: 0.2, marginBottom: '0.75rem' }} />
                 <p style={{ fontWeight: 600 }}>Pick a conversation</p>
@@ -1058,12 +1097,21 @@ export default function ChatSupportPage() {
               </div>
             )}
 
+            {!activeConv && activeId && (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-muted)' }}>
+                <Loader2 size={20} style={{ animation: 'spin 0.6s linear infinite' }} />
+              </div>
+            )}
+
             {activeConv && (
               <>
                 {/* Thread header */}
-                <div style={{ padding: '0.875rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ padding: '0.875rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button type="button" className="btn-icon chat-back" aria-label="Back to conversations" onClick={closeConversation}>
+                    <ChevronLeft size={20} />
+                  </button>
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700 }}>{activeConv.visitor_name || 'Visitor'}</span>
                       <span style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
@@ -1142,9 +1190,9 @@ export default function ChatSupportPage() {
                     );
 
                     return (
-                      <div key={msg.id} className={mine ? 'msg-row' : undefined} style={{
+                      <div key={msg.id} className={mine ? 'msg-row chat-msg' : 'chat-msg'} style={{
                         alignSelf: mine ? 'flex-start' : 'flex-end',
-                        maxWidth: '72%', display: 'flex', flexDirection: 'column',
+                        display: 'flex', flexDirection: 'column',
                         alignItems: mine ? 'flex-start' : 'flex-end',
                       }}>
                         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>

@@ -1093,6 +1093,66 @@ a {
   background: var(--muted);
 }
 
+.msg-menu {
+  left: 0;
+}
+
+/* ═══════════════════════════════════════════
+   CHAT INBOX — layout
+   ═══════════════════════════════════════════ */
+
+/* The inbox fills the screen: the top bar (below 1024px only), then the
+   conversation list and the open conversation side by side. dvh keeps the
+   reply box above a phone browser's own toolbar. */
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.chat-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.chat-list {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-thread {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-msg {
+  max-width: 72%;
+}
+
+.chat-back {
+  display: none;
+}
+
+/* Phones: one pane at a time — the list, or the open conversation with a
+   back arrow. Messages get more of the narrow width, and the ⋯ menu opens
+   leftwards so it stays on screen. */
+@media (max-width: 767px) {
+  .chat-list { width: 100%; border-right: none; }
+  .chat-shell.thread-open .chat-list { display: none; }
+  .chat-shell:not(.thread-open) .chat-thread { display: none; }
+  .chat-back { display: inline-flex; flex-shrink: 0; }
+  .chat-msg { max-width: 88%; }
+  .msg-menu { left: auto; right: 0; }
+}
+
 /* ═══════════════════════════════════════════
    TIMELINE (tracking)
    ═══════════════════════════════════════════ */
