@@ -67,6 +67,8 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 
 1. `git pull origin main` — always start from the latest code.
 2. Find the cause before changing code. Make the smallest fix that solves it.
+   If the cause is only visible on the live server (errors, cron runs, data),
+   ask for output using the read-only commands in "Seeing what production is doing".
 3. Check it:
    - `npx tsc --noEmit` — the repo already has **20 type errors** (in
      `admin/page.tsx`, `api/businesses`, `api/resync`, `api/upload`, `csv-cleaner.ts`).
@@ -84,16 +86,43 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
    1. (only if a new env var)   nano /etc/tracker/.env   → add:  NAME=value
    2. (only if a new SQL file)  cd /var/www/tracker && git pull origin main && sudo -u postgres psql -d tracking_crm -f <file>.sql
    3. cd /var/www/tracker && bash vps-setup/5-deploy.sh
-   Check: pm2 logs tracker --lines 50
+   Check: pm2 logs tracker --lines 50 --nostream
    ```
 
    Leave out steps 1–2 when they are not needed. Say in plain words what the
    developer should see afterwards.
    `5-deploy.sh` pulls from GitHub, copies `/etc/tracker/.env`, runs `npm ci`,
    builds and reloads PM2.
+   You never know a secret's value. For a new env var, name it, say where the
+   value comes from (which dashboard, or "ask the owner"), and add it to
+   `.env.example` with no value. An env-only change still needs step 3, because
+   `NEXT_PUBLIC_*` values are baked in at build time.
 
 **To undo a bad deploy:** `git revert <sha>`, push, and run the same deploy
 command. Do not force-push `main`.
+
+## Seeing what production is doing
+
+You cannot reach the VPS. When you need to, give the developer read-only
+commands to paste into the web console and ask for the output. Use only
+commands like these:
+
+```bash
+pm2 ls                                              # is the app up, restarts
+pm2 logs tracker --lines 100 --nostream             # recent app output + errors
+tail -n 100 /var/log/tracker-err.log                # older errors
+tail -n 50 /var/log/tracker-cron.log                # cron runs
+crontab -l                                          # which crons exist
+cd /var/www/tracker && git log -1 --oneline && git status -sb   # what code is live
+grep -o '^[A-Z_]*=' /etc/tracker/.env               # env var NAMES only
+sudo -u postgres psql -d tracking_crm -c "SELECT ... LIMIT 20"  # read-only queries
+```
+
+- Never ask for secret values: no `cat /etc/tracker/.env`, and no `grep` that prints values.
+- SQL you ask for must be `SELECT` only. Anything that writes is a fix and follows
+  the Deploy block (new `.sql` file in Git, owner's OK if it changes existing rows).
+- Select only the columns you need. Avoid pulling customer names, phones or
+  addresses into the chat unless the bug is about them.
 
 ## Things that live only on the VPS (not in this repo)
 
