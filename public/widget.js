@@ -429,7 +429,22 @@
 
   function formatTime(ts) {
     var d = new Date(ts);
+    if (!ts || isNaN(d.getTime())) return '';
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // The API sends created_at; the old chat server sent createdAt, and
+  // messages made in this script still use that.
+  function msgTime(msg) { return msg.created_at || msg.createdAt; }
+
+  // `since` for the next poll: the latest server time seen, including edits
+  // and deletions. Never a time from this browser's clock.
+  function advanceTs(msg) {
+    var ts = msg.changed_at || msg.created_at;
+    if (!ts) return;
+    if (state.lastTs && new Date(state.lastTs) >= new Date(ts)) return;
+    state.lastTs = ts;
+    try { localStorage.setItem('_cw_ts_' + SITE_KEY, state.lastTs); } catch(e) {}
   }
 
   function switchToChat() {
@@ -440,34 +455,24 @@
     input.focus();
   }
 
-  function renderMessage(msg) {
-    if (document.querySelector('[data-id="' + msg.id + '"]')) return;
-    var cls = msg.sender === 'visitor' ? '_cw_visitor' : (msg.sender === 'agent' ? '_cw_agent' : '_cw_ai');
-    var label = msg.sender === 'visitor' ? 'You' : (msg.sender === 'agent' ? 'Support Agent' : 'Support');
-    var div = document.createElement('div');
-    div.className = '_cw_msg ' + cls;
-    div.dataset.id = msg.id;
-
-    // Group a run from one sender: tuck it closer and drop the repeated name.
-    var prev = typingEl.previousElementSibling;
-    var sameSender = prev && prev.classList && prev.classList.contains('_cw_msg') && prev.classList.contains(cls);
-    if (sameSender) div.classList.add('_cw_same');
-
+  function bubbleHtml(msg) {
     // A files-only reply also carries a text stand-in for older views; the
     // files themselves say it here.
     var files = (msg.metadata && Array.isArray(msg.metadata.attachments)) ? renderFiles(msg.metadata.attachments) : '';
     var showText = !(files && msg.metadata.captionless);
     if (files) files = '<div class="_cw_files' + (showText ? ' _cw_gap' : '') + '">' + files + '</div>';
+    return files + (showText ? linkify(msg.content) : '');
+  }
 
-    div.innerHTML =
-      (sameSender ? '' : '<div class="_cw_label">' + label + '</div>') +
-      '<div class="_cw_bubble">' + files + (showText ? linkify(msg.content) : '') + '</div>' +
-      '<div class="_cw_time">' + formatTime(msg.createdAt) + '</div>';
-    messagesEl.insertBefore(div, typingEl);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    // An image has no height until it loads, so follow it down once it does:
-    // while the scroll above is still settling, or if the customer is at the
-    // bottom anyway — not when they have scrolled up to read.
+  function timeText(msg) {
+    var t = formatTime(msgTime(msg));
+    return msg.edited_at ? (t ? t + ' · ' : '') + 'Edited' : t;
+  }
+
+  // An image has no height until it loads, so follow it down once it does:
+  // while the scroll after a new message is still settling, or if the customer
+  // is at the bottom anyway — not when they have scrolled up to read.
+  function followImages(div) {
     state.pinUntil = Date.now() + 2000;
     var imgs = div.getElementsByTagName('img');
     for (var j = 0; j < imgs.length; j++) {
@@ -476,10 +481,56 @@
         if (Date.now() < state.pinUntil || gap <= this.offsetHeight + 80) messagesEl.scrollTop = messagesEl.scrollHeight;
       });
     }
-    if (msg.createdAt) {
-      state.lastTs = msg.createdAt;
-      try { localStorage.setItem('_cw_ts_' + SITE_KEY, state.lastTs); } catch(e) {}
+  }
+
+  // The team deleted a message this chat shows. If it carried the sender's
+  // name for a run of messages, the next one in the run takes the name over.
+  function removeMessage(el) {
+    var next = el.nextElementSibling;
+    var label = el.classList.contains('_cw_same') ? null : el.querySelector('._cw_label');
+    el.parentNode.removeChild(el);
+    if (label && next && next.classList.contains('_cw_same')) {
+      next.classList.remove('_cw_same');
+      next.insertBefore(label, next.firstChild);
     }
+  }
+
+  function renderMessage(msg) {
+    var existing = document.querySelector('[data-id="' + msg.id + '"]');
+    if (existing || msg.deleted) {
+      // Already shown: the team may have edited or deleted it since.
+      if (existing && msg.deleted) {
+        removeMessage(existing);
+      } else if (existing && msg.edited_at && existing.getAttribute('data-edited') !== msg.edited_at) {
+        existing.setAttribute('data-edited', msg.edited_at);
+        existing.querySelector('._cw_bubble').innerHTML = bubbleHtml(msg);
+        existing.querySelector('._cw_time').textContent = timeText(msg);
+        followImages(existing);
+      }
+      advanceTs(msg);
+      return;
+    }
+
+    var cls = msg.sender === 'visitor' ? '_cw_visitor' : (msg.sender === 'agent' ? '_cw_agent' : '_cw_ai');
+    var label = msg.sender === 'visitor' ? 'You' : (msg.sender === 'agent' ? 'Support Agent' : 'Support');
+    var div = document.createElement('div');
+    div.className = '_cw_msg ' + cls;
+    div.dataset.id = msg.id;
+    if (msg.edited_at) div.setAttribute('data-edited', msg.edited_at);
+
+    // Group a run from one sender: tuck it closer and drop the repeated name.
+    var prev = typingEl.previousElementSibling;
+    var sameSender = prev && prev.classList && prev.classList.contains('_cw_msg') && prev.classList.contains(cls);
+    if (sameSender) div.classList.add('_cw_same');
+
+    div.innerHTML =
+      (sameSender ? '' : '<div class="_cw_label">' + label + '</div>') +
+      '<div class="_cw_bubble">' + bubbleHtml(msg) + '</div>' +
+      '<div class="_cw_time">' + escapeHtml(timeText(msg)) + '</div>';
+    messagesEl.insertBefore(div, typingEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    followImages(div);
+    advanceTs(msg);
     if ((msg.sender === 'ai' || msg.sender === 'agent') && !state.phoneSaved) {
       state.aiResponseCount = (state.aiResponseCount || 0) + 1;
       if (state.aiResponseCount === 1) setTimeout(showSaveBanner, 800);
@@ -541,10 +592,27 @@
 
   function loadHistory() {
     if (!state.conversationId) return;
+    // Messages on screen when the request left; one of them missing from the
+    // answer was deleted by the team in the meantime.
+    var shownBefore = [];
+    var shown = messagesEl.querySelectorAll('._cw_msg');
+    for (var i = 0; i < shown.length; i++) {
+      var shownId = shown[i].getAttribute('data-id') || '';
+      if (shownId.indexOf('tmp_') !== 0) shownBefore.push({ el: shown[i], id: shownId });
+    }
+
     api('/messages/' + state.conversationId + '?siteKey=' + encodeURIComponent(SITE_KEY))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.messages) {
+        // Start `since` again from the server's clock. An older copy of this
+        // script could have saved a time from the visitor's own clock.
+        state.lastTs = null;
+        var ids = {};
+        data.messages.forEach(function(m) { ids[m.id] = true; });
+        shownBefore.forEach(function(s) {
+          if (s.el.parentNode && !ids[s.id]) removeMessage(s.el);
+        });
         data.messages.forEach(renderMessage);
         state.status = data.status;
       }
@@ -601,10 +669,7 @@
     .then(function(data) {
       var tmp = document.querySelector('[data-id="' + tempId + '"]');
       if (tmp && data.message) tmp.dataset.id = data.message.id;
-      if (data.message && data.message.createdAt) {
-        state.lastTs = data.message.createdAt;
-        try { localStorage.setItem('_cw_ts_' + SITE_KEY, state.lastTs); } catch(e) {}
-      }
+      if (data.message) advanceTs(data.message);
       // Always stop the indicator. Leaving it spinning on a missing reply looks
       // like the chat died, which reads worse than any error would.
       showTyping(false);

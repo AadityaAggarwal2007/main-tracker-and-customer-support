@@ -27,6 +27,7 @@ Chat support used to be a separate app (`support.shiptrack.store`, repo
 | Chat inbox for staff | `src/app/admin/chat/page.tsx`, `src/app/api/chat/*` |
 | Chat widget on merchants' storefronts | `public/widget.js`, `src/app/api/widget/*`, `src/lib/chat/widget-api.ts` |
 | Files agents attach to replies | `src/lib/chat/attachment-rules.ts` (types + limits), `src/app/api/chat/attachments/*` (upload/remove), `src/app/api/widget/files/[id]` (serves sent files), table `chat_attachments` (`chat-attachments.sql`) |
+| Editing/deleting sent messages (⋯ menu in the inbox) | `src/lib/chat/message-rules.ts` (who may change what), `src/app/api/chat/messages/[id]` (details, edit, soft delete), `messages.edited_*`/`deleted_*` + table `message_revisions` (`chat-message-edits.sql`). A deleted message must stay out of the widget, the AI history and the conversation list. |
 | AI replies (model chain, tools, base prompt) | `src/lib/chat/ai.ts` — `DEFAULT_SYSTEM_PROMPT`, `buildSystemPrompt`, `FALLBACK_CHAIN` |
 | Order lookup used by the AI | `src/lib/chat/orders.ts` |
 | Email support (IMAP poll, threading, held drafts) | `src/lib/chat/email.ts`, `src/app/api/cron/chat-email-poll` |
@@ -191,7 +192,7 @@ for f in supabase-schema.sql supabase-businesses.sql supabase-multi-panel.sql \
          supabase-progression.sql supabase-draft-queue.sql supabase-email-logs.sql \
          supabase-support.sql supabase-journey.sql supabase-origin-city.sql \
          chat-tables.sql supabase-chat-cod.sql supabase-chat-faq.sql chat-settings.sql \
-         chat-attachments.sql; do
+         chat-attachments.sql chat-message-edits.sql; do
   psql -d tracking_crm -v ON_ERROR_STOP=1 -f "$f" || break
 done
 ```

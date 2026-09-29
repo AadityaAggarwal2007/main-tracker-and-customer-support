@@ -1069,6 +1069,31 @@ a {
 }
 
 /* ═══════════════════════════════════════════
+   CHAT INBOX — actions on a sent message
+   ═══════════════════════════════════════════ */
+
+/* The ⋯ beside our messages stays out of the way until the message is hovered
+   or the button has keyboard focus. Touch screens have no hover, so there it
+   is always faintly visible. */
+.msg-actions-btn {
+  opacity: 0;
+}
+
+.msg-row:hover .msg-actions-btn,
+.msg-actions-btn:focus-visible,
+.msg-actions-btn[aria-expanded="true"] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .msg-actions-btn { opacity: 0.6; }
+}
+
+.msg-menu-item:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+/* ═══════════════════════════════════════════
    TIMELINE (tracking)
    ═══════════════════════════════════════════ */
 

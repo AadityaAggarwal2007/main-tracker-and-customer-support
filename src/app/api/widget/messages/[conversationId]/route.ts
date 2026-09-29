@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { query } from '@/lib/db';
 import {
-  VISIBLE_MESSAGE_SQL, conversationForSite, siteByKey, widgetJson, widgetPreflight,
+  CUSTOMER_MESSAGE_SQL, conversationForSite, siteByKey, widgetJson, widgetPreflight,
 } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
@@ -10,6 +10,12 @@ export async function OPTIONS() { return widgetPreflight(); }
 
 // GET /api/widget/messages/:conversationId?siteKey=&since=
 // The widget polls this every 3 seconds while its panel is open.
+//
+// Without `since` it is the whole visible history. With `since` it is what
+// changed after that moment: new messages, and messages the team edited or
+// deleted in the inbox, so an open chat updates in place. A deleted message
+// comes back only as its id with deleted: true and no text. changed_at is the
+// value to send as the next `since`.
 export async function GET(
   request: NextRequest,
   { params }: { params: { conversationId: string } }
@@ -28,11 +34,21 @@ export async function GET(
     if (!conversation) return widgetJson({ error: 'Forbidden' }, 403);
 
     const messages = await query(
-      `SELECT id, conversation_id, sender, content, metadata, created_at
+      `SELECT id, conversation_id, sender,
+              CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content,
+              CASE WHEN deleted_at IS NULL THEN metadata END AS metadata,
+              created_at, edited_at,
+              (deleted_at IS NOT NULL) AS deleted,
+              GREATEST(created_at, edited_at, deleted_at) AS changed_at
          FROM messages
         WHERE conversation_id = $1
-          AND ($2::timestamptz IS NULL OR created_at > $2::timestamptz)
-          AND ${VISIBLE_MESSAGE_SQL}
+          AND ${CUSTOMER_MESSAGE_SQL}
+          AND CASE
+                WHEN $2::timestamptz IS NULL THEN deleted_at IS NULL
+                ELSE created_at > $2::timestamptz
+                  OR edited_at > $2::timestamptz
+                  OR deleted_at > $2::timestamptz
+              END
         ORDER BY created_at ASC`,
       [params.conversationId, since || null]
     );

@@ -53,6 +53,7 @@ export async function GET(request: NextRequest) {
                 AND m.sender <> 'tool_result'
                 AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
                 AND m.content IS NOT NULL AND btrim(m.content) <> ''
+                AND m.deleted_at IS NULL
               ORDER BY m.created_at DESC
               LIMIT 1) AS last_message
        FROM conversations c

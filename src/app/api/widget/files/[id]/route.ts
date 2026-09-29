@@ -20,10 +20,12 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   if (!ATTACHMENT_ID_PATTERN.test(params.id)) return notFound();
 
   try {
+    // Not once its message has been deleted from the inbox either.
     const file = await queryOne<{ file_name: string; mime_type: string; kind: string; data: Buffer }>(
-      `SELECT file_name, mime_type, kind, data
-         FROM chat_attachments
-        WHERE id = $1 AND message_id IS NOT NULL`,
+      `SELECT a.file_name, a.mime_type, a.kind, a.data
+         FROM chat_attachments a
+         JOIN messages m ON m.id = a.message_id
+        WHERE a.id = $1 AND m.deleted_at IS NULL`,
       [params.id]
     );
     if (!file) return notFound();

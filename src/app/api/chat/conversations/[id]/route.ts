@@ -44,9 +44,10 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   if (!conversation) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // tool_result rows and the hidden tool bookkeeping are context for the model,
-  // not part of the conversation a person reads.
+  // not part of the conversation a person reads. Deleted messages stay in the
+  // list, marked, so the team can see what was removed and by whom.
   const messages = await query(
-    `SELECT id, sender, content, metadata, created_at
+    `SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by
        FROM messages
       WHERE conversation_id = $1
         AND sender <> 'tool_result'

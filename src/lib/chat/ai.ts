@@ -457,13 +457,16 @@ export async function getAIResponse(
   channel: Channel = 'chat',
   siteId?: string | null
 ): Promise<AIResult> {
-  // Newest first, then flipped back into reading order.
+  // Newest first, then flipped back into reading order. A message the team
+  // edited is read as it reads now; one they deleted is left out, so the model
+  // never builds on a reply the customer no longer sees.
   const recent = await query<StoredMessage>(
     `SELECT sender, content, metadata
        FROM (
          SELECT sender, content, metadata, created_at, id
            FROM messages
           WHERE conversation_id = $1
+            AND deleted_at IS NULL
           ORDER BY created_at DESC, id DESC
           LIMIT $2
        ) t

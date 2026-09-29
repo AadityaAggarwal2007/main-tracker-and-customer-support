@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
-  Download, ExternalLink, RotateCw,
+  Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
 } from 'lucide-react';
+import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -38,10 +39,29 @@ interface ChatMessage {
   sender: 'visitor' | 'ai' | 'agent';
   content: string;
   metadata: {
-    withheld?: string; emailed?: boolean; agent?: string;
+    withheld?: string; emailed?: boolean; agent?: string; hidden?: boolean;
     attachments?: StoredAttachment[]; captionless?: boolean;
   } | null;
   created_at: string;
+  edited_at?: string | null;
+  edited_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+}
+
+// What GET /api/chat/messages/:id returns for "View details".
+interface MessageRevision {
+  action: 'edit' | 'delete';
+  previous_content: string;
+  new_content: string | null;
+  actor: string;
+  actor_role: string;
+  created_at: string;
+}
+interface MessageDetails {
+  message: ChatMessage & { source: string };
+  revisions: MessageRevision[];
+  canChange: boolean;
 }
 
 // A file in the composer, from the moment it is picked until the reply is sent.
@@ -109,6 +129,250 @@ function renderWithLinks(text: string) {
 const draggingFiles = (e: { dataTransfer: DataTransfer | null }) =>
   !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
 
+const fullDate = (iso: string) =>
+  new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/* ═══════════ MANAGING A SENT MESSAGE ═══════════ */
+
+// The ⋯ beside one of our messages and its menu. Edit and Delete appear only
+// when this user may change the message; the API checks again regardless.
+function MessageActions({ msg, open, up, canChange, onToggle, onEdit, onDelete, onCopy, onDetails }: {
+  msg: ChatMessage; open: boolean; up: boolean; canChange: boolean;
+  onToggle: (button: HTMLButtonElement) => void;
+  onEdit: () => void; onDelete: () => void; onCopy: () => void; onDetails: () => void;
+}) {
+  const deleted = !!msg.deleted_at;
+  const items: { label: string; icon: typeof Pencil; action: () => void; danger?: boolean }[] = [];
+  if (canChange && !deleted) items.push({ label: 'Edit message', icon: Pencil, action: onEdit });
+  if (canChange && !deleted) items.push({ label: 'Delete message', icon: Trash2, action: onDelete, danger: true });
+  if (!deleted) items.push({ label: 'Copy message', icon: Copy, action: onCopy });
+  items.push({ label: 'View details', icon: Info, action: onDetails });
+
+  return (
+    <div data-menu={msg.id} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        type="button"
+        className="btn-icon msg-actions-btn"
+        aria-label="Message actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={e => onToggle(e.currentTarget)}
+        style={{ width: 24, height: 24, marginTop: 4 }}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div role="menu" style={{
+          position: 'absolute', left: 0, zIndex: 20, minWidth: 176,
+          ...(up ? { bottom: '100%', marginBottom: 4 } : { top: '100%', marginTop: 4 }),
+          padding: '0.25rem', borderRadius: 'var(--radius)', background: 'var(--card-bg)',
+          border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)',
+        }}>
+          {items.map(item => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className="msg-menu-item"
+              onClick={item.action}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', textAlign: 'left',
+                padding: '0.4375rem 0.625rem', border: 'none', borderRadius: 6, background: 'transparent',
+                cursor: 'pointer', fontSize: '0.8125rem',
+                color: item.danger ? 'var(--danger)' : 'var(--fg)',
+              }}
+            >
+              <item.icon size={14} /> {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The message turned into a text box, in its own place in the thread.
+function MessageEditor({ value, original, hasFiles, channel, saving, error, onChange, onCancel, onSave }: {
+  value: string; original: string; hasFiles: boolean; channel: 'chat' | 'email';
+  saving: boolean; error: string;
+  onChange: (v: string) => void; onCancel: () => void; onSave: () => void;
+}) {
+  const trimmed = value.trim();
+  const tooLong = trimmed.length > MAX_MESSAGE_LENGTH;
+  const canSave = !saving && !tooLong && trimmed !== original.trim() && (trimmed !== '' || hasFiles);
+  const lines = value.split('\n').length;
+
+  // Opens with the cursor after the last word, ready to type.
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }, []);
+
+  return (
+    <div style={{ width: 520, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+      <textarea
+        ref={boxRef}
+        className="form-input"
+        value={value}
+        disabled={saving}
+        aria-label="Edit message"
+        rows={Math.min(Math.max(lines, 3), 12)}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); if (canSave) onSave(); }
+        }}
+        style={{ height: 'auto', resize: 'vertical', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', lineHeight: 1.5 }}
+      />
+      <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+        {channel === 'email'
+          ? 'This customer already has the original by email — saving changes it here and in the AI’s memory only.'
+          : 'The customer’s chat shows the new text within a few seconds, marked Edited. They may already have read the original.'}
+        {hasFiles && ' Attached files stay as they are.'}
+      </p>
+      {tooLong && (
+        <p style={{ fontSize: '0.6875rem', color: 'var(--danger)' }}>
+          A message can be at most {MAX_MESSAGE_LENGTH} characters.
+        </p>
+      )}
+      {error && (
+        <p role="alert" style={{ fontSize: '0.6875rem', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+          <AlertCircle size={12} style={{ flexShrink: 0 }} /> {error}
+        </p>
+      )}
+      <div style={{ display: 'flex', gap: '0.375rem', justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-outline btn-sm" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="button" className="btn btn-primary btn-sm" onClick={onSave} disabled={!canSave}>
+          {saving ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</> : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteMessageDialog({ channel, busy, error, onCancel, onConfirm }: {
+  channel: 'chat' | 'email'; busy: boolean; error: string;
+  onCancel: () => void; onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={() => { if (!busy) onCancel(); }}>
+      <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-msg-title" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title" id="delete-msg-title">Delete this message?</div>
+        </div>
+        <p style={{ fontSize: '0.875rem', marginBottom: '0.5rem' }}>This message will be removed from the conversation.</p>
+        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem' }}>
+          {channel === 'email'
+            ? 'This customer already received it by email, and an email cannot be taken back. It is removed here and from the AI’s memory.'
+            : 'It disappears from the customer’s chat within a few seconds. They may already have read it.'}
+          {' '}The text stays in the message history.
+        </p>
+        {error && (
+          <p role="alert" style={{ fontSize: '0.75rem', color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <AlertCircle size={12} style={{ flexShrink: 0 }} /> {error}
+          </p>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="btn btn-outline" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="btn" onClick={onConfirm} disabled={busy} style={{ background: 'var(--danger)', color: '#fff' }}>
+            {busy ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Deleting…</> : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "View details": who sent it, where it went, and every earlier version.
+function MessageDetailsDialog({ details, error, onClose }: {
+  details: MessageDetails | null; error: string; onClose: () => void;
+}) {
+  const row = (label: string, value: React.ReactNode) => (
+    <div key={label} style={{ display: 'grid', gridTemplateColumns: '8.5rem 1fr', gap: '0.5rem', padding: '0.375rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.8125rem' }}>
+      <span style={{ color: 'var(--fg-muted)' }}>{label}</span>
+      <span style={{ wordBreak: 'break-word' }}>{value}</span>
+    </div>
+  );
+
+  let body: React.ReactNode;
+  if (error) {
+    body = <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.8125rem' }}>{error}</p>;
+  } else if (!details) {
+    body = <div style={{ textAlign: 'center', padding: '1.5rem' }}><Loader2 size={20} style={{ animation: 'spin 0.6s linear infinite' }} /></div>;
+  } else {
+    const m = details.message;
+    const who = senderLabel(m);
+    const email = m.source === 'email';
+    const withheld = m.metadata?.withheld;
+    const files = Array.isArray(m.metadata?.attachments) ? m.metadata!.attachments!.length : 0;
+
+    const status = m.deleted_at ? 'Deleted' : withheld ? `Not sent — ${WITHHELD_LABELS[withheld] ?? 'held'}` : 'Sent';
+    const delivery = withheld ? 'Never reached the customer'
+      : m.deleted_at ? (email ? 'The customer still has it by email (an email cannot be taken back)' : 'Removed from the customer’s chat')
+      : email ? (m.metadata?.emailed === true ? 'Sent by email' : m.metadata?.emailed === false ? 'The email did not go out' : 'Email result not recorded')
+      : 'Shown in the customer’s chat';
+
+    body = (
+      <>
+        <div style={{ marginBottom: '1rem' }}>
+          {row('Message ID', <code style={{ fontSize: '0.75rem' }}>{m.id}</code>)}
+          {row('Sender', who.who)}
+          {row('Sender type', `${who.type} · ${who.origin}`)}
+          {row('Created', fullDate(m.created_at))}
+          {row('Channel', email ? 'Email' : 'Chat widget')}
+          {row('Status', status)}
+          {row('Delivery', delivery)}
+          {row('Read by customer', 'Not tracked')}
+          {row('Edited', m.edited_at
+            ? `Yes — last by ${m.edited_by || 'unknown'}, ${fullDate(m.edited_at)}${email ? ' (here only; the email is unchanged)' : ''}`
+            : 'No')}
+          {m.deleted_at && row('Deleted', `By ${m.deleted_by || 'unknown'}, ${fullDate(m.deleted_at)}`)}
+          {files > 0 && row('Attachments', `${files} file${files === 1 ? '' : 's'}`)}
+        </div>
+
+        <div style={{ fontWeight: 600, fontSize: '0.8125rem', marginBottom: '0.5rem' }}>History</div>
+        {details.revisions.length === 0 ? (
+          <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Never changed since it was sent.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {details.revisions.map((r, i) => (
+              <div key={i} style={{ fontSize: '0.75rem' }}>
+                <div style={{ color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
+                  {r.action === 'delete' ? 'Deleted' : 'Edited'} by {r.actor} ({r.actor_role}) · {fullDate(r.created_at)}
+                </div>
+                <div style={{ padding: '0.5rem 0.625rem', borderRadius: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  <span style={{ color: 'var(--fg-muted)' }}>{i === 0 ? (m.sender === 'ai' ? 'Original (AI): ' : 'Original: ') : 'Before: '}</span>
+                  {r.previous_content}
+                </div>
+                {r.action === 'edit' && r.new_content !== null && (
+                  <div style={{ marginTop: '0.25rem', padding: '0.5rem 0.625rem', borderRadius: 8, border: '1px solid var(--border)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    <span style={{ color: 'var(--fg-muted)' }}>After: </span>{r.new_content}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="msg-details-title" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title" id="msg-details-title">Message details</div>
+          <button type="button" className="btn-icon" aria-label="Close" onClick={onClose}><X size={16} /></button>
+        </div>
+        {body}
+      </div>
+    </div>
+  );
+}
+
 // Files inside a sent message: images as clickable previews, anything else as a
 // card with open and download links.
 function MessageAttachments({ files, onImageLoad }: {
@@ -169,6 +433,11 @@ export default function ChatSupportPage() {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const [menu, setMenu] = useState<{ id: string; up: boolean } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string; saving: boolean; error: string } | null>(null);
+  const [deleting, setDeleting] = useState<{ id: string; busy: boolean; error: string } | null>(null);
+  const [details, setDetails] = useState<{ id: string; data: MessageDetails | null; error: string } | null>(null);
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [fileError, setFileError] = useState('');
@@ -489,6 +758,126 @@ export default function ChatSupportPage() {
     finally { setSending(false); }
   };
 
+  /* ═══ MANAGING A SENT MESSAGE ═══ */
+  // Open message tools belong to the conversation they were opened in.
+  useEffect(() => {
+    setMenu(null);
+    setEditing(null);
+    setDeleting(null);
+    setDetails(null);
+  }, [activeId]);
+
+  // The ⋯ menu closes on a click anywhere else or on Escape.
+  useEffect(() => {
+    if (!menu) return;
+    const onPointer = (e: MouseEvent) => {
+      if (!(e.target as Element).closest?.(`[data-menu="${menu.id}"]`)) setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null); };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const toggleMenu = (id: string, button: HTMLButtonElement) => {
+    if (menu?.id === id) { setMenu(null); return; }
+    // Near the bottom of the thread the menu opens upwards, so it is not cut off.
+    const box = threadRef.current?.getBoundingClientRect();
+    const up = !!box && box.bottom - button.getBoundingClientRect().bottom < 190;
+    setMenu({ id, up });
+  };
+
+  const replaceMessage = (updated: ChatMessage) =>
+    setMessages(list => list.map(m => (m.id === updated.id ? { ...m, ...updated } : m)));
+
+  const messageText = (msg: ChatMessage) => {
+    const files = Array.isArray(msg.metadata?.attachments) ? msg.metadata!.attachments! : [];
+    return files.length > 0 && msg.metadata?.captionless ? '' : msg.content;
+  };
+
+  const startEdit = (msg: ChatMessage) => {
+    setMenu(null);
+    setEditing({ id: msg.id, text: messageText(msg), saving: false, error: '' });
+  };
+
+  const saveEdit = async () => {
+    if (!editing || editing.saving) return;
+    const { id, text } = editing;
+    setEditing(e => (e && e.id === id ? { ...e, saving: true, error: '' } : e));
+    const failed = (reason?: string) =>
+      setEditing(e => (e && e.id === id ? { ...e, saving: false, error: reason || 'Unable to update message. Please try again.' } : e));
+    try {
+      const res = await fetch(`/api/chat/messages/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      // The typed text stays in the editor on any failure.
+      if (!res.ok) { failed(res.status < 500 && data.error ? `Unable to update message: ${data.error}` : undefined); return; }
+      replaceMessage(data.message);
+      setEditing(null);
+      showAlert('success', 'Message updated');
+      fetchConversations(true);
+    } catch { failed(); }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting || deleting.busy) return;
+    const { id } = deleting;
+    setDeleting(d => (d ? { ...d, busy: true, error: '' } : d));
+    try {
+      const res = await fetch(`/api/chat/messages/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDeleting(d => (d ? {
+          ...d, busy: false,
+          error: res.status < 500 && data.error ? `Unable to delete message: ${data.error}` : 'Unable to delete message. Please try again.',
+        } : d));
+        return;
+      }
+      replaceMessage(data.message);
+      if (editing?.id === id) setEditing(null);
+      setDeleting(null);
+      showAlert('success', 'Message deleted');
+      fetchConversations(true);
+    } catch {
+      setDeleting(d => (d ? { ...d, busy: false, error: 'Unable to delete message. Please try again.' } : d));
+    }
+  };
+
+  const copyMessage = async (msg: ChatMessage) => {
+    setMenu(null);
+    const files = Array.isArray(msg.metadata?.attachments) ? msg.metadata!.attachments! : [];
+    const text = messageText(msg) || files.map(f => `${f.name} ${window.location.origin}${f.url}`).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      showAlert('success', 'Message copied');
+    } catch {
+      showAlert('error', 'Could not copy — select the text and copy it instead');
+    }
+  };
+
+  const openDetails = async (id: string) => {
+    setMenu(null);
+    setDetails({ id, data: null, error: '' });
+    try {
+      const res = await fetch(`/api/chat/messages/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      setDetails(d => (d && d.id === id
+        ? (res.ok ? { ...d, data } : { ...d, error: data.error || 'Could not load the details' })
+        : d));
+    } catch {
+      setDetails(d => (d && d.id === id ? { ...d, error: 'Could not load the details' } : d));
+    }
+  };
+
   const logout = () => {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_user');
@@ -721,13 +1110,38 @@ export default function ChatSupportPage() {
                 <div ref={threadRef} style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {messages.map(msg => {
                     const mine = msg.sender !== 'visitor';
+                    const deleted = !!msg.deleted_at;
                     const withheld = msg.metadata?.withheld;
                     const attached = msg.metadata?.attachments;
                     const files = Array.isArray(attached) ? attached : [];
                     // A files-only reply carries a text stand-in for older views; the files say it here.
                     const showText = !(files.length > 0 && msg.metadata?.captionless);
+                    const isEditing = mine && !deleted && editing?.id === msg.id;
+
+                    // A deleted message stays in the inbox as a marker, so the team can
+                    // see something was removed; its text is under View details.
+                    const bubble = (
+                      <div style={{
+                        padding: '0.625rem 0.875rem', borderRadius: 12, fontSize: '0.8125rem', lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap', wordBreak: 'break-word', minWidth: 0,
+                        background: msg.sender === 'visitor' ? 'var(--primary)' : 'var(--card-bg)',
+                        color: msg.sender === 'visitor' ? '#fff' : 'var(--fg)',
+                        border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
+                        opacity: withheld ? 0.65 : 1,
+                        ...(deleted ? { background: 'transparent', color: 'var(--fg-muted)', fontStyle: 'italic', border: '1px dashed var(--border)', opacity: 1 } : {}),
+                      }}>
+                        {deleted ? 'This message was deleted' : (
+                          <>
+                            {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
+                            {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
+                            {showText && renderWithLinks(msg.content)}
+                          </>
+                        )}
+                      </div>
+                    );
+
                     return (
-                      <div key={msg.id} style={{
+                      <div key={msg.id} className={mine ? 'msg-row' : undefined} style={{
                         alignSelf: mine ? 'flex-start' : 'flex-end',
                         maxWidth: '72%', display: 'flex', flexDirection: 'column',
                         alignItems: mine ? 'flex-start' : 'flex-end',
@@ -735,19 +1149,39 @@ export default function ChatSupportPage() {
                         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
                           {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You' : 'AI'}
                         </span>
-                        <div style={{
-                          padding: '0.625rem 0.875rem', borderRadius: 12, fontSize: '0.8125rem', lineHeight: 1.5,
-                          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                          background: msg.sender === 'visitor' ? 'var(--primary)' : 'var(--card-bg)',
-                          color: msg.sender === 'visitor' ? '#fff' : 'var(--fg)',
-                          border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
-                          opacity: withheld ? 0.65 : 1,
-                        }}>
-                          {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
-                          {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
-                          {showText && renderWithLinks(msg.content)}
-                        </div>
-                        {withheld && (
+                        {!mine ? bubble : (
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', maxWidth: '100%' }}>
+                            {isEditing && editing ? (
+                              <MessageEditor
+                                value={editing.text}
+                                original={messageText(msg)}
+                                hasFiles={files.length > 0}
+                                channel={activeConv.source === 'email' ? 'email' : 'chat'}
+                                saving={editing.saving}
+                                error={editing.error}
+                                onChange={text => setEditing(e => (e ? { ...e, text } : e))}
+                                onCancel={() => setEditing(null)}
+                                onSave={saveEdit}
+                              />
+                            ) : (
+                              <>
+                                {bubble}
+                                <MessageActions
+                                  msg={msg}
+                                  open={menu?.id === msg.id}
+                                  up={!!menu?.up}
+                                  canChange={canChangeMessage(user, msg)}
+                                  onToggle={button => toggleMenu(msg.id, button)}
+                                  onEdit={() => startEdit(msg)}
+                                  onDelete={() => { setMenu(null); setDeleting({ id: msg.id, busy: false, error: '' }); }}
+                                  onCopy={() => copyMessage(msg)}
+                                  onDetails={() => openDetails(msg.id)}
+                                />
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {withheld && !deleted && (
                           <span style={{
                             fontSize: '0.625rem', color: '#b45309', background: '#fffbeb',
                             border: '1px solid #fde68a', borderRadius: 4, padding: '1px 6px', marginTop: '0.25rem',
@@ -757,6 +1191,10 @@ export default function ChatSupportPage() {
                         )}
                         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
                           {new Date(msg.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          {msg.edited_at && !deleted && (
+                            <span title={`Edited by ${msg.edited_by || 'unknown'}, ${fullDate(msg.edited_at)}`}> · Edited</span>
+                          )}
+                          {deleted && ` · Deleted${msg.deleted_by ? ` by ${msg.deleted_by}` : ''}`}
                         </span>
                       </div>
                     );
@@ -928,6 +1366,19 @@ export default function ChatSupportPage() {
             )}
           </div>
         </div>
+
+        {deleting && (
+          <DeleteMessageDialog
+            channel={activeConv?.source === 'email' ? 'email' : 'chat'}
+            busy={deleting.busy}
+            error={deleting.error}
+            onCancel={() => setDeleting(null)}
+            onConfirm={confirmDelete}
+          />
+        )}
+        {details && (
+          <MessageDetailsDialog details={details.data} error={details.error} onClose={() => setDetails(null)} />
+        )}
       </main>
     </div>
   );

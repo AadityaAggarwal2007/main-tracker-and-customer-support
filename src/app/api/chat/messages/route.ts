@@ -139,6 +139,12 @@ export async function POST(request: NextRequest) {
         emailed = false;
         console.error('[chat] agent email reply failed:', (err as Error).message);
       }
+      // Kept on the message for "View details" in the inbox.
+      await query(
+        `UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('emailed', $2::boolean)
+          WHERE id = $1`,
+        [message.id, emailed]
+      ).catch(err => console.error('[chat] could not record email status:', (err as Error).message));
     }
 
     return NextResponse.json({ message, emailed });

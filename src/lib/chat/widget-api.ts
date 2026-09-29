@@ -60,9 +60,12 @@ export async function conversationForSite(
 
 // tool_result rows, hidden tool bookkeeping and empty AI placeholders are
 // internal — a visitor must never see them.
-export const VISIBLE_MESSAGE_SQL = `
+export const CUSTOMER_MESSAGE_SQL = `
   sender <> 'tool_result'
   AND COALESCE(metadata->>'hidden', 'false') <> 'true'
   AND content IS NOT NULL
   AND btrim(content) <> ''
 `;
+
+// ...and neither must a message the team deleted from the inbox.
+export const VISIBLE_MESSAGE_SQL = `${CUSTOMER_MESSAGE_SQL} AND deleted_at IS NULL`;
