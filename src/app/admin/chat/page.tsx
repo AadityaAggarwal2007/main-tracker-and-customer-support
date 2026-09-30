@@ -6,7 +6,7 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
-  Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw,
+  Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
@@ -41,6 +41,9 @@ interface Conversation {
   // old phone/email lookup, shown as "Old check", not as Verified.
   verified_order_id?: string | null;
   verified_via?: string | null;
+  // A visitor whose typed or saved number is on an order in this panel (staff hint,
+  // NOT verification: phone-match.ts). Listed with the customers, tagged "Phone match".
+  phone_match_order_id?: string | null;
   // One verified customer's chats on a site share a customer_key (their
   // 10-digit phone). The list shows them as one row: thread_count chats in
   // all, group_unread unread across them, group_needs_human when any of them
@@ -202,7 +205,7 @@ const POLL_MS = 3000;
 // about one problem, whatever their status.
 type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved' | `topic:${string}`;
 const TOPIC_ICONS: Record<string, typeof Inbox> = {
-  risk: Flame, refund: Undo2, tracking: Link2, delay: Clock, address: MapPin, damaged: PackageX, exchange: RefreshCw,
+  risk: Flame, fraud: ShieldAlert, refund: Undo2, tracking: Link2, delay: Clock, address: MapPin, damaged: PackageX, exchange: RefreshCw,
 };
 const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: string; segment: '' | 'visitors' | 'customers' }[] = [
   { v: 'all', label: 'All', icon: Inbox, status: '', segment: 'customers' },
@@ -218,6 +221,20 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
 // 28 Sept · Closed"): the inbox tab names.
 function chatStatusLabel(status: string): string {
   return INBOX_TABS.find(t => t.status === status)?.label || '';
+}
+
+// A visitor whose number is a customer's: not verified (the AI still asks for
+// order ID + last 4), but the team can place them.
+function PhoneMatchBadge({ orderId, compact = false }: { orderId?: string | null; compact?: boolean }) {
+  return (
+    <span title={`The number this person typed or saved is on order ${orderId || ''}. Not verified: the AI shares no order details until they give the order ID and last 4 digits.`} style={{
+      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
+      display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+      background: '#dbeafe', color: '#1d4ed8', whiteSpace: 'nowrap',
+    }}>
+      <PhoneCall size={10} /> Phone match{orderId && !compact ? ` · ${orderId}` : ''}
+    </span>
+  );
 }
 
 // "Waiting 3h 20m": how long the customer has been waiting for an answer. Grey
@@ -1242,6 +1259,7 @@ export default function ChatSupportPage() {
     : conversations.find(c => c.id === activeConv.id) ?? null;
   const activeVerifiedOrder = activeVerifiedSrc?.verified_order_id ?? null;
   const activeVerifiedVia = activeVerifiedSrc?.verified_via ?? null;
+  const activePhoneMatch = activeVerifiedSrc?.phone_match_order_id ?? null;
   // The subject bar reads the thread's own answer the same way, with the
   // list row as the fallback.
   const activeSubjectSrc = !activeConv ? null
@@ -1553,9 +1571,9 @@ export default function ChatSupportPage() {
                     </>
                   ) : segment === 'customers' ? (
                     <>
-                      <p>No verified customers yet.</p>
+                      <p>No customers here yet.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
-                        Chats from people who have not verified an order, and most email threads, are under Visitors.
+                        Chats from people who have not proved an order, and whose number is on no order, are under Visitors.
                       </p>
                     </>
                   ) : (
@@ -1599,7 +1617,8 @@ export default function ChatSupportPage() {
                         {c.thread_count} chats
                       </span>
                     )}
-                    {c.verified_order_id && <VerifiedBadge via={c.verified_via} />}
+                    {c.verified_order_id ? <VerifiedBadge via={c.verified_via} />
+                      : c.phone_match_order_id ? <PhoneMatchBadge orderId={c.phone_match_order_id} compact /> : null}
                     {rowUnread(c) > 0 && (
                       <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700 }}>
                         {rowUnread(c)}
@@ -1706,7 +1725,8 @@ export default function ChatSupportPage() {
                       }}>
                         {STATUS_LABELS[activeConv.status]}
                       </span>
-                      {activeVerifiedOrder && <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />}
+                      {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
+                        : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
                       {activeWaiting && <WaitingChip since={activeWaiting} big />}
                     </div>
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>

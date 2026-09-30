@@ -12,7 +12,8 @@ export const dynamic = 'force-dynamic';
 // The inbox list. Scoped to the panels this user may see, because the chat
 // tables know nothing about ShipTrack's roles on their own.
 //
-// ?segment=visitors|customers splits unverified chats from verified ones
+// ?segment=visitors|customers splits visitors from known customers (verified, or a
+// phone that matches an order in the panel: KNOWN_CUSTOMER below)
 // (conversations.verified_order_id, see chat-verified.sql).
 //
 // A verified customer's widget chats on one site are one row (customer_key,
@@ -53,6 +54,21 @@ export const dynamic = 'force-dynamic';
 //
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
+// A customer the team can place: they proved an order (verified_order_id: order
+// ID + last 4, the widget form, or the old lookups) or the number they typed or
+// saved is on an order in this panel (phone_match_order_id, phone-match.ts).
+// Visitors are everyone else. The AI only trusts verified_order_id.
+const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)';
+
+// The SQL that puts an open chat under a problem tab (a = the table alias).
+function topicCondition(key: string, labels: string[], a: string): string {
+  if (key === 'risk') return `COALESCE(${a}.health_score, 0) >= ${HEALTH_PIN_MIN}`;
+  if (key === 'fraud') {
+    return `(COALESCE((${a}.health_signals->>'accuse')::int, 0) > 0 OR COALESCE((${a}.health_signals->>'threat')::int, 0) > 0)`;
+  }
+  return `${a}.subject_label = ANY(${sqlLabelList(labels)})`;
+}
+
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -96,13 +112,12 @@ export async function GET(request: NextRequest) {
   } else {
     if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
-    if (segment === 'visitors') conditions.push('c.verified_order_id IS NULL');
-    else if (segment === 'customers') conditions.push('c.verified_order_id IS NOT NULL');
+    if (segment === 'visitors') conditions.push(`NOT ${KNOWN_CUSTOMER}`);
+    else if (segment === 'customers') conditions.push(KNOWN_CUSTOMER);
     if (topic) {
       conditions.push("c.status <> 'resolved'");
-      conditions.push(topic.key === 'risk'
-        ? `COALESCE(c.health_score, 0) >= ${HEALTH_PIN_MIN}`
-        : `c.subject_label = ANY(${sqlLabelList(topic.labels)})`);
+      conditions.push(KNOWN_CUSTOMER);   // problem tabs are for customers; visitors stay under Visitors
+      conditions.push(topicCondition(topic.key, topic.labels, 'c'));
     }
   }
 
@@ -134,14 +149,14 @@ export async function GET(request: NextRequest) {
 
   // How many open customers (one per grouped row) each problem tab holds.
   const countsSql = `SELECT ${INBOX_TOPICS.map((t) => `count(DISTINCT x.gk) FILTER (WHERE ${
-    t.key === 'risk' ? `COALESCE(x.health_score, 0) >= ${HEALTH_PIN_MIN}` : `x.subject_label = ANY(${sqlLabelList(t.labels)})`
+    topicCondition(t.key, t.labels, 'x')
   })::int AS ${t.key}`).join(', ')}
-       FROM (SELECT c.subject_label, c.health_score,
+       FROM (SELECT c.subject_label, c.health_score, c.health_signals,
                     CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
                          THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END AS gk
                FROM conversations c
                JOIN sites s ON s.id = c.site_id
-              WHERE ${[...scopeConditions, "c.status <> 'resolved'"].join(' AND ')}) x`;
+              WHERE ${[...scopeConditions, "c.status <> 'resolved'", KNOWN_CUSTOMER].join(' AND ')}) x`;
   const countsPromise = query<Record<string, number>>(countsSql, scopeParams).catch((err) => {
     // Before chat-health.sql / chat-subject.sql are applied the columns are missing.
     console.error('[inbox] topic counts failed:', (err as Error)?.message);
@@ -153,7 +168,7 @@ export async function GET(request: NextRequest) {
      base AS (
        SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
               c.unread_count, c.last_message_at, c.created_at,
-              c.verified_order_id, c.verified_via, c.customer_key,
+              c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
               c.subject_label, c.subject_summary, c.subject_updated_at,
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
@@ -205,7 +220,7 @@ export async function GET(request: NextRequest) {
      )
      SELECT g.id, g.visitor_name, g.visitor_phone, g.status, g.source, g.category,
             g.unread_count, g.last_message_at, g.created_at,
-            g.verified_order_id, g.verified_via,
+            g.verified_order_id, g.verified_via, g.phone_match_order_id,
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
             g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
             g.subject_label, g.subject_summary, g.subject_updated_at,

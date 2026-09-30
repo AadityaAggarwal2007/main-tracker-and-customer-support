@@ -22,10 +22,15 @@ export interface InboxTopic {
 
 export const REFUND_CANCEL_LABEL = 'Refund / Cancellation';
 
-// 'risk' has no labels: it is every open chat whose frustration score is at or
-// above HEALTH_PIN_MIN (health-rules.ts), whatever it is about.
+// 'risk' and 'fraud' have no labels: 'risk' is every open chat whose frustration
+// score is at or above HEALTH_PIN_MIN (health-rules.ts), 'fraud' every open chat
+// of a customer who has called the store a fraud, scam or fake, or threatened a
+// chargeback, police, court or bad reviews (health signals), whatever it is about.
+// Problem tabs list KNOWN customers only (verified, or their phone matches an
+// order): visitors stay under Visitors.
 export const INBOX_TOPICS: InboxTopic[] = [
   { key: 'risk', label: 'At risk', hint: 'Open chats of frustrated customers: the ones who may charge back', labels: [] },
+  { key: 'fraud', label: 'Fraud / Threat', hint: 'Open chats of customers who call the store a fraud or fake, or threaten a chargeback, police or bad reviews', labels: [] },
   { key: 'refund', label: REFUND_CANCEL_LABEL, hint: 'Open chats asking for a refund or a cancellation', labels: [REFUND_CANCEL_LABEL, 'Refund', 'Cancellation'] },
   { key: 'tracking', label: 'Wrong tracking link', hint: 'Open chats saying the tracking link is wrong or shows another order', labels: ['Wrong tracking link'] },
   { key: 'delay', label: 'Order delay', hint: 'Open chats about a late order or one that has not arrived', labels: ['Delivery delay', 'Not received'] },

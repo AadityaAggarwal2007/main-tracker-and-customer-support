@@ -11,7 +11,7 @@ interface ConversationRow {
   status: string; source: string; category: string; unread_count: number;
   last_message_at: string | null; created_at: string;
   site_name: string; tracker_business_id: string | null; panel_name: string | null;
-  verified_order_id: string | null; verified_via: string | null;
+  verified_order_id: string | null; verified_via: string | null; phone_match_order_id: string | null;
   customer_key: string | null;
   subject_label: string | null; subject_summary: string | null; subject_updated_at: string | null;
   health_score: number | null; health_reason: string | null; health_updated_at: string | null;
@@ -22,7 +22,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
   const conv = await queryOne<ConversationRow>(
     `SELECT c.id, c.site_id, c.visitor_name, c.visitor_phone, c.status, c.source,
             c.category, c.unread_count, c.last_message_at, c.created_at,
-            c.verified_order_id, c.verified_via, c.customer_key,
+            c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
             c.health_score, c.health_reason, c.health_updated_at,
             s.name AS site_name, s.tracker_business_id,
