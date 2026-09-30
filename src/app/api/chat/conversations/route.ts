@@ -4,6 +4,7 @@ import { query } from '@/lib/db';
 import { parseInboxSearch } from '@/lib/chat/inbox-search';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
+import { NO_REPLY_NEEDED_REGEX, WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,12 @@ export const dynamic = 'force-dynamic';
 // the chat staff open and Close, and its score already reads the customer's
 // earlier chats, so a row can always be cleared by closing what it opens.
 // A search (?q=) keeps its own order, best matches first.
+//
+// waiting_since / waiting_overdue (src/lib/chat/waiting.ts): how long the
+// customer has waited for an answer. Waiting chats that have gone
+// WAITING_OVERDUE_HOURS without one come first (with the frustrated ones: an
+// angry customer who is also being ignored is the very first), then the
+// frustrated, then everything else by activity.
 //
 // ?topic=risk|refund|tracking|delay|address|damaged|exchange lists the OPEN
 // chats of one problem (src/lib/chat/inbox-topics.ts: by subject label, or, for
@@ -110,13 +117,19 @@ export async function GET(request: NextRequest) {
   // the latest chat's status, which can hide an older one in Needs you).
   // Every other row is its own group of one. Grouped here in SQL, before the
   // LIMIT, so the limit counts rows the inbox actually shows.
-  // Open chats of upset customers first, highest score first; everything else,
+  // Who needs an answer first. Top: an angry customer who is also being ignored
+  // (frustrated and overdue), then customers waiting 2 hours or more (longest
+  // first), then frustrated ones (highest score first). Then everything else,
   // and any Closed chat, by latest activity. A search: best matches first.
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
-    : `(g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN}) DESC,
-       CASE WHEN g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN} THEN g.health_score END DESC NULLS LAST,
+    : `CASE WHEN g.waiting_overdue AND g.is_pinned THEN 0
+            WHEN g.waiting_overdue THEN 1
+            WHEN g.is_pinned THEN 2
+            ELSE 3 END,
+       CASE WHEN g.is_pinned THEN g.health_score END DESC NULLS LAST,
+       CASE WHEN g.waiting_overdue THEN g.waiting_since END ASC NULLS LAST,
        g.last_message_at DESC NULLS LAST`;
 
   // How many open customers (one per grouped row) each problem tab holds.
@@ -147,6 +160,11 @@ export async function GET(request: NextRequest) {
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
                    THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key,
+              CASE WHEN c.status = 'resolved' OR w.last_visitor_at IS NULL THEN NULL
+                   WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_visitor_at THEN NULL
+                   WHEN w.last_visitor_text ~* '${NO_REPLY_NEEDED_REGEX}' THEN NULL
+                   WHEN c.status = 'human_needed' OR w.last_sender = 'visitor' THEN w.last_visitor_at
+              END AS waiting_since,
               ${search.hitOrder} AS hit_order,
               ${search.hitPhone} AS hit_phone,
               ${search.hitName} AS hit_name,
@@ -154,10 +172,26 @@ export async function GET(request: NextRequest) {
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
          LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text
+         LEFT JOIN LATERAL (
+           SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
+                  max(m.created_at) FILTER (WHERE m.sender = 'agent') AS last_agent_at,
+                  (array_agg(m.sender ORDER BY m.created_at DESC, m.id DESC))[1] AS last_sender,
+                  (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'visitor'))[1] AS last_visitor_text
+             FROM messages m
+            WHERE m.conversation_id = c.id AND c.status <> 'resolved'
+              AND m.sender <> 'tool_result'
+              AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
+              AND COALESCE(m.metadata->>'withheld', '') = ''
+              AND m.content IS NOT NULL AND btrim(m.content) <> ''
+              AND m.deleted_at IS NULL
+         ) w ON true
          ${search.join}
          ${where}
      ), filtered AS (
-       SELECT * FROM base
+       SELECT b.*,
+              (b.waiting_since IS NOT NULL AND b.waiting_since <= now() - interval '${WAITING_OVERDUE_HOURS} hours') AS waiting_overdue,
+              (b.status <> 'resolved' AND COALESCE(b.health_score, 0) >= ${HEALTH_PIN_MIN}) AS is_pinned
+         FROM base b
        ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text' : ''}
      ), grouped AS (
        SELECT f.*,
@@ -178,7 +212,8 @@ export async function GET(request: NextRequest) {
             g.health_score, g.health_reason, g.health_updated_at,
             COALESCE((g.health_signals->>'threat')::int, 0) > 0 AS health_threat,
             COALESCE((g.health_signals->>'accuse')::int, 0) > 0 AS health_accuse,
-            (g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN}) AS health_pinned,
+            g.is_pinned AS health_pinned,
+            g.waiting_since, g.waiting_overdue,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
             (SELECT m.content

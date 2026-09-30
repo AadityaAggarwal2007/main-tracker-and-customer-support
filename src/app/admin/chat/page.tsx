@@ -11,6 +11,7 @@ import {
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
+import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -73,6 +74,10 @@ interface Conversation {
   // or called the store a fraud (health_accuse): tags on the list row.
   health_threat?: boolean;
   health_accuse?: boolean;
+  // How long the customer has waited for an answer (src/lib/chat/waiting.ts):
+  // since when, and whether that is WAITING_OVERDUE_HOURS or more.
+  waiting_since?: string | null;
+  waiting_overdue?: boolean;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -213,6 +218,29 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
 // 28 Sept · Closed"): the inbox tab names.
 function chatStatusLabel(status: string): string {
   return INBOX_TABS.find(t => t.status === status)?.label || '';
+}
+
+// "Waiting 3h 20m": how long the customer has been waiting for an answer. Grey
+// under an hour, amber up to 2 hours, red from then on.
+const WAITING_STYLE = {
+  fresh: { bg: 'var(--bg-subtle, rgba(0,0,0,0.05))', fg: 'var(--fg-muted)' },
+  soon: { bg: '#fef3c7', fg: '#b45309' },
+  overdue: { bg: '#fee2e2', fg: '#b91c1c' },
+} as const;
+const msSince = (iso: string) => Date.now() - Date.parse(iso);
+function WaitingChip({ since, big = false }: { since: string; big?: boolean }) {
+  const ms = msSince(since);
+  if (Number.isNaN(ms)) return null;
+  const st = WAITING_STYLE[waitingLevel(ms)];
+  return (
+    <span title={`The customer has waited ${formatWaiting(ms)} for an answer (their last message is unanswered)`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
+      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4,
+      fontWeight: 700, background: st.bg, color: st.fg,
+    }}>
+      <Clock size={big ? 11 : 10} /> Waiting {formatWaiting(ms)}
+    </span>
+  );
 }
 
 // The customer's frustration on a list row: a small % pill from "Uneasy" up,
@@ -1234,7 +1262,9 @@ export default function ChatSupportPage() {
     reason: activeHealthSrc.health_reason ?? null,
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
-  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned).length;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue).length;
+  // The open chat's row, for its waiting time (the thread's own answer does not carry it).
+  const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1454,7 +1484,7 @@ export default function ChatSupportPage() {
                   {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
                 </span>
                 {urgentCount > 0 && (
-                  <span title={`Open chats of frustrated customers (${HEALTH_PIN_MIN}%+), kept at the top until they are Closed`} style={{
+                  <span title={`Frustrated customers (${HEALTH_PIN_MIN}%+) and customers waiting ${WAITING_OVERDUE_HOURS} hours or more for an answer, kept at the top until they are answered or Closed`} style={{
                     marginLeft: '0.5rem', fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700,
                     background: '#fee2e2', color: '#b91c1c',
                   }}>
@@ -1548,9 +1578,11 @@ export default function ChatSupportPage() {
                     padding: '0.75rem 1rem', border: 'none',
                     borderBottom: '1px solid var(--border)',
                     borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
-                      : c.health_pinned && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}` : '3px solid transparent',
+                      : c.health_pinned && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
+                      : c.waiting_overdue ? '3px solid #f59e0b' : '3px solid transparent',
                     background: isActiveRow(c) ? 'var(--primary-light)'
-                      : c.health_pinned && c.health_score != null ? healthLevel(c.health_score).bg : 'transparent',
+                      : c.health_pinned && c.health_score != null ? healthLevel(c.health_score).bg
+                      : c.waiting_overdue ? '#fffbeb' : 'transparent',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
@@ -1628,6 +1660,7 @@ export default function ChatSupportPage() {
                   )}
                   <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
                     {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
+                    {c.waiting_since && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
                   </div>
                 </button>
               ))}
@@ -1674,6 +1707,7 @@ export default function ChatSupportPage() {
                         {STATUS_LABELS[activeConv.status]}
                       </span>
                       {activeVerifiedOrder && <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />}
+                      {activeWaiting && <WaitingChip since={activeWaiting} big />}
                     </div>
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
                       <span>{activeConv.panel_name || activeConv.site_name}</span>
