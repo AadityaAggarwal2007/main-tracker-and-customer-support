@@ -32,6 +32,7 @@ const CRON_SECRET = process.env.DRAFT_QUEUE_SECRET || '';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface Candidate {
+  id: string;
   order_id: string;
   tracking_status: string;
   created_at: string;
@@ -63,7 +64,7 @@ export async function GET(request: NextRequest) {
     for (let page = 0; page < MAX_PAGES; page++) {
       const res = cursorAt === null
         ? await query<Candidate>(
-            `SELECT order_id, tracking_status, created_at, estimated_delivery
+            `SELECT id, order_id, tracking_status, created_at, estimated_delivery
                FROM orders
               WHERE is_cancelled = false
                 AND COALESCE(tracking_status, '') <> 'Delivered'
@@ -72,7 +73,7 @@ export async function GET(request: NextRequest) {
             [PAGE]
           )
         : await query<Candidate>(
-            `SELECT order_id, tracking_status, created_at, estimated_delivery
+            `SELECT id, order_id, tracking_status, created_at, estimated_delivery
                FROM orders
               WHERE is_cancelled = false
                 AND COALESCE(tracking_status, '') <> 'Delivered'
@@ -91,7 +92,9 @@ export async function GET(request: NextRequest) {
 
     const now = Date.now();
     // Bucket order_ids by the canonical status they should advance TO.
-    const buckets = new Map<string, string[]>();
+    // Keyed by the row's own id: two panels can both have an order #2026, and updating by
+    // order_id alone moved a young order in one panel to the stage of an old one in another.
+    const buckets = new Map<string, Candidate[]>();
 
     for (const o of rows) {
       const currentIndex = statusToIndex(o.tracking_status);
@@ -109,7 +112,7 @@ export async function GET(request: NextRequest) {
 
       const targetStatus = JOURNEY[targetIndex].status;
       if (!buckets.has(targetStatus)) buckets.set(targetStatus, []);
-      buckets.get(targetStatus)!.push(o.order_id);
+      buckets.get(targetStatus)!.push(o);
     }
 
     let totalProgressed = 0;
@@ -119,8 +122,8 @@ export async function GET(request: NextRequest) {
     // run into Postgres's 65535 bind-parameter ceiling.
     const WRITE_CHUNK = 500;
 
-    for (const [targetStatus, allIds] of buckets) {
-      if (allIds.length === 0) continue;
+    for (const [targetStatus, allRows] of buckets) {
+      if (allRows.length === 0) continue;
       const targetIndex = JOURNEY.findIndex((s) => s.status === targetStatus);
       const isDelivered = targetIndex === DELIVERED_INDEX;
 
@@ -130,16 +133,17 @@ export async function GET(request: NextRequest) {
         : `Expected journey advanced to "${targetStatus}". No verified courier scan — framework stage.`;
       const changedBy = 'journey-engine';
 
-      for (let off = 0; off < allIds.length; off += WRITE_CHUNK) {
-        const orderIds = allIds.slice(off, off + WRITE_CHUNK);
+      for (let off = 0; off < allRows.length; off += WRITE_CHUNK) {
+        const chunk = allRows.slice(off, off + WRITE_CHUNK);
+        const orderIds = chunk.map((r) => r.order_id);
 
         // Advance the orders. Auto-delivery deliberately leaves delivered_at
         // NULL — that column is reserved for a verified team confirmation.
         await query(
           `UPDATE orders
               SET tracking_status = $1, status_updated_at = NOW(), updated_at = NOW()
-            WHERE order_id = ANY($2::text[])`,
-          [targetStatus, orderIds]
+            WHERE id = ANY($2::uuid[])`,
+          [targetStatus, chunk.map((r) => r.id)]
         );
 
         const valuePlaceholders = orderIds
