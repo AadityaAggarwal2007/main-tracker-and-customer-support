@@ -66,6 +66,10 @@ Fixed from the review: phone number in the PM2 log; masker eating order IDs / ph
 
 The inbox lists chats by NEWEST ACTIVITY first (same-day chats on top, a new chat on top). It no longer lifts chats waiting 2 hours or more, threats and fraud claims, or "Came back" chats above the rest. Owner's choice of option 1, made knowing it changes how master rules 14 and 15 ("surface prominently") are met: those chats are marked instead (red Waiting timer, overdue colour, Fraud / Threat and At risk chips, "Came back" chip) and stay one click away in the Needs you tab and its count; they are no longer moved to the top. A search still puts the best match first. The list shows the newest 200 chats: an old waiting chat beyond the newest 200 in the All tab is reached through its tab (Needs you, Customers, Visitors) or search.
 
+## Owner change 2026-09-30 (late): no frustration score on visitors
+
+The "100% Critical" frustration % pill on a list row, its coloured row edge, and the Frustration bar in the thread header are shown for CUSTOMERS only (a chat with a verified order or an old phone match). A visitor chat shows none of them. The score is still worked out and stored; Fraud / Threat chips and the Waiting timer are unchanged.
+
 ## The live prompt lives in the database
 
 Vastora's real chat prompt is `sites.system_prompt` (site 27099376..., 7,985 characters), not `DEFAULT_SYSTEM_PROMPT`: a panel prompt replaces the default. Rules written only in the default never reach Vastora. So `MASTER_RULES_PROMPT` (in `ai.ts`) is appended to EVERY prompt and says it overrides the text above. The live prompt still contains old lines the block overrides (order ID + last 4, "I'm Karry", "Never promise a timeline", "suggest retrying" a payment, the refund persuasion step). Tested with the live prompt + block on 2026-09-30: identity, injection, payment link, bot question behave. Editing the database prompt was NOT done (production write); it is optional cleanup for the deploy.

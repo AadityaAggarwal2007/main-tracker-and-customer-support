@@ -389,6 +389,12 @@ function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big
   );
 }
 
+// A visitor: a chat that has not proved an order (no verified order, no old phone
+// match). Same split as the Visitors / Customers tabs. The frustration score is shown
+// for customers only (owner, 2026-09-30: a visitor is not flagged "100% Critical").
+const isVisitorChat = (c: { verified_order_id?: string | null; phone_match_order_id?: string | null }) =>
+  !c.verified_order_id && !c.phone_match_order_id;
+
 // The customer's frustration on a list row: a small % pill from "Uneasy" up,
 // coloured by level, with the reason on hover. Calm customers show nothing.
 function HealthBadge({ score, reason }: { score?: number | null; reason?: string | null }) {
@@ -1414,13 +1420,14 @@ export default function ChatSupportPage() {
   const activeHealthSrc = !activeConv ? null
     : activeConv.health_score !== undefined ? activeConv
     : conversations.find(c => c.id === activeConv.id) ?? null;
-  const activeHealth = activeHealthSrc && activeHealthSrc.health_score != null ? {
+  const activeHealth = activeHealthSrc && activeHealthSrc.health_score != null
+    && !(activeVerifiedSrc && isVisitorChat(activeVerifiedSrc)) ? {
     score: activeHealthSrc.health_score,
     reason: activeHealthSrc.health_reason ?? null,
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
-  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue || c.urgent_waiting || c.returned).length;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => (c.health_pinned && !isVisitorChat(c)) || c.waiting_overdue || c.urgent_waiting || c.returned).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
   const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
@@ -1736,10 +1743,10 @@ export default function ChatSupportPage() {
                     padding: '0.75rem 1rem', border: 'none',
                     borderBottom: '1px solid var(--border)',
                     borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
-                      : c.health_pinned && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
+                      : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
                       : c.waiting_overdue || c.urgent_waiting ? '3px solid #f59e0b' : '3px solid transparent',
                     background: isActiveRow(c) ? 'var(--primary-light)'
-                      : c.health_pinned && c.health_score != null ? healthLevel(c.health_score).bg
+                      : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? healthLevel(c.health_score).bg
                       : c.waiting_overdue || c.urgent_waiting ? '#fffbeb' : 'transparent',
                   }}
                 >
@@ -1748,7 +1755,7 @@ export default function ChatSupportPage() {
                     <span title={nameNote(c)} style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: nameFromOrder(c) ? 'italic' : undefined }}>
                       {convName(c)}
                     </span>
-                    <HealthBadge score={c.health_score} reason={c.health_reason} />
+                    {!isVisitorChat(c) && <HealthBadge score={c.health_score} reason={c.health_reason} />}
                     {(c.thread_count ?? 0) > 1 && (
                       <span title={`${c.thread_count} chats from this customer, shown as one thread`} style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
