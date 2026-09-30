@@ -7,7 +7,7 @@ const ts = require('typescript');
 const SRC = path.resolve(__dirname, '../../src/');
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tests-'));
 
-const FILES = ['ai', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise'];
+const FILES = ['ai', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain'];
 for (const f of FILES) {
   if (!fs.existsSync(path.join(SRC, 'lib/chat', f + '.ts'))) continue; // an older checkout may lack a newer file
   const src = fs.readFileSync(path.join(SRC, 'lib/chat', f + '.ts'), 'utf8');
@@ -18,7 +18,7 @@ for (const f of FILES) {
 // What the current test case set up, read by the stubs below.
 const state = {
   mode: 'offline', history: [], verifiedOrderId: null, fresh: null, verified: false, facts: null,
-  lookups: {}, faqs: [], codStates: null, script: [], requests: [], responses: [],
+  lookups: {}, faqs: [], brain: [], brainError: false, codStates: null, script: [], requests: [], responses: [],
 };
 
 const digits = (x) => String(x == null ? '' : x).replace(/\D/g, '');
@@ -40,6 +40,7 @@ const stubs = {
     query: async (sql) => {
       if (/FROM messages/.test(sql) && /ORDER BY created_at ASC/.test(sql)) return { rows: state.history };
       if (/site_faqs/.test(sql)) return { rows: state.faqs };
+      if (/brain_notes/.test(sql)) { if (state.brainError) throw new Error('relation "brain_notes" does not exist'); return { rows: state.brain }; }
       return { rows: [] };
     },
     queryOne: async (sql) => {
