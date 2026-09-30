@@ -12,6 +12,8 @@ interface Note {
 }
 interface Topic { key: string; label: string }
 
+interface Suggestion { id: string; kind: Note['kind']; title: string; body: string; topics: string[]; why: string | null; conversation_id: string | null }
+
 const KIND_LABEL: Record<string, string> = { rule: 'Rule', fact: 'Fact', lesson: 'Lesson' };
 const EMPTY = { kind: 'lesson' as Note['kind'], title: '', body: '', topics: [] as string[], always: false, common: false };
 
@@ -29,6 +31,17 @@ export default function BrainCard({ token, businessId, onAlert }: {
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState({ title: '', body: '', topics: [] as string[], always: false, kind: 'lesson' as Note['kind'] });
 
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [sugEdit, setSugEdit] = useState<Record<string, { title: string; body: string; topics: string[] }>>({});
+
+  const loadSuggestions = useCallback(async () => {
+    if (!token || !businessId) { setSuggestions([]); return; }
+    try {
+      const r = await fetch(`/api/panel-brain/suggestions?businessId=${businessId}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setSuggestions((await r.json()).suggestions || []);
+    } catch { /* keep what is on screen */ }
+  }, [token, businessId]);
+
   const load = useCallback(async () => {
     if (!token || !businessId) { setNotes([]); return; }
     try {
@@ -39,7 +52,23 @@ export default function BrainCard({ token, businessId, onAlert }: {
       setCanEdit(!!d.canEdit); setCanEditCommon(!!d.canEditCommon);
     } catch { /* keep what is on screen */ }
   }, [token, businessId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadSuggestions(); }, [load, loadSuggestions]);
+
+  const decide = async (sg: Suggestion, action: 'approve' | 'reject') => {
+    setBusy(true);
+    try {
+      const e = sugEdit[sg.id];
+      const r = await fetch('/api/panel-brain/suggestions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId, id: sg.id, action, ...(action === 'approve' && e ? e : {}) }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', d.error || 'Could not save'); return; }
+      onAlert('success', action === 'approve' ? 'Added to the Brain' : 'Rejected');
+      await Promise.all([load(), loadSuggestions()]);
+    } catch { onAlert('error', 'Could not save'); }
+    finally { setBusy(false); }
+  };
 
   const call = async (method: string, body?: unknown, qs = '') => {
     setBusy(true);
@@ -145,6 +174,37 @@ export default function BrainCard({ token, businessId, onAlert }: {
         notes that fit what the customer wrote (plus the ones marked Always). Edits apply to the very next
         message. {canEdit ? '' : 'Only an admin can change these.'}
       </div>
+
+      {suggestions.length > 0 && (
+        <div style={{ marginBottom: '0.75rem', border: '1px solid var(--primary)', borderRadius: 8, padding: '0.625rem 0.75rem' }}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--primary)', marginBottom: '0.25rem' }}>
+            Suggested from real chats ({suggestions.length})
+          </div>
+          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+            The system read chats your team answered and drafted these. The agent does NOT use them until you approve. Change the wording first if you like.
+          </div>
+          {suggestions.map((sg) => {
+            const e = sugEdit[sg.id] || { title: sg.title, body: sg.body, topics: sg.topics };
+            return (
+              <div key={sg.id} style={{ borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                <input className="form-input" style={{ fontWeight: 600, marginBottom: '0.375rem' }} value={e.title} disabled={!canEdit} maxLength={120}
+                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, title: ev.target.value } })} />
+                <textarea className="form-input" rows={3} value={e.body} disabled={!canEdit} maxLength={900}
+                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, body: ev.target.value } })} />
+                {topicPicker(e.topics, (v) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, topics: v } }), false, () => {})}
+                {sg.why && <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>Why: {sg.why}</div>}
+                {canEdit && (
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => decide(sg, 'approve')}>Approve: add to the Brain</button>
+                    <button className="btn btn-sm" disabled={busy} onClick={() => decide(sg, 'reject')}
+                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>Reject</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {group('For this panel', notes.filter((n) => n.site_id !== null))}
       {group('For every panel', notes.filter((n) => n.site_id === null))}
