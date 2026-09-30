@@ -7,12 +7,15 @@
 // that route, after the panel scoping (businessIds) is already in the WHERE,
 // so a search can never reach a panel the caller may not see. Every value from
 // the caller is bound as a parameter, never pasted into the SQL. It looks in:
-//   - the customer's name (and the name on an order the AI looked up),
+//   - the customer's name (the name on the order a chat is tied to, and on an
+//     order the AI looked up),
 //   - the phone (only when the query is a number of 6+ digits),
 //   - the verified order ID, and orders the AI looked up in the chat
 //     (order ID / tracking ID inside the stored lookup result),
 //   - the visible messages and the chat's subject.
 // Deleted messages and hidden tool rows are never searched as text.
+
+import { ORDER_NAME_ALIAS } from '@/lib/chat/display-name';
 
 export interface InboxSearch {
   q: string;             // '' = no search
@@ -81,7 +84,9 @@ export function parseInboxSearch(raw: string | null | undefined, firstParam: num
   const hitOrder = order
     ? `(COALESCE(ltrim(c.verified_order_id, '#') ILIKE ${pOrderLike}, false) OR COALESCE(h.order_hit, false))`
     : 'false';
-  const hitName = `(COALESCE(c.visitor_name ILIKE ${pLike}, false) OR COALESCE(h.name_hit, false))`;
+  // ORDER_NAME_ALIAS.name is the customer name on the chat's order (display-name.ts,
+  // joined by the list route), so a phone-matched chat is found by its customer's name.
+  const hitName = `(COALESCE(c.visitor_name ILIKE ${pLike}, false) OR COALESCE(${ORDER_NAME_ALIAS}.name ILIKE ${pLike}, false) OR COALESCE(h.name_hit, false))`;
   const hitText = `(COALESCE(c.subject_summary ILIKE ${pLike}, false) OR COALESCE(h.text_hit, false))`;
 
   // A number of 6+ digits is a phone: +91 89182 21791, 08918221791, 8918221791.

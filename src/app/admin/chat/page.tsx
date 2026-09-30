@@ -24,6 +24,9 @@ interface Business { id: string; name: string; }
 interface Conversation {
   id: string;
   visitor_name: string | null;
+  // The name staff read (src/lib/chat/display-name.ts): visitor_name when the chat has
+  // a real one, else the customer name on its verified / phone-matched order.
+  display_name?: string | null;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -259,6 +262,21 @@ function WaitingChip({ since, big = false }: { since: string; big?: boolean }) {
     </span>
   );
 }
+
+// The name to print for a chat, and a hover note when it is not the chat's own
+// but taken from its order (a phone match is a staff hint, not verification).
+const convName = (c: { display_name?: string | null; visitor_name: string | null }) =>
+  c.display_name || c.visitor_name || 'Visitor';
+// True when the printed name is the order's, not the chat's own. It is drawn in
+// italics (with "from order" in the header) so it never reads as a proven name,
+// on a phone too, where there is no hover.
+const nameFromOrder = (c: { display_name?: string | null; visitor_name: string | null }) =>
+  !!c.display_name && c.display_name !== c.visitor_name;
+const nameNote = (c: { display_name?: string | null; visitor_name: string | null; phone_match_order_id?: string | null; verified_order_id?: string | null }) => {
+  if (!nameFromOrder(c)) return undefined;
+  return c.verified_order_id ? `Name from order ${c.verified_order_id}`
+    : `Name from order ${c.phone_match_order_id ?? ''}, matched by phone number (not verified)`;
+};
 
 // The order line in the thread header: when the order was placed, where it is
 // now in ShipTrack (the stage the customer's own tracking page shows) and the
@@ -1661,8 +1679,8 @@ export default function ChatSupportPage() {
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
                     {c.source === 'email' ? <Mail size={12} style={{ color: 'var(--fg-muted)' }} /> : <MessageCircle size={12} style={{ color: 'var(--fg-muted)' }} />}
-                    <span style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {c.visitor_name || 'Visitor'}
+                    <span title={nameNote(c)} style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: nameFromOrder(c) ? 'italic' : undefined }}>
+                      {convName(c)}
                     </span>
                     <HealthBadge score={c.health_score} reason={c.health_reason} />
                     {(c.thread_count ?? 0) > 1 && (
@@ -1767,7 +1785,10 @@ export default function ChatSupportPage() {
                   </button>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 700 }}>{activeConv.visitor_name || 'Visitor'}</span>
+                      <span title={nameNote(activeConv)} style={{ fontWeight: 700, fontStyle: nameFromOrder(activeConv) ? 'italic' : undefined }}>{convName(activeConv)}</span>
+                      {nameFromOrder(activeConv) && (
+                        <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>(from order)</span>
+                      )}
                       <span style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
                         display: 'inline-flex', alignItems: 'center', gap: '0.25rem',

@@ -40,15 +40,16 @@ const iso = (v: string | Date | null | undefined): string | null => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-// null when there is no such order, or when the order number matches more than
-// one order and the chat's panel cannot tell which is meant (order numbers repeat
-// across panels). Never throws: the header just goes without the line.
+// null when the chat's site has no panel, there is no such order in it, or the
+// number matches more than one order. Never throws: the header just goes without
+// the line.
 export async function loadOrderFacts(
   orderId: string | null | undefined,
   trackerBusinessId: string | null | undefined,
   source: OrderFacts['source'],
 ): Promise<OrderFacts | null> {
-  if (!orderId) return null;
+  // No panel, no line: an order number alone could be another store's.
+  if (!orderId || !trackerBusinessId) return null;
   try {
     const { rows } = await query<FactsRow>(
       `SELECT o.order_id, o.tracking_status, o.is_cancelled, o.created_at, o.status_updated_at,
@@ -56,9 +57,9 @@ export async function loadOrderFacts(
          FROM orders o
          LEFT JOIN businesses b ON b.id = o.business_id
         WHERE o.order_id = $1
-          AND ($2::text IS NULL OR o.business_id::text = $2::text)
+          AND o.business_id::text = $2::text
         LIMIT 2`,
-      [orderId, trackerBusinessId || null]
+      [orderId, trackerBusinessId]
     );
     if (rows.length !== 1) return null;
     const row = rows[0];
