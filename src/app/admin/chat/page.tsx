@@ -46,8 +46,9 @@ interface Conversation {
   // old phone/email lookup, shown as "Old check", not as Verified.
   verified_order_id?: string | null;
   verified_via?: string | null;
-  // A visitor whose typed or saved number is on an order in this panel (staff hint,
-  // NOT verification: phone-match.ts). Listed with the customers, tagged "Phone match".
+  // OLD chats only (chat-phone-match.sql): a visitor whose typed or saved number was on an
+  // order in this panel. Retired 2026-09-30 evening: new chats never get it (a phone number
+  // alone makes nobody a customer). Kept as it was, tagged "Phone match", not verification.
   phone_match_order_id?: string | null;
   // One verified customer's chats on a site share a customer_key (their
   // 10-digit phone). The list shows them as one row: thread_count chats in

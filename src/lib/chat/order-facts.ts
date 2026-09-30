@@ -8,7 +8,7 @@
 // the customer's own tracking page shows (buildJourney in journey.ts: the stored
 // status, moved forward by the order's age), so staff and customer read the same
 // thing. It works from the order the chat verified, else the one its number
-// matched (phone-match.ts), inside the chat's own panel.
+// matched (an old phone match: no new chat gets one), inside the chat's own panel.
 import { query } from '@/lib/db';
 import { buildJourney, type JourneyOrder } from '@/lib/journey';
 

@@ -5,7 +5,6 @@ import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
-import { detectPhoneMatch } from './phone-match';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -260,7 +259,6 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         void updateConversationSubject(conversation.id);
         // The customer's frustration score (./health.ts), the same way.
         void updateConversationHealth(conversation.id);
-        void detectPhoneMatch(conversation.id);
 
         // ── AI auto-reply ──────────────────────────────────────────────
         // Routine questions (order status, tracking) are answered and sent.

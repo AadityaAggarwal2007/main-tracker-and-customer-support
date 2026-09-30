@@ -62,7 +62,8 @@ export const dynamic = 'force-dynamic';
 // between the two apps' tables compares as text.
 // A customer the team can place: they proved an order (verified_order_id: order
 // ID + last 4, the widget form, or the old lookups) or the number they typed or
-// saved is on an order in this panel (phone_match_order_id, phone-match.ts).
+// saved was on an order in this panel (phone_match_order_id: OLD chats only, the
+// detection was retired on 2026-09-30, a phone number alone no longer files a chat as a customer).
 // Visitors are everyone else. The AI only trusts verified_order_id.
 const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)';
 

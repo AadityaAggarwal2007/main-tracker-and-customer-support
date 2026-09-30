@@ -3,7 +3,6 @@ import { query, queryOne } from '@/lib/db';
 import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
-import { detectPhoneMatch } from '@/lib/chat/phone-match';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
@@ -112,8 +111,6 @@ export async function POST(request: NextRequest) {
     void updateConversationSubject(conversationId);
     // How upset the customer is (src/lib/chat/health.ts): same rules, same care.
     void updateConversationHealth(conversationId);
-    // Does a number they typed belong to a customer? A hint for staff only (phone-match.ts).
-    void detectPhoneMatch(conversationId);
 
     return widgetJson({ message: visitorMessage, aiResponse: aiMessage }, 201);
   } catch (err) {

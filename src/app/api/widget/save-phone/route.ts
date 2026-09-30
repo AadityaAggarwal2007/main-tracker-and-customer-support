@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { query } from '@/lib/db';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
-import { detectPhoneMatch } from '@/lib/chat/phone-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,8 +24,6 @@ export async function POST(request: NextRequest) {
       `UPDATE conversations SET visitor_phone = $1, updated_at = now() WHERE id = $2`,
       [phone, conversationId]
     );
-    // The number saved may be a customer's: a hint for staff (phone-match.ts).
-    void detectPhoneMatch(conversationId);
 
     return widgetJson({ ok: true });
   } catch (err) {

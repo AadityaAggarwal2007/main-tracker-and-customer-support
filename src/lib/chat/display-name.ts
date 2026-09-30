@@ -1,6 +1,6 @@
 // ── The name staff read on a chat ──────────────────────────────
 // Asked for by the owner on 2026-09-30: a chat whose number matched a customer's
-// order (Phone match, phone-match.ts) said "Visitor" where the customer's name
+// order (an old "Phone match", chat-phone-match.sql) said "Visitor" where the customer's name
 // should be, and the team could not tell who it was. Then, the same day: a name
 // the customer TYPES must never be shown for a chat that has an order. The name
 // on the order is the name the parcel goes to, so it is the only one staff read.

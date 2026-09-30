@@ -26,8 +26,9 @@ export const REFUND_CANCEL_LABEL = 'Refund / Cancellation';
 // score is at or above HEALTH_PIN_MIN (health-rules.ts), 'fraud' every open chat
 // of a customer who has called the store a fraud, scam or fake, or threatened a
 // chargeback, police, court or bad reviews (health signals), whatever it is about.
-// Problem tabs list KNOWN customers only (verified, or their phone matches an
-// order): visitors stay under Visitors.
+// Problem tabs list KNOWN customers only (verified, or an OLD chat whose phone
+// matched an order: no new chat gets that, a phone number alone makes nobody a
+// customer): visitors stay under Visitors.
 export const INBOX_TOPICS: InboxTopic[] = [
   { key: 'risk', label: 'At risk', hint: 'Open chats of frustrated customers: the ones who may charge back', labels: [] },
   { key: 'fraud', label: 'Fraud / Threat', hint: 'Open chats of customers who call the store a fraud or fake, or threaten a chargeback, police or bad reviews', labels: [] },

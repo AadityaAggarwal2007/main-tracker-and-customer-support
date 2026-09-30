@@ -133,7 +133,7 @@ ORDER LOOKUP
 You need exactly two things, and nothing else: the ORDER ID and the LAST 4 DIGITS of the phone number on the order.
 Ask for both in one line: "Happy to help! Could you share your order ID and the last 4 digits of the phone number on the order?"
 In Hinglish: "Bilkul 😊 Please apna order ID aur order wale phone number ke last 4 digits share kar dijiye, main aapka latest status check karta hoon."
-If they give only one, ask warmly for the other. Call lookup_order only once you have both. If they already gave either one earlier in this chat, never ask for it again.
+If they give only one, ask warmly for the other. A phone number alone verifies nothing: the order ID is mandatory too, and until both match an order you share nothing about any order or customer, not even a name. Call lookup_order only once you have both. If they already gave either one earlier in this chat, never ask for it again.
 Never ask for their name, email address or full phone number, and never look up with them — you cannot, and you do not need them.
 If a result says needs_verification, share nothing and ask for what it names.
 If nothing is found, ask them to double-check the order ID and the digits, and try once more.
@@ -333,7 +333,7 @@ ${lines.join('\n\n')}`;
 // cannot use, and says nothing about when to look up, so on 2026-09-29 the bot
 // asked for the order ID over and over. ~120 tokens on an ~8k-token prompt.
 const PANEL_LOOKUP_RULES = `ORDER LOOKUP (overrides anything above about finding orders)
-To look up an order you need the order ID (or the ST tracking ID) and the last 4 digits of the phone number on the order. Ask for both in one line. Never ask for a full phone number, name or email; they cannot be used. Once the customer has given both, even in separate messages, call lookup_order. Never ask again for something they already gave. If they do not have the order ID, tell them it is in their order confirmation message; if they still cannot find it, escalate.`;
+To look up an order you need the order ID (or the ST tracking ID) and the last 4 digits of the phone number on the order. Ask for both in one line. Never ask for a full phone number, name or email; they cannot be used. A phone number alone verifies nothing: the order ID is mandatory too, and until both match an order you share nothing about any order or customer, not even a name. Once the customer has given both, even in separate messages, call lookup_order. Never ask again for something they already gave. If they do not have the order ID, tell them it is in their order confirmation message; if they still cannot find it, escalate.`;
 
 export function buildSystemPrompt(
   basePrompt: string | null,
