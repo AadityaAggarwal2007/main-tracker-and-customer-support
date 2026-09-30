@@ -26,6 +26,9 @@ FROM (VALUES
  ('lesson', 'Answer a status question from the lookup',
   'When a verified customer asks where their order is, how long it will take or whether it moved, answer at once from the lookup: name the current stage, give the estimated date and the tracking link. Do not say "let me check with the team" when the lookup already has the answer; the customer is waiting for a real answer, and a line that only promises a reply makes them write again.',
   ARRAY['tracking','delivery'], 7),
+ ('lesson', 'Ask only for what is still missing',
+  'If the customer has already typed the order ID, ask only for the phone number; if they typed the phone, ask only for the order ID. A bare number like "3605" after you asked for the order ID is the order ID. Never ask again for something the customer already wrote in this chat.',
+  ARRAY['verify','tracking'], 9),
  ('lesson', 'Ask only two things to find an order',
   'To find an order ask for the order ID and the full 10-digit phone number on it, nothing else: no payment reference, UPI, account number, screenshot, email or name. What the customer has already told you in this chat is never asked again.',
   ARRAY['verify','tracking'], 8)
