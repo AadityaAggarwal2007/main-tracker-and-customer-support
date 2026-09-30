@@ -392,7 +392,7 @@ function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big
 // A visitor: a chat that has not proved an order (no verified order, no old phone
 // match). Same split as the Visitors / Customers tabs. The frustration score is shown
 // for customers only (owner, 2026-09-30: a visitor is not flagged "100% Critical",
-// and carries no Threat / Fraud claim chip either).
+// and carries no Threat / Fraud claim chip or Waiting timer either).
 const isVisitorChat = (c: { verified_order_id?: string | null; phone_match_order_id?: string | null }) =>
   !c.verified_order_id && !c.phone_match_order_id;
 
@@ -1428,9 +1428,11 @@ export default function ChatSupportPage() {
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
-  const urgentCount = searchActive ? 0 : conversations.filter(c => (c.health_pinned && !isVisitorChat(c)) || c.waiting_overdue || c.urgent_waiting || c.returned).length;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => (c.health_pinned && !isVisitorChat(c)) || ((c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c)) || c.returned).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
-  const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
+  // The Waiting timer is for customers only (owner, 2026-09-30): a visitor shows none.
+  const activeWaitingRow = activeConv ? conversations.find(c => c.id === activeConv.id) : null;
+  const activeWaiting = activeWaitingRow && !isVisitorChat(activeWaitingRow) ? (activeWaitingRow.waiting_since ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1745,10 +1747,10 @@ export default function ChatSupportPage() {
                     borderBottom: '1px solid var(--border)',
                     borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
                       : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
-                      : c.waiting_overdue || c.urgent_waiting ? '3px solid #f59e0b' : '3px solid transparent',
+                      : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? '3px solid #f59e0b' : '3px solid transparent',
                     background: isActiveRow(c) ? 'var(--primary-light)'
                       : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? healthLevel(c.health_score).bg
-                      : c.waiting_overdue || c.urgent_waiting ? '#fffbeb' : 'transparent',
+                      : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? '#fffbeb' : 'transparent',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
@@ -1827,7 +1829,7 @@ export default function ChatSupportPage() {
                   )}
                   <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
                     {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
-                    {c.waiting_since && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
+                    {c.waiting_since && !isVisitorChat(c) && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
                     {c.returned && <span style={{ marginLeft: '0.5rem' }}><CameBackChip closedAt={c.auto_closed_at} /></span>}
                   </div>
                 </button>

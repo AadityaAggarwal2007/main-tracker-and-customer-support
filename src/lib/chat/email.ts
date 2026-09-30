@@ -6,6 +6,7 @@ import { getAIResponse } from './ai';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import { maskSensitive, sensitiveWarning } from './sensitive';
+import { chatIsVerified } from './verified';
 import { insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 
 // ── Email support ──────────────────────────────────────────────
@@ -293,7 +294,9 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // the team answers by email, and the chat is top of the inbox. A fraud or
         // fake-site claim (section 16) is answered by the AI with what it can prove
         // and then handed over, below.
-        if (conversation.status === 'ai_handling' && urgent === 'threat') {
+        // Only a VERIFIED customer goes to Needs you (owner, 2026-09-30); an unverified
+        // sender stays in Visitors and the AI answers (and asks for the order ID + phone).
+        if (conversation.status === 'ai_handling' && urgent === 'threat' && await chatIsVerified(conversation.id)) {
           await query(
             `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
             [conversation.id]
@@ -333,6 +336,13 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
             // getAIResponse returns ("could you send that again?") reads as
             // nonsense in an email the customer wrote once, so it is not sent
             // and not stored — the thread goes to a human instead.
+            // The sender may have verified in this very email (order ID + phone): read again.
+            const verifiedNow = await chatIsVerified(conversation.id);
+            if (aiResult.allFailed && !verifiedNow) {
+              // A visitor stays a visitor: nothing moves the thread to Needs you.
+              console.warn(`[email] No model available for ${fromAddr} ("${account.site_name}"), not verified: left in Visitors`);
+              continue;
+            }
             if (aiResult.allFailed) {
               await query(
                 `UPDATE conversations SET status = 'human_needed', last_message_at = now(), updated_at = now() WHERE id = $1`,
@@ -352,7 +362,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
             // escalated (the customer must hear something). The line goes in before
             // the sign-off.
             const routine = routineHandOverKind(masked.text);
-            const handOverNow = urgent === 'accusation' || !!routine;
+            const handOverNow = verifiedNow && (urgent === 'accusation' || !!routine);
             if (handOverNow) {
               const line = urgent === 'accusation' ? teamWillReplyLine(masked.text) : routineLine(routine!, masked.text);
               if (urgent === 'accusation' || routine !== 'refund' || !saysRefundTime(aiResult.content)) {

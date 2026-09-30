@@ -641,6 +641,17 @@ export function handOverReply(rows: GuardRow[]): string {
 // After a lookup that found nothing the model tends to just ask for the
 // details again without saying nothing matched, so ai.ts says it instead.
 // Only the order ID the customer typed is repeated, never the digits.
+// For a chat that is not verified: the guards that used to hand the chat to the team
+// cannot (only a verified customer goes to Needs you), so the customer is told, in
+// their language, what is still needed. It asks for both again on purpose.
+export function verifyAgainReply(rows: GuardRow[]): string {
+  switch (replyLanguage(rows)) {
+    case 'hi': return 'मैं अभी इससे कोई ऑर्डर मैच नहीं कर पाया। कृपया ऑर्डर कन्फर्मेशन मैसेज से ऑर्डर आईडी और ऑर्डर वाला फ़ोन नंबर देखकर दोनों एक साथ भेजिए।';
+    case 'hinglish': return 'Abhi main isse koi order match nahi kar paaya. Kripya order confirmation message se order ID aur order wala phone number dekhkar dono ek saath bhej dijiye.';
+    default: return "I couldn't match that to an order yet. Please share your order ID (it's in your order confirmation message) and the phone number on the order, both together.";
+  }
+}
+
 export function notFoundReply(rows: GuardRow[], orderId: string): string {
   const id = orderId ? ' ' + orderId : '';
   switch (replyLanguage(rows)) {

@@ -1,12 +1,13 @@
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
-import { getAIResponse } from '@/lib/chat/ai';
+import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
 import { handoffReply, isCourtesyOnly, isRepeatedReply, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentAck, urgentKind } from '@/lib/chat/escalation';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
+import { chatIsVerified } from '@/lib/chat/verified';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,8 +125,14 @@ export async function POST(request: NextRequest) {
         [conversationId, text]
       );
 
+      // Only a VERIFIED customer goes to Needs you (owner, 2026-09-30). A visitor stays
+      // a visitor: the AI answers (and asks them to verify), nobody moves the chat,
+      // and no "our team will reply" line is sent. Read again after the AI turn: the
+      // customer may have verified in this very message.
+      let verified = await chatIsVerified(conversationId);
+
       try {
-        if (urgent === 'threat') {
+        if (urgent === 'threat' && verified) {
           // No AI text at all: nothing to argue, nothing to defend.
           await handOver('threat');
           aiMessage = await saveAiMessage(aiReply(urgentAck(said)));
@@ -138,6 +145,7 @@ export async function POST(request: NextRequest) {
           const beforeMerge = conversationId;
           conversationId = await mergeIntoCustomerChat(conversationId);
           const merged = conversationId !== beforeMerge;
+          verified = await chatIsVerified(conversationId);
 
           // Store the tool exchange as hidden messages so the next turn still
           // knows which order was looked up.
@@ -157,10 +165,19 @@ export async function POST(request: NextRequest) {
 
           let text = aiResult.content;
           if (aiResult.allFailed) {
-            // Every model is down (master rules section 13): a person takes it,
-            // and the customer is told so instead of "please send that again".
-            text = handoffReply(said);
-            await handOver('AI failure');
+            if (verified) {
+              // Every model is down (master rules section 13): a person takes it,
+              // and the customer is told so instead of "please send that again".
+              text = handoffReply(said);
+              await handOver('AI failure');
+            } else {
+              // A visitor stays a visitor: the plain apology, nobody is told a team has it.
+              text = AI_BUSY_REPLY;
+            }
+          } else if (!verified) {
+            // A visitor: whatever the message was about (a refund, a threat, a fraud
+            // claim, the same answer again), the AI's own reply stands. Nothing moves
+            // the chat out of Visitors until the customer has verified.
           } else if (!aiResult.escalated && !merged && !isCourtesyOnly(said) && isRepeatedReply(text, await recentAiReplies(conversationId))) {
             // The same answer again (section 12): stop, and let a person take it.
             text = handoffReply(said);
@@ -192,9 +209,9 @@ export async function POST(request: NextRequest) {
         // Never leave the visitor with a spinning typing indicator and no reply,
         // and never leave the chat with nobody looking at it (section 13).
         console.error('[widget] AI error:', (aiErr as Error).message);
-        await handOver('AI error');
+        if (verified) await handOver('AI error');
         try {
-          aiMessage = await saveAiMessage(aiReply(handoffReply(said)));
+          aiMessage = await saveAiMessage(aiReply(verified ? handoffReply(said) : AI_BUSY_REPLY));
         } catch (saveErr) {
           console.error('[widget] fallback save failed:', (saveErr as Error).message);
         }

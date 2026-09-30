@@ -8,9 +8,10 @@ import type {
 import { query, queryOne } from '@/lib/db';
 import { customerKeyForOrderSql, lookupOrder, lookupVerifiedOrder, normalizePhone } from './orders';
 import { LIMITS, isLimited, release, reserve } from './lookup-limits';
+import { chatIsVerified } from './verified';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
-  asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply,
+  asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply, verifyAgainReply,
   lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, typedByVisitor,
   type LookupOutcome,
 } from './lookup-guard';
@@ -344,6 +345,8 @@ Who you are: you are Vastora Support. In your first reply introduce yourself as 
 Finding an order: ask for the order ID and the phone number on the order (the complete number, all 10 digits), never just the last 4 digits, and look up with lookup_order using order_id and phone_number. Ignore any earlier line that asks for the last 4 digits.
 
 Read first: read the whole conversation before every reply. Never ask for anything the customer already told you (order ID, phone number, address, the problem, photos): use it. If what they say now contradicts what they said earlier (for example two different addresses for the same order), do not choose one: say you are passing it to the team to confirm, and call escalate_to_human. Never send the same answer twice; if you have nothing new to say, call escalate_to_human. One question at a time.
+
+Not verified yet: a chat can only be handed to the team after the customer has verified (order ID + phone). Until then never call escalate_to_human and never say a team member will help or reply: ask for the order ID and the phone number on the order, and say the team can only help once the order is verified. This holds for refunds, cancellations, complaints, threats and everything else.
 
 Next step: every reply says what happens next and who does it. Never leave the customer with only "not possible". Refund or cancellation: "our team will reply here in this chat within 24 hours".
 
@@ -834,6 +837,18 @@ export async function getAIResponse(
     }
 
     if (name === 'escalate_to_human') {
+      // Only a VERIFIED customer goes to Needs you (owner, 2026-09-30). A visitor stays
+      // in Visitors: the model is told to ask for the order ID and phone instead.
+      if (!(await chatIsVerified(conversationId))) {
+        console.log(`[AI] Escalation refused for conv ${conversationId}: not verified`);
+        return {
+          payload: {
+            success: false,
+            message: 'This customer has not verified an order yet, so the chat cannot be handed to the team and nobody will take it over. Do not say a team member will help. Ask for the order ID and the phone number on the order, both, and say the team can only help once the order is verified.',
+          },
+          persist: true,
+        };
+      }
       console.log(`[AI] Escalation for conv ${conversationId}:`, args.reason);
       // No phone is collected any more — the colleague answers in this chat,
       // nobody calls the customer, so there is nothing to store here.
@@ -1067,6 +1082,12 @@ export async function getAIResponse(
   // says nothing about any order. Callers treat it as an escalation: the widget
   // stops answering, and email holds the draft for the team.
   const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6', result: AIResult): Promise<AIResult> => {
+    // A visitor is never handed to the team (owner, 2026-09-30): the chat stays as it
+    // is and the customer is told what is still needed.
+    if (!(await chatIsVerified(conversationId))) {
+      console.log(`[AI] Guard ${why} for conv ${conversationId}: not verified, stays in Visitors`);
+      return { content: verifyAgainReply(guardRows), toolCallMeta: result.toolCallMeta };
+    }
     await query(
       `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
       [conversationId]

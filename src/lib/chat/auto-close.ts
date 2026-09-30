@@ -19,7 +19,8 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 //     "thanks"; and a chat whose last AI message is not an answer (the "took longer
 //     than expected" apology, or "let me get that confirmed by our team" with no
 //     escalation), AI_NOT_AN_ANSWER_REGEX. Those stay open until someone answers.
-//   - a chat that is PROTECTED (master rules section 24): still in Needs you; about a
+//   - a CUSTOMER's chat that is PROTECTED (master rules section 24; a visitor's chat is
+//     never protected, it only waits as a visitor, owner 2026-09-30): still in Needs you; about a
 //     refund, cancellation or payment (subject label, or a message the widget / email
 //     marked `routine`, or the health scorer counted a refund demand); a threat or a
 //     fraud claim (message marked `urgent`, or the health scorer's threat / accuse
@@ -68,14 +69,15 @@ const CANDIDATES_SQL = `
                       OR (w.last_sender = 'ai' AND w.last_ai_text ~* '${AI_NOT_AN_ANSWER_REGEX}')))
                 OR (c.status = 'human_needed' AND w.last_agent_at IS NULL)
               )) AS customer_waiting,
-         (c.status = 'human_needed'
+         ((c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)
+          AND (c.status = 'human_needed'
           OR COALESCE(c.subject_label, '') ~* '(refund|cancel|payment)'
           OR COALESCE((c.health_signals->>'refund')::int, 0) > 0
           OR COALESCE((c.health_signals->>'threat')::int, 0) > 0
           OR COALESCE((c.health_signals->>'accuse')::int, 0) > 0
           OR EXISTS (SELECT 1 FROM messages pm
                       WHERE pm.conversation_id = c.id AND pm.deleted_at IS NULL
-                        AND (pm.metadata ? 'urgent' OR pm.metadata ? 'routine' OR pm.metadata ? 'sensitive_hidden'))
+                        AND (pm.metadata ? 'urgent' OR pm.metadata ? 'routine' OR pm.metadata ? 'sensitive_hidden')))
          ) AS is_protected
     FROM conversations c
     LEFT JOIN LATERAL (
