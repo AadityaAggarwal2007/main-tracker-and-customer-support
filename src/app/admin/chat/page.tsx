@@ -29,6 +29,10 @@ interface Conversation {
   display_name?: string | null;
   // True when display_name is the customer name on the chat's order.
   name_from_order?: boolean;
+  // When the system closed this chat after 4 quiet days (auto-close.ts), else null. On an
+  // OPEN chat (returned) it means the customer wrote again after that: shown as "Came back".
+  auto_closed_at?: string | null;
+  returned?: boolean;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -330,6 +334,22 @@ function OrderLine({ facts }: { facts: OrderFacts }) {
         </span>
       )}
     </div>
+  );
+}
+
+// A chat the system closed after 4 quiet days that the customer has since written
+// in again (it opened by itself): sits near the top until a person closes it or
+// takes it over, so it is seen and closed fast. The team's own Close is not tagged.
+function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big?: boolean }) {
+  const when = closedAt ? new Date(closedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : '';
+  return (
+    <span title={`Closed automatically${when ? ` on ${when}` : ''} after 4 quiet days. The customer has written again, so it opened itself. Close it or take it over.`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
+      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4,
+      fontWeight: 700, background: '#dbeafe', color: '#1d4ed8',
+    }}>
+      <RotateCw size={big ? 11 : 10} /> Came back
+    </span>
   );
 }
 
@@ -989,7 +1009,7 @@ export default function ChatSupportPage() {
         body: JSON.stringify({ status }),
       });
       if (res.ok) {
-        setActiveConv(c => (c ? { ...c, status: status as Conversation['status'] } : c));
+        setActiveConv(c => (c ? { ...c, status: status as Conversation['status'], auto_closed_at: null } : c));
         fetchConversations(true);
       } else {
         const d = await res.json();
@@ -1357,7 +1377,7 @@ export default function ChatSupportPage() {
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
-  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue).length;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue || c.returned).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
   const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
@@ -1757,6 +1777,7 @@ export default function ChatSupportPage() {
                   <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
                     {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
                     {c.waiting_since && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
+                    {c.returned && <span style={{ marginLeft: '0.5rem' }}><CameBackChip closedAt={c.auto_closed_at} /></span>}
                   </div>
                 </button>
               ))}
@@ -1808,6 +1829,12 @@ export default function ChatSupportPage() {
                       {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
                         : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
                       {activeWaiting && <WaitingChip since={activeWaiting} big />}
+                      {activeConv.auto_closed_at && activeConv.status !== 'resolved' && <CameBackChip closedAt={activeConv.auto_closed_at} big />}
+                      {activeConv.auto_closed_at && activeConv.status === 'resolved' && (
+                        <span title="Nobody wrote for 4 days and the customer was not waiting for an answer, so the system closed it. Nothing was sent to the customer. If they write again it opens itself." style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                          Closed automatically (4 quiet days)
+                        </span>
+                      )}
                     </div>
                     {activeOrder && <OrderLine facts={activeOrder} />}
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>

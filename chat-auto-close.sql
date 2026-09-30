@@ -1,0 +1,30 @@
+-- ============================================================
+-- Auto-close quiet chats. 2026-09-30.
+-- Asked for by the owner in chat on 2026-09-30: chats where nobody has written
+-- for 4 days and the customer is not waiting for an answer are Closed by the
+-- system, with no message to the customer, so the inbox and the At risk tabs
+-- show today's chats, not weeks of old ones. When the customer writes again the
+-- chat opens itself (widget message, form, email) and is shown near the top with
+-- a "Came back" tag until the team closes it or takes it over.
+--
+--   auto_closed_at   when the system closed the chat (src/lib/chat/auto-close.ts).
+--                    NULL = never auto-closed, or a person has touched it since
+--                    (Close / Take over / Hand to AI / a reply clear it).
+--                    status <> 'resolved' AND auto_closed_at IS NOT NULL means
+--                    "the customer came back after the auto-close".
+--
+-- Also the audit trail: every chat the system closes in one sweep carries the same
+-- time (now() of that statement), so one UPDATE can undo a sweep (needs the owner's
+-- OK; unread counts are not restored, the sweep sets them to 0 like a manual Close):
+--   UPDATE conversations SET status = 'ai_handling', auto_closed_at = NULL
+--    WHERE auto_closed_at = '<that sweep time>' AND status = 'resolved';
+-- (auto_closed_at = NULL is needed, or every reopened chat would show "Came back").
+--
+-- APPLY BEFORE THE CODE DEPLOY: the new code reads and writes this column.
+-- On the VPS after git pull:
+--   sudo -u postgres psql -d tracking_crm -v ON_ERROR_STOP=1 -f chat-auto-close.sql
+-- Additive + idempotent: no existing value is changed or deleted. The first
+-- sweep runs from the cron route after the deploy (see AGENTS.md), not from here.
+-- ============================================================
+ALTER TABLE conversations
+  ADD COLUMN IF NOT EXISTS auto_closed_at TIMESTAMP(3);

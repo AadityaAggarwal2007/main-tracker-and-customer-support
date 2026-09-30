@@ -22,6 +22,16 @@ export const WAITING_OVERDUE_MS = WAITING_OVERDUE_HOURS * 3_600_000;
 export const NO_REPLY_NEEDED_REGEX =
   '^[[:space:]]*(ok|okay|okk|k|kk|thanks?|thank you|thankyou|thx|ty|ok thanks?|ok thank you|noted|fine|done|bye|shukriya|dhanyavad|dhanyawad|theek hai|thik hai|ji|hmm)[[:space:].!,]*$';
 
+// An AI message that is NOT an answer to the customer, matched (case-insensitively)
+// against the AI's last visible message: the apology sent when every model failed
+// (AI_BUSY_REPLY in ai.ts, older wording too) and "let me get that confirmed by our
+// team", which promises a follow-up the AI never turned into an escalation. A chat
+// ending in one of these has been answered by nobody. The auto-close (auto-close.ts)
+// treats it as still waiting, so it is never closed over the customer's head. The
+// inbox's own Waiting timer does not use it yet. No apostrophes: it goes into SQL.
+export const AI_NOT_AN_ANSWER_REGEX =
+  '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)';
+
 export type WaitingLevel = 'fresh' | 'soon' | 'overdue';
 
 export function waitingLevel(ms: number): WaitingLevel {

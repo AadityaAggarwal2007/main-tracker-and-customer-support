@@ -17,6 +17,7 @@ interface ConversationRow {
   customer_key: string | null;
   subject_label: string | null; subject_summary: string | null; subject_updated_at: string | null;
   health_score: number | null; health_reason: string | null; health_updated_at: string | null;
+  auto_closed_at: string | null;
 }
 
 // Reachable only if the conversation's panel is one this user may see.
@@ -26,7 +27,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.category, c.unread_count, c.last_message_at, c.created_at,
             c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
-            c.health_score, c.health_reason, c.health_updated_at,
+            c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
        FROM conversations c
@@ -247,10 +248,13 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       return NextResponse.json({ error: 'Unknown status' }, { status: 400 });
     }
 
+    // Close, Take over and Hand to AI are a person acting on the chat, so the
+    // "came back after the auto-close" mark (chat-auto-close.sql) is cleared.
     await query(
       `UPDATE conversations
           SET status = $1,
               unread_count = CASE WHEN $1 = 'resolved' THEN 0 ELSE unread_count END,
+              auto_closed_at = NULL,
               updated_at = now()
         WHERE id = $2`,
       [status, params.id]

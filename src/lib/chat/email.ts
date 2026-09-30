@@ -233,6 +233,20 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
 
         if (!conversation) continue;
 
+        // A reply to a Closed thread reopens it, like a widget message does
+        // (/api/widget/message). Before 2026-09-30 it was stored in the Closed
+        // chat and nobody saw it, and the AI (which only answers ai_handling)
+        // stayed silent. A thread closed by the auto-close keeps its
+        // auto_closed_at, so the inbox shows it as "Came back".
+        if (conversation.status === 'resolved') {
+          const reopened = account.ai_enabled ? 'ai_handling' : 'human_needed';
+          await query(
+            `UPDATE conversations SET status = $2, updated_at = now() WHERE id = $1 AND status = 'resolved'`,
+            [conversation.id, reopened]
+          );
+          conversation.status = reopened;
+        }
+
         // Store incoming email as visitor message
         await query(
           `INSERT INTO messages (id, conversation_id, sender, content, email_message_id, metadata, created_at)

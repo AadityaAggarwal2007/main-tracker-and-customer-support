@@ -122,10 +122,11 @@ export async function POST(request: NextRequest) {
       return row;
     });
 
-    // A person answering means the AI stands down for this thread.
+    // A person answering means the AI stands down for this thread, and the
+    // "came back after the auto-close" mark (chat-auto-close.sql) is done with.
     await query(
       `UPDATE conversations
-          SET status = 'agent_handling', last_message_at = now(), updated_at = now()
+          SET status = 'agent_handling', last_message_at = now(), auto_closed_at = NULL, updated_at = now()
         WHERE id = $1`,
       [conversationId]
     );

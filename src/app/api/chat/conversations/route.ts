@@ -46,6 +46,11 @@ export const dynamic = 'force-dynamic';
 // angry customer who is also being ignored is the very first), then the
 // frustrated, then everything else by activity.
 //
+// returned / auto_closed_at (src/lib/chat/auto-close.ts, chat-auto-close.sql): a chat the
+// system closed after 4 quiet days that the customer has since written in again (it
+// reopened by itself). Listed right after the overdue chats, above merely frustrated
+// ones, until a person closes it or takes it over, so it is seen and closed fast.
+//
 // ?topic=risk|refund|tracking|delay|address|damaged|exchange lists the OPEN
 // chats of one problem (src/lib/chat/inbox-topics.ts: by subject label, or, for
 // risk, by frustration score). The answer also carries topic_counts, the number
@@ -148,8 +153,9 @@ export async function GET(request: NextRequest) {
        g.last_message_at DESC NULLS LAST`
     : `CASE WHEN g.waiting_overdue AND g.is_pinned THEN 0
             WHEN g.waiting_overdue THEN 1
-            WHEN g.is_pinned THEN 2
-            ELSE 3 END,
+            WHEN g.returned THEN 2
+            WHEN g.is_pinned THEN 3
+            ELSE 4 END,
        CASE WHEN g.is_pinned THEN g.health_score END DESC NULLS LAST,
        CASE WHEN g.waiting_overdue THEN g.waiting_since END ASC NULLS LAST,
        g.last_message_at DESC NULLS LAST`;
@@ -178,6 +184,7 @@ export async function GET(request: NextRequest) {
               c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
               c.subject_label, c.subject_summary, c.subject_updated_at,
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
+              c.auto_closed_at,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
@@ -213,7 +220,8 @@ export async function GET(request: NextRequest) {
      ), filtered AS (
        SELECT b.*,
               (b.waiting_since IS NOT NULL AND b.waiting_since <= now() - interval '${WAITING_OVERDUE_HOURS} hours') AS waiting_overdue,
-              (b.status <> 'resolved' AND COALESCE(b.health_score, 0) >= ${HEALTH_PIN_MIN}) AS is_pinned
+              (b.status <> 'resolved' AND COALESCE(b.health_score, 0) >= ${HEALTH_PIN_MIN}) AS is_pinned,
+              (b.status <> 'resolved' AND b.auto_closed_at IS NOT NULL) AS returned
          FROM base b
        ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text' : ''}
      ), grouped AS (
@@ -236,6 +244,7 @@ export async function GET(request: NextRequest) {
             COALESCE((g.health_signals->>'threat')::int, 0) > 0 AS health_threat,
             COALESCE((g.health_signals->>'accuse')::int, 0) > 0 AS health_accuse,
             g.is_pinned AS health_pinned,
+            g.returned, g.auto_closed_at,
             g.waiting_since, g.waiting_overdue,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
