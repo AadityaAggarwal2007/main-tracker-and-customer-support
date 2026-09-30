@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
+import { cleanCodStates } from '@/lib/chat/cod';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +38,7 @@ export async function GET(request: NextRequest) {
       aiEnabled: site.ai_enabled,
       systemPrompt: site.system_prompt,
       codAvailable: site.cod_available,
+      codStates: site.cod_states,
       domain: site.domain,
       conversations: Number(counts?.conversations ?? 0),
     },
@@ -53,7 +55,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const { businessId, aiEnabled, systemPrompt, codAvailable, regenerateKey } = await request.json();
+    const { businessId, aiEnabled, systemPrompt, codAvailable, codStates, regenerateKey } = await request.json();
     if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
 
     const biz = await queryOne<{ id: string }>(`SELECT id FROM businesses WHERE id = $1`, [businessId]);
@@ -72,6 +74,17 @@ export async function PATCH(request: NextRequest) {
       sets.push(`cod_available = $${pi++}`);
       params.push(codAvailable === null ? null : Boolean(codAvailable));
     }
+    // COD only in some states (chat-cod-states.sql). What is typed is reduced to
+    // state names, so it can never turn into an instruction for the agent; a
+    // box with nothing usable in it clears the setting.
+    if (codStates !== undefined) {
+      const cleaned = cleanCodStates(codStates);
+      if (typeof codStates === 'string' && codStates.trim() && !cleaned) {
+        return NextResponse.json({ error: 'Type the state names, like Gujarat' }, { status: 400 });
+      }
+      sets.push(`cod_states = $${pi++}`);
+      params.push(cleaned);
+    }
     if (systemPrompt !== undefined) {
       // An empty box means "use the default prompt", not "answer with nothing".
       sets.push(`system_prompt = $${pi++}`);
@@ -86,9 +99,9 @@ export async function PATCH(request: NextRequest) {
     sets.push(`updated_at = now()`);
     params.push(site.id);
 
-    const updated = await queryOne<{ widget_key: string; ai_enabled: boolean; system_prompt: string | null; cod_available: boolean | null }>(
+    const updated = await queryOne<{ widget_key: string; ai_enabled: boolean; system_prompt: string | null; cod_available: boolean | null; cod_states: string | null }>(
       `UPDATE sites SET ${sets.join(', ')} WHERE id = $${pi}
-       RETURNING widget_key, ai_enabled, system_prompt, cod_available`,
+       RETURNING widget_key, ai_enabled, system_prompt, cod_available, cod_states`,
       params
     );
 
@@ -100,6 +113,7 @@ export async function PATCH(request: NextRequest) {
         aiEnabled: updated!.ai_enabled,
         systemPrompt: updated!.system_prompt,
         codAvailable: updated!.cod_available,
+        codStates: updated!.cod_states,
       },
     });
   } catch (err) {

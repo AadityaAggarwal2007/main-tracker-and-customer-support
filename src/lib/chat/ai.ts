@@ -14,6 +14,7 @@ import {
   type LookupOutcome,
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
+import { codAlreadyToldNote, codStatesPrompt } from './cod';
 
 // ── The support AI ─────────────────────────────────────────────
 // Ported from the chat-support app's ai.js. The system prompt, the tool
@@ -339,10 +340,15 @@ export function buildSystemPrompt(
   codAvailable: boolean | null | undefined,
   channel: Channel = 'chat',
   faqs: SavedAnswer[] = [],
+  codStates: string | null = null,
 ): string {
   const base = basePrompt ? basePrompt + '\n\n' + PANEL_LOOKUP_RULES : DEFAULT_SYSTEM_PROMPT;
   let cod: string;
-  if (codAvailable === true) {
+  // COD in some states only (sites.cod_states, chat-cod-states.sql) is a fuller
+  // answer than yes / no, so when it is set it is the one used.
+  if (codStates) {
+    cod = codStatesPrompt(codStates);
+  } else if (codAvailable === true) {
     cod = 'Cash on Delivery IS available at this store. If they ask, confirm it plainly and warmly. Do not quote any COD fee or limit, you do not know those.';
   } else if (codAvailable === false) {
     cod = 'Cash on Delivery is NOT available at this store. If they ask, say so politely and without apology, and move on. Do not suggest a workaround.';
@@ -564,7 +570,16 @@ export async function getAIResponse(
   // Saved answers are read fresh on every message, so an edit in Panel
   // Settings takes effect on the very next reply with no redeploy.
   let faqs: SavedAnswer[] = [];
+  // The states COD works in, if the owner set some (read fresh like the saved answers).
+  let codStates: string | null = null;
   if (siteId) {
+    try {
+      const c = await queryOne<{ cod_states: string | null }>(`SELECT cod_states FROM sites WHERE id = $1`, [siteId]);
+      codStates = c?.cod_states?.trim() || null;
+    } catch (err) {
+      // Before chat-cod-states.sql is applied the column does not exist yet.
+      console.error('[AI] COD states lookup failed:', (err as Error)?.message);
+    }
     try {
       const r = await query<SavedAnswer>(
         `SELECT question, answer FROM site_faqs
@@ -597,8 +612,13 @@ export async function getAIResponse(
   );
   const alreadyReplied = !!replied?.yes;
 
-  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs)
-    + (alreadyReplied ? ALREADY_REPLIED_NOTE : '');
+  // COD only in some states: once we have said where it works, say it once.
+  const codAlreadyTold = !!codStates
+    && recent.rows.some((r) => (r.sender === 'ai' || r.sender === 'agent') && /\b(cod|cash on delivery)\b/i.test(r.content || ''));
+
+  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates)
+    + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
+    + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
 
   // Build chat history — include tool results stored in metadata
   const chatMessages: ChatCompletionMessageParam[] = [];

@@ -36,7 +36,7 @@ interface PanelEmailAccount { id: string; email: string; created_at: string; }
 // The chat site behind a panel — one row, created the first time chat is used
 interface PanelChatSite {
   id: string; widgetKey: string; aiEnabled: boolean;
-  systemPrompt: string | null; codAvailable: boolean | null; domain: string; conversations: number;
+  systemPrompt: string | null; codAvailable: boolean | null; codStates: string | null; domain: string; conversations: number;
 }
 // What deleting a panel would destroy — Tracker rows plus the chat-support site
 interface PanelImpact {
@@ -128,6 +128,9 @@ export default function AdminDashboard() {
   const [chatSite, setChatSite] = useState<PanelChatSite | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [savingChat, setSavingChat] = useState(false);
+  // "COD only in some states": the states being typed, and whether the box is open.
+  const [codStatesDraft, setCodStatesDraft] = useState('');
+  const [codStatesOpen, setCodStatesOpen] = useState(false);
   // Conversations parked for a person. Polled for the sidebar badge: an
   // escalated EMAIL reply is never auto-sent, so this queue going unwatched
   // means those customers sit in silence.
@@ -633,6 +636,8 @@ export default function AdminDashboard() {
       if (res.ok) {
         setChatSite(data.site);
         setPromptDraft(data.site?.systemPrompt || '');
+        setCodStatesDraft(data.site?.codStates || '');
+        setCodStatesOpen(false);
       }
     } catch { /* leave the card as it was */ }
   }, [token, activePanelId]);
@@ -2052,22 +2057,63 @@ export default function AdminDashboard() {
                               { v: true,  label: 'COD available' },
                               { v: false, label: 'No COD' },
                               { v: null,  label: "Don't answer" },
-                            ] as { v: boolean | null; label: string }[]).map((opt) => (
-                              <button
-                                key={String(opt.v)}
-                                className="btn btn-sm"
-                                disabled={savingChat}
-                                onClick={() => saveChatSettings({ codAvailable: opt.v })}
-                                style={{
-                                  background: chatSite.codAvailable === opt.v ? 'var(--accent)' : 'transparent',
-                                  color: chatSite.codAvailable === opt.v ? '#fff' : 'var(--fg-muted)',
-                                  border: '1px solid var(--border)',
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
+                            ] as { v: boolean | null; label: string }[]).map((opt) => {
+                              const on = !chatSite.codStates && chatSite.codAvailable === opt.v;
+                              return (
+                                <button
+                                  key={String(opt.v)}
+                                  className="btn btn-sm"
+                                  disabled={savingChat}
+                                  // Picking one of these three replaces "only in some states".
+                                  onClick={() => { setCodStatesOpen(false); saveChatSettings({ codAvailable: opt.v, codStates: null }); }}
+                                  style={{
+                                    background: on ? 'var(--accent)' : 'transparent',
+                                    color: on ? '#fff' : 'var(--fg-muted)',
+                                    border: '1px solid var(--border)',
+                                  }}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                            <button
+                              className="btn btn-sm"
+                              disabled={savingChat}
+                              onClick={() => setCodStatesOpen(true)}
+                              style={{
+                                background: chatSite.codStates ? 'var(--accent)' : 'transparent',
+                                color: chatSite.codStates ? '#fff' : 'var(--fg-muted)',
+                                border: '1px solid var(--border)',
+                              }}
+                            >
+                              Only in some states
+                            </button>
                           </div>
+                          {(codStatesOpen || chatSite.codStates) && (
+                            <div style={{ marginTop: '0.5rem' }}>
+                              <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>
+                                COD works only for addresses in these states. The agent brings it up only when a customer asks,
+                                says so once in one short line, and never tells a customer in these states that COD is unavailable.
+                              </div>
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <input
+                                  className="form-input"
+                                  style={{ flex: 1 }}
+                                  placeholder="State names, e.g. Gujarat"
+                                  maxLength={100}
+                                  value={codStatesDraft}
+                                  onChange={(e) => setCodStatesDraft(e.target.value)}
+                                />
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  disabled={savingChat || !codStatesDraft.trim()}
+                                  onClick={() => saveChatSettings({ codStates: codStatesDraft })}
+                                >
+                                  Save states
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         <div className="form-group">
