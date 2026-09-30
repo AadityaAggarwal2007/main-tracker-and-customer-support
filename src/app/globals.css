@@ -1126,6 +1126,11 @@ a {
   flex-direction: column;
 }
 
+/* The inbox search box. 16px on a phone stops the page zooming when it is tapped. */
+.chat-search { font-size: 0.8125rem; outline: none; font-family: inherit; }
+.chat-search:focus { border-color: var(--primary); }
+@media (max-width: 767px) { .chat-search { font-size: 16px; } }
+
 .chat-thread {
   flex: 1;
   min-width: 0;

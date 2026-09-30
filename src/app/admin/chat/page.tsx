@@ -6,7 +6,7 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
-  Menu, ChevronLeft, Users, UserCheck,
+  Menu, ChevronLeft, Users, UserCheck, Search,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import {
@@ -54,6 +54,13 @@ interface Conversation {
   subject_label?: string | null;
   subject_summary?: string | null;
   subject_updated_at?: string | null;
+  // Only in a search (?q=): why this chat matched, and the text around the
+  // newest message that contains what was typed.
+  hit_order?: boolean;
+  hit_phone?: boolean;
+  hit_name?: boolean;
+  hit_text?: boolean;
+  match_snippet?: string | null;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -243,11 +250,27 @@ function timeAgo(iso: string | null): string {
 }
 
 // A link stops at an asterisk, so "**https://…/abc**" still opens the page.
-function renderWithLinks(text: string) {
+// " · matched: order, message": which kind of match put a chat in the results.
+function matchedText(c: Conversation): string {
+  const why = [c.hit_order && 'order', c.hit_phone && 'phone', c.hit_name && 'name', c.hit_text && 'message'].filter(Boolean);
+  return why.length ? ` · matched: ${why.join(', ')}` : '';
+}
+
+// Every match of what was searched for, in yellow, as plain text (never a
+// pattern). data-search lets the thread scroll to the newest match.
+function highlightText(text: string, term: string, keyBase: string) {
+  if (!term) return text;
+  const re = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  return text.split(re).map((part, i) => i % 2 === 1
+    ? <mark key={`${keyBase}-${i}`} data-search="1" style={{ background: '#fde047', color: '#111', borderRadius: 3, padding: '0 1px' }}>{part}</mark>
+    : part);
+}
+
+function renderWithLinks(text: string, term = '') {
   return text.split(/(https?:\/\/[^\s*]+)/g).map((part, i) =>
     /^https?:\/\//.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'underline', wordBreak: 'break-all' }}>{part}</a>
-      : <span key={i}>{part}</span>
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'underline', wordBreak: 'break-all' }}>{highlightText(part, term, `l${i}`)}</a>
+      : <span key={i}>{highlightText(part, term, `s${i}`)}</span>
   );
 }
 
@@ -553,6 +576,24 @@ export default function ChatSupportPage() {
   const statusFilter = tabDef.status;
   const segment = tabDef.segment;
 
+  // The search box. searchQ trails what is typed by a moment, so the list is
+  // not asked for on every key. A search looks at ALL chats of the chosen
+  // panel (Closed ones and visitors too), whatever tab is open.
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQ, setSearchQ] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+  const searchActive = searchQ.length >= 2;
+  const searchActiveRef = useRef(false);
+  searchActiveRef.current = searchActive;
+  // "#1234" highlights the 1234 in "#1234" and in "1234" alike.
+  const searchTerm = searchActive ? (searchQ.replace(/^[#\s]+/, '') || searchQ) : '';
+  const listSeqRef = useRef(0);
+  const scrolledToHitRef = useRef('');
+  const unreadRef = useRef(0);
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -627,20 +668,27 @@ export default function ChatSupportPage() {
   /* ═══ CONVERSATION LIST ═══ */
   const fetchConversations = useCallback(async (quiet = false) => {
     if (!token) return;
+    // Only the newest answer is used: a slow answer for what was typed a
+    // moment ago must not replace the list for what is typed now.
+    const seq = ++listSeqRef.current;
     if (!quiet) setLoadingList(true);
     try {
       const params = new URLSearchParams();
       if (activePanelId) params.set('businessId', activePanelId);
-      if (statusFilter) params.set('status', statusFilter);
-      if (segment) params.set('segment', segment);
+      if (searchActive) {
+        params.set('q', searchQ);
+      } else {
+        if (statusFilter) params.set('status', statusFilter);
+        if (segment) params.set('segment', segment);
+      }
       const res = await fetch(`/api/chat/conversations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (res.ok) setConversations(data.conversations || []);
+      if (res.ok && seq === listSeqRef.current) setConversations(data.conversations || []);
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment]);
+  }, [token, activePanelId, statusFilter, segment, searchActive, searchQ]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -674,7 +722,8 @@ export default function ChatSupportPage() {
     if (!token) return;
     const tick = () => {
       if (document.hidden) return;
-      fetchConversations(true);
+      // A search is not re-run every few seconds; the open chat still is.
+      if (!searchActiveRef.current) fetchConversations(true);
       if (activeIdRef.current) fetchThread(activeIdRef.current, true);
     };
     const id = setInterval(tick, POLL_MS);
@@ -687,6 +736,22 @@ export default function ChatSupportPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     pinUntilRef.current = Date.now() + 2000;
   }, [messages.length, earlierCount]);
+
+  // Opened from a search: go to the newest place the search text appears,
+  // once per chat and search (the poll must not pull the thread back to it).
+  useEffect(() => {
+    if (!searchActive || !activeId) { scrolledToHitRef.current = ''; return; }
+    const key = `${activeId}|${searchQ}`;
+    if (scrolledToHitRef.current === key) return;
+    if (!threadRef.current?.querySelector('mark[data-search]')) return;
+    scrolledToHitRef.current = key;
+    pinUntilRef.current = 0;
+    // After the scroll to the bottom above has settled.
+    setTimeout(() => {
+      const hits = threadRef.current?.querySelectorAll('mark[data-search]');
+      hits?.[hits.length - 1]?.scrollIntoView({ block: 'center' });
+    }, 600);
+  }, [messages, earlier, activeId, searchActive, searchQ]);
 
   // An image has no height until it loads, so the scroll above stops short of
   // it. Follow it down while that scroll is still settling, or if the agent is
@@ -1060,7 +1125,11 @@ export default function ChatSupportPage() {
   const canReply = user.role !== 'viewer';
   // A grouped row (one customer's chats) carries the unread count of all of them.
   const rowUnread = (c: Conversation) => c.group_unread ?? c.unread_count ?? 0;
-  const unreadTotal = conversations.reduce((n, c) => n + (rowUnread(c) || 0), 0);
+  // The unread count is the inbox's; a search shows other chats, so it keeps
+  // the last count from before it.
+  const unreadNow = conversations.reduce((n, c) => n + (rowUnread(c) || 0), 0);
+  if (!searchActive) unreadRef.current = unreadNow;
+  const unreadTotal = searchActive ? unreadRef.current : unreadNow;
   // The open chat's row: its own, or its customer's grouped row, which moves
   // to the customer's newest chat when they write in a new one.
   const isActiveRow = (c: Conversation) => activeId === c.id || (
@@ -1121,7 +1190,7 @@ export default function ChatSupportPage() {
           <>
             {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
             {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
-            {showText && renderWithLinks(msg.content)}
+            {showText && renderWithLinks(msg.content, searchTerm)}
           </>
         )}
       </div>
@@ -1227,7 +1296,7 @@ export default function ChatSupportPage() {
           {INBOX_TABS.map(s => (
             <button
               key={s.v}
-              onClick={() => { setTab(s.v); setActiveId(null); setSidebarOpen(false); }}
+              onClick={() => { setTab(s.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
               className={`nav-btn ${tab === s.v ? 'active' : ''}`}
               style={{ width: '100%' }}
             >
@@ -1269,11 +1338,46 @@ export default function ChatSupportPage() {
         <div className={`chat-shell${activeId ? ' thread-open' : ''}`}>
           {/* Conversation list */}
           <div className="chat-list">
-            <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: '0.875rem' }}>
-              Conversations
-              <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
-                {conversations.length}
-              </span>
+            <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>
+                {searchActive ? 'Search results' : 'Conversations'}
+                <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
+                  {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
+                </span>
+              </div>
+              <div style={{ position: 'relative', marginTop: '0.5rem' }}>
+                <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-muted)', pointerEvents: 'none' }} />
+                <input
+                  className="chat-search"
+                  type="search"
+                  value={searchInput}
+                  onChange={e => setSearchInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Escape') { setSearchInput(''); setSearchQ(''); } }}
+                  placeholder="Search name, phone, order ID or message"
+                  aria-label="Search chats"
+                  maxLength={80}
+                  autoComplete="off"
+                  style={{
+                    width: '100%', padding: '0.4375rem 1.875rem 0.4375rem 1.875rem', borderRadius: 8,
+                    border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--fg)',
+                  }}
+                />
+                {searchInput && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => { setSearchInput(''); setSearchQ(''); }}
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', padding: 4 }}
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              {searchActive && (
+                <div style={{ marginTop: '0.375rem', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                  In all chats{activePanelId ? ` of ${businesses.find(b => b.id === activePanelId)?.name || 'this panel'}` : ''}, including Closed ones and visitors.
+                </div>
+              )}
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -1286,7 +1390,14 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  {segment === 'customers' ? (
+                  {searchActive ? (
+                    <>
+                      <p>No chats found for “{searchQ}”.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        Try the order ID, the phone number or the customer&apos;s name. Closed chats and visitors are searched too.
+                      </p>
+                    </>
+                  ) : segment === 'customers' ? (
                     <>
                       <p>No verified customers yet.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
@@ -1364,11 +1475,20 @@ export default function ChatSupportPage() {
                     )}
                   </div>
 
-                  <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.last_message || '—'}
-                  </div>
+                  {searchActive && c.match_snippet ? (
+                    <div style={{
+                      fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', wordBreak: 'break-word',
+                      display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    }}>
+                      {highlightText(c.match_snippet.replace(/\s+/g, ' '), searchTerm, `r${c.id}`)}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {c.last_message || '—'}
+                    </div>
+                  )}
                   <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                    {timeAgo(c.last_message_at)}
+                    {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
                   </div>
                 </button>
               ))}

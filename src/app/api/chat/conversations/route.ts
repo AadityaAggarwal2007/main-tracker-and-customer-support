@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { parseInboxSearch } from '@/lib/chat/inbox-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,13 @@ export const dynamic = 'force-dynamic';
 //
 // subject_label / subject_summary / subject_updated_at (chat-subject.sql) are
 // the row's own chat's subject; on a grouped row that is the latest chat.
+//
+// ?q=<text> searches every chat of the panels the caller may see (name, phone,
+// order ID / tracking ID, what was said; see src/lib/chat/inbox-search.ts). It
+// ignores status, segment and category, so a Closed chat or a visitor is found
+// too, and adds hit_order/hit_phone/hit_name/hit_text (why a row matched) and
+// match_snippet (the text around the newest matching message). Matches are
+// still grouped one row per customer, best matches (an order) first.
 //
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
@@ -50,10 +58,17 @@ export async function GET(request: NextRequest) {
     params.push(user.businessIds);
   }
 
-  if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
-  if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
-  if (segment === 'visitors') conditions.push('c.verified_order_id IS NULL');
-  else if (segment === 'customers') conditions.push('c.verified_order_id IS NOT NULL');
+  // A search looks at every chat in the scope above; the tabs do not narrow it.
+  const search = parseInboxSearch(searchParams.get('q'), pi);
+  if (search.q) {
+    params.push(...search.params);
+    pi += search.params.length;
+  } else {
+    if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
+    if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
+    if (segment === 'visitors') conditions.push('c.verified_order_id IS NULL');
+    else if (segment === 'customers') conditions.push('c.verified_order_id IS NOT NULL');
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit);
@@ -67,7 +82,8 @@ export async function GET(request: NextRequest) {
   // Every other row is its own group of one. Grouped here in SQL, before the
   // LIMIT, so the limit counts rows the inbox actually shows.
   const result = await query(
-    `WITH filtered AS (
+    `WITH ${search.cte ? search.cte + ',' : ''}
+     base AS (
        SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
               c.unread_count, c.last_message_at, c.created_at,
               c.verified_order_id, c.verified_via, c.customer_key,
@@ -75,11 +91,19 @@ export async function GET(request: NextRequest) {
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
-                   THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key
+                   THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key,
+              ${search.hitOrder} AS hit_order,
+              ${search.hitPhone} AS hit_phone,
+              ${search.hitName} AS hit_name,
+              ${search.hitText} AS hit_text
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
          LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text
+         ${search.join}
          ${where}
+     ), filtered AS (
+       SELECT * FROM base
+       ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text' : ''}
      ), grouped AS (
        SELECT f.*,
               row_number() OVER w AS group_rank,
@@ -96,6 +120,8 @@ export async function GET(request: NextRequest) {
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
             g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
             g.subject_label, g.subject_summary, g.subject_updated_at,
+            g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
+            ${search.snippet} AS match_snippet,
             (SELECT m.content
                FROM messages m
               WHERE m.conversation_id = g.id
@@ -107,7 +133,8 @@ export async function GET(request: NextRequest) {
               LIMIT 1) AS last_message
        FROM grouped g
       WHERE g.group_rank = 1
-      ORDER BY g.last_message_at DESC NULLS LAST
+      ORDER BY ${search.q ? 'CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,' : ''}
+               g.last_message_at DESC NULLS LAST
       LIMIT $${pi}`,
     params
   );
