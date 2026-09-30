@@ -391,7 +391,8 @@ function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big
 
 // A visitor: a chat that has not proved an order (no verified order, no old phone
 // match). Same split as the Visitors / Customers tabs. The frustration score is shown
-// for customers only (owner, 2026-09-30: a visitor is not flagged "100% Critical").
+// for customers only (owner, 2026-09-30: a visitor is not flagged "100% Critical",
+// and carries no Threat / Fraud claim chip either).
 const isVisitorChat = (c: { verified_order_id?: string | null; phone_match_order_id?: string | null }) =>
   !c.verified_order_id && !c.phone_match_order_id;
 
@@ -1798,13 +1799,13 @@ export default function ChatSupportPage() {
                     ) : CATEGORY_LABELS[c.category] && (
                       <><span>·</span><span>{CATEGORY_LABELS[c.category]}</span></>
                     )}
-                    {c.status !== 'resolved' && c.health_threat && (
+                    {c.status !== 'resolved' && !isVisitorChat(c) && c.health_threat && (
                       <span title="This customer has threatened a chargeback, police, court or bad reviews" style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
                         background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',
                       }}>Threat</span>
                     )}
-                    {c.status !== 'resolved' && c.health_accuse && (
+                    {c.status !== 'resolved' && !isVisitorChat(c) && c.health_accuse && (
                       <span title="This customer has called the store a fraud, scam or fake" style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
                         background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',

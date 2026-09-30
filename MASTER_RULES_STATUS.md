@@ -68,7 +68,7 @@ The inbox lists chats by NEWEST ACTIVITY first (same-day chats on top, a new cha
 
 ## Owner change 2026-09-30 (late): no frustration score on visitors
 
-The "100% Critical" frustration % pill on a list row, its coloured row edge, and the Frustration bar in the thread header are shown for CUSTOMERS only (a chat with a verified order or an old phone match). A visitor chat shows none of them. The score is still worked out and stored; Fraud / Threat chips and the Waiting timer are unchanged.
+The "100% Critical" frustration % pill on a list row, its coloured row edge, and the Frustration bar in the thread header are shown for CUSTOMERS only (a chat with a verified order or an old phone match). A visitor chat shows none of them, and no Threat / Fraud claim chip either (owner, same day). The score and the marks are still worked out and stored, and a visitor's threat still goes to Needs you by code; the Waiting timer is unchanged.
 
 ## The live prompt lives in the database
 
