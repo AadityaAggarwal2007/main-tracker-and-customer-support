@@ -30,8 +30,10 @@ export const dynamic = 'force-dynamic';
 // health_score / health_reason / health_updated_at (chat-health.sql, how upset
 // the customer is, 0-100) are shown as the row's health. An OPEN chat whose
 // customer scores HEALTH_PIN_MIN or more (health_pinned) is listed first, the
-// highest score first, and goes back to its normal place when it is Closed. On
-// a grouped row the score is the highest among the customer's open chats.
+// highest score first, and goes back to its normal place when it is Closed. It
+// is the row's OWN chat that counts (on a grouped row, the latest one): that is
+// the chat staff open and Close, and its score already reads the customer's
+// earlier chats, so a row can always be cleared by closing what it opens.
 // A search (?q=) keeps its own order, best matches first.
 //
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
@@ -94,8 +96,8 @@ export async function GET(request: NextRequest) {
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
-    : `(COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN}) DESC,
-       CASE WHEN COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN} THEN g.group_health_open END DESC NULLS LAST,
+    : `(g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN}) DESC,
+       CASE WHEN g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN} THEN g.health_score END DESC NULLS LAST,
        g.last_message_at DESC NULLS LAST`;
 
   const result = await query(
@@ -127,8 +129,7 @@ export async function GET(request: NextRequest) {
               row_number() OVER w AS group_rank,
               count(*) OVER (PARTITION BY f.site_id, f.group_key)::int AS thread_count,
               sum(f.unread_count) OVER (PARTITION BY f.site_id, f.group_key)::int AS group_unread,
-              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human,
-              max(f.health_score) FILTER (WHERE f.status <> 'resolved') OVER (PARTITION BY f.site_id, f.group_key) AS group_health_open
+              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human
          FROM filtered f
        WINDOW w AS (PARTITION BY f.site_id, f.group_key
                     ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
@@ -139,9 +140,8 @@ export async function GET(request: NextRequest) {
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
             g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
             g.subject_label, g.subject_summary, g.subject_updated_at,
-            COALESCE(g.group_health_open, g.health_score) AS health_score,
-            g.health_reason, g.health_updated_at,
-            (COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN}) AS health_pinned,
+            g.health_score, g.health_reason, g.health_updated_at,
+            (g.status <> 'resolved' AND COALESCE(g.health_score, 0) >= ${HEALTH_PIN_MIN}) AS health_pinned,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
             (SELECT m.content
