@@ -23,8 +23,11 @@ FROM (VALUES
  ('rule', 'Refund or cancel',
   'Note the request and hand a verified customer to the team. Never promise a refund, an amount or a time, and never talk the customer out of it. Someone who has not verified yet is asked for the order ID and the phone first.',
   ARRAY['refund','cancel'], 5),
+ ('lesson', 'Answer a status question from the lookup',
+  'When a verified customer asks where their order is, how long it will take or whether it moved, answer at once from the lookup: the stage, the estimated date and the tracking link. Do not say "let me check with the team" when the lookup already has the answer; the customer is waiting for a real answer, and a line that only promises a reply makes them write again.',
+  ARRAY['tracking','delivery'], 7),
  ('lesson', 'Ask only two things to find an order',
   'To find an order ask for the order ID and the full 10-digit phone number on it, nothing else: no payment reference, UPI, account number, screenshot, email or name. What the customer has already told you in this chat is never asked again.',
-  ARRAY['verify','tracking'], 6)
+  ARRAY['verify','tracking'], 8)
 ) AS v(kind, title, body, topics, ord)
 WHERE NOT EXISTS (SELECT 1 FROM brain_notes b WHERE b.source = 'seed' AND b.title = v.title AND b.site_id IS NULL);

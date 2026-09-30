@@ -25,6 +25,7 @@ if (live) {
   state.faqs = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('question',question,'answer',answer) ORDER BY sort_order, created_at),'[]') FROM site_faqs WHERE site_id='${SITE_ID}' AND is_enabled`).trim());
   // The notes in the Brain right now (this panel's and the common ones), so the live run tests them too.
   state.liveBrain = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'title',title,'body',body,'topics',topics,'always',always,'sort_order',sort_order) ORDER BY sort_order, created_at),'[]') FROM brain_notes WHERE is_enabled AND (site_id='${SITE_ID}' OR site_id IS NULL)`).trim() || '[]');
+  if (args.includes('--nobrain')) state.liveBrain = []; // to compare with and without the Brain
   siteId = SITE_ID;
   state.mode = 'live';
 }
