@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { parseInboxSearch } from '@/lib/chat/inbox-search';
+import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,13 @@ export const dynamic = 'force-dynamic';
 // too, and adds hit_order/hit_phone/hit_name/hit_text (why a row matched) and
 // match_snippet (the text around the newest matching message). Matches are
 // still grouped one row per customer, best matches (an order) first.
+//
+// health_score / health_reason / health_updated_at (chat-health.sql, how upset
+// the customer is, 0-100) are shown as the row's health. An OPEN chat whose
+// customer scores HEALTH_PIN_MIN or more (health_pinned) is listed first, the
+// highest score first, and goes back to its normal place when it is Closed. On
+// a grouped row the score is the highest among the customer's open chats.
+// A search (?q=) keeps its own order, best matches first.
 //
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
@@ -81,6 +89,15 @@ export async function GET(request: NextRequest) {
   // the latest chat's status, which can hide an older one in Needs you).
   // Every other row is its own group of one. Grouped here in SQL, before the
   // LIMIT, so the limit counts rows the inbox actually shows.
+  // Open chats of upset customers first, highest score first; everything else,
+  // and any Closed chat, by latest activity. A search: best matches first.
+  const orderBy = search.q
+    ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
+       g.last_message_at DESC NULLS LAST`
+    : `(COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN}) DESC,
+       CASE WHEN COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN} THEN g.group_health_open END DESC NULLS LAST,
+       g.last_message_at DESC NULLS LAST`;
+
   const result = await query(
     `WITH ${search.cte ? search.cte + ',' : ''}
      base AS (
@@ -88,6 +105,7 @@ export async function GET(request: NextRequest) {
               c.unread_count, c.last_message_at, c.created_at,
               c.verified_order_id, c.verified_via, c.customer_key,
               c.subject_label, c.subject_summary, c.subject_updated_at,
+              c.health_score, c.health_reason, c.health_updated_at,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
@@ -109,7 +127,8 @@ export async function GET(request: NextRequest) {
               row_number() OVER w AS group_rank,
               count(*) OVER (PARTITION BY f.site_id, f.group_key)::int AS thread_count,
               sum(f.unread_count) OVER (PARTITION BY f.site_id, f.group_key)::int AS group_unread,
-              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human
+              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human,
+              max(f.health_score) FILTER (WHERE f.status <> 'resolved') OVER (PARTITION BY f.site_id, f.group_key) AS group_health_open
          FROM filtered f
        WINDOW w AS (PARTITION BY f.site_id, f.group_key
                     ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
@@ -120,6 +139,9 @@ export async function GET(request: NextRequest) {
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
             g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
             g.subject_label, g.subject_summary, g.subject_updated_at,
+            COALESCE(g.group_health_open, g.health_score) AS health_score,
+            g.health_reason, g.health_updated_at,
+            (COALESCE(g.group_health_open, 0) >= ${HEALTH_PIN_MIN}) AS health_pinned,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
             (SELECT m.content
@@ -133,8 +155,7 @@ export async function GET(request: NextRequest) {
               LIMIT 1) AS last_message
        FROM grouped g
       WHERE g.group_rank = 1
-      ORDER BY ${search.q ? 'CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,' : ''}
-               g.last_message_at DESC NULLS LAST
+      ORDER BY ${orderBy}
       LIMIT $${pi}`,
     params
   );

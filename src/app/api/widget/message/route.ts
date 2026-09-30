@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
+import { updateConversationHealth } from '@/lib/chat/health';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
@@ -108,6 +109,8 @@ export async function POST(request: NextRequest) {
     // that the reply is saved. Not awaited: the visitor never waits on it, and
     // it never throws.
     void updateConversationSubject(conversationId);
+    // How upset the customer is (src/lib/chat/health.ts): same rules, same care.
+    void updateConversationHealth(conversationId);
 
     return widgetJson({ message: visitorMessage, aiResponse: aiMessage }, 201);
   } catch (err) {

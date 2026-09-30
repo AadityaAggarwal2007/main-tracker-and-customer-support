@@ -9,6 +9,7 @@ import {
   Menu, ChevronLeft, Users, UserCheck, Search,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
+import { healthLevel } from '@/lib/chat/health-rules';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -61,6 +62,12 @@ interface Conversation {
   hit_name?: boolean;
   hit_text?: boolean;
   match_snippet?: string | null;
+  // How upset the customer is, 0-100 (src/lib/chat/health.ts). health_pinned:
+  // an open chat scoring 50+, listed first until it is Closed.
+  health_score?: number | null;
+  health_reason?: string | null;
+  health_updated_at?: string | null;
+  health_pinned?: boolean;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -196,6 +203,49 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
 // 28 Sept · Closed"): the inbox tab names.
 function chatStatusLabel(status: string): string {
   return INBOX_TABS.find(t => t.status === status)?.label || '';
+}
+
+// The customer's frustration on a list row: a small % pill from "Uneasy" up,
+// coloured by level, with the reason on hover. Calm customers show nothing.
+function HealthBadge({ score, reason }: { score?: number | null; reason?: string | null }) {
+  if (score == null || score < 25) return null;
+  const lvl = healthLevel(score);
+  return (
+    <span title={`${lvl.label} · ${score}%${reason ? ` — ${reason}` : ''}`} style={{
+      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
+      background: lvl.bg, color: lvl.fg,
+    }}>
+      {score}%
+    </span>
+  );
+}
+
+// The customer's frustration across the header: a bar, the level, and why.
+function HealthBar({ score, reason, updatedAt }: { score: number; reason?: string | null; updatedAt?: string | null }) {
+  const lvl = healthLevel(score);
+  return (
+    <div title={reason || undefined} style={{
+      flexBasis: '100%', minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.625rem', flexWrap: 'wrap',
+      padding: '0.375rem 0.625rem', borderRadius: 8, background: lvl.bg, color: lvl.fg,
+    }}>
+      <span style={{ fontSize: '0.6875rem', fontWeight: 700, whiteSpace: 'nowrap' }}>Frustration</span>
+      <span style={{ fontSize: '0.9375rem', fontWeight: 800, lineHeight: 1 }}>{score}%</span>
+      <span style={{ fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>{lvl.label}</span>
+      <div aria-hidden style={{ flex: '0 0 96px', height: 6, borderRadius: 3, background: 'rgba(0,0,0,0.1)' }}>
+        <div style={{ width: `${score}%`, height: '100%', borderRadius: 3, background: lvl.bar }} />
+      </div>
+      {reason && (
+        <span style={{ flex: 1, minWidth: 0, fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {reason}
+        </span>
+      )}
+      {updatedAt && (
+        <span style={{ marginLeft: 'auto', fontSize: '0.625rem', opacity: 0.75, whiteSpace: 'nowrap' }}>
+          updated {timeAgo(updatedAt)}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // Green "Verified" tag for a customer who proved their order. A 'legacy' tag
@@ -1155,6 +1205,17 @@ export default function ChatSupportPage() {
     summary: activeSubjectSrc.subject_summary || '',
     updatedAt: activeSubjectSrc.subject_updated_at ?? null,
   } : null;
+  // The frustration bar reads the thread's own answer, with the list row as
+  // the fallback while it loads.
+  const activeHealthSrc = !activeConv ? null
+    : activeConv.health_score !== undefined ? activeConv
+    : conversations.find(c => c.id === activeConv.id) ?? null;
+  const activeHealth = activeHealthSrc && activeHealthSrc.health_score != null ? {
+    score: activeHealthSrc.health_score,
+    reason: activeHealthSrc.health_reason ?? null,
+    updatedAt: activeHealthSrc.health_updated_at ?? null,
+  } : null;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned).length;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1344,6 +1405,14 @@ export default function ChatSupportPage() {
                 <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
                   {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
                 </span>
+                {urgentCount > 0 && (
+                  <span title="Open chats of frustrated customers (50%+), kept at the top until they are Closed" style={{
+                    marginLeft: '0.5rem', fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700,
+                    background: '#fee2e2', color: '#b91c1c',
+                  }}>
+                    {urgentCount} need attention
+                  </span>
+                )}
               </div>
               <div style={{ position: 'relative', marginTop: '0.5rem' }}>
                 <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-muted)', pointerEvents: 'none' }} />
@@ -1423,8 +1492,10 @@ export default function ChatSupportPage() {
                     display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
                     padding: '0.75rem 1rem', border: 'none',
                     borderBottom: '1px solid var(--border)',
-                    borderLeft: isActiveRow(c) ? '3px solid var(--primary)' : '3px solid transparent',
-                    background: isActiveRow(c) ? 'var(--primary-light)' : 'transparent',
+                    borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
+                      : c.health_pinned && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}` : '3px solid transparent',
+                    background: isActiveRow(c) ? 'var(--primary-light)'
+                      : c.health_pinned && c.health_score != null ? healthLevel(c.health_score).bg : 'transparent',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
@@ -1432,6 +1503,7 @@ export default function ChatSupportPage() {
                     <span style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {c.visitor_name || 'Visitor'}
                     </span>
+                    <HealthBadge score={c.health_score} reason={c.health_reason} />
                     {(c.thread_count ?? 0) > 1 && (
                       <span title={`${c.thread_count} chats from this customer, shown as one thread`} style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
@@ -1591,6 +1663,11 @@ export default function ChatSupportPage() {
                         </span>
                       )}
                     </div>
+                  )}
+
+                  {/* How upset the customer is, right beside Take over / Close */}
+                  {activeHealth && (
+                    <HealthBar score={activeHealth.score} reason={activeHealth.reason} updatedAt={activeHealth.updatedAt} />
                   )}
                 </div>
 

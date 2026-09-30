@@ -14,6 +14,7 @@ interface ConversationRow {
   verified_order_id: string | null; verified_via: string | null;
   customer_key: string | null;
   subject_label: string | null; subject_summary: string | null; subject_updated_at: string | null;
+  health_score: number | null; health_reason: string | null; health_updated_at: string | null;
 }
 
 // Reachable only if the conversation's panel is one this user may see.
@@ -23,6 +24,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.category, c.unread_count, c.last_message_at, c.created_at,
             c.verified_order_id, c.verified_via, c.customer_key,
             c.subject_label, c.subject_summary, c.subject_updated_at,
+            c.health_score, c.health_reason, c.health_updated_at,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
        FROM conversations c
