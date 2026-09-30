@@ -48,6 +48,12 @@ interface Conversation {
   group_unread?: number;
   group_needs_human?: boolean;
   earlier?: EarlierChat[];
+  // The customer's current concern, written by the AI after each message
+  // (src/lib/chat/subject.ts): one of its SUBJECT_LABELS plus a one-line
+  // summary (<= 90 chars). Null until the first subject is made.
+  subject_label?: string | null;
+  subject_summary?: string | null;
+  subject_updated_at?: string | null;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -141,6 +147,20 @@ const CATEGORY_LABELS: Record<string, string> = {
   cancellation: 'Cancellation',
   others: '',
 };
+
+// Colour of a subject label, by kind of concern, so the team can tell at a
+// glance: money (amber), a change the customer asks for (blue), something
+// that went wrong (red), anything else (grey).
+const SUBJECT_MONEY = ['Refund', 'Payment issue', 'Payment method / COD'];
+const SUBJECT_CHANGE = ['Address change', 'Wrong address', 'Size exchange', 'Product exchange', 'Return', 'Cancellation'];
+const SUBJECT_PROBLEM = ['Not received', 'Damaged item', 'Wrong item', 'Missing item', 'Wrong tracking link', 'Delivery delay', 'Complaint'];
+
+function subjectStyle(label: string): { bg: string; fg: string } {
+  if (SUBJECT_MONEY.includes(label)) return { bg: '#fef3c7', fg: '#b45309' };
+  if (SUBJECT_CHANGE.includes(label)) return { bg: '#dbeafe', fg: '#1d4ed8' };
+  if (SUBJECT_PROBLEM.includes(label)) return { bg: '#fee2e2', fg: '#b91c1c' };
+  return { bg: 'var(--bg-subtle, rgba(0,0,0,0.05))', fg: 'var(--fg-muted)' };
+}
 
 // An AI reply that was written but never sent — escalated to a person, or the
 // send itself failed. The customer has not seen it.
@@ -1054,6 +1074,16 @@ export default function ChatSupportPage() {
     : conversations.find(c => c.id === activeConv.id) ?? null;
   const activeVerifiedOrder = activeVerifiedSrc?.verified_order_id ?? null;
   const activeVerifiedVia = activeVerifiedSrc?.verified_via ?? null;
+  // The subject bar reads the thread's own answer the same way, with the
+  // list row as the fallback.
+  const activeSubjectSrc = !activeConv ? null
+    : activeConv.subject_label !== undefined ? activeConv
+    : conversations.find(c => c.id === activeConv.id) ?? null;
+  const activeSubject = activeSubjectSrc?.subject_label ? {
+    label: activeSubjectSrc.subject_label,
+    summary: activeSubjectSrc.subject_summary || '',
+    updatedAt: activeSubjectSrc.subject_updated_at ?? null,
+  } : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1319,9 +1349,15 @@ export default function ChatSupportPage() {
                     )}
                   </div>
 
-                  <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.25rem', display: 'flex', gap: '0.375rem' }}>
-                    <span>{c.panel_name || c.site_name}</span>
-                    {CATEGORY_LABELS[c.category] && (
+                  <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.25rem', display: 'flex', gap: '0.375rem', alignItems: 'center', minWidth: 0 }}>
+                    <span style={{ flexShrink: 0 }}>{c.panel_name || c.site_name}</span>
+                    {c.subject_label ? (
+                      <><span>·</span><span title={c.subject_summary || c.subject_label} style={{
+                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
+                        background: subjectStyle(c.subject_label).bg, color: subjectStyle(c.subject_label).fg,
+                      }}>{c.subject_label}</span></>
+                    ) : CATEGORY_LABELS[c.category] && (
                       <><span>·</span><span>{CATEGORY_LABELS[c.category]}</span></>
                     )}
                   </div>
@@ -1401,6 +1437,36 @@ export default function ChatSupportPage() {
                       )}
                       {activeConv.status !== 'resolved' && (
                         <button className="btn btn-outline btn-sm" onClick={() => changeStatus('resolved')}>Close</button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Subject: the customer's current concern, on its own line across the header */}
+                  {activeSubject && (
+                    <div title={activeSubject.summary ? `${activeSubject.label}: ${activeSubject.summary}` : activeSubject.label} style={{
+                      flexBasis: '100%', minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.5rem',
+                      padding: '0.375rem 0.625rem', borderRadius: 8,
+                      background: 'var(--bg-subtle, rgba(0,0,0,0.04))', border: '1px solid var(--border)',
+                    }}>
+                      <span style={{
+                        fontSize: '0.6875rem', padding: '2px 8px', borderRadius: 9999, fontWeight: 700,
+                        flexShrink: 0, whiteSpace: 'nowrap',
+                        background: subjectStyle(activeSubject.label).bg, color: subjectStyle(activeSubject.label).fg,
+                      }}>
+                        {activeSubject.label}
+                      </span>
+                      {activeSubject.summary && (
+                        <span style={{
+                          flex: 1, minWidth: 0, fontSize: '0.8125rem', fontWeight: 500, color: 'var(--fg)',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {activeSubject.summary}
+                        </span>
+                      )}
+                      {activeSubject.updatedAt && (
+                        <span style={{ marginLeft: 'auto', fontSize: '0.625rem', color: 'var(--fg-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                          updated {timeAgo(activeSubject.updatedAt)}
+                        </span>
                       )}
                     </div>
                   )}

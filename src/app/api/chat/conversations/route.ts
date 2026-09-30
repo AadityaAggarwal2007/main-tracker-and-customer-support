@@ -15,6 +15,9 @@ export const dynamic = 'force-dynamic';
 // see chat-customer-key.sql), with thread_count, group_unread and
 // group_needs_human added.
 //
+// subject_label / subject_summary / subject_updated_at (chat-subject.sql) are
+// the row's own chat's subject; on a grouped row that is the latest chat.
+//
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
 export async function GET(request: NextRequest) {
@@ -68,6 +71,7 @@ export async function GET(request: NextRequest) {
        SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
               c.unread_count, c.last_message_at, c.created_at,
               c.verified_order_id, c.verified_via, c.customer_key,
+              c.subject_label, c.subject_summary, c.subject_updated_at,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
@@ -91,6 +95,7 @@ export async function GET(request: NextRequest) {
             g.verified_order_id, g.verified_via,
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
             g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
+            g.subject_label, g.subject_summary, g.subject_updated_at,
             (SELECT m.content
                FROM messages m
               WHERE m.conversation_id = g.id

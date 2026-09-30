@@ -58,7 +58,7 @@ const FALLBACK_CHAIN = [
 // the next model in the chain would have served the request fine. Only auth
 // failures are hopeless, since every model would fail them the same way. Note
 // 402 (out of credits) still degrades: the free tiers keep working without them.
-function isRetryable(err: unknown): boolean {
+export function isRetryable(err: unknown): boolean {
   const status = (err as { status?: number })?.status;
   return status !== 401 && status !== 403;
 }
@@ -92,11 +92,11 @@ const HISTORY_WINDOW = 16;
 
 let activeModel = process.env.AI_MODEL || FALLBACK_CHAIN[0];
 
-function attemptOrder(): string[] {
+export function attemptOrder(): string[] {
   return [activeModel, ...FALLBACK_CHAIN.filter((m) => m !== activeModel)];
 }
 
-function getClient(): OpenAI {
+export function getClient(): OpenAI {
   return new OpenAI({
     baseURL: `${process.env.CODEX_URL || 'https://openrouter.ai/api'}/v1`,
     apiKey: process.env.AI_API_KEY || 'codex-local',

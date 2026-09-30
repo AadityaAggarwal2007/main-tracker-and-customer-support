@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
+import { updateConversationSubject } from '@/lib/chat/subject';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 
 export const dynamic = 'force-dynamic';
@@ -102,6 +103,11 @@ export async function POST(request: NextRequest) {
         }
       }
     }
+
+    // The chat's subject line for the inbox (src/lib/chat/subject.ts), now
+    // that the reply is saved. Not awaited: the visitor never waits on it, and
+    // it never throws.
+    void updateConversationSubject(conversationId);
 
     return widgetJson({ message: visitorMessage, aiResponse: aiMessage }, 201);
   } catch (err) {
