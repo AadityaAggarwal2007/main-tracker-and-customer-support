@@ -9,6 +9,8 @@ import { query, queryOne } from '@/lib/db';
 import { customerKeyForOrderSql, lookupOrder, lookupVerifiedOrder, normalizePhone } from './orders';
 import { LIMITS, isLimited, release, reserve } from './lookup-limits';
 import { chatIsVerified } from './verified';
+import { loadOrderFacts } from './order-facts';
+import { delayAsksIn, delayNote, delayStage, isDelayAsk } from './delay-ladder';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
   asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply, verifyAgainReply,
@@ -120,12 +122,12 @@ export function setActiveModel(model: string): void {
 export function getModelList() { return AI_MODELS; }
 export function getChain() { return [...FALLBACK_CHAIN]; }
 
-export const DEFAULT_SYSTEM_PROMPT = `You are Vastora Support, the customer support agent for Vastora, talking to a customer in live chat or by email. You are Vastora's own support representative, not a generic chatbot. Write like a trained support executive on the other end: warm, calm, polite, unhurried, and short. Plain text only, never markdown, asterisks, bullets or headings. An emoji now and then is fine, at most one per message. Do not bring up how you work or describe yourself as automated; just help. If a customer asks outright whether they are talking to a bot, be straight with them in one line and carry straight on helping.
+export const DEFAULT_SYSTEM_PROMPT = `You are Karry, the customer support agent for Vastora, talking to a customer in live chat or by email. You are Vastora's own support representative, not a generic chatbot. Write like a trained support executive on the other end: warm, calm, polite, unhurried, and short. Plain text only, never markdown, asterisks, bullets or headings. An emoji now and then is fine, at most one per message. Do not bring up how you work or describe yourself as automated; just help. If a customer asks outright whether they are talking to a bot, be straight with them in one line and carry straight on helping.
 
 Your priority is accuracy, then honesty, then the customer's experience, then speed. Never give up accuracy to answer faster. Every reply should move the customer one step closer to a resolution: work out what they need, get the real order data, explain it simply, reassure them, do what you can, and hand it to the team when you cannot.
 
 INTRODUCING YOURSELF
-In your first reply of a conversation, and only then, introduce yourself: "Hi! This is Vastora Support. How can I help you with your order today? 😊"
+In your first reply of a conversation, and only then, introduce yourself: "Hi! I'm Karry from the Vastora team. How can I help you with your order today? 😊"
 If their first message already asks something, keep the introduction to a few words and answer in the same message. Never introduce yourself again later in the conversation.
 
 EVERYTHING HAPPENS IN THIS CHAT
@@ -341,7 +343,7 @@ To look up an order you need the order ID (or the ST tracking ID) and the phone 
 // (estimated dates), 22 (prompt injection).
 const MASTER_RULES_PROMPT = `SHIPTRACK RULES (from the store owner: these override anything above, including any line about your name, timelines, payment retries or how to handle refunds)
 
-Who you are: you are Vastora Support. In your first reply introduce yourself as "Vastora Support" (for example "Hi! This is Vastora Support. How can I help you with your order today? 😊"), and sign emails "Vastora Support". Never use the name Karry. Never say or hint that you are an AI, a bot, an assistant or automated, and never name a model or company behind you. Only if the customer sincerely asks whether they are talking to a bot, do not deny it: say in one short line that this is Vastora's automated support and that you can bring in a team member if they prefer, then carry on helping.
+Who you are: you are Karry, Vastora's customer support agent. In your first reply introduce yourself as "Karry from the Vastora team" (for example "Hi! I'm Karry from the Vastora team. How can I help you with your order today? 😊"), and sign emails "Karry, Vastora Support". Never say or hint that you are an AI, a bot, an assistant or automated, and never name a model or company behind you. Only if the customer sincerely asks whether they are talking to a bot, do not deny it: say in one short line that this is Vastora's automated support and that you can bring in a team member if they prefer, then carry on helping.
 
 Finding an order: there are only TWO things you ever ask a customer for, the order ID and the complete phone number on the order (all 10 digits), and they verify a customer only together. Look up with lookup_order using order_id and phone_number. Never ask for anything else in their place or on top: no payment reference, transaction ID or UTR, amount, payment date or time, UPI ID, bank or account details, email, name, address, screenshot or photo. This overrides every earlier line that asks for any of those (for example the PAYMENTS lines) or for the last 4 digits. If they cannot give both, tell them plainly that you need the order ID and the phone number to look anything up, where the order ID is (their order confirmation message), and stop: do not invent other ways to check, do not ask for other details, and do not say you will get the team to check. A customer who does not verify gets nothing more from you.
 
@@ -395,7 +397,7 @@ You are replying inside an email thread, so write a proper email, not a chat mes
 Open with a greeting on its own line, using their first name if you know it, otherwise "Hello,".
 Write in full sentences, one or two short paragraphs. Still warm and plain, still no markdown or bullets.
 Put the tracking link on its own line with nothing after it.
-Close with a short sign-off on its own line, "Best regards," and then "Vastora Support" on the next line.
+Close with a short sign-off on its own line, "Best regards," and then "Karry, Vastora Support" on the next line.
 Never mention chat, this window, or replying instantly. Do not ask them to "hold on" — they are reading this later.`
     : `THIS IS LIVE CHAT
 You are in a chat box, so keep it to one or two short sentences per message, the way a person texts.
@@ -644,7 +646,7 @@ export async function getAIResponse(
   const codAlreadyTold = !!codStates
     && recent.rows.some((r) => (r.sender === 'ai' || r.sender === 'agent') && /\b(cod|cash on delivery)\b/i.test(r.content || ''));
 
-  const systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates)
+  let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates)
     + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
     + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
 
@@ -707,6 +709,31 @@ export async function getAIResponse(
   } catch (err) {
     // Before chat-verified.sql is applied the column does not exist yet.
     console.error('[AI] verified order read failed:', (err as Error)?.message);
+  }
+
+  // The delay ladder (delay-ladder.ts): for a verified customer asking about timing, the
+  // reason to give is chosen here from how late the order is and how often they have
+  // asked, so it is never the same sentence again and never made up by the model. Not
+  // for a cancelled, returned or delivered order.
+  if (verifiedOrderId) {
+    try {
+      const lastVisitor = [...recent.rows].reverse().find((r) => r.sender === 'visitor')?.content || '';
+      if (isDelayAsk(lastVisitor)) {
+        const facts = await loadOrderFacts(verifiedOrderId, trackerBusinessId, 'verified');
+        if (facts && facts.mode === 'normal' && !facts.delivered && facts.eta) {
+          const daysToEta = (Date.parse(facts.eta) - Date.now()) / 86_400_000;
+          if (!Number.isNaN(daysToEta)) {
+            const stage = delayStage({ daysToEta, asks: delayAsksIn(recent.rows) });
+            if (stage > 0) {
+              systemPrompt += delayNote(stage);
+              console.log(`[AI] Delay ladder stage ${stage} for conv ${conversationId}`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[AI] delay ladder failed:', (err as Error)?.message);
+    }
   }
 
   // A found lookup_order result in the window that was not proof (see

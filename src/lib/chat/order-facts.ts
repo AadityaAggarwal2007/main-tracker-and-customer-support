@@ -4,7 +4,9 @@
 // delivery date, so nobody has to open the panel or ask the customer.
 //
 // STAFF ONLY: read by GET /api/chat/conversations/[id] (behind login and panel
-// scope) and never by the AI, the widget or /api/widget/*. The status is the one
+// scope). The AI reads it only to work out how late an order is (the delay ladder in
+// ai.ts / delay-ladder.ts); none of these facts is put in its prompt or shown to a
+// customer by it. Never by the widget or /api/widget/*. The status is the one
 // the customer's own tracking page shows (buildJourney in journey.ts: the stored
 // status, moved forward by the order's age), so staff and customer read the same
 // thing. It works from the order the chat verified, else the one its number
