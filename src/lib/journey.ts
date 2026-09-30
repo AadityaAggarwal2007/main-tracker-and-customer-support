@@ -348,7 +348,9 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
     // never "arriving soon" and never Delivered.
     notice = { level: 'warn', title: 'Taking longer than usual', body: 'Your order is taking a little longer than usual and is still on its way. Our team is keeping an eye on it.' };
   } else if (currentIndex >= 8) {
-    notice = { level: 'info', title: 'Out for delivery', body: `Your order is out for delivery in ${destCity} and will reach you today.` };
+    // Not "will reach you today": the order can sit at this stage for days, and the stage
+    // is a schedule, not a courier scan.
+    notice = { level: 'info', title: 'Out for delivery', body: `Your order is in the final delivery stage in ${destCity}. Please keep your phone reachable for the delivery agent.` };
   } else if (currentIndex >= 4) {
     notice = { level: 'info', title: 'On the way', body: `Your order is moving through the courier network towards ${destCity} and is on schedule for delivery.` };
   } else if (currentIndex >= 3) {
