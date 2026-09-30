@@ -19,9 +19,9 @@ export const dynamic = 'force-dynamic';
 // truth: each order's stage is derived purely from how many days have passed
 // since it was placed. We never invent a courier scan — the intermediate
 // stages are the honest EXPECTED framework, surfaced as such on the track
-// page. Delivered is auto-marked on day 13 (business rule) with delivered_at
-// left NULL, so the UI can still distinguish it from a team-confirmed
-// delivery.
+// page. The schedule stops at Out for Delivery: it NEVER marks an order
+// Delivered (owner's rule, 2026-09-30: only the team does). Before that date it
+// did, on day 13, and 169 orders read Delivered with nobody having delivered them.
 //
 // Only ever advances FORWARD, never regresses, and never touches cancelled /
 // RTO / failed / manually-set special states.
@@ -101,7 +101,7 @@ export async function GET(request: NextRequest) {
       if (Number.isNaN(created)) continue;
       const ageDays = Math.max(0, Math.floor((now - created) / DAY_MS));
 
-      const targetIndex = expectedIndexForAge(ageDays); // includes Delivered at day 13
+      const targetIndex = expectedIndexForAge(ageDays); // stops at Out for Delivery, never Delivered
       if (targetIndex <= currentIndex) continue; // only move forward
 
       const targetStatus = JOURNEY[targetIndex].status;

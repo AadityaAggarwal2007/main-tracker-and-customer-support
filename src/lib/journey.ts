@@ -13,13 +13,13 @@
 //   • Order Placed         (order created — real)
 //   • Shipped + AWB        (from CSV / Shopify — real when present)
 //   • Destination state/city (the customer's own order address — real)
-//   • Delivered            (auto-marked on day 13 per business rule)
+//   • Delivered            (marked ONLY by the team; the schedule stops at Out for Delivery)
 //
 // This module is pure (no DB, no I/O) so it can run on the server (track
 // API + progression cron) and be imported by client components alike.
 // ═══════════════════════════════════════════════════════════════════════
 
-export const AUTO_DELIVER_DAY = 13; // business rule: auto-mark Delivered on day 13
+export const AUTO_DELIVER_DAY = 13; // the end of the usual delivery window (ETA); it does NOT mark anything Delivered
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface JourneyStageDef {
@@ -250,15 +250,17 @@ function ageInDays(created: string | Date, now: Date): number {
   return Math.max(0, Math.floor((now.getTime() - c) / DAY_MS));
 }
 
-/** Highest journey index the schedule permits at `ageDays`, capped so the
- *  framework never advances into Delivered on its own before day 13. */
+/** Highest journey index the schedule permits at `ageDays`. It stops at Out for
+ *  Delivery: the schedule NEVER moves an order into Delivered. Only the team marks
+ *  an order Delivered (owner's rule, 2026-09-30). Until 2026-09-30 this returned
+ *  Delivered from day 13, the cron wrote it to the database and the track page showed
+ *  it, which is how 169 orders read "Delivered" with nobody having delivered them. */
 export function expectedIndexForAge(ageDays: number): number {
   let idx = 0;
   for (let i = 0; i < JOURNEY.length; i++) {
     if (ageDays >= JOURNEY[i].startDay) idx = i;
   }
-  // Delivered (index 9) only from day 13 — the loop already enforces via startDay.
-  return idx;
+  return Math.min(idx, LAST_AUTO_INDEX_BEFORE_DELIVERED);
 }
 
 /**
@@ -305,9 +307,9 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   // ── Normal linear journey ──────────────────────────────────────────────
   const storedIndex = statusToIndex(order.tracking_status);
-  const deliveredByStatus = storedIndex === DELIVERED_INDEX;
-  const deliveredByAge = ageDays >= AUTO_DELIVER_DAY;
-  const delivered = deliveredByStatus || deliveredByAge;
+  // Delivered only when the stored status says so, and only the team sets that. An
+  // order's age never makes it Delivered (owner's rule, 2026-09-30).
+  const delivered = storedIndex === DELIVERED_INDEX;
 
   let currentIndex: number;
   if (delivered) {
@@ -322,7 +324,8 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
     currentIndex = Math.min(Math.max(fromStored, expectedIndex), LAST_AUTO_INDEX_BEFORE_DELIVERED);
   }
 
-  const deliveredEstimated = delivered && !order.delivered_at;
+  // Delivered is always a team confirmation now; the flag stays for old callers.
+  const deliveredEstimated = false;
 
   const stages = JOURNEY.map<JourneyStageView>((def, i) => ({
     key: def.key, status: def.status, icon: def.icon, estimated: def.estimated,
@@ -341,8 +344,9 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
   if (delivered) {
     notice = { level: 'success', title: 'Delivered', body: 'Your order has been delivered. Thank you for shopping with us!' };
   } else if (ageDays > AUTO_DELIVER_DAY + 1) {
-    // Running past the window — reassuring, no behind-the-scenes detail.
-    notice = { level: 'warn', title: 'Arriving soon', body: 'Your shipment is on its final leg and will reach you shortly. Thanks for your patience.' };
+    // Past the usual window and the team has not marked it Delivered: say so plainly,
+    // never "arriving soon" and never Delivered.
+    notice = { level: 'warn', title: 'Taking longer than usual', body: 'Your order is taking a little longer than usual and is still on its way. Our team is keeping an eye on it.' };
   } else if (currentIndex >= 8) {
     notice = { level: 'info', title: 'Out for delivery', body: `Your order is out for delivery in ${destCity} and will reach you today.` };
   } else if (currentIndex >= 4) {

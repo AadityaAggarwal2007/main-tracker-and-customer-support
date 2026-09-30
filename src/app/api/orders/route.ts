@@ -218,6 +218,14 @@ export async function PATCH(request: NextRequest) {
     if (status === 'Cancelled') {
       setClauses.push('is_cancelled = true', 'cancelled_at = NOW()');
     }
+    // Delivered is marked by the team only, and says who and when (delivered_at,
+    // delivered_by: supabase-journey.sql). Moving an order off Delivered clears both.
+    if (status === 'Delivered') {
+      setClauses.push('delivered_at = NOW()', `delivered_by = $${pi++}`);
+      setParams.push(user.displayName || user.username);
+    } else {
+      setClauses.push('delivered_at = NULL', 'delivered_by = NULL');
+    }
     if (trackingId)        { setClauses.push(`tracking_id = $${pi++}`);       setParams.push(trackingId); }
     if (courierPartner)    { setClauses.push(`courier_partner = $${pi++}`);    setParams.push(courierPartner); }
     if (estimatedDelivery) { setClauses.push(`estimated_delivery = $${pi++}`); setParams.push(estimatedDelivery); }
