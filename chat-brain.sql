@@ -16,7 +16,7 @@
 -- ============================================================
 CREATE TABLE IF NOT EXISTS brain_notes (
   id          uuid PRIMARY KEY,
-  site_id     uuid REFERENCES sites(id) ON DELETE CASCADE,
+  site_id     text REFERENCES sites(id) ON DELETE CASCADE,
   kind        text NOT NULL DEFAULT 'lesson' CHECK (kind IN ('rule', 'fact', 'lesson')),
   title       text NOT NULL,
   body        text NOT NULL,
