@@ -22,6 +22,16 @@
 export const AUTO_DELIVER_DAY = 13; // the end of the usual delivery window (ETA); it does NOT mark anything Delivered
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// The last four stages hang off the order's OWN estimated delivery date, so that
+// Out for Delivery always starts 1 day before it (owner, 2026-10-01: customers
+// asked why an order had been "Out for Delivery" for days while its estimated date
+// was still 3-4 days away). The window is the days from placing to the estimated
+// date: 13 by default, or the order's own date when it carries a believable one.
+export const MIN_WINDOW_DAYS = AUTO_DELIVER_DAY;
+export const MAX_WINDOW_DAYS = 20;
+// Days before the estimated date on which State / City / Hub / Out for Delivery start.
+const DAYS_BEFORE_ETA = [6, 4, 2, 1];
+
 export interface JourneyStageDef {
   key: string;
   /** Canonical value stored in orders.tracking_status */
@@ -32,7 +42,8 @@ export interface JourneyStageDef {
   icon: string;
   /** true = expected framework stage (not a verified courier scan) */
   estimated: boolean;
-  /** Expected day the order ENTERS this stage (days since order placed) */
+  /** Expected day the order ENTERS this stage (days since order placed) in the
+   *  default 13-day window; stageStartDay() gives it for any window. */
   startDay: number;
 }
 
@@ -44,10 +55,10 @@ export const JOURNEY: JourneyStageDef[] = [
   { key: 'shipped',    status: 'Shipped',             baseLabel: 'Shipped',               icon: 'Truck',          estimated: false, startDay: 3 },
   { key: 'firstscan',  status: 'Shipment Picked Up',  baseLabel: 'Picked Up',             icon: 'PackageCheck',   estimated: true,  startDay: 4 },
   { key: 'transit',    status: 'In Transit',          baseLabel: 'In Transit',            icon: 'Navigation',     estimated: true,  startDay: 5 },
-  { key: 'state',      status: 'Reached State',       baseLabel: 'Reached {STATE}',       icon: 'MapPin',         estimated: true,  startDay: 6 },
-  { key: 'city',       status: 'Reached City',        baseLabel: 'Reached {CITY}',        icon: 'MapPin',         estimated: true,  startDay: 7 },
-  { key: 'hub',        status: 'Local Hub',           baseLabel: 'At Local Delivery Hub', icon: 'Building2',      estimated: true,  startDay: 8 },
-  { key: 'ofd',        status: 'Out for Delivery',    baseLabel: 'Out for Delivery',      icon: 'Bike',           estimated: true,  startDay: 9 },
+  { key: 'state',      status: 'Reached State',       baseLabel: 'Reached {STATE}',       icon: 'MapPin',         estimated: true,  startDay: 7 },
+  { key: 'city',       status: 'Reached City',        baseLabel: 'Reached {CITY}',        icon: 'MapPin',         estimated: true,  startDay: 9 },
+  { key: 'hub',        status: 'Local Hub',           baseLabel: 'At Local Delivery Hub', icon: 'Building2',      estimated: true,  startDay: 11 },
+  { key: 'ofd',        status: 'Out for Delivery',    baseLabel: 'Out for Delivery',      icon: 'Bike',           estimated: true,  startDay: 12 },
   { key: 'delivered',  status: 'Delivered',           baseLabel: 'Delivered',             icon: 'CheckCircle',    estimated: false, startDay: AUTO_DELIVER_DAY },
 ];
 
@@ -74,6 +85,34 @@ export function statusToIndex(status: string | null | undefined): number | null 
   if (!status) return null;
   const key = String(status).trim().toLowerCase();
   return key in STATUS_TO_INDEX ? STATUS_TO_INDEX[key] : null;
+}
+
+/** Day (since the order was placed) on which stage `i` starts when the order's
+ *  estimated delivery is `windowDays` days after it was placed. The first six stages
+ *  do not move; State, City, Hub and Out for Delivery come 6, 4, 2 and 1 days before
+ *  the estimated date. */
+export function stageStartDay(i: number, windowDays: number = AUTO_DELIVER_DAY): number {
+  if (i <= 5) return JOURNEY[i].startDay;
+  if (i >= DELIVERED_INDEX) return windowDays;
+  return windowDays - DAYS_BEFORE_ETA[i - 6];
+}
+
+const IST_MS = 5.5 * 60 * 60 * 1000;
+
+/** Days from placing the order to its estimated delivery date, as the schedule uses
+ *  them: the order's own date when it is believable (13 to 20 days after it was
+ *  placed), otherwise the default 13. Whole IST calendar days, so a date stored at
+ *  midnight UTC or IST comes out the same. */
+export function windowDaysFor(
+  created: string | Date | null | undefined,
+  estimatedDelivery: string | Date | null | undefined,
+): number {
+  if (!created || !estimatedDelivery) return AUTO_DELIVER_DAY;
+  const c = new Date(created).getTime();
+  const e = new Date(estimatedDelivery).getTime();
+  if (Number.isNaN(c) || Number.isNaN(e)) return AUTO_DELIVER_DAY;
+  const days = Math.floor((e + IST_MS) / DAY_MS) - Math.floor((c + IST_MS) / DAY_MS);
+  return days >= MIN_WINDOW_DAYS && days <= MAX_WINDOW_DAYS ? days : AUTO_DELIVER_DAY;
 }
 
 export type JourneyMode = 'normal' | 'cancelled' | 'rto' | 'failed';
@@ -198,16 +237,16 @@ const WORK_START_MS = 10 * 60 * 60 * 1000; // 10:00 IST
  * That offset used to put "Packed & Ready to Ship" at 3:43 am, which no
  * warehouse does. Strictly increasing across stages because startDay is.
  */
-function eventTime(base: number, def: JourneyStageDef, i: number): number {
+function eventTime(base: number, i: number, windowDays: number): number {
   if (i === 0) return base;
-  const onDay = base + def.startDay * DAY_MS;
+  const onDay = base + stageStartDay(i, windowDays) * DAY_MS;
   // Floor to IST midnight, expressed in UTC ms, then add the working offset.
   const istMidnight = Math.floor((onDay + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
   return istMidnight + WORK_START_MS + i * 47 * 60 * 1000;
 }
 
 function buildEvents(
-  order: JourneyOrder, currentIndex: number, delivered: boolean, now: Date,
+  order: JourneyOrder, currentIndex: number, delivered: boolean, now: Date, windowDays: number,
 ): JourneyEvent[] {
   const base = new Date(order.created_at).getTime();
   if (Number.isNaN(base)) return [];
@@ -221,7 +260,7 @@ function buildEvents(
   // the feed showed a parcel shipped before it was packed.
   const times: number[] = [];
   for (let i = 0; i <= lastIdx; i++) {
-    times.push(Math.min(eventTime(base, JOURNEY[i], i), nowMs));
+    times.push(Math.min(eventTime(base, i, windowDays), nowMs));
   }
   // Clamping to "now" can flatten the tail, so walk back and keep it ascending.
   for (let i = times.length - 2; i >= 0; i--) {
@@ -254,11 +293,13 @@ function ageInDays(created: string | Date, now: Date): number {
  *  Delivery: the schedule NEVER moves an order into Delivered. Only the team marks
  *  an order Delivered (owner's rule, 2026-09-30). Until 2026-09-30 this returned
  *  Delivered from day 13, the cron wrote it to the database and the track page showed
- *  it, which is how 169 orders read "Delivered" with nobody having delivered them. */
-export function expectedIndexForAge(ageDays: number): number {
+ *  it, which is how 169 orders read "Delivered" with nobody having delivered them.
+ *  `windowDays` is the order's days to its estimated date (windowDaysFor): Out for
+ *  Delivery starts 1 day before it. */
+export function expectedIndexForAge(ageDays: number, windowDays: number = AUTO_DELIVER_DAY): number {
   let idx = 0;
   for (let i = 0; i < JOURNEY.length; i++) {
-    if (ageDays >= JOURNEY[i].startDay) idx = i;
+    if (ageDays >= stageStartDay(i, windowDays)) idx = i;
   }
   return Math.min(idx, LAST_AUTO_INDEX_BEFORE_DELIVERED);
 }
@@ -270,7 +311,8 @@ export function expectedIndexForAge(ageDays: number): number {
 export function buildJourney(order: JourneyOrder, now: Date = new Date()): JourneyResult {
   const lastCheckedISO = now.toISOString();
   const ageDays = ageInDays(order.created_at, now);
-  const expectedIndex = expectedIndexForAge(ageDays);
+  const windowDays = windowDaysFor(order.created_at, order.estimated_delivery);
+  const expectedIndex = expectedIndexForAge(ageDays, windowDays);
   const mode = classifySpecial(order.tracking_status, order.is_cancelled);
 
   // ETA: prefer a real provided date; otherwise the day-13 framework window.
@@ -335,7 +377,7 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   const currentDef = JOURNEY[currentIndex];
   const currentLabel = fillLabel(currentDef, order.state, order.city);
-  const events = buildEvents(order, currentIndex, delivered, now);
+  const events = buildEvents(order, currentIndex, delivered, now, windowDays);
 
   // ── Customer-facing status message (confident, reads as real tracking) ──
   const destCity = order.city && order.city.trim() ? titleCase(order.city.trim()) : 'your city';
@@ -343,11 +385,11 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   if (delivered) {
     notice = { level: 'success', title: 'Delivered', body: 'Your order has been delivered. Thank you for shopping with us!' };
-  } else if (ageDays > AUTO_DELIVER_DAY + 1) {
+  } else if (ageDays > windowDays + 1) {
     // Past the usual window and the team has not marked it Delivered: say so plainly,
     // never "arriving soon" and never Delivered.
     notice = { level: 'warn', title: 'Taking longer than usual', body: 'Your order is taking a little longer than usual and is still on its way. Our team is keeping an eye on it.' };
-  } else if (currentIndex >= 8) {
+  } else if (currentIndex >= 9) {
     // Not "will reach you today": the order can sit at this stage for days, and the stage
     // is a schedule, not a courier scan.
     notice = { level: 'info', title: 'Out for delivery', body: `Your order is in the final delivery stage in ${destCity}. Please keep your phone reachable for the delivery agent.` };

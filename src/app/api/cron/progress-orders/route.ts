@@ -6,6 +6,7 @@ import {
   AUTO_DELIVER_DAY,
   expectedIndexForAge,
   statusToIndex,
+  windowDaysFor,
 } from '@/lib/journey';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +35,7 @@ interface Candidate {
   order_id: string;
   tracking_status: string;
   created_at: string;
+  estimated_delivery: string | Date | null;
 }
 
 export async function GET(request: NextRequest) {
@@ -61,7 +63,7 @@ export async function GET(request: NextRequest) {
     for (let page = 0; page < MAX_PAGES; page++) {
       const res = cursorAt === null
         ? await query<Candidate>(
-            `SELECT order_id, tracking_status, created_at
+            `SELECT order_id, tracking_status, created_at, estimated_delivery
                FROM orders
               WHERE is_cancelled = false
                 AND COALESCE(tracking_status, '') <> 'Delivered'
@@ -70,7 +72,7 @@ export async function GET(request: NextRequest) {
             [PAGE]
           )
         : await query<Candidate>(
-            `SELECT order_id, tracking_status, created_at
+            `SELECT order_id, tracking_status, created_at, estimated_delivery
                FROM orders
               WHERE is_cancelled = false
                 AND COALESCE(tracking_status, '') <> 'Delivered'
@@ -101,7 +103,8 @@ export async function GET(request: NextRequest) {
       if (Number.isNaN(created)) continue;
       const ageDays = Math.max(0, Math.floor((now - created) / DAY_MS));
 
-      const targetIndex = expectedIndexForAge(ageDays); // stops at Out for Delivery, never Delivered
+      // Stops at Out for Delivery (1 day before the order's estimated date), never Delivered.
+      const targetIndex = expectedIndexForAge(ageDays, windowDaysFor(o.created_at, o.estimated_delivery));
       if (targetIndex <= currentIndex) continue; // only move forward
 
       const targetStatus = JOURNEY[targetIndex].status;

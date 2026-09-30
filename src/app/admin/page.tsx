@@ -2208,7 +2208,9 @@ export default function AdminDashboard() {
                   </button>
                 </div>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
-                  Orders automatically move through stages after the set time. Customer tracking pages update in real-time.
+                  These timings are NOT used any more. Customer tracking pages follow each order&apos;s own
+                  estimated delivery date: the last stage, Out for Delivery, starts 1 day before it (Hub 2 days,
+                  City 4, State 6 days before). The schedule never marks an order Delivered; only your team does.
                 </p>
 
                 {progressionSteps.length === 0 ? (
