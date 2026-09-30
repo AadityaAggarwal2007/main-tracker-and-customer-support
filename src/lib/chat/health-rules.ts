@@ -58,6 +58,7 @@ export interface HealthSignals {
   waitingDays: number;     // days since the oldest open chat began
   recentAbuse: boolean;    // in the customer's last 2 messages
   recentThreat: boolean;   // in the customer's last 3
+  calmed: boolean;         // their LAST message says it is solved, with nothing negative in it
 }
 
 // The words are matched as text, lower-cased. Latin (English and Hinglish) with
@@ -90,7 +91,22 @@ const REFUND = [
   /(रिफंड|रिफण्ड|कैंसिल|पैसे वापस|पैसा वापस|पैसे लौटा|पैसे वापिस)/,
 ];
 
+// The customer says the problem is over ("mil gaya", "got my order", "all good").
+// A plain "ok thanks" is not that: customers say it after "the team will check"
+// too, while they are still waiting. Not "not received", "nahi mila", or a question.
+const RESOLVED = [
+  /\b(mil ?gaya|mil ?gayi|mil gya|mila gaya|received|got (it|my|the)|solved|resolved|sorted|fixed|all good|sab theek|theek ho gaya|no (more )?(issue|problem)s?|problem (is )?(solved|fixed)|delivered)\b/i,
+  /(मिल गया|मिल गई|सब ठीक|ठीक हो गया|सॉल्व)/,
+];
+const NEGATION = /\b(not|nahi|nahin|nhi|never|haven'?t|hasn'?t|didn'?t|no)\b|नहीं/i;
+
 const any = (list: RegExp[], text: string) => list.some((re) => re.test(text));
+
+export function saysResolved(text: string): boolean {
+  if (!any(RESOLVED, text)) return false;
+  const t = text.replace(/\bno (more )?(issue|problem)s?\b/gi, ' ');
+  return !NEGATION.test(t) && !t.includes('?');
+}
 
 const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, ' ').trim();
 
@@ -103,7 +119,7 @@ export function scanSignals(
   const mine = rows.filter((r) => r.sender === 'visitor' && (r.content || '').trim());
   const sig: HealthSignals = {
     refund: 0, abuse: 0, rude: 0, accuse: 0, threat: 0, escalate: 0, caps: 0, burst: 0, repeats: 0,
-    chats: Math.max(1, ctx.chats || 1), waitingDays: 0, recentAbuse: false, recentThreat: false,
+    chats: Math.max(1, ctx.chats || 1), waitingDays: 0, recentAbuse: false, recentThreat: false, calmed: false,
   };
   const seen = new Map<string, number>();
   mine.forEach((r, i) => {
@@ -123,6 +139,9 @@ export function scanSignals(
     if (key.length >= 8 && /[a-zऀ-ॿ]/.test(key)) seen.set(key, (seen.get(key) || 0) + 1);
   });
   seen.forEach((n) => { if (n > 1) sig.repeats += n - 1; });
+  const last = mine.length ? mine[mine.length - 1].content.slice(0, 1500) : '';
+  sig.calmed = !!last && saysResolved(last)
+    && !any([...ABUSE, ...RUDE, ...ACCUSE, ...THREAT, ...ESCALATE, ...REFUND], last);
   if (ctx.openSince) {
     const t = Date.parse(ctx.openSince);
     if (!Number.isNaN(t)) sig.waitingDays = Math.max(0, Math.floor(((ctx.now ?? Date.now()) - t) / 86_400_000));
@@ -153,10 +172,14 @@ export function heuristicScore(sig: HealthSignals): number {
 // and knows when the customer has been helped and thanked, so it leads; the
 // counts pull it up when it is too gentle, and a threat or swearing in the
 // customer's LAST messages is never scored below 85 / 70 whatever the model
-// says. Old anger does not hold a floor once the customer has calmed down.
+// says. Old anger does not hold a floor once the customer has calmed down, and
+// a customer whose last message says the problem is solved is at most 30:
+// the owner's rule is that a solved chat goes back down, whatever happened
+// before it.
 export function combineHealth(llm: number | null, sig: HealthSignals): number {
   const heur = heuristicScore(sig);
   const blended = llm == null ? heur : Math.max(Math.round(0.65 * llm + 0.35 * heur), llm - 8);
+  if (sig.calmed) return clamp(Math.min(blended, 30));
   const floor = sig.recentThreat ? 85 : sig.recentAbuse ? 70 : 0;
   return clamp(Math.max(blended, floor));
 }
@@ -183,7 +206,13 @@ Read the chat history (oldest first; several chats of the same customer may be j
 25-49 uneasy: mildly worried, or asking again about a delay.
 50-74 frustrated: repeated complaints or demands for a refund or cancellation (even if polite), waiting a long time, ignored, or asked the same thing again by support. A polite customer asking three times for a refund on an overdue order is about 65.
 75-100 critical: angry, abusive or swearing, accusing the store of fraud, or threatening (chargeback, bank, police, court, consumer forum, bad reviews).
-Judge the latest state: a customer who was angry but has since been helped and thanked scores low.
+Judge the latest state: if the customer's LAST message says the problem is solved (for example "got my order, all good"), the score is 30 or lower whatever happened before. A plain "ok thanks" after a holding answer such as "the team will check" does not mean solved.
+Calibration examples:
+- Polite, asks where the order is, order 2 days old: 5.
+- Polite, asks once or twice when it will arrive, order 9 days old, estimated delivery still ahead: 25.
+- Polite but asks three times for a refund on an overdue order: 60.
+- Swears, accuses the store of fraud, or threatens a chargeback: 90.
+- Swore earlier, but the last message says the problem is solved: 10.
 Answer with exactly one line: the number, then " | ", then the reason. The reason is at most 100 characters, in English, plain facts. No names, phone numbers, emails or links. Example of the format: 63 | Refund asked 3 times, order 11 days old`;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

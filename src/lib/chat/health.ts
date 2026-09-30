@@ -55,6 +55,9 @@ async function askModel(transcript: string): Promise<{ score: number; reason: st
           { role: 'user' as const, content: transcript },
         ],
         max_tokens: HEALTH_MAX_TOKENS,
+        // The same story should get the same score every time (a temperature above
+        // 0 moved one chat between 15 and 65 in tests), or chats jump in and out of the top.
+        temperature: 0,
         // A one-line score needs no thinking; with reasoning on, this model
         // sometimes answered blank (see the same note in subject.ts). An
         // OpenRouter field the SDK does not type; providers without it ignore it.
