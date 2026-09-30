@@ -4,10 +4,12 @@ import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
-import { handoffReply, isCourtesyOnly, isRepeatedReply, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentAck, urgentKind } from '@/lib/chat/escalation';
+import { handoffReply, isCourtesyOnly, looksHinglish, isRepeatedReply, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentAck, urgentKind } from '@/lib/chat/escalation';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
+import { addressConflict, addressConflictReply } from '@/lib/chat/address-conflict';
+import { recentVisitorMessages } from '@/lib/chat/chat-history';
 
 export const dynamic = 'force-dynamic';
 
@@ -131,8 +133,23 @@ export async function POST(request: NextRequest) {
       // customer may have verified in this very message.
       let verified = await chatIsVerified(conversationId);
 
+      // Two different addresses from one customer (master rules section 10): the AI must
+      // not pick one. A verified customer's chat goes to a person; nobody else is moved.
+      let addressClash = false;
+      if (verified && urgent !== 'threat') {
+        try {
+          const said_all = await recentVisitorMessages(conversationId);
+          addressClash = addressConflict(said_all.slice(1), said);
+        } catch (err) {
+          console.error('[widget] address check failed:', (err as Error).message);
+        }
+      }
+
       try {
-        if (urgent === 'threat' && verified) {
+        if (addressClash) {
+          await handOver('address conflict');
+          aiMessage = await saveAiMessage(aiReply(addressConflictReply(looksHinglish(said))));
+        } else if (urgent === 'threat' && verified) {
           // No AI text at all: nothing to argue, nothing to defend.
           await handOver('threat');
           aiMessage = await saveAiMessage(aiReply(urgentAck(said)));

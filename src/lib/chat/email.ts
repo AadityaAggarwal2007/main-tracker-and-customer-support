@@ -7,6 +7,8 @@ import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import { maskSensitive, sensitiveWarning } from './sensitive';
 import { chatIsVerified } from './verified';
+import { addressConflict } from './address-conflict';
+import { recentVisitorMessages } from './chat-history';
 import { insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 
 // ── Email support ──────────────────────────────────────────────
@@ -303,6 +305,24 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
           );
           console.log(`[email] threat from ${fromAddr} on site "${account.site_name}": held for a person, no auto-reply`);
           continue;
+        }
+
+        // Two different addresses from a verified customer (master rules section 10): the
+        // AI must not pick one, so the thread is held for a person (no auto-reply).
+        if (conversation.status === 'ai_handling' && await chatIsVerified(conversation.id)) {
+          try {
+            const mine = await recentVisitorMessages(conversation.id);
+            if (addressConflict(mine.slice(1), masked.text)) {
+              await query(
+                `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
+                [conversation.id]
+              );
+              console.log(`[email] two different addresses from ${fromAddr} on site "${account.site_name}": held for a person`);
+              continue;
+            }
+          } catch (err) {
+            console.error('[email] address check failed:', (err as Error).message);
+          }
         }
 
         // ── AI auto-reply ──────────────────────────────────────────────

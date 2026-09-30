@@ -12,7 +12,7 @@ prompt. FAIL = code or prompt does the opposite. NOT BUILT = no code yet.
 
 | § | Rule | Status | What is wrong or missing |
 |---|---|---|---|
-| 5.1, 10 | Never re-ask; read the whole chat; conflicting facts go to Needs You | PARTIAL (history widened, deployed 75674fe) | The model now reads the last 120 messages (was 16), which is the whole chat for 99.7% of chats (22 of 3,920 are longer); the hand-over guards still read the last 16 as before. The owner block tells it not to re-ask and to escalate contradictions. Model test 2026-09-30: it did NOT escalate two different addresses (it took the newer one), so conflicting facts are prompt-only and not met. Order ID / phone re-asks are still guarded in code (H1-H6). |
+| 5.1, 10 | Never re-ask; read the whole chat; conflicting facts go to Needs You | DEPLOYED 2026-09-30 (address part by code, other conflicts prompt-only) | The model reads the last 120 messages (was 16); the hand-over guards still read the last 16. The AI is told not to re-ask. TWO DIFFERENT ADDRESSES from a VERIFIED customer are now caught by code (`address-conflict.ts`): a message looks like an address when it has a PIN code next to an address word, or two address words, or one plus "send it to" / "address"; two such messages conflict when their PIN codes differ, or (no PIN codes) they share under a third of their words. The chat goes to Needs you and the customer gets a fixed reply ("two different addresses, I can't pick one, the team will confirm", no time promised); email: held for a person, no auto-reply. A visitor is never moved (owner's note). It is a careful guess, not a parser: a wrong alarm only sends the chat to a person. Other conflicts (two order IDs for one order, two names) are still prompt-only. |
 | 5.2 | Short, one question at a time | PARTIAL | Prompt only. |
 | 5.3 | Every reply gives next step and time | DEPLOYED 2026-09-30 (75674fe) | The "Never promise a timeline" line is overridden. Refund / cancellation replies get the 24-hour line from code; threats and fraud claims the 1-hour line. Other hand-overs say the team replies here, with no number (the master file gives none). |
 | 6 | Match the customer's language | PARTIAL | Prompt only; AI sometimes answers in English. |
@@ -99,7 +99,7 @@ Deployed: card masking (§20), phone-only resume closed (§8.3, §9), order ID +
 
 Still to do, in the order I suggest:
 1. (§24 auto-close protection: done, see the table.)
-2. §10 conflicting facts (two addresses) to Needs You by code, not only by prompt.
+2. (§10 two different addresses: done by code, see the table; other kinds of conflict are still prompt-only.)
 3. §17 / §15 a visible 24h / 1h overdue timer and an alert (sound or push) beyond the inbox row.
 4. §19 proactive delay message.
 5. The remaining review leftovers above (card split across two messages; carrying on a chat verified in the chat when the same customer uses the form on a new device).
