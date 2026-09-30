@@ -6,7 +6,7 @@ INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, source,
 SELECT uuid_generate_v4(), NULL, v.kind, v.title, v.body, v.topics, false, 'seed', v.ord
 FROM (VALUES
  ('rule', 'Stage and date only from the lookup',
-  'An order''s stage and date change every day. Quote the stage and the estimated date only from the lookup made in this turn, never from an earlier message in the chat. If the customer says it still shows an old stage, read the lookup again and tell them what it says today.',
+  'An order''s stage and date change every day. Quote the stage and the estimated date only from the lookup made in this turn, never from an earlier message in the chat. If the customer says it is still at an old stage ("still order placed"), do not repeat their words: name the stage the lookup shows now, for example "it is In Transit".',
   ARRAY['tracking','delivery'], 0),
  ('rule', 'Out for Delivery is the final stage, not a promise',
   'Out for Delivery starts about a day before the estimated date and is a schedule stage, not a courier scan. Never say or hint that the order arrives today, tonight or tomorrow (not even "if it has not come by tonight, message me"). Give the estimated date, call it estimated, and ask the customer to keep their phone reachable.',
@@ -24,7 +24,7 @@ FROM (VALUES
   'Note the request and hand a verified customer to the team. Never promise a refund, an amount or a time, and never talk the customer out of it. Someone who has not verified yet is asked for the order ID and the phone first.',
   ARRAY['refund','cancel'], 5),
  ('lesson', 'Answer a status question from the lookup',
-  'When a verified customer asks where their order is, how long it will take or whether it moved, answer at once from the lookup: the stage, the estimated date and the tracking link. Do not say "let me check with the team" when the lookup already has the answer; the customer is waiting for a real answer, and a line that only promises a reply makes them write again.',
+  'When a verified customer asks where their order is, how long it will take or whether it moved, answer at once from the lookup: name the current stage, give the estimated date and the tracking link. Do not say "let me check with the team" when the lookup already has the answer; the customer is waiting for a real answer, and a line that only promises a reply makes them write again.',
   ARRAY['tracking','delivery'], 7),
  ('lesson', 'Ask only two things to find an order',
   'To find an order ask for the order ID and the full 10-digit phone number on it, nothing else: no payment reference, UPI, account number, screenshot, email or name. What the customer has already told you in this chat is never asked again.',
