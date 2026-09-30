@@ -34,16 +34,28 @@ export async function POST(request: NextRequest) {
       [conversationId, content]
     );
 
-    await query(
+    // A customer writing into a chat staff had Closed opens it again and the
+    // AI answers, instead of the message sitting unanswered in a closed chat.
+    // On a site with the AI switched off nobody would answer under "AI
+    // handling", so there it goes to Needs you instead. Only widget chats, and
+    // only 'resolved': a chat waiting on a person ('human_needed') or taken
+    // over by one ('agent_handling') keeps its status.
+    const updated = await queryOne<{ status: string }>(
       `UPDATE conversations
-          SET unread_count = unread_count + 1, last_message_at = now(), updated_at = now()
-        WHERE id = $1`,
-      [conversationId]
+          SET unread_count = unread_count + 1, last_message_at = now(), updated_at = now(),
+              status = CASE WHEN status = 'resolved' AND source = 'chat'
+                            THEN CASE WHEN $2::boolean THEN 'ai_handling' ELSE 'human_needed' END
+                            ELSE status END
+        WHERE id = $1
+        RETURNING status`,
+      [conversationId, !!site.ai_enabled]
     );
+    const status = updated?.status ?? conversation.status;
+    if (status !== conversation.status) console.log(`[widget] reopened conv ${conversationId} on a new message`);
 
     // AI response if in ai_handling mode
     let aiMessage: StoredMessage | null = null;
-    if (conversation.status === 'ai_handling' && site.ai_enabled) {
+    if (status === 'ai_handling' && site.ai_enabled) {
       try {
         const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id);
 

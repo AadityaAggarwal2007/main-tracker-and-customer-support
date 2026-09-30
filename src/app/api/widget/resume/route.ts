@@ -72,10 +72,14 @@ export async function POST(request: NextRequest) {
     // re-serves that order there; a fresh lookup in the chat verifies it
     // again. The same browser (same visitorId) keeps its verification. Older
     // widgets send no visitorId and are treated as another device.
+    // customer_key goes with it (chat-customer-key.sql): an unverified device
+    // must not sit in the verified customer's inbox thread, where staff would
+    // take it for the customer. A fresh lookup keys it again.
     try {
       const cleared = await query(
         `UPDATE conversations
-            SET verified_order_id = NULL, verified_at = NULL, verified_via = NULL
+            SET verified_order_id = NULL, verified_at = NULL, verified_via = NULL,
+                customer_key = NULL
           WHERE id = $1
             AND verified_order_id IS NOT NULL
             AND visitor_id IS DISTINCT FROM $2`,

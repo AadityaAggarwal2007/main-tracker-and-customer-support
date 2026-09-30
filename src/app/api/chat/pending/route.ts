@@ -35,7 +35,11 @@ export async function GET(request: NextRequest) {
   }
 
   const row = await query<{ human_needed: string; email_waiting: string }>(
-    `SELECT count(*) AS human_needed,
+    // A verified customer's widget chats on one site are one inbox row
+    // (customer_key, chat-customer-key.sql), so they count once here too.
+    `SELECT count(DISTINCT CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
+                                THEN 'k:' || c.site_id || ':' || c.customer_key
+                                ELSE 'c:' || c.id END) AS human_needed,
             count(*) FILTER (WHERE c.source = 'email') AS email_waiting
        FROM conversations c
        JOIN sites s ON s.id = c.site_id

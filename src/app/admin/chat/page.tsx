@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { Fragment, useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
@@ -38,6 +38,33 @@ interface Conversation {
   // old phone/email lookup, shown as "Old check", not as Verified.
   verified_order_id?: string | null;
   verified_via?: string | null;
+  // One verified customer's chats on a site share a customer_key (their
+  // 10-digit phone). The list shows them as one row: thread_count chats in
+  // all, group_unread unread across them, group_needs_human when any of them
+  // waits for a person. The thread's answer carries their older chats in
+  // `earlier`, oldest first.
+  customer_key?: string | null;
+  thread_count?: number;
+  group_unread?: number;
+  group_needs_human?: boolean;
+  earlier?: EarlierChat[];
+}
+
+// One of the customer's older chats, shown read-only above the latest one.
+interface EarlierChat {
+  conversation_id: string;
+  created_at: string;
+  status: string;
+  messages: ChatMessage[];
+}
+
+// The customer's chat they wrote in after the open one (newer_chat in the
+// thread's answer): named in a bar, not drawn in the thread.
+interface NewerChat {
+  conversation_id: string;
+  created_at: string;
+  last_message_at: string | null;
+  status: string;
 }
 
 interface ChatMessage {
@@ -138,6 +165,12 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
   { v: 'resolved', label: 'Closed', icon: Check, status: 'resolved', segment: '' },
 ];
 
+// How another chat's status reads on its divider or bar ("Earlier chat ·
+// 28 Sept · Closed"): the inbox tab names.
+function chatStatusLabel(status: string): string {
+  return INBOX_TABS.find(t => t.status === status)?.label || '';
+}
+
 // Green "Verified" tag for a customer who proved their order. A 'legacy' tag
 // (chat-verified-legacy.sql) gets an amber "Old check" instead: that order was
 // found by an older phone/email lookup, which is not proof, and the AI ignores it.
@@ -161,6 +194,20 @@ function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?: string
     }}>
       <UserCheck size={10} /> Verified{orderId ? ` · ${orderId}` : ''}
     </span>
+  );
+}
+
+// A centred line across the thread between one chat of the customer and the next.
+function ThreadDivider({ children }: { children: React.ReactNode }) {
+  return (
+    <div role="separator" style={{
+      display: 'flex', alignItems: 'center', gap: '0.625rem', margin: '0.25rem 0',
+      fontSize: '0.6875rem', fontWeight: 600, color: 'var(--fg-muted)',
+    }}>
+      <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+      <span style={{ whiteSpace: 'nowrap' }}>{children}</span>
+      <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>
   );
 }
 
@@ -489,6 +536,11 @@ export default function ChatSupportPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // The same customer's older chats on this site (read-only, oldest first),
+  // how many older chats they have in all, and their newer chat if any.
+  const [earlier, setEarlier] = useState<EarlierChat[]>([]);
+  const [earlierTotal, setEarlierTotal] = useState(0);
+  const [newerChat, setNewerChat] = useState<NewerChat | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -581,12 +633,16 @@ export default function ChatSupportPage() {
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
       setMessages(data.messages || []);
+      const older = data.earlier ?? data.conversation?.earlier;
+      setEarlier(Array.isArray(older) ? older : []);
+      setEarlierTotal(typeof data.earlier_total === 'number' ? data.earlier_total : 0);
+      setNewerChat(data.newer_chat && data.newer_chat.conversation_id !== id ? data.newer_chat : null);
     } catch { /* keep what is on screen */ }
   }, [token]);
 
   useEffect(() => {
     if (activeId) fetchThread(activeId);
-    else { setActiveConv(null); setMessages([]); }
+    else { setActiveConv(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
   }, [activeId, fetchThread]);
 
   /* ═══ POLLING ═══ */
@@ -604,10 +660,11 @@ export default function ChatSupportPage() {
   }, [token, fetchConversations, fetchThread]);
 
   const pinUntilRef = useRef(0);
+  const earlierCount = earlier.reduce((n, e) => n + (e.messages?.length || 0), 0);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     pinUntilRef.current = Date.now() + 2000;
-  }, [messages.length]);
+  }, [messages.length, earlierCount]);
 
   // An image has no height until it loads, so the scroll above stops short of
   // it. Follow it down while that scroll is still settling, or if the agent is
@@ -979,7 +1036,16 @@ export default function ChatSupportPage() {
   }
 
   const canReply = user.role !== 'viewer';
-  const unreadTotal = conversations.reduce((n, c) => n + (c.unread_count || 0), 0);
+  // A grouped row (one customer's chats) carries the unread count of all of them.
+  const rowUnread = (c: Conversation) => c.group_unread ?? c.unread_count ?? 0;
+  const unreadTotal = conversations.reduce((n, c) => n + (rowUnread(c) || 0), 0);
+  // The open chat's row: its own, or its customer's grouped row, which moves
+  // to the customer's newest chat when they write in a new one.
+  const isActiveRow = (c: Conversation) => activeId === c.id || (
+    !!activeConv?.customer_key && activeConv.source === 'chat' && c.source === 'chat'
+    && c.customer_key === activeConv.customer_key && c.site_id === activeConv.site_id
+  );
+  const hiddenEarlier = Math.max(0, earlierTotal - earlier.length);
   // The thread's own answer carries the verified fields, so the header stays
   // right after the chat drops out of the Visitors list; the list row is the
   // fallback while the thread is still loading.
@@ -994,6 +1060,101 @@ export default function ChatSupportPage() {
     : pendingFiles.some(p => p.status === 'failed') ? 'Retry or remove the file that failed before sending.'
     : '';
   const composerNotice = [fileError, sendHint].filter(Boolean).join(' · ');
+
+  // One message in the thread. readOnly = a message from an older chat of the
+  // same customer: shown as it was, without the edit/delete menu.
+  const renderMessage = (msg: ChatMessage, readOnly = false) => {
+    const mine = msg.sender !== 'visitor';
+    const deleted = !!msg.deleted_at;
+    const withheld = msg.metadata?.withheld;
+    const attached = msg.metadata?.attachments;
+    const files = Array.isArray(attached) ? attached : [];
+    // A files-only reply carries a text stand-in for older views; the files say it here.
+    const showText = !(files.length > 0 && msg.metadata?.captionless);
+    const isEditing = !readOnly && mine && !deleted && editing?.id === msg.id;
+
+    // A deleted message stays in the inbox as a marker, so the team can
+    // see something was removed; its text is under View details.
+    const bubble = (
+      <div style={{
+        padding: '0.625rem 0.875rem', borderRadius: 12, fontSize: '0.8125rem', lineHeight: 1.5,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', minWidth: 0,
+        background: msg.sender === 'visitor' ? 'var(--primary)' : 'var(--card-bg)',
+        color: msg.sender === 'visitor' ? '#fff' : 'var(--fg)',
+        border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
+        opacity: withheld ? 0.65 : 1,
+        ...(deleted ? { background: 'transparent', color: 'var(--fg-muted)', fontStyle: 'italic', border: '1px dashed var(--border)', opacity: 1 } : {}),
+      }}>
+        {deleted ? 'This message was deleted' : (
+          <>
+            {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
+            {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
+            {showText && renderWithLinks(msg.content)}
+          </>
+        )}
+      </div>
+    );
+
+    return (
+      <div key={msg.id} className={mine ? 'msg-row chat-msg' : 'chat-msg'} style={{
+        alignSelf: mine ? 'flex-start' : 'flex-end',
+        display: 'flex', flexDirection: 'column',
+        alignItems: mine ? 'flex-start' : 'flex-end',
+      }}>
+        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
+          {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You'
+            : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
+        </span>
+        {!mine || readOnly ? bubble : (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', maxWidth: '100%' }}>
+            {isEditing && editing ? (
+              <MessageEditor
+                value={editing.text}
+                original={messageText(msg)}
+                hasFiles={files.length > 0}
+                channel={activeConv?.source === 'email' ? 'email' : 'chat'}
+                saving={editing.saving}
+                error={editing.error}
+                onChange={text => setEditing(e => (e ? { ...e, text } : e))}
+                onCancel={() => setEditing(null)}
+                onSave={saveEdit}
+              />
+            ) : (
+              <>
+                {bubble}
+                <MessageActions
+                  msg={msg}
+                  open={menu?.id === msg.id}
+                  up={!!menu?.up}
+                  canChange={canChangeMessage(user, msg)}
+                  onToggle={button => toggleMenu(msg.id, button)}
+                  onEdit={() => startEdit(msg)}
+                  onDelete={() => { setMenu(null); setDeleting({ id: msg.id, busy: false, error: '' }); }}
+                  onCopy={() => copyMessage(msg)}
+                  onDetails={() => openDetails(msg.id)}
+                />
+              </>
+            )}
+          </div>
+        )}
+        {withheld && !deleted && (
+          <span style={{
+            fontSize: '0.625rem', color: '#b45309', background: '#fffbeb',
+            border: '1px solid #fde68a', borderRadius: 4, padding: '1px 6px', marginTop: '0.25rem',
+          }}>
+            Not sent — {WITHHELD_LABELS[withheld] ?? 'held for you'}
+          </span>
+        )}
+        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+          {new Date(msg.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          {msg.edited_at && !deleted && (
+            <span title={`Edited by ${msg.edited_by || 'unknown'}, ${fullDate(msg.edited_at)}`}> · Edited</span>
+          )}
+          {deleted && ` · Deleted${msg.deleted_by ? ` by ${msg.deleted_by}` : ''}`}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="admin-layout">
@@ -1119,8 +1280,8 @@ export default function ChatSupportPage() {
                     display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
                     padding: '0.75rem 1rem', border: 'none',
                     borderBottom: '1px solid var(--border)',
-                    borderLeft: activeId === c.id ? '3px solid var(--primary)' : '3px solid transparent',
-                    background: activeId === c.id ? 'var(--primary-light)' : 'transparent',
+                    borderLeft: isActiveRow(c) ? '3px solid var(--primary)' : '3px solid transparent',
+                    background: isActiveRow(c) ? 'var(--primary-light)' : 'transparent',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
@@ -1128,10 +1289,18 @@ export default function ChatSupportPage() {
                     <span style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {c.visitor_name || 'Visitor'}
                     </span>
+                    {(c.thread_count ?? 0) > 1 && (
+                      <span title={`${c.thread_count} chats from this customer, shown as one thread`} style={{
+                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
+                        background: 'var(--bg-subtle, rgba(0,0,0,0.05))', color: 'var(--fg-muted)',
+                      }}>
+                        {c.thread_count} chats
+                      </span>
+                    )}
                     {c.verified_order_id && <VerifiedBadge via={c.verified_via} />}
-                    {c.unread_count > 0 && (
+                    {rowUnread(c) > 0 && (
                       <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700 }}>
-                        {c.unread_count}
+                        {rowUnread(c)}
                       </span>
                     )}
                     <span style={{
@@ -1140,6 +1309,14 @@ export default function ChatSupportPage() {
                     }}>
                       {STATUS_LABELS[c.status]}
                     </span>
+                    {c.group_needs_human && c.status !== 'human_needed' && (
+                      <span title="An older chat of this customer is waiting for a person" style={{
+                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
+                        background: STATUS_STYLE.human_needed.bg, color: STATUS_STYLE.human_needed.fg,
+                      }}>
+                        {STATUS_LABELS.human_needed}
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.25rem', display: 'flex', gap: '0.375rem' }}>
@@ -1231,100 +1408,51 @@ export default function ChatSupportPage() {
 
                 {/* Messages */}
                 <div ref={threadRef} style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  {messages.map(msg => {
-                    const mine = msg.sender !== 'visitor';
-                    const deleted = !!msg.deleted_at;
-                    const withheld = msg.metadata?.withheld;
-                    const attached = msg.metadata?.attachments;
-                    const files = Array.isArray(attached) ? attached : [];
-                    // A files-only reply carries a text stand-in for older views; the files say it here.
-                    const showText = !(files.length > 0 && msg.metadata?.captionless);
-                    const isEditing = mine && !deleted && editing?.id === msg.id;
-
-                    // A deleted message stays in the inbox as a marker, so the team can
-                    // see something was removed; its text is under View details.
-                    const bubble = (
-                      <div style={{
-                        padding: '0.625rem 0.875rem', borderRadius: 12, fontSize: '0.8125rem', lineHeight: 1.5,
-                        whiteSpace: 'pre-wrap', wordBreak: 'break-word', minWidth: 0,
-                        background: msg.sender === 'visitor' ? 'var(--primary)' : 'var(--card-bg)',
-                        color: msg.sender === 'visitor' ? '#fff' : 'var(--fg)',
-                        border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
-                        opacity: withheld ? 0.65 : 1,
-                        ...(deleted ? { background: 'transparent', color: 'var(--fg-muted)', fontStyle: 'italic', border: '1px dashed var(--border)', opacity: 1 } : {}),
-                      }}>
-                        {deleted ? 'This message was deleted' : (
-                          <>
-                            {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
-                            {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
-                            {showText && renderWithLinks(msg.content)}
-                          </>
-                        )}
-                      </div>
-                    );
-
-                    return (
-                      <div key={msg.id} className={mine ? 'msg-row chat-msg' : 'chat-msg'} style={{
-                        alignSelf: mine ? 'flex-start' : 'flex-end',
-                        display: 'flex', flexDirection: 'column',
-                        alignItems: mine ? 'flex-start' : 'flex-end',
-                      }}>
-                        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
-                          {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You'
-                            : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
-                        </span>
-                        {!mine ? bubble : (
-                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', maxWidth: '100%' }}>
-                            {isEditing && editing ? (
-                              <MessageEditor
-                                value={editing.text}
-                                original={messageText(msg)}
-                                hasFiles={files.length > 0}
-                                channel={activeConv.source === 'email' ? 'email' : 'chat'}
-                                saving={editing.saving}
-                                error={editing.error}
-                                onChange={text => setEditing(e => (e ? { ...e, text } : e))}
-                                onCancel={() => setEditing(null)}
-                                onSave={saveEdit}
-                              />
-                            ) : (
-                              <>
-                                {bubble}
-                                <MessageActions
-                                  msg={msg}
-                                  open={menu?.id === msg.id}
-                                  up={!!menu?.up}
-                                  canChange={canChangeMessage(user, msg)}
-                                  onToggle={button => toggleMenu(msg.id, button)}
-                                  onEdit={() => startEdit(msg)}
-                                  onDelete={() => { setMenu(null); setDeleting({ id: msg.id, busy: false, error: '' }); }}
-                                  onCopy={() => copyMessage(msg)}
-                                  onDetails={() => openDetails(msg.id)}
-                                />
-                              </>
-                            )}
-                          </div>
-                        )}
-                        {withheld && !deleted && (
-                          <span style={{
-                            fontSize: '0.625rem', color: '#b45309', background: '#fffbeb',
-                            border: '1px solid #fde68a', borderRadius: 4, padding: '1px 6px', marginTop: '0.25rem',
-                          }}>
-                            Not sent — {WITHHELD_LABELS[withheld] ?? 'held for you'}
-                          </span>
-                        )}
-                        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                          {new Date(msg.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                          {msg.edited_at && !deleted && (
-                            <span title={`Edited by ${msg.edited_by || 'unknown'}, ${fullDate(msg.edited_at)}`}> · Edited</span>
-                          )}
-                          {deleted && ` · Deleted${msg.deleted_by ? ` by ${msg.deleted_by}` : ''}`}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  {hiddenEarlier > 0 && (
+                    <div style={{ textAlign: 'center', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                      {hiddenEarlier} older {hiddenEarlier === 1 ? 'chat' : 'chats'} not shown (empty, or before the last 5)
+                    </div>
+                  )}
+                  {earlier.map(block => (
+                    <Fragment key={block.conversation_id}>
+                      <ThreadDivider>
+                        Earlier chat · {new Date(block.created_at).toLocaleDateString([], { day: 'numeric', month: 'short' })}
+                        {chatStatusLabel(block.status) ? ` · ${chatStatusLabel(block.status)}` : ''}
+                        {' · '}
+                        <button type="button" onClick={() => openConversation(block.conversation_id)} style={{
+                          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                          font: 'inherit', color: 'var(--primary)',
+                        }}>
+                          Open
+                        </button>
+                      </ThreadDivider>
+                      {(block.messages || []).map(msg => renderMessage(msg, true))}
+                    </Fragment>
+                  ))}
+                  {earlier.length > 0 && <ThreadDivider>{newerChat ? 'This chat' : 'Latest chat'}</ThreadDivider>}
+                  {messages.map(msg => renderMessage(msg))}
                   <div ref={bottomRef} />
                 </div>
+
+                {/* The customer wrote in a newer chat: replies here would go to this one. */}
+                {newerChat && (
+                  <div role="status" style={{
+                    borderTop: '1px solid var(--border)', padding: '0.5rem 1rem',
+                    display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap',
+                    fontSize: '0.75rem', background: 'var(--primary-light)', color: 'var(--fg)',
+                  }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      This customer has a newer chat
+                      {(() => {
+                        const bits = [chatStatusLabel(newerChat.status), timeAgo(newerChat.last_message_at)].filter(Boolean);
+                        return bits.length ? ` (${bits.join(', ')})` : '';
+                      })()}. Replies here go to this older chat.
+                    </span>
+                    <button type="button" className="btn btn-primary btn-sm" onClick={() => openConversation(newerChat.conversation_id)}>
+                      Open newer chat
+                    </button>
+                  </div>
+                )}
 
                 {/* Composer */}
                 {activeConv.status !== 'resolved' && canReply && (

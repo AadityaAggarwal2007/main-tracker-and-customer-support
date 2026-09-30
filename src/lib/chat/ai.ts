@@ -6,7 +6,7 @@ import type {
   ChatCompletionToolChoiceOption,
 } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
-import { lookupOrder, lookupVerifiedOrder } from './orders';
+import { customerKeyForOrderSql, lookupOrder, lookupVerifiedOrder } from './orders';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
   asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply,
@@ -874,7 +874,11 @@ export async function getAIResponse(
       // proved stays the verified one: a second order looked up later does not
       // replace it (nor a form-verified one, whose verified_via says 'form').
       // A 'legacy' tag was never proof, so a real proof replaces it. Every
-      // expression in SET sees the old row, so the three CASEs agree.
+      // expression in SET sees the old row, so the CASEs agree.
+      // customer_key (chat-customer-key.sql) follows the verified order, for
+      // widget chats only: it groups this customer's chats in the inbox. A
+      // chat proved with the last 4 never takes over an older chat, though;
+      // only the widget form (full phone) does that.
       if (confirmed?.order_id) {
         try {
           await query(
@@ -884,7 +888,11 @@ export async function getAIResponse(
                     verified_at = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
                                        THEN now() ELSE verified_at END,
                     verified_via = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
-                                        THEN 'chat' ELSE verified_via END
+                                        THEN 'chat' ELSE verified_via END,
+                    customer_key = CASE WHEN (verified_order_id IS NULL OR verified_via = 'legacy')
+                                             AND source = 'chat'
+                                        THEN ${customerKeyForOrderSql('$1', 'conversations.site_id')}
+                                        ELSE customer_key END
               WHERE id = $2`,
             [confirmed.order_id, conversationId]
           );

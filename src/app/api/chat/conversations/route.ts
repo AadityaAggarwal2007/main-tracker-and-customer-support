@@ -11,6 +11,10 @@ export const dynamic = 'force-dynamic';
 // ?segment=visitors|customers splits unverified chats from verified ones
 // (conversations.verified_order_id, see chat-verified.sql).
 //
+// A verified customer's widget chats on one site are one row (customer_key,
+// see chat-customer-key.sql), with thread_count, group_unread and
+// group_needs_human added.
+//
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
 export async function GET(request: NextRequest) {
@@ -51,26 +55,54 @@ export async function GET(request: NextRequest) {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit);
 
+  // One row per verified customer (chat-customer-key.sql): widget chats that
+  // share (site_id, customer_key) collapse into their most recent chat among
+  // the rows the filters above kept. thread_count is how many of that
+  // customer's chats matched, group_unread their unread messages together,
+  // group_needs_human whether any of them waits for a person (the row shows
+  // the latest chat's status, which can hide an older one in Needs you).
+  // Every other row is its own group of one. Grouped here in SQL, before the
+  // LIMIT, so the limit counts rows the inbox actually shows.
   const result = await query(
-    `SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
-            c.unread_count, c.last_message_at, c.created_at,
-            c.verified_order_id, c.verified_via,
-            s.id AS site_id, s.name AS site_name, s.tracker_business_id,
-            b.name AS panel_name,
+    `WITH filtered AS (
+       SELECT c.id, c.visitor_name, c.visitor_phone, c.status, c.source, c.category,
+              c.unread_count, c.last_message_at, c.created_at,
+              c.verified_order_id, c.verified_via, c.customer_key,
+              s.id AS site_id, s.name AS site_name, s.tracker_business_id,
+              b.name AS panel_name,
+              CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
+                   THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key
+         FROM conversations c
+         JOIN sites s ON s.id = c.site_id
+         LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text
+         ${where}
+     ), grouped AS (
+       SELECT f.*,
+              row_number() OVER w AS group_rank,
+              count(*) OVER (PARTITION BY f.site_id, f.group_key)::int AS thread_count,
+              sum(f.unread_count) OVER (PARTITION BY f.site_id, f.group_key)::int AS group_unread,
+              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human
+         FROM filtered f
+       WINDOW w AS (PARTITION BY f.site_id, f.group_key
+                    ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
+     )
+     SELECT g.id, g.visitor_name, g.visitor_phone, g.status, g.source, g.category,
+            g.unread_count, g.last_message_at, g.created_at,
+            g.verified_order_id, g.verified_via,
+            g.site_id, g.site_name, g.tracker_business_id, g.panel_name,
+            g.customer_key, g.thread_count, g.group_unread, g.group_needs_human,
             (SELECT m.content
                FROM messages m
-              WHERE m.conversation_id = c.id
+              WHERE m.conversation_id = g.id
                 AND m.sender <> 'tool_result'
                 AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
                 AND m.content IS NOT NULL AND btrim(m.content) <> ''
                 AND m.deleted_at IS NULL
               ORDER BY m.created_at DESC
               LIMIT 1) AS last_message
-       FROM conversations c
-       JOIN sites s ON s.id = c.site_id
-       LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text
-       ${where}
-      ORDER BY c.last_message_at DESC NULLS LAST
+       FROM grouped g
+      WHERE g.group_rank = 1
+      ORDER BY g.last_message_at DESC NULLS LAST
       LIMIT $${pi}`,
     params
   );

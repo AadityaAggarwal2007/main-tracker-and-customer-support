@@ -293,3 +293,27 @@ export async function lookupVerifiedOrder(
     return { found: false, message: 'Could not look up order right now. Please try again in a moment.' };
   }
 }
+
+// ── One chat per verified customer (conversations.customer_key) ─
+// The key is the last 10 digits of the phone on the order a chat verified
+// (chat-customer-key.sql). It is the same number verifyOrderByPhone compares
+// with, so the form's typed phone (normalizePhone) and the order's stored
+// phone reduce to the same key. It only groups a customer's chats for staff
+// and lets the form carry on their chat; it never reaches the widget or the AI.
+
+// A phone column reduced to its key: digits only, at least 10, last 10 kept.
+export const phoneKeySql = (col: string) =>
+  `CASE WHEN length(regexp_replace(COALESCE(${col}, ''), '\\D', '', 'g')) >= 10
+        THEN RIGHT(regexp_replace(COALESCE(${col}, ''), '\\D', '', 'g'), 10) END`;
+
+// Scalar subquery: the key of order `orderIdSql` within the panel of site
+// `siteIdSql`, or NULL when the site has no panel, the order is not in it, or
+// its rows do not agree on one 10-digit phone. Same rule as the backfill in
+// chat-customer-key.sql.
+export const customerKeyForOrderSql = (orderIdSql: string, siteIdSql: string) =>
+  `(SELECT CASE WHEN count(DISTINCT k.key) = 1 THEN min(k.key) END
+      FROM (SELECT ${phoneKeySql('o.customer_mobile')} AS key
+              FROM orders o
+              JOIN sites s ON o.business_id::text = s.tracker_business_id::text
+             WHERE s.id = ${siteIdSql}
+               AND o.order_id = ${orderIdSql}) k)`;
