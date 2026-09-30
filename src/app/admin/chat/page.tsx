@@ -27,6 +27,8 @@ interface Conversation {
   // The name staff read (src/lib/chat/display-name.ts): visitor_name when the chat has
   // a real one, else the customer name on its verified / phone-matched order.
   display_name?: string | null;
+  // True when display_name is the customer name on the chat's order.
+  name_from_order?: boolean;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -267,16 +269,16 @@ function WaitingChip({ since, big = false }: { since: string; big?: boolean }) {
 // but taken from its order (a phone match is a staff hint, not verification).
 const convName = (c: { display_name?: string | null; visitor_name: string | null }) =>
   c.display_name || c.visitor_name || 'Visitor';
-// True when the printed name is the order's, not the chat's own. It is drawn in
-// italics (with "from order" in the header) so it never reads as a proven name,
-// on a phone too, where there is no hover.
-const nameFromOrder = (c: { display_name?: string | null; visitor_name: string | null }) =>
-  !!c.display_name && c.display_name !== c.visitor_name;
-const nameNote = (c: { display_name?: string | null; visitor_name: string | null; phone_match_order_id?: string | null; verified_order_id?: string | null }) => {
-  if (!nameFromOrder(c)) return undefined;
-  return c.verified_order_id ? `Name from order ${c.verified_order_id}`
-    : `Name from order ${c.phone_match_order_id ?? ''}, matched by phone number (not verified)`;
-};
+// A chat tied to an order shows the customer name ON THE ORDER, never one the
+// customer typed (display-name.ts). For a verified customer that is simply their
+// name; for a phone match (not proof of who is typing) it is drawn in italics,
+// with "from order" in the header, so it never reads as a proven name, on a
+// phone too, where there is no hover.
+type NameSrc = { name_from_order?: boolean; phone_match_order_id?: string | null; verified_order_id?: string | null };
+const nameFromOrder = (c: NameSrc) => !!c.name_from_order && !c.verified_order_id;
+const nameNote = (c: NameSrc) => !c.name_from_order ? undefined
+  : c.verified_order_id ? `Name from order ${c.verified_order_id}`
+  : `Name from order ${c.phone_match_order_id ?? ''}, matched by phone number (not verified)`;
 
 // The order line in the thread header: when the order was placed, where it is
 // now in ShipTrack (the stage the customer's own tracking page shows) and the

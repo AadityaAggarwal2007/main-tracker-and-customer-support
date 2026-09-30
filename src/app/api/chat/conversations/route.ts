@@ -5,7 +5,7 @@ import { parseInboxSearch } from '@/lib/chat/inbox-search';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
 import { NO_REPLY_NEEDED_REGEX, WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
-import { displayNameSql, orderNameJoinSql } from '@/lib/chat/display-name';
+import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,9 +53,10 @@ export const dynamic = 'force-dynamic';
 // each row health_threat / health_accuse: the customer has threatened a
 // chargeback, police or court, or called the store a fraud.
 //
-// display_name (src/lib/chat/display-name.ts): the name staff read. The chat's own
-// name when it has a real one, else the customer name on its verified or
-// phone-matched order (a phone-matched chat used to say "Visitor"). Never stored.
+// display_name (src/lib/chat/display-name.ts): the name staff read. A chat tied to
+// an order (verified, else phone-matched) shows the customer name ON THE ORDER,
+// never one the customer typed; a chat with no order shows its own name.
+// name_from_order says which. Never stored.
 //
 // sites.tracker_business_id is text and businesses.id is uuid, so every join
 // between the two apps' tables compares as text.
@@ -171,7 +172,7 @@ export async function GET(request: NextRequest) {
   const result = await query(
     `WITH ${search.cte ? search.cte + ',' : ''}
      base AS (
-       SELECT c.id, c.visitor_name, ${displayNameSql('c')} AS display_name, c.visitor_phone, c.status, c.source, c.category,
+       SELECT c.id, c.visitor_name, ${displayNameSql('c')} AS display_name, ${nameFromOrderSql()} AS name_from_order, c.visitor_phone, c.status, c.source, c.category,
               c.unread_count, c.last_message_at, c.created_at,
               c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
               c.subject_label, c.subject_summary, c.subject_updated_at,
@@ -224,7 +225,7 @@ export async function GET(request: NextRequest) {
        WINDOW w AS (PARTITION BY f.site_id, f.group_key
                     ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
      )
-     SELECT g.id, g.visitor_name, g.display_name, g.visitor_phone, g.status, g.source, g.category,
+     SELECT g.id, g.visitor_name, g.display_name, g.name_from_order, g.visitor_phone, g.status, g.source, g.category,
             g.unread_count, g.last_message_at, g.created_at,
             g.verified_order_id, g.verified_via, g.phone_match_order_id,
             g.site_id, g.site_name, g.tracker_business_id, g.panel_name,

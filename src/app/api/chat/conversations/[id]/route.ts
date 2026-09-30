@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest, AuthUser } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
-import { displayNameSql, orderNameJoinSql } from '@/lib/chat/display-name';
+import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 
 export const dynamic = 'force-dynamic';
 
 const VALID_STATUSES = ['ai_handling', 'agent_handling', 'resolved', 'human_needed'];
 
 interface ConversationRow {
-  id: string; site_id: string; visitor_name: string | null; display_name: string | null; visitor_phone: string | null;
+  id: string; site_id: string; visitor_name: string | null; display_name: string | null; name_from_order: boolean; visitor_phone: string | null;
   status: string; source: string; category: string; unread_count: number;
   last_message_at: string | null; created_at: string;
   site_name: string; tracker_business_id: string | null; panel_name: string | null;
@@ -22,7 +22,7 @@ interface ConversationRow {
 // Reachable only if the conversation's panel is one this user may see.
 async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow | null> {
   const conv = await queryOne<ConversationRow>(
-    `SELECT c.id, c.site_id, c.visitor_name, ${displayNameSql('c')} AS display_name, c.visitor_phone, c.status, c.source,
+    `SELECT c.id, c.site_id, c.visitor_name, ${displayNameSql('c')} AS display_name, ${nameFromOrderSql()} AS name_from_order, c.visitor_phone, c.status, c.source,
             c.category, c.unread_count, c.last_message_at, c.created_at,
             c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
