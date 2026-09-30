@@ -2,7 +2,7 @@ import { PoolClient } from 'pg';
 import { queryOne, withTransaction } from '@/lib/db';
 
 // ── One chat per customer ──────────────────────────────────────
-// Asked for by the owner on 2026-10-01: a customer who verifies (order ID + full
+// Asked for by the owner on 2026-09-30: a customer who verifies (order ID + full
 // phone) while an older chat of theirs exists must end up with ONE chat that holds
 // the whole history, not two. The older chat is the one that stays (it has the
 // history and the customer's place in the inbox); the newer one's messages are

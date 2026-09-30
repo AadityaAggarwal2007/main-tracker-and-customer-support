@@ -156,26 +156,17 @@ export async function GET(request: NextRequest) {
   // the latest chat's status, which can hide an older one in Needs you).
   // Every other row is its own group of one. Grouped here in SQL, before the
   // LIMIT, so the limit counts rows the inbox actually shows.
-  // Who needs an answer first. Very top: a customer who threatened a chargeback,
-  // police or court, or called the store a fraud, and has not been answered by a
-  // person yet (master rules sections 15 and 16), longest waiting first; these
-  // count as overdue after 1 hour, everyone else after 2. Then: an angry customer who is also being ignored
-  // (frustrated and overdue), then customers waiting 2 hours or more (longest
-  // first), then frustrated ones (highest score first). Then everything else,
-  // and any Closed chat, by latest activity. A search: best matches first.
+  // Newest activity first (owner, 2026-09-30): the chat that was written in last is on
+  // top, so today's chats are at the top and a new chat appears at the top. It used to
+  // put customers waiting 2 hours or more (and threats and frauds) first, and a chat
+  // waiting since last week sat above everything from today. Those chats are still
+  // marked (red Waiting timer, overdue colour, Fraud / Threat and At risk chips, the
+  // Needs you tab and its counts), just not lifted out of date order. A search: best
+  // matches first.
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
-    : `CASE WHEN g.group_urgent_since IS NOT NULL THEN 0
-            WHEN g.waiting_overdue AND g.is_pinned THEN 1
-            WHEN g.waiting_overdue THEN 2
-            WHEN g.returned THEN 3
-            WHEN g.is_pinned THEN 4
-            ELSE 5 END,
-       g.group_urgent_since ASC NULLS LAST,
-       CASE WHEN g.is_pinned THEN g.health_score END DESC NULLS LAST,
-       CASE WHEN g.waiting_overdue THEN g.waiting_since END ASC NULLS LAST,
-       g.last_message_at DESC NULLS LAST`;
+    : `g.last_message_at DESC NULLS LAST, g.created_at DESC`;
 
   // How many open customers (one per grouped row) each problem tab holds.
   const countsSql = `SELECT ${INBOX_TOPICS.map((t) => `count(DISTINCT x.gk) FILTER (WHERE ${

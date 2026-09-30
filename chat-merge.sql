@@ -1,5 +1,5 @@
 -- ============================================================
--- One chat per customer: merging a duplicate chat into the customer's own. 2026-10-01.
+-- One chat per customer: merging a duplicate chat into the customer's own. 2026-09-30.
 -- Asked for by the owner in chat: a customer who proves an order in the chat (order
 -- ID + full phone) while an older chat of theirs sits on another device must end up
 -- with ONE chat and its history, not two.
