@@ -942,6 +942,8 @@ export async function getAIResponse(
       // and keeps this order in view for the rest of the chat. The first order
       // proved stays the verified one: a second order looked up later does not
       // replace it (nor a form-verified one, whose verified_via says 'form').
+      // 'chat_phone' = order ID + the FULL phone typed in the chat (since 2026-09-30),
+      // the same proof as the form; older chat proofs ('chat') were a last 4.
       // A 'legacy' tag was never proof, so a real proof replaces it. Every
       // expression in SET sees the old row, so the CASEs agree.
       // customer_key (chat-customer-key.sql) follows the verified order, for
@@ -957,7 +959,7 @@ export async function getAIResponse(
                     verified_at = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
                                        THEN now() ELSE verified_at END,
                     verified_via = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
-                                        THEN 'chat' ELSE verified_via END,
+                                        THEN 'chat_phone' ELSE verified_via END,
                     customer_key = CASE WHEN (verified_order_id IS NULL OR verified_via = 'legacy')
                                              AND source = 'chat'
                                         THEN ${customerKeyForOrderSql('$1', 'conversations.site_id')}

@@ -62,8 +62,9 @@ export async function POST(request: NextRequest) {
     // Widget routes trust a stored conversation id, not visitor_id, so every
     // device that ever held that chat keeps reading it. It is therefore only
     // carried on when the device that holds it proved exactly what this one
-    // just proved: the SAME order with the full phone ('form'). Never a chat
-    // proved with the last 4 only ('chat') or a legacy tag, and never a chat
+    // just proved: the SAME order with the full phone ('form', or 'chat_phone': the
+    // same proof typed in the chat since 2026-09-30). Never a chat proved with
+    // the last 4 only ('chat', older chats) or a legacy tag, and never a chat
     // verified for another order (that device never proved this one, and the
     // AI would start serving this order there). Otherwise this visitor gets
     // its own chat with the same customer_key, and the inbox shows them as
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
         WHERE site_id = $1
           AND source = 'chat'
           AND customer_key = $2
-          AND verified_via = 'form'
+          AND verified_via IN ('form', 'chat_phone')
           AND verified_order_id = $3
         ORDER BY last_message_at DESC NULLS LAST, created_at DESC
         LIMIT 1`,
@@ -100,10 +101,26 @@ export async function POST(request: NextRequest) {
     }
     const carriedOn = !!conversation;
     if (!conversation) {
-      const own = await getOrCreateVisitorConversation(site.id, visitorId);
+      // This device's own chat: the open one, else its most recent Closed one (the
+      // auto-close shuts a visitor's chat after 4 quiet hours, and a customer who
+      // then verifies must get THAT chat back, not a second one). A Closed chat is
+      // only reused while nobody else was verified in it: on a shared device a
+      // chat verified for another customer is never opened to this one.
+      let own = await queryOne<{ id: string; status: string }>(
+        `SELECT id, status FROM conversations
+          WHERE site_id = $1 AND visitor_id = $2 AND source = 'chat'
+            AND (status <> 'resolved'
+                 OR verified_order_id IS NULL
+                 OR customer_key = $3 OR verified_order_id = $4)
+          ORDER BY (status <> 'resolved') DESC, created_at DESC
+          LIMIT 1`,
+        [site.id, visitorId, customerKey, order.order_id]
+      );
+      if (!own) own = await getOrCreateVisitorConversation(site.id, visitorId);
       conversation = await queryOne<{ id: string; status: string }>(
         `UPDATE conversations
-            SET verified_order_id = $1,
+            SET status = CASE WHEN status = 'resolved' THEN 'ai_handling' ELSE status END,
+                verified_order_id = $1,
                 verified_at = now(),
                 verified_via = 'form',
                 visitor_name = COALESCE($2, visitor_name),

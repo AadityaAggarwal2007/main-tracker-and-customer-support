@@ -41,7 +41,19 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 
 export const AUTO_CLOSE_DAYS = 4;
 
-// Chats open right now (any status but Closed) and quiet for the window.
+// A VISITOR's chat (a widget chat nobody has verified yet, and not an old phone-match
+// customer) is closed after this many quiet HOURS instead of days (owner, 2026-09-30):
+// a visitor who asked a question and left is done, and the Visitors tab should show
+// the ones talking now. Email threads are slower and keep the days. The same
+// protections apply (a waiting customer, a protected chat: never closed).
+export const AUTO_CLOSE_VISITOR_HOURS = 4;
+
+// The quiet window of ONE chat: hours for a visitor's widget chat, days otherwise.
+// $1 = days, $2 = visitor hours. Same test as the inbox's Visitors / Customers split.
+const WINDOW_SQL = `(CASE WHEN c.source = 'chat' AND c.verified_order_id IS NULL AND c.phone_match_order_id IS NULL
+                         THEN make_interval(hours => $2::int) ELSE make_interval(days => $1::int) END)`;
+
+// Chats open right now (any status but Closed) and quiet for their window (WINDOW_SQL).
 // `w` mirrors the list route's waiting join (its message filters are the list's own);
 // customer_waiting is that rule made STRICTER, never looser: whatever the inbox shows
 // as waiting is waiting here too (checked against the live list, see AGENTS.md).
@@ -81,13 +93,14 @@ const CANDIDATES_SQL = `
          AND m.deleted_at IS NULL
     ) w ON true
    WHERE c.status <> 'resolved'
-     AND COALESCE(c.last_message_at, c.created_at) < now() - make_interval(days => $1::int)
-     AND c.updated_at < now() - make_interval(days => $1::int)
+     AND COALESCE(c.last_message_at, c.created_at) < now() - ${WINDOW_SQL}
+     AND c.updated_at < now() - ${WINDOW_SQL}
      AND NOT EXISTS (SELECT 1 FROM messages m2
-                      WHERE m2.conversation_id = c.id AND m2.created_at >= now() - make_interval(days => $1::int))`;
+                      WHERE m2.conversation_id = c.id AND m2.created_at >= now() - ${WINDOW_SQL})`;
 
 export interface AutoCloseResult {
   days: number;
+  visitorHours: number;
   quiet: number;        // open chats with nothing new for the window
   waiting: number;      // of those, customers still waiting for an answer: left open
   protected: number;    // of those, refund / cancellation / payment / threat / fraud / Needs you chats: left open
@@ -95,8 +108,9 @@ export interface AutoCloseResult {
   dryRun: boolean;
 }
 
-export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number } = {}): Promise<AutoCloseResult> {
+export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number; visitorHours?: number } = {}): Promise<AutoCloseResult> {
   const days = Math.max(1, Math.floor(opts.days ?? AUTO_CLOSE_DAYS));
+  const visitorHours = Math.max(1, Math.floor(opts.visitorHours ?? AUTO_CLOSE_VISITOR_HOURS));
   const dryRun = !!opts.dryRun;
 
   if (dryRun) {
@@ -104,9 +118,9 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
       `SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting,
               count(*) FILTER (WHERE NOT customer_waiting AND is_protected)::int AS kept
          FROM (${CANDIDATES_SQL}) x`,
-      [days]
+      [days, visitorHours]
     );
-    return { days, quiet: r.rows[0]?.quiet ?? 0, waiting: r.rows[0]?.waiting ?? 0, protected: r.rows[0]?.kept ?? 0, closed: 0, dryRun };
+    return { days, visitorHours, quiet: r.rows[0]?.quiet ?? 0, waiting: r.rows[0]?.waiting ?? 0, protected: r.rows[0]?.kept ?? 0, closed: 0, dryRun };
   }
 
   // One statement, so the customer-waiting test and the close see the same rows.
@@ -124,13 +138,13 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
               FROM cand
              WHERE c.id = cand.id AND NOT cand.customer_waiting AND NOT cand.is_protected
                AND c.status <> 'resolved'
-               AND COALESCE(c.last_message_at, c.created_at) < now() - make_interval(days => $1::int)
-               AND c.updated_at < now() - make_interval(days => $1::int)
+               AND COALESCE(c.last_message_at, c.created_at) < now() - ${WINDOW_SQL}
+               AND c.updated_at < now() - ${WINDOW_SQL}
             RETURNING c.id)
      SELECT (SELECT count(*) FROM done)::int AS closed_n, stats.quiet, stats.waiting, stats.kept
        FROM stats`,
-    [days]
+    [days, visitorHours]
   );
   const row = closed.rows[0];
-  return { days, quiet: row?.quiet ?? 0, waiting: row?.waiting ?? 0, protected: row?.kept ?? 0, closed: row?.closed_n ?? 0, dryRun };
+  return { days, visitorHours, quiet: row?.quiet ?? 0, waiting: row?.waiting ?? 0, protected: row?.kept ?? 0, closed: row?.closed_n ?? 0, dryRun };
 }

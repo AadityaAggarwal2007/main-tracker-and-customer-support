@@ -240,7 +240,8 @@ export async function GET(request: NextRequest) {
               ((b.waiting_since IS NOT NULL AND b.waiting_since <= now() - interval '${WAITING_OVERDUE_HOURS} hours')
                OR (b.urgent_since IS NOT NULL AND b.urgent_since <= now() - interval '${URGENT_OVERDUE_HOURS} hour')) AS waiting_overdue,
               (b.status <> 'resolved' AND COALESCE(b.health_score, 0) >= ${HEALTH_PIN_MIN}) AS is_pinned,
-              (b.status <> 'resolved' AND b.auto_closed_at IS NOT NULL) AS returned
+              (b.status <> 'resolved' AND b.auto_closed_at IS NOT NULL
+               AND (b.verified_order_id IS NOT NULL OR b.phone_match_order_id IS NOT NULL)) AS returned
          FROM base b
        ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text' : ''}
      ), grouped AS (
