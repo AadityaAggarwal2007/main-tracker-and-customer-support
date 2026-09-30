@@ -642,17 +642,20 @@ export async function getAIResponse(
   // ask for the order ID and last 4 all over again. Only this conversation's
   // own verified order, only within its panel, and only when it is missing
   // from the window (it costs tokens on every message).
-  // verified_via 'legacy' (chat-verified-legacy.sql) only moves an old chat
-  // out of Visitors: its order was found by the old phone/email lookup, which
-  // is not proof of ownership, so it counts as NOT verified here (no order kept
-  // in view, no re-read without last 4, no H4).
+  // verified_via 'legacy' (chat-verified-legacy.sql) counts too: the owner
+  // asked on 2026-09-30 that a customer who verified once is never asked for
+  // the order ID and last 4 again (seen live: an "Old check" chat asked a
+  // customer who had typed their full phone). That order was found in this
+  // same chat from the full phone the customer typed and was already shown
+  // here, and /api/widget/resume clears the tag when another browser picks
+  // the chat up by phone alone, so it is only ever re-served where it was.
   let verifiedOrderId: string | null = null;
   try {
-    const v = await queryOne<{ verified_order_id: string | null; verified_via: string | null }>(
-      `SELECT verified_order_id, verified_via FROM conversations WHERE id = $1`,
+    const v = await queryOne<{ verified_order_id: string | null }>(
+      `SELECT verified_order_id FROM conversations WHERE id = $1`,
       [conversationId]
     );
-    verifiedOrderId = v?.verified_via === 'legacy' ? null : (v?.verified_order_id || null);
+    verifiedOrderId = v?.verified_order_id || null;
   } catch (err) {
     // Before chat-verified.sql is applied the column does not exist yet.
     console.error('[AI] verified order read failed:', (err as Error)?.message);

@@ -193,11 +193,13 @@ function chatStatusLabel(status: string): string {
 
 // Green "Verified" tag for a customer who proved their order. A 'legacy' tag
 // (chat-verified-legacy.sql) gets an amber "Old check" instead: that order was
-// found by an older phone/email lookup, which is not proof, and the AI ignores it.
+// found by an older phone/email lookup in this chat. Since 2026-09-30 the AI
+// treats it as verified in this chat too (the owner: never ask a verified
+// customer again); the amber badge only tells staff how it was found.
 function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?: string | null }) {
   if (via === 'legacy') {
     return (
-      <span title="Found by an older phone/email lookup, not verified with order ID + last 4. The AI will ask again before sharing order details." style={{
+      <span title="Found by an older phone/email lookup in this chat, not with order ID + last 4. The AI still treats this chat as verified for this order." style={{
         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
         background: '#fef3c7', color: '#b45309',
