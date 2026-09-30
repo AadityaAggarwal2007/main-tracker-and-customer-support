@@ -1,5 +1,5 @@
 import { query, queryOne } from '@/lib/db';
-import { AUTO_DELIVER_DAY } from '@/lib/journey';
+import { AUTO_DELIVER_DAY, JOURNEY, buildJourney, type JourneyOrder } from '@/lib/journey';
 
 // ── Order lookup for the support AI ────────────────────────────
 // Ported from the chat-support app's tracker-db.js. It already spoke raw SQL
@@ -73,6 +73,7 @@ interface OrderRow {
   customer_mobile: string | null; tracking_status: string; tracking_id: string | null;
   tracking_token: string | null; courier_partner: string | null; estimated_delivery: string | null;
   order_total: number; city: string | null; state: string | null; created_at: string;
+  status_updated_at: string | null; delivered_at: string | null; origin_city: string | null;
   is_cancelled: boolean; payment_method: string | null;
   business_name: string | null; business_tracking_domain: string | null;
   products: string[] | null;
@@ -94,9 +95,12 @@ const ORDER_SELECT_SQL = `SELECT
          o.city,
          o.state,
          o.created_at,
+         o.status_updated_at,
+         o.delivered_at,
          o.is_cancelled,
          o.payment_method,
          b.name AS business_name,
+         b.origin_city,
          b.tracking_domain AS business_tracking_domain,
          COALESCE(
            array_agg(oi.product_name ORDER BY oi.created_at)
@@ -109,8 +113,8 @@ const ORDER_SELECT_SQL = `SELECT
 const ORDER_GROUP_SQL = `GROUP BY
          o.order_id, o.customer_name, o.customer_email, o.customer_mobile,
          o.tracking_status, o.tracking_id, o.tracking_token, o.courier_partner, o.estimated_delivery,
-         o.order_total, o.city, o.state, o.created_at, o.is_cancelled,
-         o.payment_method, b.name, b.tracking_domain
+         o.order_total, o.city, o.state, o.created_at, o.status_updated_at, o.delivered_at, o.is_cancelled,
+         o.payment_method, b.name, b.tracking_domain, b.origin_city
        ORDER BY o.created_at DESC`;
 
 // The panel id arrives from sites.tracker_business_id, which is text on the
@@ -142,10 +146,19 @@ function toFoundOrder(row: OrderRow): FoundOrder {
   const isCOD = rawPay === 'cod' || rawPay.includes('cash on delivery');
   const paymentDisplay = isCOD ? 'Cash on Delivery (COD)' : 'Prepaid';
 
+  // The stage the customer's own tracking page shows (journey.ts: the stored status,
+  // moved forward by the order's age, and never Delivered unless the team marked it),
+  // in its plain name ("Reached City", not "Reached Surat"). Before 2026-09-30 the AI
+  // read the raw stored status: it said "packed, not picked up" about an order whose
+  // tracking page said it had reached the destination state. Special states (cancelled,
+  // return to origin, failed) keep their stored wording.
+  const journey = buildJourney(row as unknown as JourneyOrder);
+  const stage = journey.mode === 'normal' && journey.currentIndex >= 0 ? JOURNEY[journey.currentIndex].status : row.tracking_status;
+
   return {
     order_id: row.order_id,
     customer_name: row.customer_name,
-    status: row.tracking_status,
+    status: stage,
     tracking_id: row.tracking_id || null,
     tracking_link: trackingLink,
     courier: row.courier_partner || null,
