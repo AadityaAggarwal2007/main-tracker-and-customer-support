@@ -101,6 +101,7 @@ export async function POST(request: NextRequest) {
       conversationId: conversation.id,
       status: conversation.status,
       messages: messages.rows,
+      siteName: site.name,
     });
   } catch (err) {
     console.error('[widget] resume error:', err);

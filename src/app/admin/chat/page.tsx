@@ -84,6 +84,16 @@ interface PendingFile {
   id?: string;
 }
 
+// The name the widget shows the customer above AI replies ("Vastora Support"),
+// built from the site name the same way public/widget.js builds it. The owner
+// asked for the brand, not "AI", on these messages; team replies say "You".
+function supportLabel(siteName?: string | null): string {
+  const name = (siteName || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (!name) return 'Support';
+  const brand = name.charAt(0).toUpperCase() + name.slice(1);
+  return /\bsupport$/i.test(brand) ? brand : `${brand} Support`;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   ai_handling: 'AI',
   agent_handling: 'You',
@@ -1260,7 +1270,8 @@ export default function ChatSupportPage() {
                         alignItems: mine ? 'flex-start' : 'flex-end',
                       }}>
                         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
-                          {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You' : 'AI'}
+                          {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You'
+                            : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
                         </span>
                         {!mine ? bubble : (
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', maxWidth: '100%' }}>

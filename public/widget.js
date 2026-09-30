@@ -33,6 +33,35 @@
     state.phoneSaved = !!(localStorage.getItem('_cw_phone_' + SITE_KEY));
   } catch (e) { state.visitorId = generateId(); }
 
+  // The store's name above replies ("Vastora Support"), never a bare "AI".
+  // data-brand on the script tag wins; otherwise the site name the widget API
+  // sends, remembered so a returning visitor sees it before any request.
+  var BRAND_ATTR = cleanBrand(script.getAttribute('data-brand'));
+  var brand = BRAND_ATTR;
+  if (!brand) { try { brand = cleanBrand(localStorage.getItem('_cw_brand_' + SITE_KEY)); } catch (e) {} }
+
+  function cleanBrand(v) {
+    v = typeof v === 'string' ? v.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').slice(0, 60) : '';
+    return v ? v.charAt(0).toUpperCase() + v.slice(1) : '';
+  }
+
+  function supportLabel() {
+    if (!brand) return 'Support';
+    return /\bsupport$/i.test(brand) ? brand : brand + ' Support';
+  }
+
+  // Called with siteName from the widget API. Labels already on screen that
+  // still show the fallback take the name too.
+  function setBrand(siteName) {
+    if (BRAND_ATTR) return;
+    var b = cleanBrand(siteName);
+    if (!b || b === brand) return;
+    brand = b;
+    try { localStorage.setItem('_cw_brand_' + SITE_KEY, b); } catch (e) {}
+    var labels = document.querySelectorAll('#_cw_root ._cw_ai ._cw_label, #_cw_root ._cw_agent ._cw_label');
+    for (var i = 0; i < labels.length; i++) labels[i].textContent = supportLabel();
+  }
+
   function generateId() { return 'v_' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -441,6 +470,7 @@
         state.conversationId = data.conversationId;
         state.status = data.status;
         state.phoneSaved = true;
+        setBrand(data.siteName);
         try {
           localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId);
           localStorage.setItem('_cw_phone_' + SITE_KEY, phone);
@@ -585,7 +615,7 @@
     }
 
     var cls = msg.sender === 'visitor' ? '_cw_visitor' : (msg.sender === 'agent' ? '_cw_agent' : '_cw_ai');
-    var label = msg.sender === 'visitor' ? 'You' : (msg.sender === 'agent' ? 'Support Agent' : 'Support');
+    var label = msg.sender === 'visitor' ? 'You' : supportLabel();
     var div = document.createElement('div');
     div.className = '_cw_msg ' + cls;
     div.dataset.id = msg.id;
@@ -597,7 +627,7 @@
     if (sameSender) div.classList.add('_cw_same');
 
     div.innerHTML =
-      (sameSender ? '' : '<div class="_cw_label">' + label + '</div>') +
+      (sameSender ? '' : '<div class="_cw_label">' + escapeHtml(label) + '</div>') +
       '<div class="_cw_bubble">' + bubbleHtml(msg) + '</div>' +
       '<div class="_cw_time">' + escapeHtml(timeText(msg)) + '</div>';
     messagesEl.insertBefore(div, typingEl);
@@ -653,6 +683,7 @@
       if (data.conversationId) {
         state.conversationId = data.conversationId;
         state.status = data.status;
+        setBrand(data.siteName);
         try { localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId); } catch(e) {}
         switchToChat();
         if (firstMessage) {
@@ -679,6 +710,7 @@
     api('/messages/' + state.conversationId + '?siteKey=' + encodeURIComponent(SITE_KEY))
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      setBrand(data && data.siteName);
       if (data.messages) {
         // Start `since` again from the server's clock. An older copy of this
         // script could have saved a time from the visitor's own clock.
@@ -800,7 +832,7 @@
     div.setAttribute('data-id', 'tmp_verified');
     var label = document.createElement('div');
     label.className = '_cw_label';
-    label.textContent = 'Support';
+    label.textContent = supportLabel();
     var bubble = document.createElement('div');
     bubble.className = '_cw_bubble';
     bubble.textContent = (firstName ? 'Hi ' + firstName + '! ' : '') +
@@ -847,6 +879,7 @@
         state.conversationId = data.conversationId;
         if (data.status) state.status = data.status;
         state.phoneSaved = true;
+        setBrand(data.siteName);
         try {
           localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId);
           localStorage.setItem('_cw_phone_' + SITE_KEY, phone);

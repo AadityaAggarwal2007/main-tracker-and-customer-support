@@ -59,7 +59,7 @@ export async function GET(
       since ? [params.conversationId, since] : [params.conversationId]
     );
 
-    return widgetJson({ messages: messages.rows, status: conversation.status });
+    return widgetJson({ messages: messages.rows, status: conversation.status, siteName: site.name });
   } catch (err) {
     console.error('[widget] messages error:', err);
     return widgetJson({ error: 'Could not load messages' }, 500);
