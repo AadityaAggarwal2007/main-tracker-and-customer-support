@@ -34,7 +34,8 @@ interface Conversation {
   panel_name: string | null;
   last_message: string | null;
   // Set once the customer proved an order (the widget's form, or order ID +
-  // last 4 in the chat). Unset = a visitor.
+  // last 4 in the chat). Unset = a visitor. verified_via 'legacy' = found by an
+  // old phone/email lookup, shown as "Old check", not as Verified.
   verified_order_id?: string | null;
   verified_via?: string | null;
 }
@@ -114,8 +115,8 @@ const WITHHELD_LABELS: Record<string, string> = {
 
 const POLL_MS = 3000;
 
-// The inbox tabs. All and Customers show verified customers only, Visitors the
-// rest; the status tabs show everyone, whatever they have verified.
+// The inbox tabs. All and Customers show verified customers only (plus the
+// "Old check" legacy tags), Visitors the rest; the status tabs show everyone, whatever they have verified.
 type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved';
 const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: string; segment: '' | 'visitors' | 'customers' }[] = [
   { v: 'all', label: 'All', icon: Inbox, status: '', segment: 'customers' },
@@ -127,8 +128,21 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
   { v: 'resolved', label: 'Closed', icon: Check, status: 'resolved', segment: '' },
 ];
 
-// Green "Verified" tag for a customer who proved their order.
-function VerifiedBadge({ orderId }: { orderId?: string | null }) {
+// Green "Verified" tag for a customer who proved their order. A 'legacy' tag
+// (chat-verified-legacy.sql) gets an amber "Old check" instead: that order was
+// found by an older phone/email lookup, which is not proof, and the AI ignores it.
+function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?: string | null }) {
+  if (via === 'legacy') {
+    return (
+      <span title="Found by an older phone/email lookup, not verified with order ID + last 4. The AI will ask again before sharing order details." style={{
+        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
+        display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+        background: '#fef3c7', color: '#b45309',
+      }}>
+        <Info size={10} /> Old check{orderId ? ` · ${orderId}` : ''}
+      </span>
+    );
+  }
   return (
     <span title={orderId ? `Verified order ${orderId}` : 'Verified customer'} style={{
       fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
@@ -959,9 +973,11 @@ export default function ChatSupportPage() {
   // The thread's own answer carries the verified fields, so the header stays
   // right after the chat drops out of the Visitors list; the list row is the
   // fallback while the thread is still loading.
-  const activeVerifiedOrder = !activeConv ? null
-    : activeConv.verified_order_id !== undefined ? activeConv.verified_order_id
-    : conversations.find(c => c.id === activeConv.id)?.verified_order_id ?? null;
+  const activeVerifiedSrc = !activeConv ? null
+    : activeConv.verified_order_id !== undefined ? activeConv
+    : conversations.find(c => c.id === activeConv.id) ?? null;
+  const activeVerifiedOrder = activeVerifiedSrc?.verified_order_id ?? null;
+  const activeVerifiedVia = activeVerifiedSrc?.verified_via ?? null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1102,7 +1118,7 @@ export default function ChatSupportPage() {
                     <span style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {c.visitor_name || 'Visitor'}
                     </span>
-                    {c.verified_order_id && <VerifiedBadge />}
+                    {c.verified_order_id && <VerifiedBadge via={c.verified_via} />}
                     {c.unread_count > 0 && (
                       <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700 }}>
                         {c.unread_count}
@@ -1173,7 +1189,7 @@ export default function ChatSupportPage() {
                       }}>
                         {STATUS_LABELS[activeConv.status]}
                       </span>
-                      {activeVerifiedOrder && <VerifiedBadge orderId={activeVerifiedOrder} />}
+                      {activeVerifiedOrder && <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />}
                     </div>
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
                       <span>{activeConv.panel_name || activeConv.site_name}</span>

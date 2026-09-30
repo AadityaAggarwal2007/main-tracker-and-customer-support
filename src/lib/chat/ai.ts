@@ -412,6 +412,36 @@ const CATEGORIZE_TOOL: ChatCompletionTool = {
   },
 };
 
+// Until 2026-09-24 lookup_order also found orders by a full phone, an email or
+// a name, which is not proof of ownership (the 2026-09-11 incident came from
+// those lookups), and old chats still hold such found results in the history
+// window. Proof is an order ID + last 4 with no phone or email (the old code
+// dropped the last 4 when one came along and matched on that instead).
+// Before the chat-verification deploy that shape is not enough either: the
+// bot often looked up an order ID that an old phone lookup had shown it.
+// chat-verified-backfill.sql sorted those out and verified the real proofs,
+// so an older result counts only when it holds this chat's verified order.
+const VERIFICATION_DEPLOYED_AT = Date.parse('2026-09-29T21:58:55Z');
+function isProvenLookup(argsJson: string | undefined): boolean {
+  let a: unknown;
+  try { a = JSON.parse(argsJson || '{}'); } catch { return false; }
+  if (!a || typeof a !== 'object') return false;
+  const arg = (k: string) => {
+    const v = (a as Record<string, unknown>)[k];
+    return v == null ? '' : String(v).trim();
+  };
+  return !!arg('order_id')
+    && normaliseDigits(arg('phone_last4')).replace(/\D/g, '').length >= 4
+    && !arg('phone') && !arg('email');
+}
+
+// What the model reads instead of such a result.
+const UNPROVEN_LOOKUP = JSON.stringify({
+  found: false,
+  needs_verification: true,
+  message: 'This earlier lookup is not proof of ownership. Share nothing from it. Ask for the order ID and the last 4 digits of the phone number on the order, then look up again with both.',
+});
+
 // The API rejects the whole request unless every assistant tool_call is
 // answered by a matching tool message. Rows get orphaned when the history
 // window slices a pair in half, or when a tool result failed to persist — so
@@ -493,6 +523,7 @@ interface StoredMessage {
   sender: string;
   content: string | null;
   metadata: { tool_calls?: ChatCompletionMessageToolCall[]; tool_call_id?: string; hidden?: boolean; withheld?: string } | null;
+  created_at: Date | string;
 }
 
 export async function getAIResponse(
@@ -507,7 +538,7 @@ export async function getAIResponse(
   // edited is read as it reads now; one they deleted is left out, so the model
   // never builds on a reply the customer no longer sees.
   const recent = await query<StoredMessage>(
-    `SELECT sender, content, metadata
+    `SELECT sender, content, metadata, created_at
        FROM (
          SELECT sender, content, metadata, created_at, id
            FROM messages
@@ -561,6 +592,8 @@ export async function getAIResponse(
 
   // Build chat history — include tool results stored in metadata
   const chatMessages: ChatCompletionMessageParam[] = [];
+  // When each tool result was stored (see UNPROVEN_LOOKUP below).
+  const storedAt = new WeakMap<object, number>();
   for (const m of recent.rows) {
     if (m.sender === 'visitor') {
       chatMessages.push({ role: 'user', content: m.content || '' });
@@ -580,11 +613,13 @@ export async function getAIResponse(
         chatMessages.push({ role: 'assistant', content: m.content || '' });
       }
     } else if (m.sender === 'tool_result') {
-      chatMessages.push({
+      const t: ChatCompletionMessageParam = {
         role: 'tool',
         tool_call_id: m.metadata?.tool_call_id || 'unknown',
         content: m.content || '',
-      });
+      };
+      storedAt.set(t, new Date(m.created_at).getTime());
+      chatMessages.push(t);
     }
   }
 
@@ -597,16 +632,43 @@ export async function getAIResponse(
   // ask for the order ID and last 4 all over again. Only this conversation's
   // own verified order, only within its panel, and only when it is missing
   // from the window (it costs tokens on every message).
+  // verified_via 'legacy' (chat-verified-legacy.sql) only moves an old chat
+  // out of Visitors: its order was found by the old phone/email lookup, which
+  // is not proof of ownership, so it counts as NOT verified here (no order kept
+  // in view, no re-read without last 4, no H4).
   let verifiedOrderId: string | null = null;
   try {
-    const v = await queryOne<{ verified_order_id: string | null }>(
-      `SELECT verified_order_id FROM conversations WHERE id = $1`,
+    const v = await queryOne<{ verified_order_id: string | null; verified_via: string | null }>(
+      `SELECT verified_order_id, verified_via FROM conversations WHERE id = $1`,
       [conversationId]
     );
-    verifiedOrderId = v?.verified_order_id || null;
+    verifiedOrderId = v?.verified_via === 'legacy' ? null : (v?.verified_order_id || null);
   } catch (err) {
     // Before chat-verified.sql is applied the column does not exist yet.
     console.error('[AI] verified order read failed:', (err as Error)?.message);
+  }
+
+  // A found lookup_order result in the window that was not proof (see
+  // isProvenLookup) is swapped for UNPROVEN_LOOKUP before the model sees it,
+  // and its orders do not count as known. Also kept: a result holding only
+  // this chat's verified order (the re-read below stores order ID only).
+  const callArgs = new Map<string, { name: string; args: string }>();
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i] as ChatCompletionMessageParam & { tool_calls?: ChatCompletionMessageToolCall[] };
+    if (m.role === 'assistant' && m.tool_calls) {
+      for (const tc of m.tool_calls) callArgs.set(tc.id, { name: tc.function?.name, args: tc.function?.arguments });
+      continue;
+    }
+    if (m.role !== 'tool') continue;
+    const call = callArgs.get(m.tool_call_id);
+    if (call?.name !== 'lookup_order') continue;
+    if (isProvenLookup(call.args) && (storedAt.get(m) ?? 0) >= VERIFICATION_DEPLOYED_AT) continue;
+    let r: { found?: boolean; orders?: { order_id?: string }[] } | null = null;
+    try { r = JSON.parse(String(m.content || '')); } catch { continue; }
+    if (r?.found !== true) continue;
+    const onlyVerified = !!verifiedOrderId && Array.isArray(r.orders) && r.orders.length > 0
+      && r.orders.every((o) => o?.order_id === verifiedOrderId);
+    if (!onlyVerified) history[i] = { ...m, content: UNPROVEN_LOOKUP };
   }
 
   // Every order a found lookup in the window returned: its ID and tracking ID
@@ -801,13 +863,18 @@ export async function getAIResponse(
       // and keeps this order in view for the rest of the chat. The first order
       // proved stays the verified one: a second order looked up later does not
       // replace it (nor a form-verified one, whose verified_via says 'form').
+      // A 'legacy' tag was never proof, so a real proof replaces it. Every
+      // expression in SET sees the old row, so the three CASEs agree.
       if (confirmed?.order_id) {
         try {
           await query(
             `UPDATE conversations
-                SET verified_order_id = COALESCE(verified_order_id, $1),
-                    verified_at = COALESCE(verified_at, now()),
-                    verified_via = COALESCE(verified_via, 'chat')
+                SET verified_order_id = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
+                                             THEN $1 ELSE verified_order_id END,
+                    verified_at = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
+                                       THEN now() ELSE verified_at END,
+                    verified_via = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy'
+                                        THEN 'chat' ELSE verified_via END
               WHERE id = $2`,
             [confirmed.order_id, conversationId]
           );
