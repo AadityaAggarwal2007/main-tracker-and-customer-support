@@ -20,9 +20,14 @@ import { VISIBLE_MESSAGE_SQL } from './widget-api';
 // in Git) for the one-off backfill: change the prompt or the clean-up rules
 // here and there together.
 
+// Refund and Cancellation are ONE label since 2026-09-30 (the owner: a customer
+// who wants their money back does not care which word we file it under, and two
+// tabs split one queue). Chats labelled before that still say 'Refund' or
+// 'Cancellation'; the inbox shows and files both as 'Refund / Cancellation'
+// (inbox-topics.ts), and a model that still answers 'Refund' is read as it.
 export const SUBJECT_LABELS = [
   'Order status', 'Delivery delay', 'Not received', 'Address change', 'Wrong address',
-  'Size exchange', 'Product exchange', 'Return', 'Refund', 'Cancellation',
+  'Size exchange', 'Product exchange', 'Return', 'Refund / Cancellation',
   'Damaged item', 'Wrong item', 'Missing item', 'Wrong tracking link',
   'Payment issue', 'Payment method / COD', 'Product question', 'Complaint', 'Other',
 ] as const;
@@ -54,6 +59,7 @@ const labelKey = (s: string) => s.replace(/^\W*label\s*:/i, '').toLowerCase().re
 
 export function matchSubjectLabel(raw: string): SubjectLabel {
   const key = labelKey(raw || '');
+  if (key === 'refund' || key === 'cancellation' || key === 'refundcancel' || key === 'refundandcancellation') return 'Refund / Cancellation';
   return SUBJECT_LABELS.find((l) => labelKey(l) === key) || 'Other';
 }
 

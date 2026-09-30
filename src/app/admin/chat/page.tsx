@@ -6,10 +6,11 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
-  Menu, ChevronLeft, Users, UserCheck, Search,
+  Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
+import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -68,6 +69,10 @@ interface Conversation {
   health_reason?: string | null;
   health_updated_at?: string | null;
   health_pinned?: boolean;
+  // The customer has threatened a chargeback, police or court (health_threat),
+  // or called the store a fraud (health_accuse): tags on the list row.
+  health_threat?: boolean;
+  health_accuse?: boolean;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -165,7 +170,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 // Colour of a subject label, by kind of concern, so the team can tell at a
 // glance: money (amber), a change the customer asks for (blue), something
 // that went wrong (red), anything else (grey).
-const SUBJECT_MONEY = ['Refund', 'Payment issue', 'Payment method / COD'];
+const SUBJECT_MONEY = ['Refund / Cancellation', 'Refund', 'Cancellation', 'Payment issue', 'Payment method / COD'];
 const SUBJECT_CHANGE = ['Address change', 'Wrong address', 'Size exchange', 'Product exchange', 'Return', 'Cancellation'];
 const SUBJECT_PROBLEM = ['Not received', 'Damaged item', 'Wrong item', 'Missing item', 'Wrong tracking link', 'Delivery delay', 'Complaint'];
 
@@ -188,7 +193,12 @@ const POLL_MS = 3000;
 
 // The inbox tabs. All and Customers show verified customers only (plus the
 // "Old check" legacy tags), Visitors the rest; the status tabs show everyone, whatever they have verified.
-type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved';
+// A problem tab is 'topic:<key>' (src/lib/chat/inbox-topics.ts): the open chats
+// about one problem, whatever their status.
+type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved' | `topic:${string}`;
+const TOPIC_ICONS: Record<string, typeof Inbox> = {
+  risk: Flame, refund: Undo2, tracking: Link2, delay: Clock, address: MapPin, damaged: PackageX, exchange: RefreshCw,
+};
 const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: string; segment: '' | 'visitors' | 'customers' }[] = [
   { v: 'all', label: 'All', icon: Inbox, status: '', segment: 'customers' },
   { v: 'visitors', label: 'Visitors', icon: Users, status: '', segment: 'visitors' },
@@ -622,9 +632,14 @@ export default function ChatSupportPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activePanelId, setActivePanelId] = useState('');
   const [tab, setTab] = useState<InboxTab>('all');
-  const tabDef = INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0];
+  const topicKey = tab.startsWith('topic:') ? tab.slice(6) : '';
+  const topicDef = INBOX_TOPICS.find(t => t.key === topicKey) || null;
+  // A problem tab has no status or segment of its own: it lists the open chats about it.
+  const tabDef = topicKey ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
   const statusFilter = tabDef.status;
   const segment = tabDef.segment;
+  // Open customers per problem tab, from the list's own answer.
+  const [topicCounts, setTopicCounts] = useState<Record<string, number>>({});
 
   // The search box. searchQ trails what is typed by a moment, so the list is
   // not asked for on every key. A search looks at ALL chats of the chosen
@@ -730,15 +745,19 @@ export default function ChatSupportPage() {
       } else {
         if (statusFilter) params.set('status', statusFilter);
         if (segment) params.set('segment', segment);
+        if (topicKey) params.set('topic', topicKey);
       }
       const res = await fetch(`/api/chat/conversations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (res.ok && seq === listSeqRef.current) setConversations(data.conversations || []);
+      if (res.ok && seq === listSeqRef.current) {
+        setConversations(data.conversations || []);
+        if (data.topic_counts) setTopicCounts(data.topic_counts);
+      }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, searchActive, searchQ]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, searchActive, searchQ]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1364,6 +1383,35 @@ export default function ChatSupportPage() {
               <s.icon size={16} /> {s.label}
             </button>
           ))}
+
+          {/* What the customers are upset about: open chats only, so each queue stays short */}
+          <div style={{ padding: '0.875rem 0.75rem 0.25rem', fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
+            Problem type
+          </div>
+          {INBOX_TOPICS.map(t => {
+            const Icon = TOPIC_ICONS[t.key] || Inbox;
+            const n = topicCounts[t.key] ?? 0;
+            const id = `topic:${t.key}` as InboxTab;
+            return (
+              <button
+                key={id}
+                title={t.hint}
+                onClick={() => { setTab(id); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
+                className={`nav-btn ${tab === id ? 'active' : ''}`}
+                style={{ width: '100%' }}
+              >
+                <Icon size={16} style={t.key === 'risk' && n > 0 ? { color: '#dc2626' } : undefined} />
+                <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{t.label}</span>
+                {n > 0 && (
+                  <span style={{
+                    fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
+                    background: t.key === 'risk' ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))',
+                    color: t.key === 'risk' ? '#b91c1c' : 'var(--fg-muted)',
+                  }}>{n}</span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '0.75rem' }}>
@@ -1401,7 +1449,7 @@ export default function ChatSupportPage() {
           <div className="chat-list">
             <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
               <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>
-                {searchActive ? 'Search results' : 'Conversations'}
+                {searchActive ? 'Search results' : topicDef ? topicDef.label : 'Conversations'}
                 <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
                   {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
                 </span>
@@ -1459,7 +1507,14 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  {searchActive ? (
+                  {topicDef && !searchActive ? (
+                    <>
+                      <p>No open chats under “{topicDef.label}”.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        {topicDef.hint}. Closed chats are under Closed, or find them with the search box.
+                      </p>
+                    </>
+                  ) : searchActive ? (
                     <>
                       <p>No chats found for “{searchQ}”.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
@@ -1541,9 +1596,21 @@ export default function ChatSupportPage() {
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
                         background: subjectStyle(c.subject_label).bg, color: subjectStyle(c.subject_label).fg,
-                      }}>{c.subject_label}</span></>
+                      }}>{displaySubjectLabel(c.subject_label)}</span></>
                     ) : CATEGORY_LABELS[c.category] && (
                       <><span>·</span><span>{CATEGORY_LABELS[c.category]}</span></>
+                    )}
+                    {c.status !== 'resolved' && c.health_threat && (
+                      <span title="This customer has threatened a chargeback, police, court or bad reviews" style={{
+                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
+                        background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',
+                      }}>Threat</span>
+                    )}
+                    {c.status !== 'resolved' && c.health_accuse && (
+                      <span title="This customer has called the store a fraud, scam or fake" style={{
+                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
+                        background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',
+                      }}>Fraud claim</span>
                     )}
                   </div>
 
@@ -1647,7 +1714,7 @@ export default function ChatSupportPage() {
                         flexShrink: 0, whiteSpace: 'nowrap',
                         background: subjectStyle(activeSubject.label).bg, color: subjectStyle(activeSubject.label).fg,
                       }}>
-                        {activeSubject.label}
+                        {displaySubjectLabel(activeSubject.label)}
                       </span>
                       {activeSubject.summary && (
                         <span style={{
