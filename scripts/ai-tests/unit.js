@@ -7,6 +7,7 @@ const load = (f) => {
   fs.writeFileSync(path.join(dir, f + '.js'), js);
   return require(path.join(dir, f + '.js'));
 };
+load('today-promise');
 const brain = load('brain'), learn = load('brain-learn');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
