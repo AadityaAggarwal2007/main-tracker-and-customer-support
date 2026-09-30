@@ -6,7 +6,7 @@ import {
   Loader2, Check, AlertCircle, ShoppingBag, LogOut, Send, Mail,
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
-  Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall,
+  Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall, CalendarDays, Truck, CalendarCheck,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
@@ -257,6 +257,58 @@ function WaitingChip({ since, big = false }: { since: string; big?: boolean }) {
     }}>
       <Clock size={big ? 11 : 10} /> Waiting {formatWaiting(ms)}
     </span>
+  );
+}
+
+// The order line in the thread header: when the order was placed, where it is
+// now in ShipTrack (the stage the customer's own tracking page shows) and the
+// estimated delivery date. From GET /api/chat/conversations/[id] (order_facts),
+// staff only.
+interface OrderFacts {
+  order_id: string;
+  source: 'verified' | 'phone_match';
+  placed_on: string | null;
+  status: string;
+  mode: 'normal' | 'cancelled' | 'rto' | 'failed';
+  delivered: boolean;
+  eta: string | null;
+  eta_estimated: boolean;
+}
+// India is where the stores ship, so dates are read in India time whatever the
+// staff member's own clock says.
+function orderDay(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+}
+function OrderLine({ facts }: { facts: OrderFacts }) {
+  const placed = orderDay(facts.placed_on);
+  // A delivered, cancelled or returning order has no delivery still to come.
+  const eta = facts.delivered || facts.mode === 'cancelled' || facts.mode === 'rto' ? null : orderDay(facts.eta);
+  const tone = facts.mode === 'cancelled' || facts.mode === 'rto' ? { bg: 'var(--danger-light)', fg: 'var(--danger)' }
+    : facts.mode === 'failed' ? { bg: 'var(--warning-light)', fg: 'var(--warning)' }
+    : facts.delivered ? { bg: 'var(--success-light)', fg: 'var(--success)' }
+    : { bg: 'var(--primary-light)', fg: 'var(--primary)' };
+  const item = { display: 'inline-flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' } as const;
+  return (
+    <div title={`Order ${facts.order_id}${facts.source === 'phone_match' ? ' (matched by phone number, not verified)' : ''}`} style={{
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.25rem 0.75rem',
+      fontSize: '0.75rem', marginTop: '0.375rem', color: 'var(--fg-muted)',
+    }}>
+      {placed && (
+        <span style={item}><CalendarDays size={12} /> Ordered <b style={{ color: 'var(--fg)', fontWeight: 600 }}>{placed}</b></span>
+      )}
+      <span style={item}>
+        <Truck size={12} /> Now
+        <b style={{ background: tone.bg, color: tone.fg, padding: '1px 7px', borderRadius: 9999, fontWeight: 700, fontSize: '0.6875rem' }}>{facts.status}</b>
+      </span>
+      {eta && (
+        <span style={item}>
+          <CalendarCheck size={12} /> Est. delivery <b style={{ color: 'var(--fg)', fontWeight: 600 }}>{eta}</b>
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -708,6 +760,8 @@ export default function ChatSupportPage() {
   const [loadingList, setLoadingList] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
+  // The open chat's order line; tied to its chat so a fast switch never shows the last one's.
+  const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // The same customer's older chats on this site (read-only, oldest first),
   // how many older chats they have in all, and their newer chat if any.
@@ -816,6 +870,7 @@ export default function ChatSupportPage() {
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
+      setOrderInfo({ id, facts: data.order_facts ?? null });
       setMessages(data.messages || []);
       const older = data.earlier ?? data.conversation?.earlier;
       setEarlier(Array.isArray(older) ? older : []);
@@ -826,7 +881,7 @@ export default function ChatSupportPage() {
 
   useEffect(() => {
     if (activeId) fetchThread(activeId);
-    else { setActiveConv(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
+    else { setActiveConv(null); setOrderInfo(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
   }, [activeId, fetchThread]);
 
   /* ═══ POLLING ═══ */
@@ -1280,6 +1335,7 @@ export default function ChatSupportPage() {
     reason: activeHealthSrc.health_reason ?? null,
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
+  const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
   const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
   const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
@@ -1729,6 +1785,7 @@ export default function ChatSupportPage() {
                         : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
                       {activeWaiting && <WaitingChip since={activeWaiting} big />}
                     </div>
+                    {activeOrder && <OrderLine facts={activeOrder} />}
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
                       <span>{activeConv.panel_name || activeConv.site_name}</span>
                       {activeConv.visitor_phone && (

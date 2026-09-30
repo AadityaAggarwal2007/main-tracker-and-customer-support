@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest, AuthUser } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
+import { loadOrderFacts } from '@/lib/chat/order-facts';
 
 export const dynamic = 'force-dynamic';
 
@@ -192,6 +193,12 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   // (newer_chat), so staff can switch to where the customer is now writing.
   const thread = await loadCustomerThread(conversation, user);
 
+  // The header's order line (placed on, where it is now, estimated delivery):
+  // the verified order, else the one the chat's number matched. Staff only.
+  const orderFacts = conversation.verified_order_id
+    ? await loadOrderFacts(conversation.verified_order_id, conversation.tracker_business_id, 'verified')
+    : await loadOrderFacts(conversation.phone_match_order_id, conversation.tracker_business_id, 'phone_match');
+
   // Opening a thread clears its unread badge, and the grouped inbox row
   // (group_unread) counts the customer's other chats too, so the older chats
   // shown here go as well. A newer chat keeps its badge: nothing of it is
@@ -215,6 +222,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     earlier: thread.earlier,
     earlier_total: thread.earlierTotal,
     newer_chat: thread.newer,
+    order_facts: orderFacts,
   });
 }
 
