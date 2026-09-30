@@ -28,7 +28,10 @@ export const HEALTH_LEVELS: HealthLevel[] = [
 ];
 
 // An OPEN chat at or above this stays at the top of the inbox until it is Closed.
-export const HEALTH_PIN_MIN = 50;
+// 50 (the start of "Frustrated") put 796 of 2,431 open chats up there on the first
+// day, 33%, because scores bunch at 55-59 for customers the bot asked the same thing
+// twice; 60 gave 213 (9%). Raise it if the top is still too crowded.
+export const HEALTH_PIN_MIN = 60;
 
 export function healthLevel(score: number): HealthLevel {
   return HEALTH_LEVELS.find((l) => score >= l.min) || HEALTH_LEVELS[HEALTH_LEVELS.length - 1];

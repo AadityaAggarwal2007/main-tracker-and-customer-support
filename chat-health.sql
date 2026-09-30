@@ -14,7 +14,8 @@
 -- customer message, from the customer's recent messages (all their chats on
 -- the site) and the scoring rules in src/lib/chat/health-rules.ts. The inbox
 -- shows it in the thread header and on the list row, and keeps every OPEN chat
--- with a score of 50+ at the top of the list until it is Closed.
+-- with a score of 60+ (HEALTH_PIN_MIN in health-rules.ts) at the top of the list
+-- until it is Closed.
 -- NULL = not scored yet (no customer message since this went live).
 --
 -- APPLY BEFORE THE CODE DEPLOY: the new code reads and writes these columns.

@@ -9,7 +9,7 @@ import {
   Menu, ChevronLeft, Users, UserCheck, Search,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
-import { healthLevel } from '@/lib/chat/health-rules';
+import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -63,7 +63,7 @@ interface Conversation {
   hit_text?: boolean;
   match_snippet?: string | null;
   // How upset the customer is, 0-100 (src/lib/chat/health.ts). health_pinned:
-  // an open chat scoring 50+, listed first until it is Closed.
+  // an open chat scoring HEALTH_PIN_MIN or more, listed first until it is Closed.
   health_score?: number | null;
   health_reason?: string | null;
   health_updated_at?: string | null;
@@ -1406,7 +1406,7 @@ export default function ChatSupportPage() {
                   {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
                 </span>
                 {urgentCount > 0 && (
-                  <span title="Open chats of frustrated customers (50%+), kept at the top until they are Closed" style={{
+                  <span title={`Open chats of frustrated customers (${HEALTH_PIN_MIN}%+), kept at the top until they are Closed`} style={{
                     marginLeft: '0.5rem', fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700,
                     background: '#fee2e2', color: '#b91c1c',
                   }}>
