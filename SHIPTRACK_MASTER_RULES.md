@@ -352,6 +352,9 @@ When in doubt:
 
 **Keep the chat open and escalate.**
 
+
+> **Owner note (2026-09-30):** `Needs You` applies only to a **verified** customer (order ID + phone proved). An unverified visitor stays in Visitors: nothing moves the chat, no "team will reply" promise is made, and the AI asks them to verify first.
+
 ---
 
 # 12. CUSTOMER REPEAT / AI LOOP PROTECTION
@@ -444,6 +447,9 @@ Do not delete messages.
 
 Do not attempt to manipulate the customer into withdrawing a complaint.
 
+
+> **Owner note (2026-09-30):** `Needs You` applies only to a **verified** customer (order ID + phone proved). An unverified visitor stays in Visitors: nothing moves the chat, no "team will reply" promise is made, and the AI asks them to verify first.
+
 ---
 
 # 16. FAKE WEBSITE / FRAUD CLAIM
@@ -470,6 +476,9 @@ Do not invent proof.
 
 Human team response SLA: **1 hour**.
 
+
+> **Owner note (2026-09-30):** `Needs You` applies only to a **verified** customer (order ID + phone proved). An unverified visitor stays in Visitors: nothing moves the chat, no "team will reply" promise is made, and the AI asks them to verify first.
+
 ---
 
 # 17. REFUND AND CANCELLATION
@@ -488,6 +497,9 @@ If a refund is actually completed, the conversation must state:
 - refund amount
 - refund date
 - original payment method / refund method
+
+
+> **Owner note (2026-09-30):** `Needs You` applies only to a **verified** customer (order ID + phone proved). An unverified visitor stays in Visitors: nothing moves the chat, no "team will reply" promise is made, and the AI asks them to verify first.
 
 ---
 
