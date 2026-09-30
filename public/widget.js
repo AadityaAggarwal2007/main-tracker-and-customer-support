@@ -31,6 +31,9 @@
     state.conversationId = localStorage.getItem('_cw_cid_' + SITE_KEY) || null;
     state.lastTs = localStorage.getItem('_cw_ts_' + SITE_KEY) || null;
     state.phoneSaved = !!(localStorage.getItem('_cw_phone_' + SITE_KEY));
+    // An earlier version kept the customer's phone number here on the storefront:
+    // replace it with a plain marker.
+    if (localStorage.getItem('_cw_phone_' + SITE_KEY) && localStorage.getItem('_cw_phone_' + SITE_KEY) !== '1') localStorage.setItem('_cw_phone_' + SITE_KEY, '1');
   } catch (e) { state.visitorId = generateId(); }
 
   // The store's name above replies ("Vastora Support"), never a bare "AI".
@@ -351,7 +354,6 @@
         '<button id="_cw_verify_btn" type="button">Verify &amp; continue</button>' +
         '<div id="_cw_verify_or">or</div>' +
         '<button id="_cw_visitor_btn" type="button">Continue with a visitor</button>' +
-        '<button id="_cw_verify_resume" type="button">Already chatted with us? Resume →</button>' +
         '<div id="_cw_verify_disclaimer">This chat is powered by AI and may make mistakes. Your messages are visible to the store. Your phone number is used to find your order and to let you resume this chat. See <a href="#" target="_blank">privacy policy</a>.</div>' +
       '</div>' +
       '<div id="_cw_welcome">' +
@@ -360,14 +362,7 @@
         '<div id="_cw_disclaimer">This chat is powered by AI and may make mistakes. Your messages are visible to the store. See <a href="#" target="_blank">privacy policy</a>.</div>' +
         '<div id="_cw_actions">' + actionPills + '</div>' +
         '<div id="_cw_resume_wrap">' +
-          '<button id="_cw_resume_toggle">Already chatted with us? Resume →</button>' +
-          '<div id="_cw_resume_form">' +
-            '<div id="_cw_resume_row">' +
-              '<input id="_cw_resume_ph" type="tel" placeholder="Your phone number" />' +
-              '<button id="_cw_resume_btn">Continue</button>' +
-            '</div>' +
-            '<div id="_cw_resume_err">No conversation found for this number.</div>' +
-          '</div>' +
+          '<button id="_cw_resume_toggle">Already chatted with us? Verify &amp; continue →</button>' +
         '</div>' +
         '<div id="_cw_welcome_input_wrap">' +
           '<input id="_cw_welcome_input" placeholder="Ask anything..." />' +
@@ -408,7 +403,6 @@
   var verifyBtn = document.getElementById('_cw_verify_btn');
   var verifyErr = document.getElementById('_cw_verify_err');
   var visitorBtn = document.getElementById('_cw_visitor_btn');
-  var verifyResume = document.getElementById('_cw_verify_resume');
   var chatView = document.getElementById('_cw_chat');
   var welcomeInput = document.getElementById('_cw_welcome_input');
   var welcomeSend = document.getElementById('_cw_welcome_send');
@@ -424,6 +418,9 @@
   }
 
   function showSaveBanner() {
+    // Not offered any more: a phone number alone can no longer bring a chat back
+    // on another device, so asking for it here would promise something untrue.
+    return;
     if (state.phoneSaved) return;
     var banner = document.getElementById('_cw_save_banner');
     if (banner) banner.style.display = 'flex';
@@ -442,46 +439,12 @@
     .then(function(data) {
       if (data.ok) {
         state.phoneSaved = true;
-        try { localStorage.setItem('_cw_phone_' + SITE_KEY, phone); } catch(e) {}
+        try { localStorage.setItem('_cw_phone_' + SITE_KEY, '1'); } catch(e) {}
         var banner = document.getElementById('_cw_save_banner');
         if (banner) {
           banner.innerHTML = '<div style="font-size:13px;color:#22c55e;font-weight:500;text-align:center">Chat saved! Resume anytime with your phone number.</div>';
           setTimeout(function() { banner.style.display = 'none'; }, 3000);
         }
-      }
-    })
-    .catch(function() {});
-  }
-
-  function resumeByPhone() {
-    var input = document.getElementById('_cw_resume_ph');
-    var err = document.getElementById('_cw_resume_err');
-    var phone = normalizePhone(input.value);
-    if (phone.length < 10) { input.style.borderColor = '#e55'; return; }
-    input.style.borderColor = '';
-    if (err) err.style.display = 'none';
-    api('/resume', {
-      method: 'POST',
-      body: JSON.stringify({ siteKey: SITE_KEY, phone: phone, visitorId: state.visitorId }),
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.found && data.conversationId) {
-        state.conversationId = data.conversationId;
-        state.status = data.status;
-        state.phoneSaved = true;
-        setBrand(data.siteName);
-        try {
-          localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId);
-          localStorage.setItem('_cw_phone_' + SITE_KEY, phone);
-        } catch(e) {}
-        switchToChat();
-        if (data.messages && data.messages.length > 0) {
-          data.messages.forEach(renderMessage);
-        }
-        startPolling();
-      } else {
-        if (err) err.style.display = 'block';
       }
     })
     .catch(function() {});
@@ -882,7 +845,8 @@
         setBrand(data.siteName);
         try {
           localStorage.setItem('_cw_cid_' + SITE_KEY, data.conversationId);
-          localStorage.setItem('_cw_phone_' + SITE_KEY, phone);
+          // A marker only: the phone number itself is not kept on the storefront.
+          localStorage.setItem('_cw_phone_' + SITE_KEY, '1');
         } catch(e) {}
         verifyPh.value = '';
         switchToChat();
@@ -938,15 +902,6 @@
   // Pre-chat form
   verifyBtn.addEventListener('click', submitVerify);
   visitorBtn.addEventListener('click', function() { verifyError(''); showWelcome(); });
-  // Picking up an earlier chat lives in the welcome view: open it there.
-  verifyResume.addEventListener('click', function() {
-    verifyError('');
-    showWelcome();
-    var form = document.getElementById('_cw_resume_form');
-    var ph = document.getElementById('_cw_resume_ph');
-    if (form) form.style.display = 'flex';
-    if (ph) ph.focus();
-  });
   verifyOid.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); submitVerify(); } });
   verifyPh.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); submitVerify(); } });
   verifyOid.addEventListener('input', function() { this.style.borderColor = ''; });
@@ -954,23 +909,11 @@
   // A visitor with a chat already never sees the form.
   if (!state.conversationId) showVerify();
 
-  // Resume by phone
+  // Picking up an earlier chat on a new device goes through the same Order ID +
+  // phone form as everybody else (a phone number alone opens nothing).
   var resumeToggle = document.getElementById('_cw_resume_toggle');
-  var resumeForm = document.getElementById('_cw_resume_form');
-  var resumePh = document.getElementById('_cw_resume_ph');
-  var resumeBtn = document.getElementById('_cw_resume_btn');
   if (resumeToggle) {
-    resumeToggle.addEventListener('click', function() {
-      var shown = resumeForm.style.display === 'flex';
-      resumeForm.style.display = shown ? 'none' : 'flex';
-      if (!shown && resumePh) resumePh.focus();
-    });
-  }
-  if (resumeBtn) {
-    resumeBtn.addEventListener('click', resumeByPhone);
-  }
-  if (resumePh) {
-    resumePh.addEventListener('keydown', function(e) { if (e.key === 'Enter') resumeByPhone(); });
+    resumeToggle.addEventListener('click', function() { verifyError(''); showVerify(); });
   }
 
   // Save phone banner

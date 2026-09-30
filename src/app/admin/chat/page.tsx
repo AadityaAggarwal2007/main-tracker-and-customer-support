@@ -33,6 +33,10 @@ interface Conversation {
   // OPEN chat (returned) it means the customer wrote again after that: shown as "Came back".
   auto_closed_at?: string | null;
   returned?: boolean;
+  // Who pressed Close (a team member's name) and when; null on chats closed before
+  // chat-closed-by.sql. The system's own closes are marked by auto_closed_at.
+  closed_by_name?: string | null;
+  closed_at?: string | null;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -46,7 +50,7 @@ interface Conversation {
   panel_name: string | null;
   last_message: string | null;
   // Set once the customer proved an order (the widget's form, or order ID +
-  // last 4 in the chat). Unset = a visitor. verified_via 'legacy' = found by an
+  // phone in the chat). Unset = a visitor. verified_via 'legacy' = found by an
   // old phone/email lookup, shown as "Old check", not as Verified.
   verified_order_id?: string | null;
   verified_via?: string | null;
@@ -91,6 +95,8 @@ interface Conversation {
   // since when, and whether that is WAITING_OVERDUE_HOURS or more.
   waiting_since?: string | null;
   waiting_overdue?: boolean;
+  // Threatened a chargeback / police / court or called the store a fraud, and no person has answered yet.
+  urgent_waiting?: boolean;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -234,10 +240,10 @@ function chatStatusLabel(status: string): string {
 }
 
 // A visitor whose number is a customer's: not verified (the AI still asks for
-// order ID + last 4), but the team can place them.
+// order ID + phone), but the team can place them.
 function PhoneMatchBadge({ orderId, compact = false }: { orderId?: string | null; compact?: boolean }) {
   return (
-    <span title={`The number this person typed or saved is on order ${orderId || ''}. Not verified: the AI shares no order details until they give the order ID and last 4 digits.`} style={{
+    <span title={`The number this person typed or saved is on order ${orderId || ''}. Not verified: the AI shares no order details until they give the order ID and the phone number.`} style={{
       fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
       display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
       background: '#dbeafe', color: '#1d4ed8', whiteSpace: 'nowrap',
@@ -337,6 +343,36 @@ function OrderLine({ facts }: { facts: OrderFacts }) {
   );
 }
 
+// Who closed a Closed chat, in words: the system (auto_closed_at: 4 quiet days) or a
+// team member (with their name and the time when it was recorded). Null when the chat
+// is not Closed. Rows closed before chat-closed-by.sql just say "by support".
+function closedInfo(c: { status: string; auto_closed_at?: string | null; closed_by_name?: string | null; closed_at?: string | null }) {
+  if (c.status !== 'resolved') return null;
+  const stamp = (iso?: string | null) => {
+    const d = iso ? new Date(iso) : null;
+    return d && !Number.isNaN(d.getTime())
+      ? d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' })
+      : '';
+  };
+  if (c.auto_closed_at) {
+    const at = stamp(c.auto_closed_at);
+    return {
+      auto: true,
+      short: 'Closed · auto',
+      long: 'Closed automatically (4 quiet days)',
+      title: `Closed by the system${at ? ` on ${at}` : ''}: nobody wrote for 4 days and the customer was not waiting for an answer. Nothing was sent to the customer. If they write again it opens itself.`,
+    };
+  }
+  const name = (c.closed_by_name || '').trim();
+  const at = stamp(c.closed_at);
+  return {
+    auto: false,
+    short: 'Closed · support',
+    long: `Closed by support${name ? ` (${name})` : ''}`,
+    title: `Closed by ${name || 'a team member'}${at ? ` on ${at}` : ''}.`,
+  };
+}
+
 // A chat the system closed after 4 quiet days that the customer has since written
 // in again (it opened by itself): sits near the top until a person closes it or
 // takes it over, so it is seen and closed fast. The team's own Close is not tagged.
@@ -404,7 +440,7 @@ function HealthBar({ score, reason, updatedAt }: { score: number; reason?: strin
 function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?: string | null }) {
   if (via === 'legacy') {
     return (
-      <span title="Found by an older phone/email lookup in this chat, not with order ID + last 4. The AI still treats this chat as verified for this order." style={{
+      <span title="Found by an older phone/email lookup in this chat, not with order ID + phone. The AI still treats this chat as verified for this order." style={{
         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
         background: '#fef3c7', color: '#b45309',
@@ -1009,7 +1045,14 @@ export default function ChatSupportPage() {
         body: JSON.stringify({ status }),
       });
       if (res.ok) {
-        setActiveConv(c => (c ? { ...c, status: status as Conversation['status'], auto_closed_at: null } : c));
+        // The closer as the server recorded it, not a guess made here.
+        const d = await res.json().catch(() => ({} as Record<string, unknown>));
+        setActiveConv(c => (c ? {
+          ...c,
+          status: status as Conversation['status'],
+          auto_closed_at: (d.auto_closed_at as string | null | undefined) ?? null,
+          ...(status === 'resolved' ? { closed_by_name: (d.closed_by_name as string | null | undefined) ?? null, closed_at: (d.closed_at as string | null | undefined) ?? null } : {}),
+        } : c));
         fetchConversations(true);
       } else {
         const d = await res.json();
@@ -1377,7 +1420,7 @@ export default function ChatSupportPage() {
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
-  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue || c.returned).length;
+  const urgentCount = searchActive ? 0 : conversations.filter(c => c.health_pinned || c.waiting_overdue || c.urgent_waiting || c.returned).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
   const activeWaiting = activeConv ? (conversations.find(c => c.id === activeConv.id)?.waiting_since ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
@@ -1694,10 +1737,10 @@ export default function ChatSupportPage() {
                     borderBottom: '1px solid var(--border)',
                     borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
                       : c.health_pinned && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
-                      : c.waiting_overdue ? '3px solid #f59e0b' : '3px solid transparent',
+                      : c.waiting_overdue || c.urgent_waiting ? '3px solid #f59e0b' : '3px solid transparent',
                     background: isActiveRow(c) ? 'var(--primary-light)'
                       : c.health_pinned && c.health_score != null ? healthLevel(c.health_score).bg
-                      : c.waiting_overdue ? '#fffbeb' : 'transparent',
+                      : c.waiting_overdue || c.urgent_waiting ? '#fffbeb' : 'transparent',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
@@ -1725,7 +1768,7 @@ export default function ChatSupportPage() {
                       fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
                       background: STATUS_STYLE[c.status]?.bg, color: STATUS_STYLE[c.status]?.fg,
                     }}>
-                      {STATUS_LABELS[c.status]}
+                      {closedInfo(c)?.short ?? STATUS_LABELS[c.status]}
                     </span>
                     {c.group_needs_human && c.status !== 'human_needed' && (
                       <span title="An older chat of this customer is waiting for a person" style={{
@@ -1830,9 +1873,9 @@ export default function ChatSupportPage() {
                         : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
                       {activeWaiting && <WaitingChip since={activeWaiting} big />}
                       {activeConv.auto_closed_at && activeConv.status !== 'resolved' && <CameBackChip closedAt={activeConv.auto_closed_at} big />}
-                      {activeConv.auto_closed_at && activeConv.status === 'resolved' && (
-                        <span title="Nobody wrote for 4 days and the customer was not waiting for an answer, so the system closed it. Nothing was sent to the customer. If they write again it opens itself." style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
-                          Closed automatically (4 quiet days)
+                      {closedInfo(activeConv) && (
+                        <span title={closedInfo(activeConv)!.title} style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                          {closedInfo(activeConv)!.long}
                         </span>
                       )}
                     </div>

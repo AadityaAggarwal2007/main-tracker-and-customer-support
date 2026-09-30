@@ -36,10 +36,15 @@ function normalizeOrderId(orderId?: string | null): string | null {
   return trimmed;
 }
 
-// Only these two. Name / email / full phone are deliberately not accepted —
-// see the comment on lookupOrder.
+// Only the order ID and the phone number on the order. Name and email are
+// deliberately not accepted, and since 2026-09-30 neither is a last-4 (owner's
+// rule, SHIPTRACK_MASTER_RULES.md 8.1): the proof is the order ID together with
+// the FULL phone number, the same proof as the widget's verify form.
+// phone_last4 is still declared because older stored tool calls carry it; a
+// lookup that has only that is refused and asks for the full number.
 export interface OrderLookupArgs {
   order_id?: string;
+  phone_number?: string;
   phone_last4?: string;
 }
 
@@ -155,46 +160,48 @@ function toFoundOrder(row: OrderRow): FoundOrder {
 }
 
 // Look up an order. The ONLY accepted identifiers are the order ID (or its
-// tracking ID) AND the last 4 digits of the phone on the order — both, together.
+// tracking ID) AND the full phone number on the order: both, together, and the
+// number must be a complete 10-digit one (+91 and a leading 0 are ignored).
 //
-// Name, email and full phone were removed deliberately. Each caused a real
+// Name, email and a bare last-4 were removed deliberately. Each caused a real
 // problem: a name is a substring match, so "Raj" pulled back Suraj and Rajan
 // and "a" matched 7,312 of 7,946 orders; last-4 on its own collides massively
 // (4,783 of 7,946 orders sit in colliding last-4 groups) and once showed one
 // customer another's order; and order IDs are sequential, so an order number
 // alone lets anyone walk #1200, #1201, #1202 and read strangers' details.
 //
-// Order ID + last-4 together is the same rule the public /track page uses, and
-// it also keeps names, emails and full numbers out of the model and the logs.
+// Order ID + full phone is the proof the widget's verify form uses
+// (verifyOrderByPhone below). The number is compared here and never returned or
+// logged by this function, so it stays out of the model's results.
 //
 // trackerBusinessId scopes the lookup to one panel's orders.
 export async function lookupOrder(
-  { order_id, phone_last4 }: OrderLookupArgs,
+  { order_id, phone_number }: OrderLookupArgs,
   trackerBusinessId?: string | null
 ): Promise<OrderLookupResult> {
   const normalizedOrderId = normalizeOrderId(order_id);
-  const rawLast4 = phone_last4 ? phone_last4.replace(/\D/g, '').slice(-4) : null;
-  const last4 = rawLast4 && rawLast4.length === 4 ? rawLast4 : null;
+  const phoneRaw = normalizePhone(phone_number);
+  const phone = phoneRaw && /^\d{10}$/.test(phoneRaw) ? phoneRaw : null;
 
-  if (!normalizedOrderId && !last4) {
+  if (!normalizedOrderId && !phone) {
     return {
       found: false,
       needs_verification: true,
-      message: 'Ask the customer for their order ID and the last 4 digits of the phone number on the order. Both are needed.',
+      message: 'Ask the customer for their order ID and the phone number on the order. Both are needed.',
     };
   }
   if (!normalizedOrderId) {
     return {
       found: false,
       needs_verification: true,
-      message: 'Last 4 digits alone match many different customers. Ask for the order ID as well, then look up again with both.',
+      message: 'A phone number alone verifies nothing. Ask for the order ID as well, then look up again with both.',
     };
   }
-  if (!last4) {
+  if (!phone) {
     return {
       found: false,
       needs_verification: true,
-      message: 'An order number alone is not proof of ownership. Ask for the last 4 digits of the phone number on the order, then look up again with both.',
+      message: 'An order number alone is not proof of ownership, and neither are the last few digits of a phone. Ask for the complete phone number on the order (all 10 digits), then look up again with both.',
     };
   }
 
@@ -205,13 +212,15 @@ export async function lookupOrder(
        -- equality checks. The first may be the order ID or the tracking ID:
        -- customers copy the ST… tracking ID off the track page and send that.
        -- It is random rather than sequential, so it is no weaker than the
-       -- order ID, and the last-4 check below still applies either way.
+       -- order ID, and the phone check below still applies either way.
+       -- customer_mobile is stored in many shapes (+91 98765 43210,
+       -- 09876543210…), so it is reduced to its last 10 digits first.
        WHERE (o.order_id ILIKE $1 OR o.tracking_id ILIKE $1)
-       AND RIGHT(o.customer_mobile, 4) = $2
+       AND RIGHT(regexp_replace(COALESCE(o.customer_mobile, ''), '\\D', '', 'g'), 10) = $2
        AND ${BUSINESS_SCOPE_SQL('$3')}
        ${ORDER_GROUP_SQL}
        LIMIT 3`,
-      [escapeLike(normalizedOrderId), last4, trackerBusinessId || null]
+      [escapeLike(normalizedOrderId), phone, trackerBusinessId || null]
     );
 
     if (result.rows.length === 0) {
@@ -219,7 +228,7 @@ export async function lookupOrder(
         found: false,
         // Seen live: with the old "ask them to check both" the model just
         // asked for the details again without saying nothing had matched.
-        message: 'No order matched that order ID together with those last 4 digits. Tell the customer plainly that you could not find an order with both, and ask them to double-check the order ID and the last 4 digits of the phone number on the order.',
+        message: 'No order matched that order ID together with that phone number. Tell the customer plainly that you could not find an order with both, and ask them to double-check the order ID and the phone number on the order.',
       };
     }
 

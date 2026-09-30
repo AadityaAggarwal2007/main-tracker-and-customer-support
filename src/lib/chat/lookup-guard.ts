@@ -1,4 +1,4 @@
-// ── Making sure a typed order ID + last 4 gets looked up ───────
+// ── Making sure a typed order ID + phone number gets looked up ─
 // On the evening of 2026-09-28 deepseek-v4-flash mostly stopped putting
 // together an order ID and last 4 digits sent in separate messages: a bare
 // "3335" right after "could you share the last 4 digits?" led to a lookup 72%
@@ -7,7 +7,13 @@
 // staff never saw them. These helpers read the same rows getAIResponse loads,
 // notice when the customer has already typed both, and let ai.ts force the
 // lookup (with values the customer actually typed) or hand the chat to a
-// person. lookupOrder's own order ID + last-4 rule is not touched.
+// person. lookupOrder's own rule is not touched.
+//
+// Since 2026-09-30 (owner's rule, SHIPTRACK_MASTER_RULES.md 8.1) the proof is
+// the order ID + the FULL phone number; a last 4 is no longer asked for or
+// accepted. In this file `last4` (a token flag, and the `last4` a reply is said
+// to ask for) now means "the phone number": the name is kept so the many call
+// sites do not change. A customer who types only 4 digits gives no pair.
 // No imports: this file is small on purpose, so it can be tested on its own.
 
 export interface GuardRow {
@@ -21,7 +27,7 @@ export interface GuardRow {
   } | null;
 }
 
-export interface PendingLookup { identifier: string; last4: string }
+export interface PendingLookup { identifier: string; phone: string }
 
 /** What a lookup made during this request came back with. */
 export interface LookupOutcome { found?: boolean; needs_verification?: boolean; order_id?: string }
@@ -31,7 +37,16 @@ export function normaliseDigits(text: string): string {
   return text.replace(/[०-९]/g, (d) => String(d.charCodeAt(0) - 0x0966));
 }
 
-// ── Did the reply ask for the order ID or the last 4? ──────────
+// ── Did the reply ask for the order ID or the phone number? ────
+// Asking for the phone number: the words alone are not enough ("the courier will
+// contact you on the mobile number on the order" is not a question), so one
+// sentence must hold a request verb or a question mark as well.
+const PHONE_WORDS = [
+  /\b(?:phone|mobile|mob|contact|registered)\s*(?:number|no\.?|num)\b/,   // the phone number on the order
+  /\bnumber\s+(?:on|of|linked to|used (?:in|for))\s+(?:the\s+|your\s+)?order\b/,
+  /(?:फ़ोन|फोन|मोबाइल)\s*(?:नंबर|नम्बर|no)/,
+];
+const ASK_VERB = /\?|\b(?:share|send|provide|give|tell|type|enter|confirm|mention|verify|bata\w*|bhej\w*|dijiye|dijie|dein|de do|chahiye|kripya)\b|कृपया|बता|भेज|दीजिए|दें|चाहिए|साझा|शेयर/;
 const ASKS_LAST4 = [
   /\blast\s*(?:4|four)\b/,                                   // last 4 digits, last four digits
   /\blast\s+ke\s+(?:4|four|char|chaar)\b/,                   // last ke 4 digit
@@ -50,9 +65,10 @@ const REQUEST = /\?|\b(?:share|send|provide|give|tell|type|enter|confirm|check|n
 export function asksForOrderDetails(text: string | null | undefined): { orderId: boolean; last4: boolean } {
   const t = normaliseDigits(text || '').toLowerCase();
   if (!REQUEST.test(t)) return { orderId: false, last4: false };
+  const phoneAsk = t.split(/(?<=[.!?\n])\s*/).some((sentence) => PHONE_WORDS.some((re) => re.test(sentence)) && ASK_VERB.test(sentence));
   return {
     orderId: ASKS_ORDER_ID.some((re) => re.test(t)),
-    last4: ASKS_LAST4.some((re) => re.test(t)),
+    last4: phoneAsk || ASKS_LAST4.some((re) => re.test(t)),
   };
 }
 
@@ -61,9 +77,9 @@ interface Token {
   key: string;        // row:offset — two tokens are "different" when these differ
   row: number;
   value: string;      // as it should be looked up: STAB12CD34EF, #1598, 1598
-  digits: string;     // the 4 digits it gives as a last-4 candidate, if any
+  digits: string;     // the 10-digit phone number it gives, if it is one
   id: boolean;        // can be the order ID / tracking ID
-  last4: boolean;     // can be the last 4 digits
+  last4: boolean;     // is the phone number (name kept, see the top of the file)
   bare?: boolean;     // a plain number, read only from what the AI had asked
 }
 
@@ -125,10 +141,7 @@ function prep(content: string): string {
   return normaliseDigits(content.slice(0, 2000)).replace(/\s+/g, ' ');
 }
 
-// Customers label the number themselves: "mobile no 3473", "Last four digit of
-// my phone no. Is 8204", "5175 hain order number", "ID 4813". That beats
-// reading it from what the AI last asked.
-const LAST4_LABELLED = /\b(?:last ?(?:4|four|char)(?: ?digits?)?(?: (?:of|ke|ka) (?:my |mere |meri )?(?:phone|mobile|mob|number)\.?(?: ?(?:no|number)\.?)?)?|(?:phone|mobile|mob)(?: ?(?:no|number|num)\.?)?)(?: ?(?:is|are|hai|hain|:|-|=))? ?(\d{4})\b/gi;
+// Customers label the order ID themselves: "5175 hain order number", "ID 4813".
 const ID_BEFORE_LABEL = /\b(\d{4,5}) ?(?:hai|hain|is)? ?(?:my |mera )?order ?(?:id|no|number)\b/gi;
 const ID_LABELLED = /\bid ?(?:is|hai|:|-|=)? ?(\d{4,5})\b/gi;
 // Prices, pincodes and OTPs are numbers too, and not ones to look up.
@@ -155,14 +168,14 @@ function partOfSomethingElse(text: string, start: number, end: number): boolean 
 // askedId / askedLast4: whether the AI message just before it asked for them,
 // which is the only thing that gives a bare number a meaning — order numbers
 // are 4 digits too (#1002–#6821), so a lone "1598" could be either.
-function tokensIn(content: string, row: number, askedId: boolean, askedLast4: boolean): Token[] {
+function tokensIn(content: string, row: number, askedId: boolean, _askedPhone: boolean): Token[] {
   const text = prep(content);
   const used: boolean[] = new Array(text.length).fill(false);
   const found: { at: number; token: Token }[] = [];
   const add = (at: number, t: Omit<Token, 'key' | 'row'>) => found.push({ at, token: { key: `${row}:${at}`, row, ...t } });
 
   for (const p of phonesIn(text, used)) {
-    add(p.at, { value: p.phone, digits: p.phone.slice(-4), id: false, last4: true });
+    add(p.at, { value: p.phone, digits: p.phone, id: false, last4: true });
   }
   // ST + 10 letters/digits is a tracking ID. Typed in lower case it could be an
   // English word ("strengthened"), so then it needs a digit in it.
@@ -188,10 +201,6 @@ function tokensIn(content: string, row: number, askedId: boolean, askedLast4: bo
     add(m.index, { value: m[1], digits: '', id: true, last4: false });
     return true;
   });
-  scan(LAST4_LABELLED, text, used, (m) => {
-    add(m.index, { value: m[1], digits: m[1], id: false, last4: true });
-    return true;
-  });
   for (const re of [ID_BEFORE_LABEL, ID_LABELLED]) {
     scan(re, text, used, (m) => {
       add(m.index, { value: m[1], digits: '', id: true, last4: false });
@@ -203,10 +212,10 @@ function tokensIn(content: string, row: number, askedId: boolean, askedLast4: bo
     scan(/\d+/g, text, used, (m) => {
       const d = m[0];
       if (partOfSomethingElse(text, m.index, m.index + d.length)) return false;
+      // Only an order ID can be a bare number now: 4 digits are no proof.
       const id = askedId && (d.length === 4 || d.length === 5);
-      const last4 = askedLast4 && d.length === 4;
-      if (!id && !last4) return false;
-      add(m.index, { value: d, digits: last4 ? d : '', id, last4, bare: true });
+      if (!id) return false;
+      add(m.index, { value: d, digits: '', id, last4: false, bare: true });
       return true;
     });
   }
@@ -279,7 +288,12 @@ function bestPair(tokens: Token[]): { id: Token; l4: Token } | null {
 }
 
 export const normId = (s: unknown) => normaliseDigits(String(s ?? '')).toLowerCase().replace(/[#\s]/g, '');
-const last4Of = (s: unknown) => normaliseDigits(String(s ?? '')).replace(/\D/g, '').slice(-4);
+// What a stored lookup call proved with: the 10-digit phone (new calls), or the
+// 4 digits an older call used.
+const phoneOf = (s: unknown) => {
+  const d = normaliseDigits(String(s ?? '')).replace(/\D/g, '');
+  return tenDigits(d) || d.slice(-4);
+};
 
 interface TriedLookup { order_id: string; last4: string; callId: string }
 
@@ -290,7 +304,7 @@ function lookupCalls(rows: GuardRow[]): TriedLookup[] {
     for (const tc of r.metadata?.tool_calls || []) {
       if (tc?.function?.name !== 'lookup_order') continue;
       const a = parseJson(tc.function.arguments) || {};
-      out.push({ order_id: normId(a.order_id), last4: last4Of(a.phone_last4), callId: tc.id || '' });
+      out.push({ order_id: normId(a.order_id), last4: phoneOf(a.phone_number ?? a.phone_last4), callId: tc.id || '' });
     }
   }
   return out;
@@ -303,7 +317,7 @@ function samePair(t: TriedLookup, id: string, l4: string): boolean {
 }
 
 /**
- * The order ID and last 4 the customer has typed and we have not yet looked
+ * The order ID and phone number the customer has typed and we have not yet looked
  * up, while our last message was still asking for them. Null otherwise.
  */
 export function findPendingLookup(rows: GuardRow[]): PendingLookup | null {
@@ -315,7 +329,7 @@ export function findPendingLookup(rows: GuardRow[]): PendingLookup | null {
   const pair = bestPair(visitorTokens(rows, lastFoundIndex(rows)));
   if (!pair) return null;
   if (lookupCalls(rows).some((t) => samePair(t, pair.id.value, pair.l4.digits))) return null;
-  return { identifier: pair.id.value, last4: pair.l4.digits };
+  return { identifier: pair.id.value, phone: pair.l4.digits };
 }
 
 /**
@@ -323,13 +337,12 @@ export function findPendingLookup(rows: GuardRow[]): PendingLookup | null {
  * an earlier successful lookup returned). The model has been seen to fill in
  * digits nobody sent; a forced call must not be allowed to guess.
  */
-export function typedByVisitor(args: { order_id?: unknown; phone_last4?: unknown }, rows: GuardRow[]): boolean {
+export function typedByVisitor(args: { order_id?: unknown; phone_number?: unknown }, rows: GuardRow[]): boolean {
   const id = normId(args.order_id);
-  const l4raw = normaliseDigits(String(args.phone_last4 ?? '')).replace(/\D/g, '');
-  if (!id || !l4raw) return false;
+  const phone = tenDigits(normaliseDigits(String(args.phone_number ?? '')).replace(/\D/g, ''));
+  if (!id || !phone) return false;
 
   const words = new Set<string>();
-  const fours = new Set<string>();
   const phones: string[] = [];
   rows.forEach((r, row) => {
     if (r.sender === 'visitor') {
@@ -337,20 +350,13 @@ export function typedByVisitor(args: { order_id?: unknown; phone_last4?: unknown
       const used: boolean[] = new Array(text.length).fill(false);
       for (const p of phonesIn(text, used)) {
         phones.push(p.phone);
-        fours.add(p.phone.slice(-4));
         words.add(p.phone);
       }
       const rest = text.split('').map((c, i) => (used[i] ? ' ' : c)).join('').toLowerCase();
-      for (const w of rest.match(/[a-z0-9]+/g) || []) {
-        words.add(w);
-        if (/^\d{4}$/.test(w)) fours.add(w);
-      }
+      for (const w of rest.match(/[a-z0-9]+/g) || []) words.add(w);
       // What findPendingLookup reads from the same text, so it never refuses
       // its own pair: "order no3973" is one word above but gives the ID 3973.
-      for (const t of tokensIn(r.content || '', row, true, true)) {
-        words.add(normId(t.value));
-        if (t.digits) fours.add(t.digits);
-      }
+      for (const t of tokensIn(r.content || '', row, true, true)) words.add(normId(t.value));
     } else if (r.sender === 'tool_result') {
       const res = parseJson(r.content);
       if (res?.found !== true || !Array.isArray(res.orders)) return;
@@ -361,19 +367,12 @@ export function typedByVisitor(args: { order_id?: unknown; phone_last4?: unknown
     }
   });
 
-  if (!words.has(id)) return false;
-  let last4 = l4raw;
-  if (l4raw.length !== 4) {
-    const p = tenDigits(l4raw);
-    if (!p || !phones.includes(p)) return false;
-    last4 = p.slice(-4);
-  }
-  // One number used as both the order ID and the last 4 is a guess (see bestPair).
-  return id !== last4 && fours.has(last4);
+  // Both were typed by the customer, and the phone is not also the order ID.
+  return words.has(id) && phones.includes(phone) && id !== phone;
 }
 
 /**
- * The reply asks for the order ID or last 4 again although asking is no longer
+ * The reply asks for the order ID or phone number again although asking is no longer
  * getting anywhere: two full lookups have come back not found since the last
  * one that worked, or the customer has just sent again a pair that was already
  * looked up and not found.
@@ -394,8 +393,8 @@ export function asksAgainAfterFailedLookups(reply: string, rows: GuardRow[], thi
   const failed: { call: TriedLookup; row: number }[] = [];
   rows.forEach((r, i) => {
     if (i <= from || r.sender !== 'tool_result' || !notFound(parseJson(r.content))) return;
-    // Older calls looked up by name or phone and missed the same way; only a
-    // full order ID + last 4 counts.
+    // Older calls looked up by name or phone and missed the same way; only an
+    // order ID + phone (or, for older chats, last 4) counts.
     const call = calls.find((c) => c.callId && c.callId === r.metadata?.tool_call_id);
     if (!call?.order_id || !call.last4) return;
     failures++;
@@ -645,8 +644,8 @@ export function handOverReply(rows: GuardRow[]): string {
 export function notFoundReply(rows: GuardRow[], orderId: string): string {
   const id = orderId ? ' ' + orderId : '';
   switch (replyLanguage(rows)) {
-    case 'hi': return `ऑर्डर आईडी${id} और इन आखिरी 4 अंकों से कोई ऑर्डर नहीं मिला। कृपया दोनों एक बार जाँच कर दोबारा भेजें।`;
-    case 'hinglish': return `Order ID${id} aur in last 4 digits se koi order nahi mila. Kripya dono ek baar check karke dobara bhejiye.`;
-    default: return `I couldn't find an order with order ID${id} and those last 4 digits. Could you please double-check both and send them again?`;
+    case 'hi': return `ऑर्डर आईडी${id} और इस फ़ोन नंबर से कोई ऑर्डर नहीं मिला। कृपया ऑर्डर आईडी और फ़ोन नंबर एक बार जाँच कर दोबारा भेजें।`;
+    case 'hinglish': return `Order ID${id} aur is phone number se koi order nahi mila. Kripya order ID aur phone number ek baar check karke dobara bhejiye.`;
+    default: return `I couldn't find an order with order ID${id} and that phone number. Could you please double-check the order ID and the phone number and send them again?`;
   }
 }

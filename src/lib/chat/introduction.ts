@@ -18,13 +18,17 @@ export const ALREADY_REPLIED_NOTE =
 // checking…" or "I'm writing from our office…" are never touched.
 const INTRODUCTION = /^\s*(?:(?:[Hh]i|[Hh]ello|[Hh]ey|[Nn]amaste)\b[^!?.,\n]{0,40}[!.,]\s*)?(?:😊\s*)?I(?:['’]m|\s+am)\s+[A-Z][a-z]+\s+from\s+(?:the\s+)?[A-Z][\w'’&-]*(?:\s+[A-Z][\w'’&-]*){0,3}(?:\s+[Tt]eam)?(?=\s*(?:[.!]|😊|\n|$|[—–-]\s|,\s*and\s))\s*(?:[.!]|[—–-]|,\s*and\b)?\s*(?:😊\s*)?/u;
 
+// Since 2026-09-30 the introduction is "Hi! This is Vastora Support." (the name
+// Karry is gone): the same, for "This is Vastora Support" and "I'm Vastora Support".
+const INTRODUCTION_SUPPORT = /^\s*(?:(?:[Hh]i|[Hh]ello|[Hh]ey|[Nn]amaste)\b[^!?.,\n]{0,40}[!.,]\s*)?(?:😊\s*)?(?:[Tt]his\s+is|I(?:['’]m|\s+am))\s+(?:the\s+)?[A-Z][\w'’&-]*(?:\s+[A-Z][\w'’&-]*){0,2}\s+[Ss]upport(?=\s*(?:[.!]|😊|\n|$|[—–-]\s|,\s*and\s))\s*(?:[.!]|[—–-]|,\s*and\b)?\s*(?:😊\s*)?/u;
+
 // The stock question that usually follows the introduction.
 const OPENING_QUESTION = /^how (?:else )?can i help you(?: with your order)?(?: today)?\s*\?\s*(?:😊\s*)?/iu;
 
 const HELLO_AGAIN = 'Hi again! 😊 How else can I help you with your order?';
 
 export function dropRepeatedIntroduction(reply: string): string {
-  const intro = reply.match(INTRODUCTION);
+  const intro = reply.match(INTRODUCTION) || reply.match(INTRODUCTION_SUPPORT);
   if (!intro) return reply;
   let rest = reply.slice(intro[0].length);
   const question = rest.match(OPENING_QUESTION);

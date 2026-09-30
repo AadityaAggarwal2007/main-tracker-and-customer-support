@@ -70,6 +70,14 @@ export const dynamic = 'force-dynamic';
 // saved was on an order in this panel (phone_match_order_id: OLD chats only, the
 // detection was retired on 2026-09-30, a phone number alone no longer files a chat as a customer).
 // Visitors are everyone else. The AI only trusts verified_order_id.
+// A customer whose message was marked `urgent` (widget route / email poller: a
+// threat of a chargeback, police, court, legal action, bad reviews, or a fraud or
+// fake-site claim, see escalation.ts) and whom no team member has answered since.
+// The team owes them an answer within 1 hour, not 2. The mark is on the message
+// itself, so it does not depend on the frustration scorer, does not expire after
+// three more messages, and is not hidden by an "ok" from the customer.
+const URGENT_OVERDUE_HOURS = 1;
+
 const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)';
 
 // The SQL that puts an open chat under a problem tab (a = the table alias).
@@ -144,18 +152,23 @@ export async function GET(request: NextRequest) {
   // the latest chat's status, which can hide an older one in Needs you).
   // Every other row is its own group of one. Grouped here in SQL, before the
   // LIMIT, so the limit counts rows the inbox actually shows.
-  // Who needs an answer first. Top: an angry customer who is also being ignored
+  // Who needs an answer first. Very top: a customer who threatened a chargeback,
+  // police or court, or called the store a fraud, and has not been answered by a
+  // person yet (master rules sections 15 and 16), longest waiting first; these
+  // count as overdue after 1 hour, everyone else after 2. Then: an angry customer who is also being ignored
   // (frustrated and overdue), then customers waiting 2 hours or more (longest
   // first), then frustrated ones (highest score first). Then everything else,
   // and any Closed chat, by latest activity. A search: best matches first.
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
-    : `CASE WHEN g.waiting_overdue AND g.is_pinned THEN 0
-            WHEN g.waiting_overdue THEN 1
-            WHEN g.returned THEN 2
-            WHEN g.is_pinned THEN 3
-            ELSE 4 END,
+    : `CASE WHEN g.group_urgent_since IS NOT NULL THEN 0
+            WHEN g.waiting_overdue AND g.is_pinned THEN 1
+            WHEN g.waiting_overdue THEN 2
+            WHEN g.returned THEN 3
+            WHEN g.is_pinned THEN 4
+            ELSE 5 END,
+       g.group_urgent_since ASC NULLS LAST,
        CASE WHEN g.is_pinned THEN g.health_score END DESC NULLS LAST,
        CASE WHEN g.waiting_overdue THEN g.waiting_since END ASC NULLS LAST,
        g.last_message_at DESC NULLS LAST`;
@@ -184,7 +197,7 @@ export async function GET(request: NextRequest) {
               c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
               c.subject_label, c.subject_summary, c.subject_updated_at,
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
-              c.auto_closed_at,
+              c.auto_closed_at, c.closed_by_name, c.closed_at,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
@@ -194,6 +207,10 @@ export async function GET(request: NextRequest) {
                    WHEN w.last_visitor_text ~* '${NO_REPLY_NEEDED_REGEX}' THEN NULL
                    WHEN c.status = 'human_needed' OR w.last_sender = 'visitor' THEN w.last_visitor_at
               END AS waiting_since,
+              CASE WHEN c.status = 'resolved' OR w.last_urgent_at IS NULL THEN NULL
+                   WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_urgent_at THEN NULL
+                   ELSE w.last_urgent_at
+              END AS urgent_since,
               ${search.hitOrder} AS hit_order,
               ${search.hitPhone} AS hit_phone,
               ${search.hitName} AS hit_name,
@@ -204,6 +221,7 @@ export async function GET(request: NextRequest) {
          LEFT JOIN LATERAL (
            SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
                   max(m.created_at) FILTER (WHERE m.sender = 'agent') AS last_agent_at,
+                  max(m.created_at) FILTER (WHERE m.sender = 'visitor' AND m.metadata->>'urgent' IS NOT NULL) AS last_urgent_at,
                   (array_agg(m.sender ORDER BY m.created_at DESC, m.id DESC))[1] AS last_sender,
                   (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'visitor'))[1] AS last_visitor_text
              FROM messages m
@@ -219,7 +237,8 @@ export async function GET(request: NextRequest) {
          ${where}
      ), filtered AS (
        SELECT b.*,
-              (b.waiting_since IS NOT NULL AND b.waiting_since <= now() - interval '${WAITING_OVERDUE_HOURS} hours') AS waiting_overdue,
+              ((b.waiting_since IS NOT NULL AND b.waiting_since <= now() - interval '${WAITING_OVERDUE_HOURS} hours')
+               OR (b.urgent_since IS NOT NULL AND b.urgent_since <= now() - interval '${URGENT_OVERDUE_HOURS} hour')) AS waiting_overdue,
               (b.status <> 'resolved' AND COALESCE(b.health_score, 0) >= ${HEALTH_PIN_MIN}) AS is_pinned,
               (b.status <> 'resolved' AND b.auto_closed_at IS NOT NULL) AS returned
          FROM base b
@@ -229,7 +248,8 @@ export async function GET(request: NextRequest) {
               row_number() OVER w AS group_rank,
               count(*) OVER (PARTITION BY f.site_id, f.group_key)::int AS thread_count,
               sum(f.unread_count) OVER (PARTITION BY f.site_id, f.group_key)::int AS group_unread,
-              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human
+              bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human,
+              min(f.urgent_since) OVER (PARTITION BY f.site_id, f.group_key) AS group_urgent_since
          FROM filtered f
        WINDOW w AS (PARTITION BY f.site_id, f.group_key
                     ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
@@ -244,8 +264,8 @@ export async function GET(request: NextRequest) {
             COALESCE((g.health_signals->>'threat')::int, 0) > 0 AS health_threat,
             COALESCE((g.health_signals->>'accuse')::int, 0) > 0 AS health_accuse,
             g.is_pinned AS health_pinned,
-            g.returned, g.auto_closed_at,
-            g.waiting_since, g.waiting_overdue,
+            g.returned, g.auto_closed_at, g.closed_by_name, g.closed_at,
+            g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
             (SELECT m.content

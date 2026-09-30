@@ -18,6 +18,7 @@ interface ConversationRow {
   subject_label: string | null; subject_summary: string | null; subject_updated_at: string | null;
   health_score: number | null; health_reason: string | null; health_updated_at: string | null;
   auto_closed_at: string | null;
+  closed_by_name: string | null; closed_at: string | null;
 }
 
 // Reachable only if the conversation's panel is one this user may see.
@@ -27,7 +28,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.category, c.unread_count, c.last_message_at, c.created_at,
             c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
-            c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at,
+            c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at, c.closed_by_name, c.closed_at,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
        FROM conversations c
@@ -249,18 +250,33 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     }
 
     // Close, Take over and Hand to AI are a person acting on the chat, so the
-    // "came back after the auto-close" mark (chat-auto-close.sql) is cleared.
-    await query(
+    // "came back after the auto-close" mark (chat-auto-close.sql) is cleared. A
+    // Close also records who pressed it (chat-closed-by.sql), so a Closed chat says
+    // "Closed by support" and not "Closed automatically". Closing a chat that is
+    // already Closed changes neither the mark nor the name.
+    const updated = await queryOne<{ status: string; closed_by_name: string | null; closed_at: string | null; auto_closed_at: string | null }>(
       `UPDATE conversations
           SET status = $1,
               unread_count = CASE WHEN $1 = 'resolved' THEN 0 ELSE unread_count END,
-              auto_closed_at = NULL,
+              closed_by_name = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN $3::text ELSE closed_by_name END,
+              closed_at = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN now() ELSE closed_at END,
+              auto_closed_at = CASE WHEN $1 = 'resolved' AND status = 'resolved' THEN auto_closed_at ELSE NULL END,
               updated_at = now()
-        WHERE id = $2`,
-      [status, params.id]
+        WHERE id = $2
+        RETURNING status, closed_by_name, closed_at, auto_closed_at`,
+      [status, params.id, (user.displayName || user.username || '').trim() || 'support']
     );
 
-    return NextResponse.json({ success: true, status });
+    // What the database now says about who closed it, so the screen shows that
+    // and not its own guess (a chat the auto-close closed a moment ago stays
+    // "Closed automatically" even if someone pressed Close on a stale screen).
+    return NextResponse.json({
+      success: true,
+      status,
+      closed_by_name: updated?.closed_by_name ?? null,
+      closed_at: updated?.closed_at ?? null,
+      auto_closed_at: updated?.auto_closed_at ?? null,
+    });
   } catch {
     return NextResponse.json({ error: 'Could not update that conversation' }, { status: 500 });
   }

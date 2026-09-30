@@ -5,6 +5,8 @@ import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
+import { maskSensitive, sensitiveWarning } from './sensitive';
+import { insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -176,7 +178,9 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // Skip emails sent by this account (avoid reply loops)
         if (fromAddr === account.email.toLowerCase()) continue;
 
-        const subject = parsed.subject || '(no subject)';
+        // A card number in the subject line is hidden too: the subject is stored and
+        // becomes the reply's subject.
+        const subject = maskSensitive(parsed.subject || '(no subject)').text;
         const messageId = parsed.messageId || '';
         const inReplyTo = parsed.inReplyTo || '';
         const references = Array.isArray(parsed.references)
@@ -247,15 +251,25 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
           conversation.status = reopened;
         }
 
+        // Card number, CVV, expiry, OTP, UPI PIN or a password in the email is
+        // hidden before it is stored (master rules section 20). The original
+        // stays in the mailbox itself, which we cannot change.
+        const masked = maskSensitive(cleanText);
+        if (masked.kinds.length) console.log(`[email] hid ${masked.kinds.join(', ')} in a mail on conv ${conversation.id}`);
+
+        // A threat or a fraud claim (subject or body) is marked on the message
+        // itself: the inbox ranks the chat first while no person has answered.
+        const urgent = urgentKind(`${subject}\n${masked.text}`);
+
         // Store incoming email as visitor message
         await query(
           `INSERT INTO messages (id, conversation_id, sender, content, email_message_id, metadata, created_at)
            VALUES (gen_random_uuid()::text, $1, 'visitor', $2, $3, $4::jsonb, now())`,
           [
             conversation.id,
-            cleanText,
+            masked.text,
             messageId,
-            JSON.stringify({ source: 'email', subject, fromEmail: fromAddr, fromName }),
+            JSON.stringify({ source: 'email', subject, fromEmail: fromAddr, fromName, ...(masked.kinds.length ? { sensitive_hidden: masked.kinds } : {}), ...(urgent ? { urgent } : {}) }),
           ]
         );
 
@@ -273,6 +287,20 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         void updateConversationSubject(conversation.id);
         // The customer's frustration score (./health.ts), the same way.
         void updateConversationHealth(conversation.id);
+
+        // A threat (chargeback, police, court, legal action, bad reviews) goes to a
+        // person at once and gets NO automatic reply (master rules section 15):
+        // the team answers by email, and the chat is top of the inbox. A fraud or
+        // fake-site claim (section 16) is answered by the AI with what it can prove
+        // and then handed over, below.
+        if (conversation.status === 'ai_handling' && urgent === 'threat') {
+          await query(
+            `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
+            [conversation.id]
+          );
+          console.log(`[email] threat from ${fromAddr} on site "${account.site_name}": held for a person, no auto-reply`);
+          continue;
+        }
 
         // ── AI auto-reply ──────────────────────────────────────────────
         // Routine questions (order status, tracking) are answered and sent.
@@ -314,9 +342,32 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
               continue;
             }
 
+            // Payment details in the email: the "please do not share these" line
+            // goes in right after the greeting (added here, not left to the model).
+            if (masked.kinds.length) aiResult.content = insertEmailNote(aiResult.content, sensitiveWarning(masked.text), 'top');
+
+            // A fraud claim, a refund or cancellation request, or a payment problem
+            // (master rules sections 11, 16, 17): the reply says a person has it and
+            // when, the chat goes to Needs you, and the reply is SENT even if the AI
+            // escalated (the customer must hear something). The line goes in before
+            // the sign-off.
+            const routine = routineHandOverKind(masked.text);
+            const handOverNow = urgent === 'accusation' || !!routine;
+            if (handOverNow) {
+              const line = urgent === 'accusation' ? teamWillReplyLine(masked.text) : routineLine(routine!, masked.text);
+              if (urgent === 'accusation' || routine !== 'refund' || !saysRefundTime(aiResult.content)) {
+                aiResult.content = insertEmailNote(aiResult.content, line, 'bottom');
+              }
+              await query(
+                `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
+                [conversation.id]
+              );
+            }
+
             // escalate_to_human has already moved the conversation to
-            // human_needed; the reply is kept as an unsent draft.
-            const held = Boolean(aiResult.escalated);
+            // human_needed; the reply is kept as an unsent draft, unless it is one
+            // of the hand-overs above.
+            const held = Boolean(aiResult.escalated) && !handOverNow;
 
             // Stored as not-yet-emailed and flipped once SMTP confirms. A
             // message that claims it was sent when the send threw would leave
