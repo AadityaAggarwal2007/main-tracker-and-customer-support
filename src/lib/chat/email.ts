@@ -269,7 +269,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
             conversation.id,
             masked.text,
             messageId,
-            JSON.stringify({ source: 'email', subject, fromEmail: fromAddr, fromName, ...(masked.kinds.length ? { sensitive_hidden: masked.kinds } : {}), ...(urgent ? { urgent } : {}) }),
+            JSON.stringify({ source: 'email', subject, fromEmail: fromAddr, fromName, ...(masked.kinds.length ? { sensitive_hidden: masked.kinds } : {}), ...(urgent ? { urgent } : {}), ...(routineHandOverKind(masked.text) ? { routine: routineHandOverKind(masked.text) } : {}) }),
           ]
         );
 

@@ -19,6 +19,15 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 //     "thanks"; and a chat whose last AI message is not an answer (the "took longer
 //     than expected" apology, or "let me get that confirmed by our team" with no
 //     escalation), AI_NOT_AN_ANSWER_REGEX. Those stay open until someone answers.
+//   - a chat that is PROTECTED (master rules section 24): still in Needs you; about a
+//     refund, cancellation or payment (subject label, or a message the widget / email
+//     marked `routine`, or the health scorer counted a refund demand); a threat or a
+//     fraud claim (message marked `urgent`, or the health scorer's threat / accuse
+//     counts); or one where the customer sent card / OTP details (`sensitive_hidden`).
+//     Asked for by the owner: these stay open until a team member closes them,
+//     however quiet, because a refund or a complaint nobody finished is exactly what
+//     turns into a chargeback. Chats already closed before this (2026-09-30) are left
+//     as they are, by the owner's order.
 //   - a chat with any message, or that a person or the customer touched (Take over,
 //     Hand to AI, the verify form reopening it: updated_at), in the last
 //     AUTO_CLOSE_DAYS days. Without that a chat reopened by the verify form (which
@@ -46,7 +55,16 @@ const CANDIDATES_SQL = `
                       OR w.last_sender = 'visitor'
                       OR (w.last_sender = 'ai' AND w.last_ai_text ~* '${AI_NOT_AN_ANSWER_REGEX}')))
                 OR (c.status = 'human_needed' AND w.last_agent_at IS NULL)
-              )) AS customer_waiting
+              )) AS customer_waiting,
+         (c.status = 'human_needed'
+          OR COALESCE(c.subject_label, '') ~* '(refund|cancel|payment)'
+          OR COALESCE((c.health_signals->>'refund')::int, 0) > 0
+          OR COALESCE((c.health_signals->>'threat')::int, 0) > 0
+          OR COALESCE((c.health_signals->>'accuse')::int, 0) > 0
+          OR EXISTS (SELECT 1 FROM messages pm
+                      WHERE pm.conversation_id = c.id AND pm.deleted_at IS NULL
+                        AND (pm.metadata ? 'urgent' OR pm.metadata ? 'routine' OR pm.metadata ? 'sensitive_hidden'))
+         ) AS is_protected
     FROM conversations c
     LEFT JOIN LATERAL (
       SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
@@ -72,6 +90,7 @@ export interface AutoCloseResult {
   days: number;
   quiet: number;        // open chats with nothing new for the window
   waiting: number;      // of those, customers still waiting for an answer: left open
+  protected: number;    // of those, refund / cancellation / payment / threat / fraud / Needs you chats: left open
   closed: number;       // closed now (0 on a dry run)
   dryRun: boolean;
 }
@@ -81,12 +100,13 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
   const dryRun = !!opts.dryRun;
 
   if (dryRun) {
-    const r = await query<{ quiet: number; waiting: number }>(
-      `SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting
+    const r = await query<{ quiet: number; waiting: number; kept: number }>(
+      `SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting,
+              count(*) FILTER (WHERE NOT customer_waiting AND is_protected)::int AS kept
          FROM (${CANDIDATES_SQL}) x`,
       [days]
     );
-    return { days, quiet: r.rows[0]?.quiet ?? 0, waiting: r.rows[0]?.waiting ?? 0, closed: 0, dryRun };
+    return { days, quiet: r.rows[0]?.quiet ?? 0, waiting: r.rows[0]?.waiting ?? 0, protected: r.rows[0]?.kept ?? 0, closed: 0, dryRun };
   }
 
   // One statement, so the customer-waiting test and the close see the same rows.
@@ -94,22 +114,23 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
   // its UPDATE moves last_message_at and Postgres rechecks the row, so a chat that
   // just got a message is not closed. No message is written; unread goes to 0
   // like a manual Close, and auto_closed_at is the mark (chat-auto-close.sql).
-  const closed = await query<{ closed_n: number; quiet: number; waiting: number }>(
+  const closed = await query<{ closed_n: number; quiet: number; waiting: number; kept: number }>(
     `WITH cand AS (${CANDIDATES_SQL}),
-          stats AS (SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting FROM cand),
+          stats AS (SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting,
+                           count(*) FILTER (WHERE NOT customer_waiting AND is_protected)::int AS kept FROM cand),
           done AS (
             UPDATE conversations c
                SET status = 'resolved', unread_count = 0, auto_closed_at = now(), updated_at = now()
               FROM cand
-             WHERE c.id = cand.id AND NOT cand.customer_waiting
+             WHERE c.id = cand.id AND NOT cand.customer_waiting AND NOT cand.is_protected
                AND c.status <> 'resolved'
                AND COALESCE(c.last_message_at, c.created_at) < now() - make_interval(days => $1::int)
                AND c.updated_at < now() - make_interval(days => $1::int)
             RETURNING c.id)
-     SELECT (SELECT count(*) FROM done)::int AS closed_n, stats.quiet, stats.waiting
+     SELECT (SELECT count(*) FROM done)::int AS closed_n, stats.quiet, stats.waiting, stats.kept
        FROM stats`,
     [days]
   );
   const row = closed.rows[0];
-  return { days, quiet: row?.quiet ?? 0, waiting: row?.waiting ?? 0, closed: row?.closed_n ?? 0, dryRun };
+  return { days, quiet: row?.quiet ?? 0, waiting: row?.waiting ?? 0, protected: row?.kept ?? 0, closed: row?.closed_n ?? 0, dryRun };
 }

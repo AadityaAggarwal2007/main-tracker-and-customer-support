@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   const dryRun = dry !== null && !['0', 'false', 'no'].includes(dry.toLowerCase());
   try {
     const result = await autoCloseIdleChats({ dryRun, days: AUTO_CLOSE_DAYS });
-    if (!dryRun && result.closed > 0) console.log(`[auto-close] closed ${result.closed} quiet chats (${result.waiting} left open: customer waiting)`);
+    if (!dryRun && result.closed > 0) console.log(`[auto-close] closed ${result.closed} quiet chats (${result.waiting} left open: customer waiting; ${result.protected} left open: refund / threat / payment / Needs you)`);
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     console.error('[cron] chat auto-close error:', err);

@@ -358,9 +358,9 @@ function closedInfo(c: { status: string; auto_closed_at?: string | null; closed_
     const at = stamp(c.auto_closed_at);
     return {
       auto: true,
-      short: 'Closed · auto',
-      long: 'Closed automatically (4 quiet days)',
-      title: `Closed by the system${at ? ` on ${at}` : ''}: nobody wrote for 4 days and the customer was not waiting for an answer. Nothing was sent to the customer. If they write again it opens itself.`,
+      short: 'Closed · AI',
+      long: 'Closed by AI (4 quiet days)',
+      title: `Closed by AI (the automatic sweep)${at ? ` on ${at}` : ''}: nobody wrote for 4 days and the customer was not waiting for an answer. Nothing was sent to the customer. If they write again it opens itself.`,
     };
   }
   const name = (c.closed_by_name || '').trim();
@@ -379,7 +379,7 @@ function closedInfo(c: { status: string; auto_closed_at?: string | null; closed_
 function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big?: boolean }) {
   const when = closedAt ? new Date(closedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : '';
   return (
-    <span title={`Closed automatically${when ? ` on ${when}` : ''} after 4 quiet days. The customer has written again, so it opened itself. Close it or take it over.`} style={{
+    <span title={`Closed by AI${when ? ` on ${when}` : ''} after 4 quiet days. The customer has written again, so it opened itself. Close it or take it over.`} style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
       fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4,
       fontWeight: 700, background: '#dbeafe', color: '#1d4ed8',

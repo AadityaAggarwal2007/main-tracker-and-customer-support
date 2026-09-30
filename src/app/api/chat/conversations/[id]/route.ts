@@ -252,7 +252,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     // Close, Take over and Hand to AI are a person acting on the chat, so the
     // "came back after the auto-close" mark (chat-auto-close.sql) is cleared. A
     // Close also records who pressed it (chat-closed-by.sql), so a Closed chat says
-    // "Closed by support" and not "Closed automatically". Closing a chat that is
+    // "Closed by support" and not "Closed by AI". Closing a chat that is
     // already Closed changes neither the mark nor the name.
     const updated = await queryOne<{ status: string; closed_by_name: string | null; closed_at: string | null; auto_closed_at: string | null }>(
       `UPDATE conversations
@@ -269,7 +269,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
     // What the database now says about who closed it, so the screen shows that
     // and not its own guess (a chat the auto-close closed a moment ago stays
-    // "Closed automatically" even if someone pressed Close on a stale screen).
+    // "Closed by AI" even if someone pressed Close on a stale screen).
     return NextResponse.json({
       success: true,
       status,

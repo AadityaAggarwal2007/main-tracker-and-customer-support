@@ -59,7 +59,10 @@ export async function POST(request: NextRequest) {
     // the chat first while no person has answered, whatever the chat's status
     // (master rules sections 15 and 16).
     const urgent = urgentKind(String(masked.text));
-    const markers = { ...(masked.kinds.length ? { sensitive_hidden: masked.kinds } : {}), ...(urgent ? { urgent } : {}) };
+    // A refund, cancellation or payment problem is marked too: the auto-close never
+    // closes such a chat (master rules section 24).
+    const routine = routineHandOverKind(String(masked.text));
+    const markers = { ...(masked.kinds.length ? { sensitive_hidden: masked.kinds } : {}), ...(urgent ? { urgent } : {}), ...(routine ? { routine } : {}) };
 
     // Save visitor message
     const visitorMessage = await queryOne<StoredMessage>(

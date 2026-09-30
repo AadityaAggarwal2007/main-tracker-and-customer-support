@@ -664,7 +664,7 @@ When a chat is closed, the system must clearly record who/what closed it.
 
 Examples:
 
-- `Closed automatically`
+- `Closed by AI` (owner's wording, 2026-09-30, for the automatic close)
 - `Closed by support`
 
 Do not leave closure ownership ambiguous.
