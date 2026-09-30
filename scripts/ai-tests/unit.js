@@ -64,4 +64,12 @@ t('parseDraft: null lesson, junk, personal details, no topic, duplicate title, t
   // the model wrapped the JSON in prose or a code fence
   assert.ok(learn.parseDraft('Sure!\n```json\n{"lesson":{"title":"Courier is Valmo","body":"When asked which courier delivers, say Valmo.","topics":["tracking"]}}\n```', valid, []));
 });
+t('parseDraft: never teaches "today", hiding the date, or touches refund / cancel / payment', () => {
+  const mk = (title, body, topics) => JSON.stringify({ lesson: { title, body, topics } });
+  assert.strictEqual(learn.parseDraft(mk('Out for delivery wording', 'If it is Out for Delivery, say it will arrive today.', ['delivery']), valid, []), null);
+  assert.strictEqual(learn.parseDraft(mk('No dates', 'Never give a specific delivery date to the customer at all.', ['delivery']), valid, []), null);
+  assert.strictEqual(learn.parseDraft(mk('Cancel handling', 'Escalate every cancellation request to the team right away.', ['cancel']), valid, []), null);
+  assert.strictEqual(learn.parseDraft(mk('Refund wording', 'Tell the customer the refund takes seven working days.', ['refund']), valid, []), null);
+  assert.ok(learn.parseDraft(mk('Courier is Valmo', 'When asked which courier delivers, say Valmo.', ['tracking']), valid, []));
+});
 console.log(`UNIT: ${n} groups passed`);

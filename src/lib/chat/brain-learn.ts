@@ -6,7 +6,12 @@
 // until an admin approves it in Panel Settings (then it becomes a brain_notes row). The AI
 // never writes to its own rules. The pure helpers below have no imports and are tested offline.
 
+import { promisesToday } from './today-promise';
+
 export const SUGGEST_MAX_PER_RUN = 15;
+
+// Topics the owner's locked rules already settle: a draft about them is never offered.
+const LOCKED_TOPICS = ['refund', 'cancel', 'payment'];
 
 // Phones, emails, order / tracking IDs, links, long digit runs, PIN codes: a lesson is general,
 // so none of that is sent to the model or allowed in a draft.
@@ -42,7 +47,9 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
   if (title.length < 4 || body.length < 25) return null;
   if (hasPersonalDetail(title) || hasPersonalDetail(body)) return null;
   const topics = (Array.isArray(l.topics) ? l.topics : []).map(String).filter((t) => validTopics.includes(t)).slice(0, 3);
-  if (!topics.length) return null;
+  if (!topics.length || topics.some((t) => LOCKED_TOPICS.includes(t))) return null;
+  // Never a draft that teaches promising arrival today / tonight, or hiding the estimated date.
+  if (promisesToday(title + '. ' + body) || /\b(never|don'?t|do not)\b[^.]{0,30}\b(give|share|tell|say)\b[^.]{0,30}\bdate\b/i.test(body)) return null;
   const same = (a: string, b: string) => a.toLowerCase().replace(/\W+/g, ' ').trim() === b.toLowerCase().replace(/\W+/g, ' ').trim();
   if (existingTitles.some((t) => same(t, title))) return null;
   const kind = l.kind === 'rule' || l.kind === 'fact' ? l.kind : 'lesson';
@@ -56,4 +63,4 @@ Answer with JSON only, no other text:
 or
 {"lesson": {"kind": "rule" | "fact" | "lesson", "title": "at most 8 words", "body": "1 to 3 sentences, general, as an instruction to the AI", "topics": ["..."]}, "why": "one short line"}
 topics must come from the list given. Never include a name, phone number, order ID, address, amount or date from this chat.
-Return {"lesson": null} when: the team reply is a greeting, thanks or small talk; the answer is only about this one order; you are not sure; or it would change how customers are verified, how refunds or payments are handled, or would promise a delivery date.`;
+Return {"lesson": null} when: the team reply is a greeting, thanks or small talk; the answer is only about this one order; you are not sure; or it touches how customers are verified, how refunds, cancellations or payments are handled, or a delivery date. The AI must never say an order arrives today, tonight or tomorrow and must always give the order's estimated date, so never suggest otherwise. The team is sometimes wrong or hurried: copy a practice only if it is clearly good, not merely what they did.`;
