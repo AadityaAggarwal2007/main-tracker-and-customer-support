@@ -30,3 +30,6 @@ CREATE TABLE IF NOT EXISTS brain_notes (
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS brain_notes_site_idx ON brain_notes (site_id, is_enabled);
+
+-- The app connects as tracker_user.
+GRANT SELECT, INSERT, UPDATE, DELETE ON brain_notes TO tracker_user;
