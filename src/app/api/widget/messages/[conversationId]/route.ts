@@ -56,10 +56,12 @@ export async function GET(
         WHERE conversation_id = $1
           AND ${filter}
         ORDER BY created_at ASC`,
-      since ? [params.conversationId, since] : [params.conversationId]
+      since ? [conversation.id, since] : [conversation.id]
     );
 
-    return widgetJson({ messages: messages.rows, status: conversation.status, siteName: site.name });
+    // conversationId: the chat these messages belong to now (it differs from the one
+    // asked for after a merge, and the widget then switches to it).
+    return widgetJson({ messages: messages.rows, status: conversation.status, siteName: site.name, conversationId: conversation.id });
   } catch (err) {
     console.error('[widget] messages error:', err);
     return widgetJson({ error: 'Could not load messages' }, 500);

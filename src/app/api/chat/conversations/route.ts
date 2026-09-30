@@ -120,6 +120,10 @@ export async function GET(request: NextRequest) {
     params.push(user.businessIds);
   }
 
+  // A chat that was merged into the customer's own (merge-chats.ts) is an empty shell:
+  // never listed, so a customer is one row and one chat.
+  conditions.push('c.merged_into IS NULL');
+
   // The panel scope alone, for the topic counts (positions $1.. are the same).
   const scopeConditions = [...conditions];
   const scopeParams = [...params];

@@ -59,14 +59,34 @@ export interface WidgetConversation {
 }
 
 // A conversation is only ever readable through the site key that owns it.
+//
+// A chat that was merged into the customer's own chat (merge-chats.ts, merged_into)
+// answers as that chat: the returned id is the one to read and write, not the one
+// asked for, so a device that still holds the old id keeps working in the right chat.
 export async function conversationForSite(
   conversationId: string,
   siteId: string
 ): Promise<WidgetConversation | null> {
-  return queryOne<WidgetConversation>(
-    `SELECT id, site_id, status FROM conversations WHERE id = $1 AND site_id = $2`,
-    [conversationId, siteId]
-  );
+  let id = conversationId;
+  for (let hop = 0; hop < 5; hop++) {
+    let row: (WidgetConversation & { merged_into?: string | null }) | null;
+    try {
+      row = await queryOne<WidgetConversation & { merged_into: string | null }>(
+        `SELECT id, site_id, status, merged_into FROM conversations WHERE id = $1 AND site_id = $2`,
+        [id, siteId]
+      );
+    } catch (err) {
+      // Before chat-merge.sql is applied the column does not exist yet.
+      if (!/merged_into/.test((err as Error)?.message || '')) throw err;
+      return queryOne<WidgetConversation>(
+        `SELECT id, site_id, status FROM conversations WHERE id = $1 AND site_id = $2`,
+        [id, siteId]
+      );
+    }
+    if (!row || !row.merged_into) return row ? { id: row.id, site_id: row.site_id, status: row.status } : null;
+    id = row.merged_into;
+  }
+  return null;
 }
 
 // The visitor's open conversation on this site, or a new one. Shared by

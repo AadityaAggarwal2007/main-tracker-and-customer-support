@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
 
     await query(
       `UPDATE conversations SET visitor_phone = $1, updated_at = now() WHERE id = $2`,
-      [phone, conversationId]
+      [phone, conversation.id]
     );
 
     return widgetJson({ ok: true });

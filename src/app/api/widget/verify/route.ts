@@ -3,6 +3,7 @@ import { queryOne } from '@/lib/db';
 import { normalizePhone, verifyOrderByPhone } from '@/lib/chat/orders';
 import { clientIp, getOrCreateVisitorConversation, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { LIMITS, isLimited, release, reserve } from '@/lib/chat/lookup-limits';
+import { mergeVisitorChatInto } from '@/lib/chat/merge-chats';
 
 export const dynamic = 'force-dynamic';
 
@@ -132,6 +133,9 @@ export async function POST(request: NextRequest) {
         [order.order_id, realName || null, customerKey, own.id]
       ) || own;
     }
+    // The customer got their earlier chat back: what this browser had typed as a
+    // visitor before verifying goes into it, so it is one chat with one history.
+    if (carriedOn) await mergeVisitorChatInto(conversation.id, site.id, visitorId);
     console.log(`[widget] verified conv ${conversation.id} via form${carriedOn ? ' (carried on the customer\'s chat)' : ''}`);
 
     return widgetJson({

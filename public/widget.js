@@ -659,6 +659,25 @@
     .catch(function(err) { console.error('[ChatWidget] init error', err); });
   }
 
+  // Remove every message on screen (a chat is being replaced by another, whose whole
+  // history is then loaded in order: showMessage only appends).
+  function clearMessageNodes() {
+    var nodes = messagesEl.querySelectorAll('._cw_msg');
+    for (var i = 0; i < nodes.length; i++) if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i]);
+    state.lastTs = null;
+    try { localStorage.removeItem('_cw_ts_' + SITE_KEY); } catch(e) {}
+  }
+
+  // The server says this chat now lives under another id (it was merged into the
+  // customer's earlier chat): move to it and show its whole history.
+  function switchConversation(newId) {
+    if (!newId || newId === state.conversationId) return;
+    state.conversationId = newId;
+    try { localStorage.setItem('_cw_cid_' + SITE_KEY, newId); } catch(e) {}
+    clearMessageNodes();
+    loadHistory();
+  }
+
   function loadHistory() {
     if (!state.conversationId) return;
     // Messages on screen when the request left; one of them missing from the
@@ -674,6 +693,7 @@
     .then(function(r) { return r.json(); })
     .then(function(data) {
       setBrand(data && data.siteName);
+      if (data && data.conversationId && data.conversationId !== state.conversationId) { switchConversation(data.conversationId); return; }
       if (data.messages) {
         // Start `since` again from the server's clock. An older copy of this
         // script could have saved a time from the visitor's own clock.
@@ -685,6 +705,8 @@
         });
         data.messages.forEach(renderMessage);
         state.status = data.status;
+        // The "Verified" note goes after the history it belongs to.
+        if (state.pendingNote) { var n = state.pendingNote; state.pendingNote = null; showVerifiedNote(n.orderId, n.firstName); }
       }
     })
     .catch(function(err) { console.error('[ChatWidget] history error', err); });
@@ -698,6 +720,7 @@
     api(url)
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      if (data && data.conversationId && data.conversationId !== state.conversationId) { switchConversation(data.conversationId); return; }
       if (data.messages && data.messages.length > 0) {
         // Only replies this chat has not shown yet count as unread; a poll can
         // repeat messages or carry edits and deletions of old ones.
@@ -745,6 +768,13 @@
       // Always stop the indicator. Leaving it spinning on a missing reply looks
       // like the chat died, which reads worse than any error would.
       showTyping(false);
+      if (data.conversationId && data.conversationId !== state.conversationId) {
+        // Merged into the customer's earlier chat: show that chat, history first.
+        state.sending = false;
+        switchConversation(data.conversationId);
+        if (callback) callback();
+        return;
+      }
       if (data.aiResponse) showMessage(data.aiResponse, false);
       state.sending = false;
       if (callback) callback();
@@ -849,9 +879,12 @@
           localStorage.setItem('_cw_phone_' + SITE_KEY, '1');
         } catch(e) {}
         verifyPh.value = '';
+        // The chat they are on may be a different one now (their earlier chat came back):
+        // start from an empty screen so its history shows in order, then the note.
+        clearMessageNodes();
+        state.pendingNote = { orderId: String(data.orderId || orderId), firstName: data.firstName ? String(data.firstName) : '' };
         switchToChat();
-        showVerifiedNote(String(data.orderId || orderId), data.firstName ? String(data.firstName) : '');
-        startPolling();
+        if (state.pollTimer) loadHistory(); else startPolling();
       } else if (res.status === 429 || data.error === 'too_many_attempts') {
         done('Too many attempts. Please try again later or continue as a visitor.');
       } else if (data.error === 'not_found') {

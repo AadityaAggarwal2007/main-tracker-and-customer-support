@@ -6,6 +6,7 @@ import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
 import { handoffReply, isCourtesyOnly, isRepeatedReply, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentAck, urgentKind } from '@/lib/chat/escalation';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
+import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,16 +35,20 @@ async function recentAiReplies(conversationId: string): Promise<string[]> {
 // POST /api/widget/message — visitor sends a message, AI answers inline
 export async function POST(request: NextRequest) {
   try {
-    const { conversationId, siteKey, content } = await request.json();
-    if (!conversationId || !siteKey || !content) {
+    const { conversationId: requestedConversationId, siteKey, content } = await request.json();
+    if (!requestedConversationId || !siteKey || !content) {
       return widgetJson({ error: 'conversationId, siteKey, content required' }, 400);
     }
 
     const site = await siteByKey(siteKey);
     if (!site) return widgetJson({ error: 'Invalid site key' }, 404);
 
-    const conversation = await conversationForSite(conversationId, site.id);
+    const conversation = await conversationForSite(requestedConversationId, site.id);
     if (!conversation) return widgetJson({ error: 'Forbidden' }, 403);
+    // The chat this one stands for: after a merge (merge-chats.ts) a device that still
+    // holds the old id writes into the customer's own chat. `let`: a customer who
+    // proves an order in this very message may be folded into their earlier chat below.
+    let conversationId: string = conversation.id;
 
     // Card number, CVV, expiry, OTP, UPI PIN or a password typed by the
     // customer is hidden BEFORE it is stored (master rules section 20), so the
@@ -127,6 +132,13 @@ export async function POST(request: NextRequest) {
         } else {
           const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id);
 
+          // The customer may just have proved an order in this chat (order ID + full
+          // phone). If they already have a chat for that order, this one is folded into
+          // it now: one chat, with the history, and everything below is saved there.
+          const beforeMerge = conversationId;
+          conversationId = await mergeIntoCustomerChat(conversationId);
+          const merged = conversationId !== beforeMerge;
+
           // Store the tool exchange as hidden messages so the next turn still
           // knows which order was looked up.
           if (aiResult.toolCallMeta) {
@@ -149,7 +161,7 @@ export async function POST(request: NextRequest) {
             // and the customer is told so instead of "please send that again".
             text = handoffReply(said);
             await handOver('AI failure');
-          } else if (!aiResult.escalated && !isCourtesyOnly(said) && isRepeatedReply(text, await recentAiReplies(conversationId))) {
+          } else if (!aiResult.escalated && !merged && !isCourtesyOnly(said) && isRepeatedReply(text, await recentAiReplies(conversationId))) {
             // The same answer again (section 12): stop, and let a person take it.
             text = handoffReply(said);
             await handOver('repeated answer');
@@ -196,7 +208,8 @@ export async function POST(request: NextRequest) {
     // How upset the customer is (src/lib/chat/health.ts): same rules, same care.
     void updateConversationHealth(conversationId);
 
-    return widgetJson({ message: visitorMessage, aiResponse: aiMessage }, 201);
+    // conversationId: the chat the widget should be on (after a merge it is another id).
+    return widgetJson({ message: visitorMessage, aiResponse: aiMessage, conversationId }, 201);
   } catch (err) {
     console.error('[widget] message error:', err);
     return widgetJson({ error: 'Could not send that message' }, 500);
