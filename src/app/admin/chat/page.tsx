@@ -826,6 +826,8 @@ export default function ChatSupportPage() {
   // not asked for on every key. A search looks at ALL chats of the chosen
   // panel (Closed ones and visitors too), whatever tab is open.
   const [searchInput, setSearchInput] = useState('');
+  // The "Unread" filter under the search box: only chats with messages nobody has read.
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [searchQ, setSearchQ] = useState('');
   useEffect(() => {
     const t = setTimeout(() => setSearchQ(searchInput.trim()), 300);
@@ -929,6 +931,7 @@ export default function ChatSupportPage() {
         if (statusFilter) params.set('status', statusFilter);
         if (segment) params.set('segment', segment);
         if (topicKey) params.set('topic', topicKey);
+        if (unreadOnly) params.set('unread', '1');
       }
       const res = await fetch(`/api/chat/conversations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -940,7 +943,7 @@ export default function ChatSupportPage() {
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, searchActive, searchQ]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, unreadOnly, searchActive, searchQ]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1688,6 +1691,26 @@ export default function ChatSupportPage() {
                   </button>
                 )}
               </div>
+              {!searchActive && (
+                <div style={{ display: 'flex', gap: 6, marginTop: '0.5rem' }} role="group" aria-label="Show chats">
+                  {([false, true] as const).map((only) => (
+                    <button
+                      key={only ? 'unread' : 'all'}
+                      type="button"
+                      aria-pressed={unreadOnly === only}
+                      onClick={() => setUnreadOnly(only)}
+                      style={{
+                        padding: '0.25rem 0.75rem', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                        border: `1px solid ${unreadOnly === only ? 'var(--primary)' : 'var(--border)'}`,
+                        background: unreadOnly === only ? 'var(--primary-light)' : 'transparent',
+                        color: unreadOnly === only ? 'var(--primary)' : 'var(--fg-muted)',
+                      }}
+                    >
+                      {only ? `Unread${unreadOnly ? ` (${conversations.length})` : ''}` : 'All'}
+                    </button>
+                  ))}
+                </div>
+              )}
               {searchActive && (
                 <div style={{ marginTop: '0.375rem', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
                   In all chats{activePanelId ? ` of ${businesses.find(b => b.id === activePanelId)?.name || 'this panel'}` : ''}, including Closed ones and visitors.
@@ -1705,7 +1728,9 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  {topicDef && !searchActive ? (
+                  {unreadOnly && !searchActive ? (
+                    <p>No unread chats here. Everything is read.</p>
+                  ) : topicDef && !searchActive ? (
                     <>
                       <p>No open chats under “{topicDef.label}”.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>

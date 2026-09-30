@@ -101,6 +101,8 @@ export async function GET(request: NextRequest) {
   // chats verified by the widget form or a found lookup. Left out, as the
   // status tabs do, it lists everyone.
   const segment = searchParams.get('segment') || '';
+  // ?unread=1 lists only chats with messages nobody has read yet (the inbox's "Unread" filter).
+  const unreadOnly = searchParams.get('unread') === '1';
   const topic = topicByKey(searchParams.get('topic'));
   const limit = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
 
@@ -136,6 +138,7 @@ export async function GET(request: NextRequest) {
   } else {
     if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
+    if (unreadOnly) conditions.push('c.unread_count > 0');
     if (segment === 'visitors') conditions.push(`NOT ${KNOWN_CUSTOMER}`);
     else if (segment === 'customers') conditions.push(KNOWN_CUSTOMER);
     if (topic) {
