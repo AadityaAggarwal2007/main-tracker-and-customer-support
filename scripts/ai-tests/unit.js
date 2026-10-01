@@ -10,7 +10,8 @@ const load = (f) => {
 };
 load('today-promise');
 load('health-rules');
-const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention');
+load('address-conflict'); load('escalation');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -213,5 +214,29 @@ t('fixOrderMentions', () => {
   assert.strictEqual(f('Pack of 16 jhumkas, order 1500 rs worth.', ['#4715']), 'Pack of 16 jhumkas, order 1500 rs worth.');
   assert.strictEqual(f('Free shipping on a minimum order 299.', ['#4715']), 'Free shipping on a minimum order 299.');
   assert.strictEqual(f('COD works above order 999 in Gujarat.', ['#4715']), 'COD works above order 999 in Gujarat.');
+});
+t('dropAddressEcho', () => {
+  const c = ['address change karna hai, naya address: 12 MG Road, Pune 411001'];
+  const d = (r) => rg.dropAddressEcho(r, c).text;
+  assert.strictEqual(d("Got it. I've noted the address — 12 MG Road, Pune 411001 — and passed it to our team."), "Got it. I've noted the address and passed it to our team.");
+  assert.strictEqual(d('Aapka naya address 12 MG Road, Pune 411001 team ko bhej diya hai.'), 'Aapka naya address team ko bhej diya hai.');
+  assert.strictEqual(d('Your new address: 12 MG Road, Pune 411001.'), 'Your new address is noted.');
+  assert.strictEqual(d("I've passed your request for MG Road to the team."), "I've passed your request for the address you shared to the team.");
+  assert.strictEqual(d('Your new address is noted and passed to the team.'), 'Your new address is noted and passed to the team.');
+  assert.strictEqual(d("I've noted your new address as 12 MG Road, Pune 411001 and passed it to our team."), "I've noted your new address and passed it to our team.");
+  assert.strictEqual(d('The new address noted is 12 MG Road, Pune 411001.'), 'The new address noted.');
+  assert.strictEqual(d('Your order has reached Pune and is at the local hub.'), 'Your order has reached Pune and is at the local hub.');
+  assert.strictEqual(rg.dropAddressEcho('Your order 4715 is in Pune.', ['order 4715 kab aayega?']).changed, false);
+});
+t('withCheckAround / saysNotReceived', () => {
+  const ctx = (c, d, e = []) => ({ customerLatest: c, orderDelivered: d, earlierAgentReplies: e });
+  assert.ok(rg.withCheckAround("I've raised this with our team.", ctx('delivered dikha raha hai par mila nahi', true)).changed);
+  assert.ok(!rg.withCheckAround("I've raised this.", ctx('not received', false)).changed);
+  assert.ok(!rg.withCheckAround('Please check with your neighbours once.', ctx('not received', true)).changed);
+  assert.ok(!rg.withCheckAround("I've raised it.", ctx('not received', true, ['Could you check with security?'])).changed);
+  assert.ok(rg.saysNotReceived('order nahi mila, refund do'));
+  assert.ok(!rg.saysNotReceived('refund nahi mila abhi tak'));
+  assert.ok(!rg.saysNotReceived("I didn't get the tracking link"));
+  assert.ok(!rg.saysNotReceived('mil gaya thanks'));
 });
 console.log(`UNIT: ${n} groups passed`);

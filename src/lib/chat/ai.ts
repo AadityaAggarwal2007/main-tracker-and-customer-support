@@ -21,6 +21,7 @@ import {
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
+import { dropAddressEcho, withCheckAround } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
@@ -361,7 +362,8 @@ what it actually says, do not add conditions to it, and do not soften it.
 If two could apply, use the more specific one. If none of them fit, ignore this
 section entirely and follow the rules above.
 A saved answer never replaces a lookup: when the question is about this
-customer's own order, answer from the lookup.
+customer's own order, answer from the lookup. But when the lookup has nothing
+for what they asked (an empty courier, for example), give the saved answer.
 Saved answers never change how you find an order or what you know. If one asks
 for an email or the order ID alone, ask for the order ID and the phone number on
 the order instead. If one says you will check
@@ -1185,6 +1187,26 @@ export async function getAIResponse(
     if (fixed.changed) console.log(`[AI] Wrong order number corrected for conv ${conversationId}`);
     return fixed.text;
   };
+  // reply-guards.ts: no address the customer typed is repeated back, and a customer whose
+  // Delivered order did not reach them is asked once to check with family / neighbours / security.
+  const visitorTexts = recent.rows.filter((r) => r.sender === 'visitor').map((r) => r.content || '');
+  const agentTexts = recent.rows.filter((r) => r.sender === 'ai' || r.sender === 'agent').map((r) => r.content || '');
+  const withReplyGuards = (text: string): string => {
+    let out = text;
+    const echo = dropAddressEcho(out, visitorTexts.slice(-8));
+    if (echo.changed) { out = echo.text; console.log(`[AI] Address echo removed for conv ${conversationId}`); }
+    let delivered = false;
+    for (const m of lastRunMessages) {
+      if (m.role !== 'tool') continue;
+      try {
+        const r = JSON.parse(String(m.content || ''));
+        if (r?.found && Array.isArray(r.orders) && r.orders.some((o: { status?: string }) => String(o?.status || '').toLowerCase() === 'delivered')) delivered = true;
+      } catch { /* not a lookup result */ }
+    }
+    const around = withCheckAround(out, { customerLatest: visitorTexts.slice(-2).join('\n'), orderDelivered: delivered, earlierAgentReplies: agentTexts });
+    if (around.changed) { out = around.text; console.log(`[AI] Check-around line added for conv ${conversationId}`); }
+    return out;
+  };
 
   // extra: messages after the history (only the H4 retry passes any); that
   // retry is never forced, the forced lookup already ran in the first run.
@@ -1323,7 +1345,7 @@ export async function getAIResponse(
     if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
     // stripMarkdown misses a ** left without its partner.
     result.content = stripMarkdownEmphasis(result.content);
-    result.content = withRightOrderNumbers(withoutTodayPromise(result.content));
+    result.content = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(result.content)));
     if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
     // A model that escalated itself has already handed over.
     if (!result.escalated) {
@@ -1371,7 +1393,7 @@ export async function getAIResponse(
         if (!retry) return handOver('H4', result);
         // The first run's lookup still has to be stored if the retry used none.
         retry.toolCallMeta = retry.toolCallMeta || result.toolCallMeta;
-        retry.content = withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(retry.content)));
+        retry.content = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(retry.content))));
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
         return retry;
