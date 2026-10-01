@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { getActiveModel, getClient } from './ai';
-import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS } from './brain';
+import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS, similarity } from './brain';
 import { LEARN_INSTRUCTION, SUGGEST_MAX_PER_RUN, maskPersonal, parseDraft } from './brain-learn';
 import { QUIET_OK, SITUATIONS, customerCalmedAfter, detectSituations, parseExample, sameReply } from './brain-examples';
 
@@ -44,6 +44,7 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
       [site.id]
     )).rows;
     const existing = known.map((r) => r.title);
+    let pendingLessons = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM brain_suggestions WHERE site_id = $1 AND status = 'pending'`, [site.id]))?.n ?? 0;
     const existingTexts = known.map((r) => `${r.title} ${r.body}`);
     const knownReplies = (await query<{ team_replied: string }>(
       `SELECT team_replied FROM brain_examples WHERE site_id = $1 AND status <> 'rejected'`, [site.id]
@@ -166,7 +167,9 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
           const raw = res.choices?.[0]?.message?.content;
           draft = parseDraft(raw, BRAIN_TOPIC_KEYS, existing, existingTexts);
           example = allowed.length ? parseExample(raw, allowed) : null;
-          if (example && knownReplies.some((r) => sameReply(r, example!.team_replied))) example = null;
+          if (example && knownReplies.some((r) => sameReply(r, example!.team_replied) || similarity(r, example!.team_replied) >= 0.5)) example = null;
+          // The owner reviews these by hand: past 25 waiting lessons, no new ones until some are decided.
+          if (draft && pendingLessons >= 25) draft = null;
         }
         if (draft) {
           await query(
@@ -176,6 +179,7 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
           );
           existing.push(draft.title);
           existingTexts.push(`${draft.title} ${draft.body}`);
+          pendingLessons++;
           out.suggested++;
         }
         if (example) {

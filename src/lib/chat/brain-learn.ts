@@ -52,7 +52,7 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
   // Never a draft that teaches promising arrival today / tonight, or hiding the estimated date.
   if (promisesToday(title + '. ' + body) || /\b(never|don'?t|do not)\b[^.]{0,30}\b(give|share|tell|say)\b[^.]{0,30}\bdate\b/i.test(body)) return null;
   if (noteProblem(title, body)) return null;
-  if (existingTexts.some((t) => similarity(t, `${title} ${body}`) >= 0.6)) return null;
+  if (existingTexts.some((t) => similarity(t, `${title} ${body}`) >= 0.5)) return null;
   const same = (a: string, b: string) => a.toLowerCase().replace(/\W+/g, ' ').trim() === b.toLowerCase().replace(/\W+/g, ' ').trim();
   if (existingTitles.some((t) => same(t, title))) return null;
   const kind = l.kind === 'rule' || l.kind === 'fact' ? l.kind : 'lesson';

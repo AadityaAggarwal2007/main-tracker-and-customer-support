@@ -147,6 +147,9 @@ t('exampleProblem', () => {
   assert.ok(ex.exampleProblem('Sorry for the delay, it will be delivered on 5 October without fail, please wait.'));
   assert.ok(ex.exampleProblem('Sorry for the delay sir, it is out for delivery and will reach you today for sure.'));
   assert.ok(ex.exampleProblem('Sorry ma\'am, please try the payment again and share the UPI screenshot here.'));
+  assert.ok(ex.exampleProblem('Could you please share your Order ID so we can check your order status for you?'));
+  assert.ok(ex.exampleProblem('Please share your Order ID, phone number, and customer name so we can check your order details.'));
+  assert.strictEqual(ex.exampleProblem('I understand your worry and I am sorry for the wait. Please share your order ID so I can check it for you right away.'), null);
 });
 t('parseExample', () => {
   const raw = (o) => JSON.stringify({ example: o, lesson: null });

@@ -72,7 +72,11 @@ export function customerCalmedAfter(after: string[]): boolean {
 // no personal detail, no amount, no calendar date, no promise of a refund time or of arrival.
 export function exampleProblem(teamReplied: string): string | null {
   const t = (teamReplied || '').trim();
-  if (t.length < 30) return 'Too short to learn from.';
+  if (t.length < 60) return 'Too short to learn from.';
+  // A reply that only asks for the order number teaches nothing about handling a hard customer.
+  if (t.length < 220 && /\b(?:share|send|provide|bhej\w*|batao|bataiye|dijiye|give)\b[^.]{0,40}\b(?:order\s*(?:id|number|no)|correct order|details)\b/i.test(t)
+      && !/\b(?:sorry|apolog\w*|understand|maafi|samajh|concern|worry|pareshan)\b/i.test(t)) return 'It only asks for details.';
+  if (/\b(?:share|send|provide|bhej\w*|batao|dijiye)\b[^.]{0,60}\b(?:customer\s+name|your\s+name|full\s+name|e-?mail)\b/i.test(t)) return 'It asks for a name or e-mail: the agent asks only for the order ID and the phone.';
   if (t.length > 900) return 'Too long: keep the part that matters.';
   if (hasPersonalDetail(t)) return 'Take out phone numbers, order IDs, links and e-mail addresses.';
   if (/(₹|\brs\.?\s?\d|\binr\b|\d+\s?(rupees|rs)\b)/i.test(t)) return 'Take out amounts: the agent must not copy a price or a refund amount.';

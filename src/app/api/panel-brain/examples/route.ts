@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
   try {
     const rows = await query(
       `SELECT ${COLS} FROM brain_examples WHERE site_id = $1 AND status <> 'rejected'
-        ORDER BY (status = 'pending') DESC, created_at DESC LIMIT 200`,
+        ORDER BY (status = 'pending') DESC, (why LIKE '%replied calmly%') DESC, created_at DESC LIMIT 200`,
       [siteId]
     );
     const learned = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM brain_reviewed WHERE site_id = $1`, [siteId]).catch(() => null);

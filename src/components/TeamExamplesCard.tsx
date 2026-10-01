@@ -89,6 +89,9 @@ export default function TeamExamplesCard({ token, businessId, canEdit, onAlert }
             const set = (patch: Partial<typeof v>) => setEdits({ ...edits, [e.id]: { ...v, ...patch } });
             return (
               <div key={e.id} style={{ borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                <div style={{ fontSize: '0.6875rem', marginBottom: 4, color: e.why && /calmly/.test(e.why) ? 'var(--success, #16a34a)' : '#b45309' }}>
+                  {e.why && /calmly/.test(e.why) ? '✓ The customer replied calmly after this' : '? The customer did not write again after this: check that it really helped'}
+                </div>
                 {situationSelect(v.situation, (s) => set({ situation: s }))}
                 <input className="form-input" style={{ marginBottom: '0.375rem' }} value={v.customer_said} disabled={!canEdit} maxLength={300} onChange={(ev) => set({ customer_said: ev.target.value })} aria-label="Customer said" />
                 <textarea className="form-input" rows={3} value={v.team_replied} disabled={!canEdit} maxLength={900} onChange={(ev) => set({ team_replied: ev.target.value })} aria-label="Our team replied" />
