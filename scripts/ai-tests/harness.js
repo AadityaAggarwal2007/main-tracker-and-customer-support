@@ -6,6 +6,8 @@ const ts = require('typescript');
 
 const SRC = path.resolve(__dirname, '../../src/');
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tests-'));
+// The compiled copies are deleted when the run ends.
+process.on('exit', () => { try { fs.rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ } });
 
 const FILES = ['ai', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain', 'brain-learn', 'brain-examples', 'health-rules'];
 for (const f of FILES) {

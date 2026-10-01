@@ -590,7 +590,7 @@ export const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. C
 const EMPTY_REPLY = "I'm here to help! How can I assist you?";
 
 // Appended for the one H4 retry only, never stored or sent every message.
-const VERIFIED_NOTE = "(Note from the system, not the customer: this customer's order is already verified - it is in the lookup above. Do not ask for the order ID or phone digits again. Answer their last message using that order.)";
+const VERIFIED_NOTE = "(Note from the system, not the customer: this customer's order is already verified - it is in the lookup above. Do not ask for the order ID or phone digits again. Answer their last message using that order. If their message is short or unclear about the order (like \"date\", \"status\", \"kab\", \"order\", \"?\"), answer with the order's current stage, its estimated delivery date and the tracking link; never reply with only a greeting.)";
 
 function stripMarkdown(text: string): string {
   return text

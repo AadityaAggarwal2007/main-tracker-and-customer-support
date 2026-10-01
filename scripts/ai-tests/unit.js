@@ -2,6 +2,7 @@
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert');
 const ts = require('typescript');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-unit-'));
+process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 const load = (f) => {
   const js = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat', f + '.ts'), 'utf8'), { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText;
   fs.writeFileSync(path.join(dir, f + '.js'), js);
