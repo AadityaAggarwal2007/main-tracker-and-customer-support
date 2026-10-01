@@ -172,9 +172,12 @@ export async function POST(request: NextRequest) {
     const pincode = shippingAddress.zip || '';
 
     // 6. Extract line items
+    // The line's full name, "Title - Silver / pack-of-3" (Shopify's line item name, the same as the
+    // CSV's "Lineitem name"), so two colours or sizes of one product are two different lines in
+    // ShipTrack, not one line shown twice. Was the bare title until 2026-10-01 (owner OK'd this change).
     const lineItems = (shopifyOrder.line_items || []).map((item: Record<string, unknown>) => ({
       brand: (item.vendor as string) || '',
-      product_name: (item.title as string) || (item.name as string) || '',
+      product_name: (item.name as string) || (item.title as string) || '',
       quantity: (item.quantity as number) || 1,
       price: parseFloat(String(item.price || '0')),
     }));
