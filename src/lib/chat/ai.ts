@@ -20,6 +20,7 @@ import {
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
+import { fixOrderMentions } from './order-mention';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
@@ -1164,6 +1165,21 @@ export async function getAIResponse(
   // The messages the last runWithModel ended on (its tool exchange included),
   // which the H4 retry carries on from.
   let lastRunMessages: ChatCompletionMessageParam[] = [];
+  // A reply may only name an order found in this chat or one the customer typed (order-mention.ts).
+  const customerTyped = recent.rows.filter((r) => r.sender === 'visitor').map((r) => r.content || '').join('\n');
+  const withRightOrderNumbers = (text: string): string => {
+    const ids = new Set<string>(verifiedOrderId ? [verifiedOrderId] : []);
+    for (const m of lastRunMessages) {
+      if (m.role !== 'tool') continue;
+      try {
+        const r = JSON.parse(String(m.content || ''));
+        if (r?.found && Array.isArray(r.orders)) for (const o of r.orders) if (o?.order_id) ids.add(String(o.order_id));
+      } catch { /* not a lookup result */ }
+    }
+    const fixed = fixOrderMentions(text, Array.from(ids), customerTyped);
+    if (fixed.changed) console.log(`[AI] Wrong order number corrected for conv ${conversationId}`);
+    return fixed.text;
+  };
 
   // extra: messages after the history (only the H4 retry passes any); that
   // retry is never forced, the forced lookup already ran in the first run.
@@ -1302,7 +1318,7 @@ export async function getAIResponse(
     if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
     // stripMarkdown misses a ** left without its partner.
     result.content = stripMarkdownEmphasis(result.content);
-    result.content = withoutTodayPromise(result.content);
+    result.content = withRightOrderNumbers(withoutTodayPromise(result.content));
     if (alreadyReplied) result.content = dropRepeatedIntroduction(result.content);
     // A model that escalated itself has already handed over.
     if (!result.escalated) {
@@ -1350,7 +1366,7 @@ export async function getAIResponse(
         if (!retry) return handOver('H4', result);
         // The first run's lookup still has to be stored if the retry used none.
         retry.toolCallMeta = retry.toolCallMeta || result.toolCallMeta;
-        retry.content = withoutTodayPromise(stripMarkdownEmphasis(retry.content));
+        retry.content = withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(retry.content)));
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
         return retry;

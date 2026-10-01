@@ -10,7 +10,7 @@ const load = (f) => {
 };
 load('today-promise');
 load('health-rules');
-const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -199,5 +199,19 @@ t('the starter notes pass the check', () => {
   assert.ok(rows.length >= 8);
   for (const [, title, body] of rows) assert.strictEqual(brain.noteProblem(title.replace(/''/g, "'"), body.replace(/''/g, "'")), null, title);
   assert.ok(brain.noteProblem('Out for delivery', 'Tell them it will arrive today.'));
+});
+t('fixOrderMentions', () => {
+  const f = (r, k, t = '') => om.fixOrderMentions(r, k, t).text;
+  assert.strictEqual(f('Maine aapka order #4711 check kiya hai.', ['#4715']), 'Maine aapka order #4715 check kiya hai.');
+  assert.strictEqual(f('Order ID: 4711, status Shipped.', ['#4715']), 'Order ID: 4715, status Shipped.');
+  assert.strictEqual(f('Your order #4715 is shipped.', ['#4715']), 'Your order #4715 is shipped.');
+  assert.strictEqual(f('Your order #9999 is shipped.', []), 'Your order is shipped.');
+  assert.strictEqual(f('Your order #9999 is shipped.', ['#4715', '#5000']), 'Your order is shipped.');
+  assert.strictEqual(f('You asked about order #9999.', ['#4715'], 'what about order 9999?'), 'You asked about order #9999.');
+  const keep = 'Total Rs 499, call 8420844429, delivery 07/10/2026, pin 700001, tracking ST8ZSB7R9HF4.';
+  assert.strictEqual(f(keep, ['#4715']), keep);
+  assert.strictEqual(f('Pack of 16 jhumkas, order 1500 rs worth.', ['#4715']), 'Pack of 16 jhumkas, order 1500 rs worth.');
+  assert.strictEqual(f('Free shipping on a minimum order 299.', ['#4715']), 'Free shipping on a minimum order 299.');
+  assert.strictEqual(f('COD works above order 999 in Gujarat.', ['#4715']), 'COD works above order 999 in Gujarat.');
 });
 console.log(`UNIT: ${n} groups passed`);
