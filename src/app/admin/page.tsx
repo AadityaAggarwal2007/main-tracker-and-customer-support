@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
+import AutoProgressionCard from '@/components/AutoProgressionCard';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, ROLE_PERMISSIONS, getStatusColorClass } from '@/lib/constants';
 import {
@@ -161,11 +162,6 @@ export default function AdminDashboard() {
   const [addingPanelEmail, setAddingPanelEmail] = useState(false);
 
 
-  // Auto-Progression
-  interface ProgressionStep { id: string; step_from: string; step_to: string; step_order: number; delay_minutes: number; is_enabled: boolean; }
-  const [progressionSteps, setProgressionSteps] = useState<ProgressionStep[]>([]);
-  const [progressionDirty, setProgressionDirty] = useState(false);
-  const [savingProgression, setSavingProgression] = useState(false);
 
   // Alert
   const [alert, setAlert] = useState<{ type: string; message: string } | null>(null);
@@ -282,17 +278,6 @@ export default function AdminDashboard() {
     } catch { /* ignore */ }
   }, [token]);
 
-  const fetchProgressionSteps = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/progression-settings?t=${Date.now()}`, { cache: 'no-store' });
-      const data = await res.json();
-      if (res.ok) {
-        setProgressionSteps(data.steps || []);
-        setProgressionDirty(false);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
   const fetchQueueStats = useCallback(async () => {
     if (!token) return;
     setLoadingQueue(true);
@@ -304,7 +289,7 @@ export default function AdminDashboard() {
     finally { setLoadingQueue(false); }
   }, [token]);
 
-  useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); fetchProgressionSteps(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats, fetchProgressionSteps]);
+  useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
   useEffect(() => { if (activeTab === 'team') fetchTeamUsers(); }, [activeTab, fetchTeamUsers]);
 
@@ -327,7 +312,6 @@ export default function AdminDashboard() {
     const t = setInterval(load, 30000);
     return () => { alive = false; clearInterval(t); };
   }, [token, activePanelId]);
-  useEffect(() => { if (activeTab === 'settings') fetchProgressionSteps(); }, [activeTab, fetchProgressionSteps]);
   useEffect(() => { fetchEmailedOrders(); }, [fetchEmailedOrders]);
   // Auto-refresh email stats every 30 seconds
   useEffect(() => {
@@ -2131,138 +2115,8 @@ export default function AdminDashboard() {
               )}
 
 
-              {/* ── Auto-Progression Settings ── */}
-              <div className="tf-card" style={{ padding: '1.5rem', marginTop: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Timer size={18} style={{ color: 'var(--primary)' }} />
-                    <span style={{ fontWeight: 700, fontSize: '1rem' }}>Auto-Progression</span>
-                  </div>
-                  <button
-                    className="btn btn-sm btn-outline"
-                    style={{ fontSize: '0.75rem' }}
-                    onClick={fetchProgressionSteps}
-                  >
-                    Refresh
-                  </button>
-                </div>
-                <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '1.25rem' }}>
-                  These timings are NOT used any more. Customer tracking pages follow each order&apos;s own
-                  estimated delivery date: the last stage, Out for Delivery, starts 1 day before it (Hub 2 days,
-                  City 4, State 6 days before). The schedule never marks an order Delivered; only your team does.
-                </p>
-
-                {progressionSteps.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--fg-muted)' }}>
-                    <Timer size={32} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
-                    <p style={{ fontSize: '0.875rem' }}>Loading progression settings...</p>
-                    <button className="btn btn-sm btn-primary" style={{ marginTop: '0.75rem' }} onClick={fetchProgressionSteps}>Load Settings</button>
-                  </div>
-                ) : (
-                  <>
-                    {/* Visual Timeline */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-                      {/* Order Placed (start) */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.625rem 0' }}>
-                        <div style={{ width: '2.25rem', height: '2.25rem', borderRadius: '50%', background: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>1</div>
-                        <span style={{ fontWeight: 600, fontSize: '0.875rem', minWidth: '10rem' }}>Order Placed</span>
-                      </div>
-
-                      {progressionSteps.map((step, idx) => (
-                        <div key={step.id}>
-                          {/* Delay connector */}
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.375rem 0', paddingLeft: '0.875rem' }}>
-                            <div style={{ width: '2px', height: '2rem', background: step.is_enabled ? 'var(--primary)' : 'var(--border)', marginLeft: '0', flexShrink: 0 }} />
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-                              <ArrowRight size={12} style={{ color: 'var(--fg-muted)' }} />
-                              <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>after</span>
-                              <input
-                                type="number"
-                                min="1"
-                                value={step.delay_minutes}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value) || 1;
-                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, delay_minutes: val } : s));
-                                  setProgressionDirty(true);
-                                }}
-                                style={{ width: '5rem', padding: '0.25rem 0.5rem', borderRadius: '0.375rem', border: '1.5px solid var(--border)', background: 'var(--bg)', fontSize: '0.8125rem', fontWeight: 600, textAlign: 'center' }}
-                              />
-                              <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>
-                                min {step.delay_minutes >= 60 && <span style={{ color: 'var(--primary)', fontWeight: 600 }}>({step.delay_minutes >= 1440 ? `${(step.delay_minutes / 1440).toFixed(1)} days` : `${(step.delay_minutes / 60).toFixed(1)} hrs`})</span>}
-                              </span>
-                              <button
-                                onClick={() => {
-                                  setProgressionSteps(prev => prev.map(s => s.id === step.id ? { ...s, is_enabled: !s.is_enabled } : s));
-                                  setProgressionDirty(true);
-                                }}
-                                title={step.is_enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
-                                style={{ cursor: 'pointer', background: 'none', border: 'none', padding: '0.125rem', display: 'flex' }}
-                              >
-                                {step.is_enabled
-                                  ? <ToggleRight size={20} style={{ color: 'var(--success)' }} />
-                                  : <ToggleLeft size={20} style={{ color: 'var(--fg-muted)' }} />
-                                }
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Step destination */}
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.625rem 0', opacity: step.is_enabled ? 1 : 0.4 }}>
-                            <div style={{
-                              width: '2.25rem', height: '2.25rem', borderRadius: '50%',
-                              background: idx === progressionSteps.length - 1 ? 'var(--success)' : 'var(--primary)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              color: 'white', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0
-                            }}>{idx + 2}</div>
-                            <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{step.step_to}</span>
-                            {idx === progressionSteps.length - 1 && <Check size={16} style={{ color: 'var(--success)' }} />}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Total time */}
-                    <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'var(--primary-light)', borderRadius: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Timer size={14} style={{ color: 'var(--primary)' }} />
-                      <span style={{ fontSize: '0.8125rem', color: 'var(--primary)', fontWeight: 600 }}>
-                        Total estimated delivery: ~{(() => {
-                          const totalMin = progressionSteps.filter(s => s.is_enabled).reduce((sum, s) => sum + s.delay_minutes, 0);
-                          if (totalMin >= 1440) return `${(totalMin / 1440).toFixed(1)} days`;
-                          if (totalMin >= 60) return `${(totalMin / 60).toFixed(1)} hours`;
-                          return `${totalMin} minutes`;
-                        })()}
-                      </span>
-                    </div>
-
-                    {/* Save button */}
-                    <div style={{ marginTop: '1rem' }}>
-                      <button
-                        className="btn btn-primary"
-                        disabled={!progressionDirty || savingProgression}
-                        onClick={async () => {
-                          setSavingProgression(true);
-                          try {
-                            const res = await fetch('/api/progression-settings', {
-                              method: 'PUT',
-                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                              body: JSON.stringify({ steps: progressionSteps }),
-                            });
-                            if (res.ok) {
-                              showAlert('success', 'Auto-progression settings saved!');
-                              setProgressionDirty(false);
-                              fetchProgressionSteps();
-                            } else { showAlert('error', 'Failed to save progression settings'); }
-                          } catch { showAlert('error', 'Failed to save'); }
-                          finally { setSavingProgression(false); }
-                        }}
-                      >
-                        {savingProgression ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : <Check size={14} />}
-                        {savingProgression ? 'Saving...' : 'Save Progression Settings'}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+              {/* ── Auto-Progression: the real schedule (src/lib/journey.ts), read only ── */}
+              <AutoProgressionCard />
 
               {/* Danger Zone */}
               {user?.role === 'admin' && (

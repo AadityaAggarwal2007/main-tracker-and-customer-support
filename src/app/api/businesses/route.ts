@@ -219,9 +219,17 @@ export async function DELETE(request: NextRequest) {
       // Production has no FK from orders to businesses, and none from
       // order_items / tracking_history / draft_queue / email_logs / email_queue
       // to orders — nothing cascades, so every child row is removed explicitly.
+      // Those child rows hang off the ORDER NUMBER, not the panel: an order number
+      // that another panel also has (the same Shopify CSV uploaded into two panels,
+      // seen 2026-10-01 with "vestora" / "vastora") keeps its rows, they are the other
+      // panel's too. Before that fix, deleting the duplicate panel would have wiped
+      // the real panel's items, history and email logs for those orders.
       const orderIds = (
         await client.query<{ order_id: string }>(
-          `SELECT order_id FROM orders WHERE business_id = $1`,
+          `SELECT o.order_id FROM orders o
+            WHERE o.business_id = $1
+              AND NOT EXISTS (SELECT 1 FROM orders x
+                               WHERE x.order_id = o.order_id AND x.business_id IS DISTINCT FROM o.business_id)`,
           [id]
         )
       ).rows.map((r) => r.order_id);
