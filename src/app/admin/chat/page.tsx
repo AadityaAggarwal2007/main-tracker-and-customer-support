@@ -14,6 +14,7 @@ import { can } from '@/lib/permissions';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
+import { INDIAN_STATES, addressText, type OrderAddress } from '@/lib/chat/order-address';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -351,6 +352,102 @@ function OrderLine({ facts }: { facts: OrderFacts }) {
           <CalendarCheck size={12} /> Est. delivery <b style={{ color: 'var(--fg)', fontWeight: 600 }}>{eta}</b>
         </span>
       )}
+    </div>
+  );
+}
+
+// The delivery address under the order line (owner, 2026-10-01: change it here instead of a
+// Shopify CSV re-upload). From GET /api/chat/conversations/[id] (order_address, staff with
+// orders.view); Edit only on a verified order for logins that may change orders
+// (address_editable). ShipTrack's copy only: Shopify and the courier keep theirs.
+interface StaffAddress extends OrderAddress { order_id: string; edited_at: string | null; edited_by: string | null }
+const stampIST = (iso: string) => new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+function AddressLine({ address, editable, onEdit }: { address: StaffAddress; editable: boolean; onEdit: () => void }) {
+  const text = addressText(address);
+  // Inline, so a long address wraps like text and the chip and Edit follow it.
+  return (
+    <div style={{ fontSize: '0.75rem', marginTop: '0.25rem', color: 'var(--fg)', lineHeight: 1.6, wordBreak: 'break-word' }}>
+      <MapPin size={12} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '0.375rem', color: 'var(--fg-muted)' }} />
+      {text || <span style={{ color: 'var(--fg-muted)' }}>No address on this order</span>}
+      {address.edited_at && (
+        <span title={`Changed in ShipTrack by ${address.edited_by || 'the team'} on ${stampIST(address.edited_at)}. Shopify and CSV updates keep this address.`} style={{
+          display: 'inline-block', verticalAlign: 'middle', marginLeft: '0.375rem', whiteSpace: 'nowrap', lineHeight: 1.4,
+          fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'var(--success-light)', color: 'var(--success)',
+        }}>
+          Changed{address.edited_by ? ` · ${address.edited_by}` : ''}
+        </span>
+      )}
+      {editable && (
+        <button type="button" onClick={onEdit} title="Change the delivery address" className="btn btn-outline btn-sm"
+          style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: '0.375rem', padding: '1px 8px', fontSize: '0.6875rem', gap: '0.25rem', minHeight: 0, lineHeight: 1.4 }}>
+          <Pencil size={11} /> Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AddressDialog({ initial, orderId, busy, error, onCancel, onSave }: {
+  initial: OrderAddress; orderId: string; busy: boolean; error: string;
+  onCancel: () => void; onSave: (a: OrderAddress) => void;
+}) {
+  const [a, setA] = useState<OrderAddress>(initial);
+  // An old order whose state is spelled another way keeps it as a choice.
+  const states = !initial.state || INDIAN_STATES.includes(initial.state) ? INDIAN_STATES : [initial.state, ...INDIAN_STATES];
+  const ok = a.line1.trim().length >= 3 && a.city.trim().length >= 2 && !!a.state && /^[1-9][0-9]{5}$/.test(a.pincode);
+  const label = { display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.625rem' } as const;
+  return (
+    <div className="modal-overlay" onClick={() => { if (!busy) onCancel(); }}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="addr-title" onClick={e => e.stopPropagation()} style={{ maxWidth: '32rem' }}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-title" id="addr-title">Change delivery address</div>
+            <p className="modal-subtitle">Order {orderId}</p>
+          </div>
+          <button type="button" className="btn-icon" onClick={onCancel} aria-label="Close" disabled={busy}><X size={16} /></button>
+        </div>
+        <form onSubmit={e => { e.preventDefault(); if (ok && !busy) onSave(a); }}>
+          <label style={label}>House / flat, street
+            <input className="form-input" style={{ marginTop: 4 }} value={a.line1} maxLength={250} autoFocus
+              onChange={e => setA({ ...a, line1: e.target.value })} />
+          </label>
+          <label style={label}>Area, landmark <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>(optional)</span>
+            <input className="form-input" style={{ marginTop: 4 }} value={a.line2} maxLength={250}
+              onChange={e => setA({ ...a, line2: e.target.value })} />
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 8.5rem', gap: '0.625rem' }}>
+            <label style={label}>City
+              <input className="form-input" style={{ marginTop: 4 }} value={a.city} maxLength={60}
+                onChange={e => setA({ ...a, city: e.target.value })} />
+            </label>
+            <label style={label}>Pincode
+              <input className="form-input" style={{ marginTop: 4 }} value={a.pincode} inputMode="numeric" maxLength={6}
+                onChange={e => setA({ ...a, pincode: e.target.value.replace(/\D/g, '').slice(0, 6) })} />
+            </label>
+          </div>
+          <label style={label}>State
+            <select className="form-input" style={{ marginTop: 4 }} value={a.state} onChange={e => setA({ ...a, state: e.target.value })}>
+              {!a.state && <option value="">Pick the state</option>}
+              {states.map(st => <option key={st} value={st}>{st}</option>)}
+            </select>
+          </label>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', fontSize: '0.75rem', color: 'var(--fg-muted)', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.625rem', marginBottom: '0.875rem' }}>
+            <Info size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>Changes the address in ShipTrack only (order details and tracking page), not in Shopify or with the courier. Later Shopify or CSV updates will not change it back.</span>
+          </div>
+          {error && (
+            <p role="alert" style={{ fontSize: '0.75rem', color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+              <AlertCircle size={12} style={{ flexShrink: 0 }} /> {error}
+            </p>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="btn btn-outline" onClick={onCancel} disabled={busy}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={!ok || busy}>
+              {busy ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</> : <><Check size={14} /> Save address</>}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -886,7 +983,8 @@ export default function ChatSupportPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   // The open chat's order line; tied to its chat so a fast switch never shows the last one's.
-  const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null } | null>(null);
+  const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean } | null>(null);
+  const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // The same customer's older chats on this site (read-only, oldest first),
   // how many older chats they have in all, and their newer chat if any.
@@ -950,6 +1048,17 @@ export default function ChatSupportPage() {
       .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
 
+  // The owner changed his login in another tab (Team), or someone signed in there: this tab takes
+  // the new login (the old owner login is dead).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'auth_token' && e.newValue) setToken(e.newValue);
+      if (e.key === 'auth_user' && e.newValue) { try { setUser(JSON.parse(e.newValue)); } catch { /* ignore */ } }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   /* ═══ PANELS ═══ */
   useEffect(() => {
     if (!token) return;
@@ -1004,7 +1113,7 @@ export default function ChatSupportPage() {
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
-      setOrderInfo({ id, facts: data.order_facts ?? null });
+      setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable });
       setMessages(data.messages || []);
       const older = data.earlier ?? data.conversation?.earlier;
       setEarlier(Array.isArray(older) ? older : []);
@@ -1511,6 +1620,26 @@ export default function ChatSupportPage() {
     updatedAt: activeHealthSrc.health_updated_at ?? null,
   } : null;
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
+  const activeAddress = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.address : null;
+  const addressEditable = !!activeAddress && !!orderInfo?.editable && can(user, 'orders.update');
+  const saveAddress = async (a: OrderAddress) => {
+    if (!addrEdit || !token) return;
+    const convId = addrEdit.convId;
+    setAddrEdit({ ...addrEdit, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}/address`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(a),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setAddrEdit({ convId, busy: false, error: data.error || 'Could not save the address' }); return; }
+      if (data.address) setOrderInfo(prev => prev && prev.id === convId ? { ...prev, address: data.address } : prev);
+      setAddrEdit(null);
+      showAlert('success', data.unchanged ? 'Nothing changed' : 'Address updated in ShipTrack');
+    } catch {
+      setAddrEdit({ convId, busy: false, error: 'Could not save the address' });
+    }
+  };
   const urgentCount = searchActive ? 0 : conversations.filter(c => (c.health_pinned && !isVisitorChat(c)) || ((c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c)) || c.returned).length;
   // The open chat's row, for its waiting time (the thread's own answer does not carry it).
   // The Waiting timer is for customers only (owner, 2026-09-30): a visitor shows none.
@@ -2048,6 +2177,10 @@ export default function ChatSupportPage() {
                       )}
                     </div>
                     {activeOrder && <OrderLine facts={activeOrder} />}
+                    {activeAddress && activeConv && (
+                      <AddressLine address={activeAddress} editable={addressEditable}
+                        onEdit={() => setAddrEdit({ convId: activeConv.id, busy: false, error: '' })} />
+                    )}
                     <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
                       <span>{activeConv.panel_name || activeConv.site_name}</span>
                       {activeConv.visitor_phone && (
@@ -2349,6 +2482,10 @@ export default function ChatSupportPage() {
         )}
         {details && (
           <MessageDetailsDialog details={details.data} error={details.error} onClose={() => setDetails(null)} />
+        )}
+        {addrEdit && activeAddress && activeConv?.id === addrEdit.convId && (
+          <AddressDialog initial={activeAddress} orderId={activeAddress.order_id} busy={addrEdit.busy} error={addrEdit.error}
+            onCancel={() => setAddrEdit(null)} onSave={saveAddress} />
         )}
       </main>
     </div>

@@ -193,6 +193,17 @@ export default function AdminDashboard() {
       .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
 
+  // The owner changed his login in another tab (Team), or someone signed in there: this tab takes
+  // the new login (the old owner login is dead).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'auth_token' && e.newValue) setToken(e.newValue);
+      if (e.key === 'auth_user' && e.newValue) { try { setUser(JSON.parse(e.newValue)); } catch { /* ignore */ } }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   // The screens' old permission names, now answered by src/lib/permissions.ts (the API routes
   // check the same rules for real). Team = the super admin only.
   const LEGACY_PERMS: Record<string, Permission | 'super' | 'settings'> = {
@@ -2144,7 +2155,8 @@ export default function AdminDashboard() {
           {/* ════════ TEAM TAB ════════ */}
           {activeTab === 'team' && hasPermission('manage_team') && (
             <div className="animate-fade-in-up">
-              <TeamCard token={token} panels={businesses} onAlert={showAlert} />
+              <TeamCard token={token} panels={businesses} onAlert={showAlert}
+                onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />
             </div>
           )}
         </div>

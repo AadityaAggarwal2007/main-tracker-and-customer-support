@@ -1,13 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, Copy, KeyRound, MessageCircle, Pencil, Power, Trash2, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Check, Copy, Eye, EyeOff, KeyRound, MessageCircle, Pencil, Power, Sparkles, Trash2, UserPlus, X } from 'lucide-react';
 import { PERMISSION_GROUPS, ROLE_INFO, TEAM_ROLES, type Permission, type Role } from '@/lib/permissions';
 
 // Team (owner, 2026-10-01): the owner (super admin) gives each person their own login: a role,
 // the panels they may use and the exact things they can do (src/lib/permissions.ts). ShipTrack
-// makes the password and shows it once, with the login link, ready to send (copy or WhatsApp).
-// Every change is checked on the server too (/api/team, the routes' own checks).
+// makes the password (or takes one the owner types) and shows it once, with the login link, ready
+// to send (copy or WhatsApp). The owner changes his own username / password here too (owner,
+// 2026-10-01: the old one was known to the whole staff): /api/auth/account. Every change is checked
+// on the server too (/api/team, the routes' own checks).
 
 type TeamRole = Exclude<Role, 'admin'>;
 interface Member {
@@ -15,8 +17,11 @@ interface Member {
   last_login: string | null; created_at: string; business_ids: string[] | null; permissions: string[] | null; effective: Permission[];
 }
 interface Panel { id: string; name: string; logo_url?: string | null; primary_color?: string | null }
-interface Draft { id?: string; displayName: string; username: string; role: TeamRole; allPanels: boolean; panels: string[]; perms: Permission[] }
+interface Draft { id?: string; origUsername?: string; displayName: string; username: string; role: TeamRole; allPanels: boolean; panels: string[]; perms: Permission[] }
 interface Share { name: string; username: string; password: string; reset: boolean }
+interface Owner { username: string; changedAt: string | null; savedInPanel: boolean }
+interface AccountDraft { current: string; username: string; pw: string; pw2: string; showCur: boolean; showNew: boolean; copied?: boolean; done?: string; pwChanged?: boolean }
+interface PwDraft { member: Member; mode: 'auto' | 'own'; value: string; show: boolean }
 
 const ROLE_STYLE: Record<TeamRole, { color: string; bg: string }> = {
   panel_admin: { color: '#4338ca', bg: '#eef0ff' },
@@ -29,24 +34,60 @@ const ALL_PERMS = PERMISSION_GROUPS.flatMap((g) => g.items.map((i) => i.key));
 
 const emptyDraft = (): Draft => ({ displayName: '', username: '', role: 'agent', allPanels: true, panels: [], perms: [...ROLE_INFO.agent.perms] });
 const suggestUsername = (name: string) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 24);
+function since(iso: string): string {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  return `${Math.round(h / 24)} d ago`;
+}
 function ago(iso: string | null): string {
   if (!iso) return 'Never logged in';
-  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
-  if (m < 1) return 'Active just now';
-  if (m < 60) return `Last login ${m} min ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `Last login ${h} h ago`;
-  return `Last login ${Math.round(h / 24)} d ago`;
+  const s = since(iso);
+  return s === 'just now' ? 'Active just now' : `Last login ${s}`;
 }
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?';
+const USERNAME_OK = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+// A strong password to suggest: 14 letters and digits, easy to read (no 0/O, 1/l/I).
+function strongPassword(): string {
+  const abc = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const bytes = new Uint32Array(14);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => abc[b % abc.length]).join('');
+}
+const sectionLabel = { fontSize: '0.6875rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 6 } as const;
 
-export default function TeamCard({ token, panels, onAlert }: { token: string | null; panels: Panel[]; onAlert: (type: string, message: string) => void }) {
+// A password box with show / hide.
+function PasswordInput({ value, onChange, show, onToggle, placeholder, autoFocus, autoComplete }: {
+  value: string; onChange: (v: string) => void; show: boolean; onToggle: () => void; placeholder?: string; autoFocus?: boolean; autoComplete?: string;
+}) {
+  return (
+    <div style={{ position: 'relative', marginTop: 4 }}>
+      <input className="form-input" type={show ? 'text' : 'password'} value={value} placeholder={placeholder} autoFocus={autoFocus}
+        autoComplete={autoComplete} maxLength={128} onChange={(e) => onChange(e.target.value)} style={{ paddingRight: '2.5rem', fontFamily: show && value ? 'monospace' : undefined }} />
+      <button type="button" onClick={onToggle} aria-label={show ? 'Hide password' : 'Show password'}
+        style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', padding: 4 }}>
+        {show ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </div>
+  );
+}
+
+export default function TeamCard({ token, panels, onAlert, onLoginChanged }: {
+  token: string | null; panels: Panel[]; onAlert: (type: string, message: string) => void;
+  // The owner's new login after he changes it here (his old one stops working).
+  onLoginChanged?: (token: string, user: unknown) => void;
+}) {
   const [members, setMembers] = useState<Member[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [share, setShare] = useState<Share | null>(null);
   const [copied, setCopied] = useState(false);
+  const [owner, setOwner] = useState<Owner | null>(null);
+  const [acct, setAcct] = useState<AccountDraft | null>(null);
+  const [pwFor, setPwFor] = useState<PwDraft | null>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -59,6 +100,50 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
     finally { setLoaded(true); }
   }, [token, onAlert]);
   useEffect(() => { load(); }, [load]);
+
+  const loadOwner = useCallback(async () => {
+    if (!token) return;
+    try {
+      const r = await fetch('/api/auth/account', { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setOwner(await r.json());
+    } catch { /* the row shows without it */ }
+  }, [token]);
+  useEffect(() => { loadOwner(); }, [loadOwner]);
+
+  // The owner's own login. On success the old one is dead everywhere, so this screen takes the new
+  // one at once (onLoginChanged) and the box says what is now saved.
+  const acctProblem = (a: AccountDraft): string | null => {
+    if (!a.current) return 'Type your current password';
+    const u = a.username.trim().toLowerCase();
+    const renamed = !!owner && u !== owner.username.toLowerCase();
+    if (renamed && !USERNAME_OK.test(u)) return 'Username: 3-32 small letters, numbers, dot, dash or underscore';
+    if (a.pw) {
+      if (a.pw.length < 8) return 'New password: at least 8 characters';
+      if (a.pw !== a.pw2) return 'The two new passwords are not the same';
+    }
+    if (!renamed && !a.pw) return 'Type a new username or a new password';
+    return null;
+  };
+  const saveAccount = async () => {
+    if (!acct || !token) return;
+    const problem = acctProblem(acct);
+    if (problem) { onAlert('error', problem); return; }
+    setBusy(true);
+    try {
+      const r = await fetch('/api/auth/account', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword: acct.current, username: acct.username.trim(), newPassword: acct.pw || undefined }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.token) { onAlert('error', d.error || 'Could not save'); return; }
+      try { localStorage.setItem('auth_token', d.token); localStorage.setItem('auth_user', JSON.stringify(d.user)); } catch { /* private window */ }
+      onLoginChanged?.(d.token, d.user);
+      setOwner({ username: d.username, changedAt: d.changedAt, savedInPanel: true });
+      setAcct({ current: '', username: d.username, pw: '', pw2: '', showCur: false, showNew: false, done: d.username, pwChanged: !!acct.pw });
+      onAlert('success', 'Login changed. Everyone using the old one is signed out.');
+    } catch { onAlert('error', 'Could not save'); }
+    finally { setBusy(false); }
+  };
 
   const call = async (method: 'POST' | 'PATCH' | 'DELETE', body?: unknown, qs = '') => {
     setBusy(true);
@@ -82,7 +167,7 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
   const openNew = () => { setShare(null); setDraft(emptyDraft()); };
   const openEdit = (m: Member) => {
     setShare(null);
-    setDraft({ id: m.id, displayName: m.display_name, username: m.username, role: m.role, allPanels: !m.business_ids || !m.business_ids.length,
+    setDraft({ id: m.id, origUsername: m.username, displayName: m.display_name, username: m.username, role: m.role, allPanels: !m.business_ids || !m.business_ids.length,
       panels: m.business_ids || [], perms: [...m.effective] });
   };
   const setRole = (role: TeamRole) => draft && setDraft({ ...draft, role, perms: [...ROLE_INFO[role].perms] });
@@ -102,18 +187,31 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
       businessIds: draft.allPanels ? null : draft.panels,
     };
     if (draft.id) {
-      const d = await call('PATCH', { id: draft.id, ...body });
-      if (d) { setDraft(null); onAlert('success', 'Saved: it applies within 30 seconds'); }
+      const renamed = draft.username !== draft.origUsername;
+      if (renamed && !USERNAME_OK.test(draft.username)) { onAlert('error', 'Username: 3-32 small letters, numbers, dot, dash or underscore'); return; }
+      const d = await call('PATCH', { id: draft.id, ...body, ...(renamed ? { username: draft.username } : {}) });
+      if (d) {
+        setDraft(null);
+        onAlert('success', renamed ? `Saved. They sign in again with ${draft.username} (same password).` : 'Saved: it applies within 30 seconds');
+      }
     } else {
       const d = await call('POST', { ...body, username: draft.username });
       if (d?.password) { setDraft(null); setShare({ name: draft.displayName, username: draft.username, password: d.password, reset: false }); }
     }
   };
 
-  const resetPassword = async (m: Member) => {
-    if (!confirm(`Make a new password for ${m.display_name}? Their old password stops working and they are signed out.`)) return;
-    const d = await call('PATCH', { id: m.id, resetPassword: true });
-    if (d?.password) setShare({ name: m.display_name, username: m.username, password: d.password, reset: true });
+  const resetPassword = (m: Member) => { setShare(null); setPwFor({ member: m, mode: 'auto', value: '', show: false }); };
+  const savePassword = async () => {
+    if (!pwFor) return;
+    const m = pwFor.member;
+    if (pwFor.mode === 'own') {
+      if (pwFor.value.length < 8) { onAlert('error', 'Password: at least 8 characters'); return; }
+      const d = await call('PATCH', { id: m.id, password: pwFor.value });
+      if (d) { setPwFor(null); setShare({ name: m.display_name, username: m.username, password: pwFor.value, reset: true }); }
+    } else {
+      const d = await call('PATCH', { id: m.id, resetPassword: true });
+      if (d?.password) { setPwFor(null); setShare({ name: m.display_name, username: m.username, password: d.password, reset: true }); }
+    }
   };
   const toggleActive = async (m: Member) => {
     if (m.is_active && !confirm(`Switch off ${m.display_name}'s login? They are signed out within 30 seconds.`)) return;
@@ -159,13 +257,28 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
 
       {/* Members */}
       <div className="tf-card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0.875rem 1.25rem', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0.875rem 1.25rem', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)', flexWrap: 'wrap' }}>
           {avatar('SA', 'linear-gradient(135deg, #4f6bed, #8b5cf6)')}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>Super Admin (you)</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>All panels · everything, including the team, Shopify, mailboxes and the Danger Zone</div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.875rem' }}>Super Admin (you)</span>
+              {owner && <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>@{owner.username}</span>}
+              <span style={{ fontSize: '0.6875rem', fontWeight: 700, padding: '0.125rem 0.5rem', borderRadius: 999, color: '#fff', background: 'linear-gradient(90deg, #4f6bed, #8b5cf6)' }}>Owner</span>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: 2 }}>
+              All panels · everything, including the team, Shopify, mailboxes and the Danger Zone
+              {owner?.savedInPanel && owner.changedAt ? ` · login changed ${since(owner.changedAt)}` : ''}
+            </div>
+            {owner && !owner.savedInPanel && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: '0.75rem', color: '#92400e', background: '#fff7e6', border: '1px solid #fde68a', borderRadius: 8, padding: '0.3125rem 0.5rem' }}>
+                <AlertTriangle size={13} style={{ flexShrink: 0 }} /> Your login is still the first one from the server settings. Change it so only you know it.
+              </div>
+            )}
           </div>
-          <span style={{ fontSize: '0.6875rem', fontWeight: 700, padding: '0.125rem 0.5rem', borderRadius: 999, color: '#fff', background: 'linear-gradient(90deg, #4f6bed, #8b5cf6)' }}>Owner</span>
+          <button className="btn btn-sm" style={muted} disabled={busy || !owner}
+            onClick={() => setAcct({ current: '', username: owner?.username || '', pw: '', pw2: '', showCur: false, showNew: false })}>
+            <KeyRound size={13} /> Change username / password
+          </button>
         </div>
         {loaded && !members.length && (
           <div style={{ padding: '2rem 1.25rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
@@ -215,8 +328,8 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
                 <input className="form-input" style={{ marginTop: 4 }} placeholder="e.g. Rahul Sharma" value={draft.displayName} maxLength={60}
                   onChange={(e) => setDraft({ ...draft, displayName: e.target.value, ...(draft.id ? {} : { username: suggestUsername(e.target.value) }) })} autoFocus />
               </label>
-              <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Username {draft.id && <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>(cannot change)</span>}
-                <input className="form-input" style={{ marginTop: 4 }} placeholder="e.g. rahul.sharma" value={draft.username} maxLength={32} disabled={!!draft.id}
+              <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Username {draft.id && draft.username !== draft.origUsername && <span style={{ fontWeight: 400, color: '#b45309' }}>(they sign in again with the new one)</span>}
+                <input className="form-input" style={{ marginTop: 4 }} placeholder="e.g. rahul.sharma" value={draft.username} maxLength={32}
                   onChange={(e) => setDraft({ ...draft, username: e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, '') })} />
               </label>
             </div>
@@ -277,9 +390,125 @@ export default function TeamCard({ token, panels, onAlert }: { token: string | n
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn" style={muted} onClick={() => setDraft(null)}>Cancel</button>
-              <button className="btn btn-primary" disabled={busy || draft.displayName.trim().length < 2 || (!draft.id && draft.username.length < 3)} onClick={save}>
+              <button className="btn btn-primary" disabled={busy || draft.displayName.trim().length < 2 || draft.username.length < 3} onClick={save}>
                 {draft.id ? <><Check size={14} /> Save</> : <><UserPlus size={14} /> Create login</>}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* The owner's own login */}
+      {acct && (
+        <div className="modal-overlay" onClick={() => !busy && setAcct(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '30rem' }}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">{acct.done ? 'Your new login is saved' : 'Change your login'}</h3>
+                <p className="modal-subtitle">{acct.done
+                  ? 'Everyone who was signed in with the old login (staff phones too) is now signed out. You stay signed in here.'
+                  : 'Only you should know this. Everyone signed in with the old login is signed out at once; you stay signed in here.'}</p>
+              </div>
+              <button className="btn-icon" onClick={() => setAcct(null)} aria-label="Close" disabled={busy}><X size={16} /></button>
+            </div>
+            {acct.done ? (
+              <>
+                <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: '0.875rem 1rem', background: 'var(--bg-subtle)', fontSize: '0.875rem', lineHeight: 1.9 }}>
+                  <div><span style={{ color: 'var(--fg-muted)', display: 'inline-block', width: 84 }}>Login link</span><b>{loginLink}</b></div>
+                  <div><span style={{ color: 'var(--fg-muted)', display: 'inline-block', width: 84 }}>Username</span><b style={{ fontFamily: 'monospace' }}>{acct.done}</b></div>
+                  <div><span style={{ color: 'var(--fg-muted)', display: 'inline-block', width: 84 }}>Password</span><span style={{ color: 'var(--fg-muted)' }}>{acct.pwChanged ? 'the new one you set' : 'same as before'}</span></div>
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: '0.75rem' }}>
+                  Keep it somewhere safe and do not share it. Give the staff their own logins with &ldquo;Add member&rdquo;.
+                </p>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.75rem' }}>
+                  <button className="btn btn-primary" onClick={() => setAcct(null)}><Check size={14} /> Done</button>
+                </div>
+              </>
+            ) : (
+              <form onSubmit={(e) => { e.preventDefault(); void saveAccount(); }}>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.875rem' }}>Current password
+                  <PasswordInput value={acct.current} onChange={(v) => setAcct({ ...acct, current: v })} show={acct.showCur}
+                    onToggle={() => setAcct({ ...acct, showCur: !acct.showCur })} autoFocus autoComplete="current-password" />
+                </label>
+                <div style={sectionLabel}>New login</div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.625rem' }}>Username
+                  <input className="form-input" style={{ marginTop: 4 }} value={acct.username} maxLength={32} autoComplete="username"
+                    onChange={(e) => setAcct({ ...acct, username: e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, '') })} />
+                  <span style={{ display: 'block', fontWeight: 400, color: 'var(--fg-muted)', fontSize: '0.6875rem', marginTop: 3 }}>Small letters, numbers, dot, dash or underscore. Keep it as it is to change only the password.</span>
+                </label>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.625rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    New password
+                    <span style={{ display: 'inline-flex', gap: 12 }}>
+                      {acct.pw && acct.showNew && (
+                        <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(acct.pw); setAcct({ ...acct, copied: true }); } catch { onAlert('error', 'Could not copy: select the text instead'); } }}
+                          style={{ border: 'none', background: 'none', color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {acct.copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
+                        </button>
+                      )}
+                      <button type="button" onClick={() => { const pw = strongPassword(); setAcct({ ...acct, pw, pw2: pw, showNew: true, copied: false }); }}
+                        style={{ border: 'none', background: 'none', color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <Sparkles size={12} /> Suggest a strong one
+                      </button>
+                    </span>
+                  </span>
+                  <PasswordInput value={acct.pw} onChange={(v) => setAcct({ ...acct, pw: v, copied: false })} show={acct.showNew}
+                    onToggle={() => setAcct({ ...acct, showNew: !acct.showNew })} placeholder="At least 8 characters. Empty = keep the current one" autoComplete="new-password" />
+                </label>
+                {acct.pw && (
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.625rem' }}>Type the new password again
+                    <PasswordInput value={acct.pw2} onChange={(v) => setAcct({ ...acct, pw2: v })} show={acct.showNew}
+                      onToggle={() => setAcct({ ...acct, showNew: !acct.showNew })} autoComplete="new-password" />
+                    {acct.pw2 && acct.pw2 !== acct.pw && <span style={{ display: 'block', color: 'var(--danger, #ef4444)', fontWeight: 500, fontSize: '0.6875rem', marginTop: 3 }}>Not the same as above</span>}
+                  </label>
+                )}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.75rem', color: '#92400e', background: '#fff7e6', border: '1px solid #fde68a', borderRadius: 8, padding: '0.5rem 0.625rem', margin: '0.375rem 0 1rem' }}>
+                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>Write the new password down before saving. If you forget it, it can only be reset on the server.</span>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn" style={muted} onClick={() => setAcct(null)} disabled={busy}>Cancel</button>
+                  <button type="submit" className="btn btn-primary" disabled={busy || !!acctProblem(acct)}><Check size={14} /> Save new login</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* A member's new password: made for them, or typed by the owner */}
+      {pwFor && (
+        <div className="modal-overlay" onClick={() => !busy && setPwFor(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '28rem' }}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">New password for {pwFor.member.display_name}</h3>
+                <p className="modal-subtitle">Their old password stops working and they are signed out.</p>
+              </div>
+              <button className="btn-icon" onClick={() => setPwFor(null)} aria-label="Close" disabled={busy}><X size={16} /></button>
+            </div>
+            <div role="radiogroup" aria-label="Password" style={{ display: 'grid', gap: 8, marginBottom: '1rem' }}>
+              {([['auto', 'Make a strong one for me', 'Recommended. Shown to you once, ready to send.'], ['own', 'I will type it', 'At least 8 characters.']] as const).map(([mode, label, hint]) => {
+                const on = pwFor.mode === mode;
+                return (
+                  <button key={mode} type="button" role="radio" aria-checked={on} onClick={() => setPwFor({ ...pwFor, mode })}
+                    style={{ textAlign: 'left', padding: '0.625rem 0.75rem', borderRadius: 10, cursor: 'pointer', border: `1.5px solid ${on ? 'var(--primary)' : 'var(--border)'}`, background: on ? 'var(--primary-light)' : 'var(--card-bg)' }}>
+                    <span style={{ display: 'block', fontWeight: 700, fontSize: '0.8125rem', color: on ? 'var(--primary)' : 'var(--fg)' }}>{label}</span>
+                    <span style={{ display: 'block', fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: 2 }}>{hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {pwFor.mode === 'own' && (
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '1rem' }}>Password
+                <PasswordInput value={pwFor.value} onChange={(v) => setPwFor({ ...pwFor, value: v })} show={pwFor.show}
+                  onToggle={() => setPwFor({ ...pwFor, show: !pwFor.show })} placeholder="At least 8 characters" autoFocus autoComplete="new-password" />
+              </label>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn" style={muted} onClick={() => setPwFor(null)} disabled={busy}>Cancel</button>
+              <button className="btn btn-primary" disabled={busy || (pwFor.mode === 'own' && pwFor.value.length < 8)} onClick={savePassword}><KeyRound size={14} /> Save new password</button>
             </div>
           </div>
         </div>

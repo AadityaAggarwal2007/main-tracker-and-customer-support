@@ -3,6 +3,7 @@ import { getAuthFromRequest, AuthUser } from '@/lib/auth';
 import crypto from 'crypto';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
+import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can, canAccessPanel } from '@/lib/permissions';
 
@@ -209,6 +210,12 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     ? await loadOrderFacts(conversation.verified_order_id, conversation.tracker_business_id, 'verified')
     : await loadOrderFacts(conversation.phone_match_order_id, conversation.tracker_business_id, 'phone_match');
 
+  // The same order's delivery address, for logins that may see orders; changeable (PATCH
+  // .../address) only on a verified order by logins that may change orders. Staff only.
+  const orderAddress = can(user, 'orders.view')
+    ? await loadOrderAddress(conversation.verified_order_id || conversation.phone_match_order_id, conversation.tracker_business_id)
+    : null;
+
   // Opening a thread clears its unread badge, and the grouped inbox row
   // (group_unread) counts the customer's other chats too, so the older chats
   // shown here go as well. A newer chat keeps its badge: nothing of it is
@@ -233,6 +240,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     earlier_total: thread.earlierTotal,
     newer_chat: thread.newer,
     order_facts: orderFacts,
+    order_address: orderAddress,
+    address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
   });
 }
 

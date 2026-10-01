@@ -33,25 +33,27 @@ function signature(body: string, secret: string): Buffer {
   return createHmac('sha256', secret).update(body).digest();
 }
 
-// extra: the team member's display name, their own permission ticks (null = the role's) and
-// their session version (a password reset bumps it, which signs that member out everywhere).
+// extra: the team member's display name, their own permission ticks (null = the role's), their
+// session version (a password reset bumps it, which signs that member out everywhere) and their
+// row id (uid), so a new member who later gets a removed or renamed member's username never
+// inherits that person's old logins. The super admin's sv is admin_login.session_version.
 export function generateToken(
   username: string,
   role: string,
   businessIds: string[] | null = null,
-  extra: { name?: string; perms?: string[] | null; sv?: number } = {},
+  extra: { name?: string; perms?: string[] | null; sv?: number; uid?: string } = {},
 ): string {
   const secret = tokenSecret();
   if (!secret) throw new Error('AUTH_TOKEN_SECRET is missing or shorter than 32 characters; refusing to issue a login token');
 
   const payload = Buffer.from(
-    JSON.stringify({ username, role, businessIds, exp: Date.now() + TOKEN_LIFETIME_MS, name: extra.name, perms: extra.perms ?? null, sv: extra.sv ?? 1 })
+    JSON.stringify({ username, role, businessIds, exp: Date.now() + TOKEN_LIFETIME_MS, name: extra.name, perms: extra.perms ?? null, sv: extra.sv ?? 1, uid: extra.uid })
   ).toString('base64url');
   const body = `${TOKEN_VERSION}.${payload}`;
   return `${body}.${signature(body, secret).toString('base64url')}`;
 }
 
-type TokenUser = AuthUser & { sv: number };
+type TokenUser = AuthUser & { sv: number; uid: string | null };
 
 export function verifyToken(token: string): TokenUser | null {
   const secret = tokenSecret();
@@ -75,6 +77,7 @@ export function verifyToken(token: string): TokenUser | null {
       businessIds: Array.isArray(payload.businessIds) ? payload.businessIds : null,
       permissions: resolvePermissions(payload.role, Array.isArray(payload.perms) ? payload.perms : null),
       sv: typeof payload.sv === 'number' ? payload.sv : 1,
+      uid: typeof payload.uid === 'string' && payload.uid ? payload.uid : null,
     };
   } catch {
     return null;
@@ -108,28 +111,109 @@ function sameText(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-// ── Team members, read fresh ───────────────────────────────────
-// A token lives 7 days, but a member who is switched off, removed, given a new password or new
-// ticks or panels must feel it at once: every request checks the token against this copy of
-// team_users, reloaded every 30 seconds and right after any change in the Team screen (one
-// server process: PM2 fork mode). Until the first load finishes, the token's own claims count.
-interface TeamEntry { active: boolean; role: Role; name: string; businessIds: string[] | null; permissions: string[] | null; sv: number }
-type TeamCache = { map: Map<string, TeamEntry>; loadedAt: number; loading: Promise<void> | null; timer: ReturnType<typeof setInterval> | null };
+// ── The super admin's own login ────────────────────────────────
+// Until 2026-10-01 the super admin was only ADMIN_USERNAME / ADMIN_PASSWORD in /etc/tracker/.env,
+// and the whole staff knew them. The owner can now change them in the panel (Team > "Change
+// username / password", /api/auth/account). That writes the one row of admin_login
+// (admin-login.sql), and from then on ONLY that row is the super admin: the .env pair no longer
+// logs in. Every change raises session_version, so each super-admin login made before it (on a
+// staff phone too) is refused from its next request. Forgot it: scripts/admin-login-reset.js.
+export interface SuperAdminRow { username: string; password_hash: string; session_version: number; updated_at: string | Date | null }
+
+// The saved row, read fresh. null = no row yet (or admin-login.sql not applied): the .env login
+// counts. Any other database error is thrown, and the callers refuse the super-admin login then.
+export async function readSuperAdminRow(): Promise<SuperAdminRow | null> {
+  try {
+    return await queryOne<SuperAdminRow>(`SELECT username, password_hash, session_version, updated_at FROM admin_login WHERE id = 1`);
+  } catch (err) {
+    if ((err as { code?: string })?.code === '42P01') return null;
+    throw err;
+  }
+}
+
+// The .env login, used only while admin_login has no row. Its logins carry sv 1.
+const ENV_SESSION_VERSION = 1;
+export function envSuperAdmin(): { username: string; password: string } | null {
+  const username = process.env.ADMIN_USERNAME || '';
+  const password = process.env.ADMIN_PASSWORD || '';
+  return username && password ? { username, password } : null;
+}
+
+// Usernames no team member may take: the super admin's, saved and .env.
+export async function ownerUsernames(): Promise<string[]> {
+  const out = new Set<string>();
+  const env = (process.env.ADMIN_USERNAME || '').trim().toLowerCase();
+  if (env) out.add(env);
+  try {
+    const row = await readSuperAdminRow();
+    if (row) out.add(row.username.toLowerCase());
+  } catch { /* the .env one at least */ }
+  return Array.from(out);
+}
+
+export function superAdminSession(username: string, sv: number): { user: AuthUser; token: string } {
+  const user: AuthUser = { username, displayName: 'Super Admin', role: 'admin', businessIds: null, permissions: resolvePermissions('admin') };
+  return { user, token: generateToken(username, 'admin', null, { name: 'Super Admin', sv }) };
+}
+
+export function checkEnvPassword(password: string): boolean {
+  const env = envSuperAdmin();
+  return !!env && sameText(password, env.password);
+}
+
+// ── Logins, read fresh ─────────────────────────────────────────
+// A token lives 7 days, but a member who is switched off, removed, given a new password, username,
+// ticks or panels must feel it at once, and so must every super-admin login after the owner
+// changes his: every request checks the token against this copy of team_users and admin_login,
+// reloaded every 30 seconds and right after any change (one server process: PM2 fork mode).
+// Until the first load finishes, a team token's own claims count, but a super-admin token is
+// refused (it may be an old one the staff still hold); /api/auth/session waits for the load, so
+// the owner's screens never send him to the login page for it.
+interface TeamEntry { id: string; active: boolean; role: Role; name: string; businessIds: string[] | null; permissions: string[] | null; sv: number }
+interface AdminEntry { username: string; sv: number }
+type TeamCache = {
+  map: Map<string, TeamEntry>; loadedAt: number; loading: Promise<void> | null; timer: ReturnType<typeof setInterval> | null;
+  // The saved super admin (null = no row: the .env login); adminLoadedAt 0 = not read yet. adminGen
+  // goes up when the account route sets it directly, so a load that started before that change
+  // cannot put the old one back.
+  admin?: AdminEntry | null; adminLoadedAt?: number; adminGen?: number;
+};
 const g = globalThis as unknown as { __shiptrackTeam?: TeamCache };
 const cache: TeamCache = g.__shiptrackTeam || (g.__shiptrackTeam = { map: new Map(), loadedAt: 0, loading: null, timer: null });
 
-export function refreshTeamCache(): Promise<void> {
-  if (cache.loading) return cache.loading;
+// After the owner's own change (the account route): exact, and no read that began earlier can undo it.
+export function setSuperAdminCache(entry: AdminEntry | null) {
+  cache.admin = entry;
+  cache.adminLoadedAt = Date.now();
+  cache.adminGen = (cache.adminGen ?? 0) + 1;
+}
+
+// A fresh read of admin_login (a reload or a login): used unless a change was set since it began.
+function noteSuperAdminRead(gen: number, row: SuperAdminRow | null) {
+  if ((cache.adminGen ?? 0) !== gen) return;
+  cache.admin = row ? { username: row.username, sv: row.session_version } : null;
+  cache.adminLoadedAt = Date.now();
+}
+
+// force: a load already running may have read the rows before the caller's change; wait for it
+// and read again.
+export async function refreshTeamCache(force = false): Promise<void> {
+  if (cache.loading) {
+    if (!force) return cache.loading;
+    await cache.loading;
+    return refreshTeamCache(false);
+  }
   cache.loading = (async () => {
+    const gen = cache.adminGen ?? 0;
     try {
-      const r = await query<{ username: string; display_name: string; role: string; is_active: boolean; business_ids: string[] | null; permissions: string[] | null; session_version: number | null }>(
-        `SELECT username, display_name, role, is_active, business_ids, permissions, session_version FROM team_users`
+      const r = await query<{ id: string; username: string; display_name: string; role: string; is_active: boolean; business_ids: string[] | null; permissions: string[] | null; session_version: number | null }>(
+        `SELECT id, username, display_name, role, is_active, business_ids, permissions, session_version FROM team_users`
       );
       const next = new Map<string, TeamEntry>();
       for (const u of r.rows) {
         if (!isRole(u.role) || u.role === 'admin') continue; // a team member is never the super admin
         next.set(u.username, {
-          active: !!u.is_active, role: u.role, name: u.display_name || u.username,
+          id: String(u.id), active: !!u.is_active, role: u.role, name: u.display_name || u.username,
           businessIds: u.business_ids && u.business_ids.length ? u.business_ids : null,
           permissions: u.permissions, sv: u.session_version ?? 1,
         });
@@ -139,10 +223,13 @@ export function refreshTeamCache(): Promise<void> {
     } catch (err) {
       // Before team-permissions.sql is applied, or the database hiccups: keep the last copy.
       console.error('[auth] team refresh failed:', (err as Error)?.message);
-    } finally {
-      cache.loading = null;
     }
-  })();
+    try {
+      noteSuperAdminRead(gen, await readSuperAdminRow());
+    } catch (err) {
+      console.error('[auth] super admin refresh failed:', (err as Error)?.message);
+    }
+  })().finally(() => { cache.loading = null; });
   if (!cache.timer) {
     cache.timer = setInterval(() => { void refreshTeamCache(); }, 30_000);
     (cache.timer as { unref?: () => void }).unref?.();
@@ -150,17 +237,35 @@ export function refreshTeamCache(): Promise<void> {
   return cache.loading;
 }
 
+// For /api/auth/session: the first answer after a restart waits (up to 3 s) for the first load.
+export async function authReady(timeoutMs = 3000): Promise<void> {
+  if (cache.adminLoadedAt) return;
+  await Promise.race([refreshTeamCache(), new Promise((r) => setTimeout(r, timeoutMs))]);
+}
+
 export async function authenticateUser(
   username: string,
   password: string
 ): Promise<{ user: AuthUser; token: string } | null> {
-  // The super admin: the owner's login from the server settings.
-  const envUsername = process.env.ADMIN_USERNAME || '';
-  const envPassword = process.env.ADMIN_PASSWORD || '';
-  if (envUsername && envPassword && sameText(username, envUsername) && sameText(password, envPassword)) {
-    const user: AuthUser = { username, displayName: 'Super Admin', role: 'admin', businessIds: null, permissions: resolvePermissions('admin') };
-    const token = generateToken(username, 'admin', null, { name: 'Super Admin' });
-    return { user, token };
+  const typed = username.trim();
+
+  // The super admin: the login the owner saved in the panel, else (never changed yet) the .env one.
+  let row: SuperAdminRow | null = null;
+  let rowRead = true;
+  const gen = cache.adminGen ?? 0;
+  try { row = await readSuperAdminRow(); } catch { rowRead = false; } // database trouble: no super-admin login now
+  if (rowRead) {
+    noteSuperAdminRead(gen, row); // e.g. a reset made on the server is known from this login on
+    if (row) {
+      if (typed.toLowerCase() === row.username.toLowerCase() && verifyPassword(row.password_hash, password)) {
+        return superAdminSession(row.username, row.session_version);
+      }
+    } else {
+      const env = envSuperAdmin();
+      if (env && sameText(typed, env.username) && sameText(password, env.password)) {
+        return superAdminSession(env.username, ENV_SESSION_VERSION);
+      }
+    }
   }
 
   // Team members
@@ -173,7 +278,7 @@ export async function authenticateUser(
        FROM team_users
        WHERE username = $1 AND is_active = true
        LIMIT 1`,
-      [username.trim().toLowerCase()]
+      [typed.toLowerCase()]
     );
 
     if (data && isRole(data.role) && data.role !== 'admin' && verifyPassword(data.password_hash, password)) {
@@ -186,7 +291,7 @@ export async function authenticateUser(
         businessIds,
         permissions: resolvePermissions(data.role, data.permissions),
       };
-      const token = generateToken(data.username, data.role, businessIds, { name: data.display_name, perms: data.permissions, sv });
+      const token = generateToken(data.username, data.role, businessIds, { name: data.display_name, perms: data.permissions, sv, uid: String(data.id) });
 
       // Last login, and an old weak hash replaced by scrypt (fire-and-forget).
       const upgrade = data.password_hash.startsWith('s1$') ? null : hashPassword(password);
@@ -210,15 +315,17 @@ export function getAuthFromRequest(request: NextRequest): AuthUser | null {
   if (!authHeader?.startsWith('Bearer ')) return null;
   const t = verifyToken(authHeader.slice(7));
   if (!t) return null;
-  const { sv, ...base } = t;
+  const { sv, uid, ...base } = t;
   if (t.role === 'admin') {
-    // Only the owner's own login is the super admin.
-    const envUsername = process.env.ADMIN_USERNAME || '';
-    return envUsername && t.username === envUsername ? base : null;
+    // Only the owner's own login is the super admin, and only one made since his last change.
+    if (!cache.adminLoadedAt) { void refreshTeamCache(); return null; }
+    const now = cache.admin ?? (process.env.ADMIN_USERNAME ? { username: process.env.ADMIN_USERNAME, sv: ENV_SESSION_VERSION } : null);
+    return now && t.username === now.username && sv === now.sv ? base : null;
   }
   if (!cache.loadedAt) { void refreshTeamCache(); return base; }
   const e = cache.map.get(t.username);
-  if (!e || !e.active || e.sv !== sv) return null; // removed, switched off, or a new password since
+  // Removed, switched off, a new password or username since, or another person's old username.
+  if (!e || !e.active || e.sv !== sv || (uid && uid !== e.id)) return null;
   return {
     username: t.username,
     displayName: e.name,
