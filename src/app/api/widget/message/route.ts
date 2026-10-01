@@ -1,3 +1,4 @@
+import { recordBrainUsage } from '@/lib/chat/brain-usage';
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
@@ -154,7 +155,8 @@ export async function POST(request: NextRequest) {
           await handOver('threat');
           aiMessage = await saveAiMessage(aiReply(urgentAck(said)));
         } else {
-          const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id);
+          const brainUsage: { brain: { id: string; title: string }[] } = { brain: [] };
+          const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id, brainUsage);
 
           // The customer may just have proved an order in this chat (order ID + full
           // phone). If they already have a chat for that order, this one is folded into
@@ -216,6 +218,7 @@ export async function POST(request: NextRequest) {
           // "please do not share these" line goes first (added here, not left
           // to the model).
           aiMessage = await saveAiMessage(aiReply(text));
+          await recordBrainUsage(aiMessage?.id, brainUsage.brain);
         }
 
         await query(

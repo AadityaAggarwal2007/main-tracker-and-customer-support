@@ -616,7 +616,9 @@ export async function getAIResponse(
   trackerBusinessId: string | null,
   codAvailable?: boolean | null,
   channel: Channel = 'chat',
-  siteId?: string | null
+  siteId?: string | null,
+  // Filled with the Brain notes shown for this reply, so the caller can record them for staff.
+  usage?: { brain: { id: string; title: string }[] }
 ): Promise<AIResult> {
   // Newest first, then flipped back into reading order. A message the team
   // edited is read as it reads now; one they deleted is left out, so the model
@@ -687,26 +689,6 @@ export async function getAIResponse(
   let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates)
     + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
     + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
-
-  // The Brain (brain.ts): the owner's notes that fit what the customer just wrote, this
-  // panel's and the common ones. Read fresh on every message, like the saved answers, so an
-  // edit in Panel Settings is live on the next reply. Never stops a reply if it cannot be read.
-  if (siteId) {
-    try {
-      const notes = await query<BrainNote>(
-        `SELECT kind, title, body, topics, always, sort_order
-           FROM brain_notes
-          WHERE is_enabled = true AND (site_id = $1 OR site_id IS NULL)
-          ORDER BY sort_order, created_at`,
-        [siteId]
-      );
-      const asked = recent.rows.filter((r) => r.sender === 'visitor').slice(-3).map((r) => r.content || '').join('\n');
-      systemPrompt += brainSection(selectNotes(notes.rows, asked));
-    } catch (err) {
-      // Before chat-brain.sql is applied the table does not exist yet.
-      console.error('[AI] brain read failed:', (err as Error)?.message);
-    }
-  }
 
   // Build chat history — include tool results stored in metadata
   const chatMessages: ChatCompletionMessageParam[] = [];
@@ -791,6 +773,34 @@ export async function getAIResponse(
       }
     } catch (err) {
       console.error('[AI] delay ladder failed:', (err as Error)?.message);
+    }
+  }
+
+  // The Brain (brain.ts): the owner's notes that fit what the customer just wrote, this
+  // panel's and the common ones, for this kind of chat (verified or not). Read fresh on every
+  // message, like the saved answers, so an edit in Panel Settings is live on the next reply.
+  // Which notes were shown is handed back through `usage` for the inbox. Never stops a reply.
+  if (siteId) {
+    try {
+      const notes = await query<BrainNote>(
+        `SELECT id, kind, title, body, topics, always, audience, sort_order
+           FROM brain_notes
+          WHERE is_enabled = true AND (site_id = $1 OR site_id IS NULL)
+          ORDER BY sort_order, created_at`,
+        [siteId]
+      );
+      const asked = recent.rows.filter((r) => r.sender === 'visitor').slice(-3).map((r) => r.content || '').join('\n');
+      const chosen = selectNotes(notes.rows, asked, undefined, undefined, !!verifiedOrderId);
+      systemPrompt += brainSection(chosen);
+      if (usage) usage.brain = chosen.filter((n) => n.id).map((n) => ({ id: n.id as string, title: n.title }));
+      if (chosen.length) {
+        // Counters for the Brain card; a failure here must never touch the reply.
+        query(`UPDATE brain_notes SET shown_count = shown_count + 1, last_shown_at = now() WHERE id = ANY($1::uuid[])`, [chosen.filter((n) => n.id).map((n) => n.id)])
+          .catch((err) => console.error('[AI] brain counters failed:', (err as Error)?.message));
+      }
+    } catch (err) {
+      // Before chat-brain.sql / chat-brain-usage.sql is applied the table or a column is missing.
+      console.error('[AI] brain read failed:', (err as Error)?.message);
     }
   }
 

@@ -2,12 +2,17 @@
 // Notes the owner keeps in Panel Settings (table brain_notes, chat-brain.sql). The AI is
 // shown only the ones that fit the customer's message: every `always` note, plus the notes
 // whose topics appear in what the customer just wrote. That keeps the prompt short and lets
-// the owner teach the agent something new without a deploy. No imports: pure, tested offline.
+// the owner teach the agent something new without a deploy. Pure (only today-promise.ts, itself
+// pure), tested offline.
+import { promisesToday } from './today-promise';
 
 export type BrainKind = 'rule' | 'fact' | 'lesson';
 
+export type BrainAudience = 'all' | 'verified' | 'visitor';
+
 export interface BrainNote {
   id?: string;
+  audience?: BrainAudience;
   kind: BrainKind;
   title: string;
   body: string;
@@ -45,9 +50,16 @@ export const BRAIN_MAX_NOTES = 14;
 // The notes to show for this customer message: `always` notes first, then topic matches (a
 // note that matches more of the message's topics first), within a character budget so the
 // prompt stays short. `text` is the customer's latest messages joined.
-export function selectNotes(notes: BrainNote[], text: string, budget = BRAIN_CHAR_BUDGET, max = BRAIN_MAX_NOTES): BrainNote[] {
+export function selectNotes(
+  notes: BrainNote[], text: string, budget = BRAIN_CHAR_BUDGET, max = BRAIN_MAX_NOTES, verified?: boolean,
+): BrainNote[] {
   const wanted = new Set(topicsIn(text));
+  // A note meant for verified customers (or visitors) is skipped for the other kind of chat.
+  // When the caller does not say, every note is eligible.
+  const eligible = (n: BrainNote) => verified === undefined || !n.audience || n.audience === 'all'
+    || (n.audience === 'verified' ? verified : !verified);
   const scored = notes
+    .filter(eligible)
     .map((n, i) => ({ n, i, hits: n.always ? 99 : n.topics.filter((t) => wanted.has(t)).length }))
     .filter((x) => x.hits > 0)
     .sort((a, b) => b.hits - a.hits || (a.n.sort_order ?? 0) - (b.n.sort_order ?? 0) || a.i - b.i);
@@ -72,4 +84,33 @@ STORE BRAIN
 Notes from the store owner about exactly this kind of question. Follow them, in the customer's language.
 The SHIPTRACK RULES above always win over a note, and a note never makes you ask for anything except the order ID and the phone number.
 ${lines.join('\n')}`;
+}
+
+// Why a note may not be saved, or null. A note is the owner's own words, but it must never teach
+// what the locked rules forbid (SHIPTRACK_MASTER_RULES.md): promising arrival today / tonight /
+// tomorrow, hiding the estimated date, asking for anything but the order ID and the phone,
+// promising a refund, sending a payment link or skipping the check of who the customer is.
+// Checked when a note is added, changed or approved; the locked rules still win at answer time.
+export function noteProblem(title: string, body: string): string | null {
+  const text = `${title}. ${body}`;
+  if (promisesToday(text)) return 'A note must not tell the agent to say an order arrives today, tonight or tomorrow.';
+  // The rest are checked sentence by sentence, and a sentence that says "never" / "do not" before
+  // the thing is a ban on it, which is what the locked rules want, so it passes.
+  const NEGATED = /\b(?:never|not|no|don'?t|do not|mat|nahi|nhi|without asking)\b/i;
+  const checks: [RegExp, string][] = [
+    [/\b(?:ask|request|maango|poochho|collect)\b[^.]{0,50}\b(?:upi|utr|transaction\s*id|payment\s*reference|screenshot|account\s*number|e-?mail|email|full\s*name|aadhaar)/i, 'The agent may ask only for the order ID and the phone number, nothing else.'],
+    [/\b(?:send|share|give)\b[^.]{0,30}\b(?:payment\s*link|upi\s*id|bank\s*(?:details|account))/i, 'A note must not tell the agent to send payment details.'],
+    [/\b(?:pay|payment)\b[^.]{0,20}\b(?:again|dobara|retry)\b/i, 'A note must not tell the agent to ask the customer to pay again.'],
+    [/\b(?:promise|guarantee|assure|confirm)\b[^.]{0,40}\b(?:refund|replacement|cancell?ation)\b/i, 'A note must not tell the agent to promise a refund, a replacement or a cancellation.'],
+    [/\b(?:skip|no need (?:for|to)|bina)\b[^.]{0,40}\b(?:verif\w*|order\s*id|phone)\b/i, 'A note must not tell the agent to skip the order ID and phone check.'],
+  ];
+  for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
+    for (const [re, message] of checks) {
+      const m = re.exec(sentence);
+      if (m && !NEGATED.test(sentence.slice(0, m.index))) return message;
+    }
+  }
+  // Hiding the estimated date.
+  if (/\b(?:never|don'?t|do not|mat)\b[^.]{0,30}\b(?:give|share|tell|say|batao|bolo)\b[^.]{0,30}\b(?:estimated\s+)?date\b/i.test(text)) return 'A note must not tell the agent to hide the estimated delivery date.';
+  return null;
 }

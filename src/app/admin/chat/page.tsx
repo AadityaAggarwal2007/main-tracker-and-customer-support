@@ -129,6 +129,8 @@ interface ChatMessage {
   edited_by?: string | null;
   deleted_at?: string | null;
   deleted_by?: string | null;
+  // The Brain notes the agent was shown for this reply (staff only).
+  brain?: { id: string; title: string }[] | null;
 }
 
 // What GET /api/chat/messages/:id returns for "View details".
@@ -1525,6 +1527,11 @@ export default function ChatSupportPage() {
             border: '1px solid #fde68a', borderRadius: 4, padding: '1px 6px', marginTop: '0.25rem',
           }}>
             Not sent — {WITHHELD_LABELS[withheld] ?? 'held for you'}
+          </span>
+        )}
+        {!deleted && msg.sender === 'ai' && Array.isArray(msg.brain) && msg.brain.length > 0 && (
+          <span title="The Brain notes the agent was shown for this reply" style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
+            🧠 {msg.brain.map((n) => n.title).join(' · ')}
           </span>
         )}
         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>

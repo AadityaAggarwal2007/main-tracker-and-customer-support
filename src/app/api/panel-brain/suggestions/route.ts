@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { getAuthFromRequest, type AuthUser } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
-import { BRAIN_TOPIC_KEYS } from '@/lib/chat/brain';
+import { BRAIN_TOPIC_KEYS, noteProblem } from '@/lib/chat/brain';
 import { hasPersonalDetail } from '@/lib/chat/brain-learn';
 
 export const dynamic = 'force-dynamic';
@@ -71,15 +71,17 @@ export async function POST(request: NextRequest) {
     if (!title || !body) return NextResponse.json({ error: 'Write a title and the note' }, { status: 400 });
     if (!always && !topics.length) return NextResponse.json({ error: 'Pick at least one topic, or tick "Always show"' }, { status: 400 });
     if (hasPersonalDetail(title) || hasPersonalDetail(body)) return NextResponse.json({ error: 'Take out phone numbers, order IDs, links and e-mail addresses: a note is general' }, { status: 400 });
+    const problem = noteProblem(title, body);
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
     const kind = ['rule', 'fact', 'lesson'].includes(String(raw.kind)) ? String(raw.kind) : sug.kind;
 
     const note = await withTransaction(async (client) => {
       const next = await client.query(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM brain_notes WHERE site_id = $1`, [siteId]);
       const ins = await client.query(
-        `INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, source, sort_order, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'learned', $8, $9)
-         RETURNING id, site_id, kind, title, body, topics, always, is_enabled, source, sort_order`,
-        [crypto.randomUUID(), siteId, kind, title, body, topics, always, next.rows[0].n, user.username]
+        `INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, audience, source, sort_order, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'learned', $9, $10)
+         RETURNING id, site_id, kind, title, body, topics, always, audience, is_enabled, source, sort_order`,
+        [crypto.randomUUID(), siteId, kind, title, body, topics, always, ['all', 'verified', 'visitor'].includes(String(raw.audience)) ? String(raw.audience) : 'all', next.rows[0].n, user.username]
       );
       await client.query(`UPDATE brain_suggestions SET status = 'approved', decided_by = $1, decided_at = now() WHERE id = $2`, [user.username, id]);
       return ins.rows[0];

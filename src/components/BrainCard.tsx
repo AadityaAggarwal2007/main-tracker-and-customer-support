@@ -8,14 +8,16 @@ import { useCallback, useEffect, useState } from 'react';
 
 interface Note {
   id: string; site_id: string | null; kind: 'rule' | 'fact' | 'lesson'; title: string; body: string;
-  topics: string[]; always: boolean; is_enabled: boolean; source: string;
+  topics: string[]; always: boolean; audience: 'all' | 'verified' | 'visitor'; shown_count: number; last_shown_at: string | null;
+  is_enabled: boolean; source: string;
 }
 interface Topic { key: string; label: string }
 
 interface Suggestion { id: string; kind: Note['kind']; title: string; body: string; topics: string[]; why: string | null; conversation_id: string | null }
 
 const KIND_LABEL: Record<string, string> = { rule: 'Rule', fact: 'Fact', lesson: 'Lesson' };
-const EMPTY = { kind: 'lesson' as Note['kind'], title: '', body: '', topics: [] as string[], always: false, common: false };
+const AUDIENCE_LABEL: Record<string, string> = { all: 'Everyone', verified: 'Verified customers only', visitor: 'Visitors only' };
+const EMPTY = { kind: 'lesson' as Note['kind'], title: '', body: '', topics: [] as string[], always: false, common: false, audience: 'all' as Note['audience'] };
 
 export default function BrainCard({ token, businessId, onAlert }: {
   token: string | null; businessId: string | null; onAlert: (type: string, message: string) => void;
@@ -29,7 +31,7 @@ export default function BrainCard({ token, businessId, onAlert }: {
   const [draft, setDraft] = useState(EMPTY);
   const [showLocked, setShowLocked] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const [edit, setEdit] = useState({ title: '', body: '', topics: [] as string[], always: false, kind: 'lesson' as Note['kind'] });
+  const [edit, setEdit] = useState({ title: '', body: '', topics: [] as string[], always: false, kind: 'lesson' as Note['kind'], audience: 'all' as Note['audience'] });
 
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [sugEdit, setSugEdit] = useState<Record<string, { title: string; body: string; topics: string[] }>>({});
@@ -123,6 +125,12 @@ export default function BrainCard({ token, businessId, onAlert }: {
     </div>
   );
 
+  const audiencePicker = (value: Note['audience'], set: (v: Note['audience']) => void) => (
+    <select className="form-input" style={{ width: 'auto', fontSize: '0.75rem', marginBottom: '0.375rem' }} value={value} onChange={(e) => set(e.target.value as Note['audience'])} aria-label="Who is this note for">
+      {Object.entries(AUDIENCE_LABEL).map(([k, label]) => <option key={k} value={k}>For: {label}</option>)}
+    </select>
+  );
+
   const group = (title: string, list: Note[]) => list.length > 0 && (
     <div style={{ marginBottom: '0.75rem' }}>
       <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>{title} ({list.length})</div>
@@ -134,6 +142,7 @@ export default function BrainCard({ token, businessId, onAlert }: {
                 <input className="form-input" style={{ fontWeight: 600, marginBottom: '0.375rem' }} value={edit.title} onChange={(e) => setEdit({ ...edit, title: e.target.value })} maxLength={120} />
                 <textarea className="form-input" rows={3} value={edit.body} onChange={(e) => setEdit({ ...edit, body: e.target.value })} maxLength={900} />
                 {topicPicker(edit.topics, (v) => setEdit({ ...edit, topics: v }), edit.always, (v) => setEdit({ ...edit, always: v }))}
+                {audiencePicker(edit.audience, (v) => setEdit({ ...edit, audience: v }))}
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => saveEdit(n)}>Save</button>
                   <button className="btn btn-sm" onClick={() => setEditing(null)} style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>Cancel</button>
@@ -145,12 +154,16 @@ export default function BrainCard({ token, businessId, onAlert }: {
                   <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{n.title}</span>
                   {chip(KIND_LABEL[n.kind] || n.kind, true)}
                   {n.always ? chip('Always') : n.topics.map((t) => chip(topicLabel(t)))}
+                  {n.audience !== 'all' && chip(AUDIENCE_LABEL[n.audience])}
                   {n.source !== 'owner' && chip(n.source === 'seed' ? 'Starter' : n.source)}
+                  <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginLeft: 'auto' }} title={n.last_shown_at ? `Last shown ${new Date(n.last_shown_at).toLocaleString()}` : 'Not shown yet'}>
+                    {n.shown_count > 0 ? `Shown ${n.shown_count}×` : 'Not shown yet'}
+                  </span>
                 </div>
                 <div style={{ fontSize: '0.8125rem', whiteSpace: 'pre-wrap' }}>{n.body}</div>
                 {editable(n) && (
                   <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.375rem' }}>
-                    <button className="btn btn-sm" disabled={busy} onClick={() => { setEditing(n.id); setEdit({ title: n.title, body: n.body, topics: n.topics, always: n.always, kind: n.kind }); }}
+                    <button className="btn btn-sm" disabled={busy} onClick={() => { setEditing(n.id); setEdit({ title: n.title, body: n.body, topics: n.topics, always: n.always, kind: n.kind, audience: n.audience || 'all' }); }}
                       style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>Edit</button>
                     <button className="btn btn-sm" disabled={busy} onClick={() => call('PATCH', { businessId, id: n.id, isEnabled: !n.is_enabled })}
                       style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>{n.is_enabled ? 'Turn off' : 'Turn on'}</button>
@@ -221,6 +234,7 @@ export default function BrainCard({ token, businessId, onAlert }: {
           </div>
           <textarea className="form-input" rows={3} placeholder="The note, in plain words: what the agent should know or do" value={draft.body} maxLength={900} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
           {topicPicker(draft.topics, (v) => setDraft({ ...draft, topics: v }), draft.always, (v) => setDraft({ ...draft, always: v }))}
+          {audiencePicker(draft.audience, (v) => setDraft({ ...draft, audience: v }))}
           {canEditCommon && (
             <label style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4, marginBottom: '0.375rem' }}>
               <input type="checkbox" checked={draft.common} onChange={(e) => setDraft({ ...draft, common: e.target.checked })} /> For every panel (not only this one)

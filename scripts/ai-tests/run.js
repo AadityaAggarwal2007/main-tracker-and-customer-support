@@ -44,7 +44,7 @@ function rowsFor(history) {
   return rows;
 }
 
-function evaluate(c, result) {
+function evaluate(c, result, usage) {
   const fails = [];
   const reply = result.content || '';
   const sent = state.requests.map((r) => r.messages.filter((m) => m.role !== 'system').map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : ''}${m.tool_calls ? JSON.stringify(m.tool_calls) : ''}`).join('\n')).join('\n');
@@ -61,6 +61,8 @@ function evaluate(c, result) {
   for (const re of e.notShown || []) if (re.test(sent)) fails.push(`the model must not be shown ${re}`);
   for (const re of e.systemHas || []) if (!re.test(system)) fails.push(`the system prompt should contain ${re}`);
   for (const re of e.systemNotHas || []) if (re.test(system)) fails.push(`the system prompt must not contain ${re}`);
+  for (const t of e.brainUsed || []) if (!(usage?.brain || []).some((b) => b.title === t)) fails.push(`the Brain note "${t}" should have been shown`);
+  for (const t of e.brainNotUsed || []) if ((usage?.brain || []).some((b) => b.title === t)) fails.push(`the Brain note "${t}" must not have been shown`);
   if (e.reasoningOff && state.requests[0]?.reasoning?.enabled !== false && String(state.requests[0]?.model).startsWith('deepseek/deepseek-v4')) fails.push('thinking should be off for deepseek-v4');
   return fails;
 }
@@ -79,11 +81,12 @@ function evaluate(c, result) {
         history: rowsFor(c.history), verifiedOrderId: c.verified || null, fresh: c.fresh || null, verified: !!c.verified,
         facts: c.facts || null, brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
       });
-      let result, err = null;
+      let result, err = null, usage;
       quiet();
-      try { result = await getAIResponse('test-conv', sitePrompt, null, null, 'chat', siteId); } catch (e) { err = e; }
+      usage = { brain: [] };
+      try { result = await getAIResponse('test-conv', sitePrompt, null, null, 'chat', siteId, usage); } catch (e) { err = e; }
       loud();
-      const fails = err ? [`threw: ${err.message}`] : evaluate(c, result);
+      const fails = err ? [`threw: ${err.message}`] : evaluate(c, result, usage);
       const tag = fails.length ? (c.watch ? 'WATCH' : 'FAIL') : 'PASS';
       if (!fails.length) pass++; else if (c.watch) watched++; else { fail++; failed.push(c.id); }
       console.log(`${tag}  ${c.id}${repeat > 1 ? ` #${n + 1}` : ''} - ${c.title}`);

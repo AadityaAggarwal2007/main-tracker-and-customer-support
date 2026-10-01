@@ -7,6 +7,7 @@
 // never writes to its own rules. The pure helpers below have no imports and are tested offline.
 
 import { promisesToday } from './today-promise';
+import { noteProblem } from './brain';
 
 export const SUGGEST_MAX_PER_RUN = 15;
 
@@ -50,6 +51,7 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
   if (!topics.length || topics.some((t) => LOCKED_TOPICS.includes(t))) return null;
   // Never a draft that teaches promising arrival today / tonight, or hiding the estimated date.
   if (promisesToday(title + '. ' + body) || /\b(never|don'?t|do not)\b[^.]{0,30}\b(give|share|tell|say)\b[^.]{0,30}\bdate\b/i.test(body)) return null;
+  if (noteProblem(title, body)) return null;
   const same = (a: string, b: string) => a.toLowerCase().replace(/\W+/g, ' ').trim() === b.toLowerCase().replace(/\W+/g, ' ').trim();
   if (existingTitles.some((t) => same(t, title))) return null;
   const kind = l.kind === 'rule' || l.kind === 'fact' ? l.kind : 'lesson';
@@ -58,6 +60,7 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
 
 export const LEARN_INSTRUCTION = `You review one support chat from an Indian online store: a customer, the store's AI assistant (Karry) and a human team member. The team member's reply shows how the store wants such a question handled.
 Decide whether the AI should learn ONE general thing from it: a store fact, a rule for how to act, or a mistake to avoid, written as an instruction to the AI. It must not already be covered by the existing notes listed.
+If "Corrections by the team" are given, a team member changed what the AI first wrote: the lesson is what was wrong with the AI's first wording.
 Answer with JSON only, no other text:
 {"lesson": null}
 or

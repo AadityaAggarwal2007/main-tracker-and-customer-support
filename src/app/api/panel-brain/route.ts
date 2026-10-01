@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { getAuthFromRequest, type AuthUser } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
-import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS } from '@/lib/chat/brain';
+import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS, noteProblem } from '@/lib/chat/brain';
 import { getLockedRules } from '@/lib/chat/ai';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,8 @@ export const dynamic = 'force-dynamic';
 // be written by an admin who is not limited to certain panels.
 
 const KINDS = ['rule', 'fact', 'lesson'];
-const COLS = 'id, site_id, kind, title, body, topics, always, is_enabled, source, sort_order, created_by, updated_at';
+const COLS = 'id, site_id, kind, title, body, topics, always, audience, shown_count, last_shown_at, is_enabled, source, sort_order, created_by, updated_at';
+const AUDIENCES = ['all', 'verified', 'visitor'];
 
 async function siteIdFor(businessId: string, user: AuthUser) {
   if (user.businessIds && user.businessIds.length > 0 && !user.businessIds.includes(businessId)) return null;
@@ -26,12 +27,13 @@ async function siteIdFor(businessId: string, user: AuthUser) {
 const isGlobalAdmin = (u: AuthUser) => u.role === 'admin' && (!u.businessIds || u.businessIds.length === 0);
 
 function clean(body: Record<string, unknown>) {
-  const out: { kind?: string; title?: string; body?: string; topics?: string[]; always?: boolean; isEnabled?: boolean } = {};
+  const out: { kind?: string; title?: string; body?: string; topics?: string[]; always?: boolean; audience?: string; isEnabled?: boolean } = {};
   if (body.kind !== undefined) out.kind = KINDS.includes(String(body.kind)) ? String(body.kind) : 'lesson';
   if (body.title !== undefined) out.title = String(body.title).trim().slice(0, 120);
   if (body.body !== undefined) out.body = String(body.body).trim().slice(0, 900);
   if (body.topics !== undefined) out.topics = (Array.isArray(body.topics) ? body.topics : []).map(String).filter((t) => BRAIN_TOPIC_KEYS.includes(t));
   if (body.always !== undefined) out.always = Boolean(body.always);
+  if (body.audience !== undefined) out.audience = AUDIENCES.includes(String(body.audience)) ? String(body.audience) : 'all';
   if (body.isEnabled !== undefined) out.isEnabled = Boolean(body.isEnabled);
   return out;
 }
@@ -80,16 +82,18 @@ export async function POST(request: NextRequest) {
     if (!n.title || !n.body) return NextResponse.json({ error: 'Write a title and the note' }, { status: 400 });
     const topics = n.topics || [];
     if (!n.always && !topics.length) return NextResponse.json({ error: 'Pick at least one topic, or turn on "always"' }, { status: 400 });
+    const problem = noteProblem(n.title, n.body);
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
 
     const next = await queryOne<{ n: number }>(
       `SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM brain_notes WHERE site_id ${common ? 'IS NULL' : '= $1'}`,
       common ? [] : [siteId]
     );
     const row = await queryOne(
-      `INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, source, sort_order, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'owner', $8, $9)
+      `INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, audience, source, sort_order, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'owner', $9, $10)
        RETURNING ${COLS}`,
-      [crypto.randomUUID(), common ? null : siteId, n.kind || 'lesson', n.title, n.body, topics, !!n.always, next?.n ?? 0, user.username]
+      [crypto.randomUUID(), common ? null : siteId, n.kind || 'lesson', n.title, n.body, topics, !!n.always, n.audience || 'all', next?.n ?? 0, user.username]
     );
     return NextResponse.json({ note: row });
   } catch (err) {
@@ -108,17 +112,22 @@ export async function PATCH(request: NextRequest) {
     const siteId = await siteIdFor(businessId, user);
     if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
 
-    const existing = await queryOne<{ site_id: string | null }>(`SELECT site_id FROM brain_notes WHERE id = $1`, [id]);
+    const existing = await queryOne<{ site_id: string | null; title: string; body: string }>(`SELECT site_id, title, body FROM brain_notes WHERE id = $1`, [id]);
     if (!existing || (existing.site_id !== null && existing.site_id !== siteId)) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     if (existing.site_id === null && !isGlobalAdmin(user)) return NextResponse.json({ error: 'A note for every panel needs an admin of all panels' }, { status: 403 });
 
     const n = clean(raw);
+    if (n.title !== undefined || n.body !== undefined) {
+      const problem = noteProblem(n.title ?? existing.title, n.body ?? existing.body);
+      if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+    }
     const sets: string[] = []; const params: unknown[] = []; let pi = 1;
     if (n.kind !== undefined)      { sets.push(`kind = $${pi++}`); params.push(n.kind); }
     if (n.title !== undefined)     { if (!n.title) return NextResponse.json({ error: 'The title cannot be empty' }, { status: 400 }); sets.push(`title = $${pi++}`); params.push(n.title); }
     if (n.body !== undefined)      { if (!n.body) return NextResponse.json({ error: 'The note cannot be empty' }, { status: 400 }); sets.push(`body = $${pi++}`); params.push(n.body); }
     if (n.topics !== undefined)    { sets.push(`topics = $${pi++}`); params.push(n.topics); }
     if (n.always !== undefined)    { sets.push(`always = $${pi++}`); params.push(n.always); }
+    if (n.audience !== undefined)  { sets.push(`audience = $${pi++}`); params.push(n.audience); }
     if (n.isEnabled !== undefined) { sets.push(`is_enabled = $${pi++}`); params.push(n.isEnabled); }
     if (!sets.length) return NextResponse.json({ success: true });
     sets.push('updated_at = now()');

@@ -31,9 +31,13 @@ export async function suggestLessons(opts: { siteId?: string; max?: number } = {
          FROM conversations c
         WHERE c.site_id = $1
           AND c.merged_into IS NULL
-          AND EXISTS (SELECT 1 FROM messages m
-                       WHERE m.conversation_id = c.id AND m.sender = 'agent' AND m.deleted_at IS NULL
-                         AND length(btrim(m.content)) >= 25 AND m.created_at > now() - interval '14 days')
+          AND (EXISTS (SELECT 1 FROM messages m
+                        WHERE m.conversation_id = c.id AND m.sender = 'agent' AND m.deleted_at IS NULL
+                          AND length(btrim(m.content)) >= 25 AND m.created_at > now() - interval '14 days')
+               -- or a team member corrected something the AI wrote: the strongest signal there is
+               OR EXISTS (SELECT 1 FROM message_revisions r JOIN messages am ON am.id = r.message_id
+                           WHERE r.conversation_id = c.id AND r.action = 'edit' AND am.sender = 'ai'
+                             AND r.created_at > now() - interval '14 days'))
           AND NOT EXISTS (SELECT 1 FROM brain_reviewed r WHERE r.conversation_id = c.id)
         ORDER BY c.last_message_at DESC NULLS LAST
         LIMIT $2`,
@@ -57,13 +61,24 @@ export async function suggestLessons(opts: { siteId?: string; max?: number } = {
         const transcript = msgs.rows
           .map((m) => `${m.sender === 'visitor' ? 'Customer' : m.sender === 'ai' ? 'AI' : 'Team'}: ${maskPersonal(m.content).slice(0, 500)}`)
           .join('\n');
+        // What the AI wrote first and what a team member changed it to.
+        const fixes = await query<{ before: string; after: string }>(
+          `SELECT r.previous_content AS before, r.new_content AS after
+             FROM message_revisions r JOIN messages am ON am.id = r.message_id
+            WHERE r.conversation_id = $1 AND r.action = 'edit' AND am.sender = 'ai' AND r.new_content IS NOT NULL
+            ORDER BY r.created_at LIMIT 3`,
+          [c.id]
+        ).catch(() => ({ rows: [] as { before: string; after: string }[] }));
+        const corrections = fixes.rows
+          .map((f) => `The AI first wrote: ${maskPersonal(f.before).slice(0, 400)}\nA team member changed it to: ${maskPersonal(f.after).slice(0, 400)}`)
+          .join('\n');
         let draft = null;
-        if (transcript.includes('Team:')) {
+        if (transcript.includes('Team:') || corrections) {
           const body = {
             model: getActiveModel(),
             messages: [
               { role: 'system', content: LEARN_INSTRUCTION },
-              { role: 'user', content: `Topics: ${BRAIN_TOPICS.map((t) => t.key).join(', ')}\nExisting notes: ${existing.join(' | ') || '(none)'}\n\nChat:\n${transcript}` },
+              { role: 'user', content: `Topics: ${BRAIN_TOPICS.map((t) => t.key).join(', ')}\nExisting notes: ${existing.join(' | ') || '(none)'}\n\nChat:\n${transcript}${corrections ? `\n\nCorrections by the team (the strongest lesson):\n${corrections}` : ''}` },
             ],
             max_tokens: 500,
             temperature: 0,

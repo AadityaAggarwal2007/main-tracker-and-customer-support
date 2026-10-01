@@ -3,6 +3,7 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
+import { recordBrainUsage } from './brain-usage';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import { maskSensitive, sensitiveWarning } from './sensitive';
@@ -332,7 +333,8 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // customer hears nothing rather than being told something unverified.
         if (account.ai_enabled && conversation.status === 'ai_handling') {
           try {
-            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email', account.site_id);
+            const brainUsage: { brain: { id: string; title: string }[] } = { brain: [] };
+            const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email', account.site_id, brainUsage);
 
             // The same hidden tool context the widget path stores. Without it the
             // next email in this thread rebuilds the history with no record of
@@ -412,6 +414,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
                 JSON.stringify(held ? { emailed: false, withheld: 'escalated' } : { emailed: false, withheld: 'sending' }),
               ]
             );
+            await recordBrainUsage(aiMsg?.id, brainUsage.brain);
 
             await query(
               `UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`,

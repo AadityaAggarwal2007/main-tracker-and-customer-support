@@ -181,14 +181,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   // tool_result rows and the hidden tool bookkeeping are context for the model,
   // not part of the conversation a person reads. Deleted messages stay in the
   // list, marked, so the team can see what was removed and by whom.
-  const messages = await query(
-    `SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by
+  // `brain` = the Brain notes the agent was shown for that reply (brain_usage, staff only).
+  // Before chat-brain-usage.sql is applied the table is missing: read without it then.
+  const messagesSql = (withBrain: boolean) => `SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by${
+    withBrain ? `, (SELECT u.notes FROM brain_usage u WHERE u.message_id = messages.id) AS brain` : ''}
        FROM messages
       WHERE conversation_id = $1
         AND ${STAFF_MESSAGE_SQL}
-      ORDER BY created_at ASC`,
-    [params.id]
-  );
+      ORDER BY created_at ASC`;
+  const messages = await query(messagesSql(true), [params.id]).catch(() => query(messagesSql(false), [params.id]));
 
   // The same customer's older chats on this site (customer_key, see
   // chat-customer-key.sql), so the inbox shows one customer as one thread:
