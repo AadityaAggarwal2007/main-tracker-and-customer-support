@@ -19,7 +19,7 @@ export const TEAM_ROLES: Exclude<Role, 'admin'>[] = ['panel_admin', 'manager', '
 
 export const PERMISSIONS = [
   'orders.view', 'orders.update', 'orders.cancel', 'orders.upload', 'orders.email', 'orders.delete',
-  'chat.view', 'chat.reply', 'chat.cases', 'chat.edit',
+  'chat.view', 'chat.reply', 'chat.cases', 'chat.edit', 'chat.senior',
   'chikki.edit', 'settings.panel',
 ] as const;
 export type Permission = typeof PERMISSIONS[number];
@@ -35,9 +35,12 @@ export const PERMISSION_GROUPS: { title: string; items: { key: Permission; label
   ] },
   { title: 'Chat support', items: [
     { key: 'chat.view', label: 'Open Chat Support', hint: 'Read chats and emails' },
-    { key: 'chat.reply', label: 'Reply to customers', hint: 'Reply, take over, hand to AI, close' },
+    { key: 'chat.reply', label: 'Reply to customers', hint: 'Reply, take over, hand to AI, close, transfer (own or unowned chats)' },
     { key: 'chat.cases', label: 'Refund / Ship again', hint: 'Mark or remove Refund and Ship again' },
     { key: 'chat.edit', label: 'Edit any message', hint: 'Edit or delete messages others sent' },
+    // Owner, 2026-10-01: Super Admin > Senior > Junior (src/lib/chat/team-rules.ts). No role preset
+    // has it: the owner ticks it per member in Team, and ticking it never signs anyone out.
+    { key: 'chat.senior', label: 'Senior', hint: "Takes a junior's chat; marks Refund / Ship again (a junior may mark only while no senior has been in ShipTrack for 30 min, 10:00-19:30)" },
   ] },
   { title: 'Chikki and panel settings', items: [
     { key: 'chikki.edit', label: 'Teach Chikki', hint: 'Saved answers, notes, lessons, team examples' },

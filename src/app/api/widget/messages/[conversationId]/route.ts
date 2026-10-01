@@ -22,6 +22,10 @@ export async function OPTIONS() { return widgetPreflight(); }
 // Times go out in JSON with millisecond precision while the database keeps
 // microseconds, so comparisons are cut to milliseconds; otherwise the newest
 // row would come back on every poll.
+//
+// metadata goes out without `agent` (the staff login that sent a reply): the customer only ever
+// meets "Vastora Support" (master rules 40-41). widget.js reads only `attachments` and
+// `captionless` from it.
 export async function GET(
   request: NextRequest,
   { params }: { params: { conversationId: string } }
@@ -48,7 +52,7 @@ export async function GET(
     const messages = await query(
       `SELECT id, conversation_id, sender,
               CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content,
-              CASE WHEN deleted_at IS NULL THEN metadata END AS metadata,
+              CASE WHEN deleted_at IS NULL THEN metadata - 'agent' END AS metadata,
               created_at, edited_at,
               (deleted_at IS NOT NULL) AS deleted,
               GREATEST(created_at, edited_at, deleted_at) AS changed_at

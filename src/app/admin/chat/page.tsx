@@ -7,10 +7,12 @@ import {
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
   Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall, CalendarDays, Truck, CalendarCheck,
-  BadgeCheck, ChevronDown,
+  BadgeCheck, ChevronDown, UserRoundCheck, ArrowRightLeft, Lock, Hand, UsersRound,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
-import { ROLE_INFO, can, type Role } from '@/lib/permissions';
+import { ROLE_INFO, can, isSuperAdmin, type Role } from '@/lib/permissions';
+import { cleanTransferNote } from '@/lib/chat/team-rules';
+import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
@@ -47,6 +49,12 @@ interface Conversation {
   case_marked_by?: string | null;
   case_marked_at?: string | null;
   case_order_id?: string | null;
+  // Who holds the chat (chat-team.sql): a team member's key, 'owner' (the Super Admin) or null
+  // (nobody). The list's `team` gives the names; on a grouped row it is the latest chat's holder.
+  assigned_to?: string | null;
+  assigned_at?: string | null;
+  // Set on a chat merged into the customer's other one (an empty shell; the thread's answer only).
+  merged_into?: string | null;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -143,6 +151,12 @@ interface ChatMessage {
   deleted_by?: string | null;
   // The Chikki (Brain) notes the agent was shown for this reply (staff only).
   brain?: { id: string; title: string }[] | null;
+  // A team reply's writer by name today (the thread's answer; staff only, the customer never
+  // gets it). null when the server cannot tell yet: shown as "Team".
+  author?: string | null;
+  // The writer's key ('owner' or a member id) when the server knows it from the reply's event:
+  // "You" still works after the owner renames this login.
+  author_key?: string | null;
 }
 
 // What GET /api/chat/messages/:id returns for "View details".
@@ -174,9 +188,167 @@ interface PendingFile {
   id?: string;
 }
 
+/* ═══════════ CHAT TEAM (owner, 2026-10-01) ═══════════ */
+// Who holds a chat, who may act on it, Take from X and Transfer (src/lib/chat/team-rules.ts).
+// The server decides every right; the inbox only draws what it was told (`staff` in the thread's
+// answer) and never guesses one of its own. A stale screen is safe anyway: the server refuses an
+// action on someone else's chat with a 409 naming them, and the inbox then shows what is true.
+
+// One person on the team (the list's answer: `team`): members who can reply, then the Super Admin
+// (key 'owner'). away_min: not seen in ShipTrack for 30+ minutes during office hours (10:00-19:30),
+// else null. seen_min: minutes since last seen (null: not seen since presence started).
+interface TeamMember { key: string; name: string; senior: boolean; owner: boolean; away_min: number | null; seen_min: number | null }
+// Someone the open chat can be transferred to. key null = "Nobody (open pool)", Super Admin only.
+interface TransferTarget { key: string | null; name: string; senior: boolean; away_min: number | null }
+// What this login may do on the open chat (the thread's answer: `staff`).
+interface StaffBlock {
+  me: string | null;
+  holder: { key: string; name: string; senior: boolean; owner: boolean; away_min: number | null } | null;
+  can_act: boolean;      // reply, Take over, Close, Hand to AI, Transfer
+  claims: boolean;       // a reply or Take over makes the chat this login's
+  take: 'senior' | 'owner' | 'holder_away' | null;   // the "Take from X" button, and on what ground
+  transfer_to: TransferTarget[];
+  can_mark_case: boolean;
+  mark_override: boolean;     // a junior may mark because every senior is away
+  mark_note: string | null;   // why Refund / Ship again is off, or the override line
+  office_open: boolean;
+}
+// The open chat's team history (the thread's answer: `team_log`), newest first: claims, takes,
+// transfers with their note, returning customers, merges. STAFF ONLY: the customer and the AI never
+// see any of it. Names are as they are today.
+interface TeamLogEntry {
+  id: string; created_at: string; kind: string;
+  actor: string; actor_name: string | null; from_owner: string | null; to_owner: string | null;
+  from_name: string | null; to_name: string | null; reason: string | null; note: string | null;
+}
+
+// "away 40 min", "seen 3 min ago", "seen 2 h ago" beside a name in the transfer list.
+const minutesText = (m: number) => (m < 60 ? `${m} min` : m < 1440 ? `${Math.floor(m / 60)} h` : `${Math.floor(m / 1440)} d`);
+function presenceText(away: number | null, seen: number | null | undefined): string {
+  if (away != null) return `away ${minutesText(away)}`;
+  if (seen == null) return '';
+  return seen < 1 ? 'seen just now' : `seen ${minutesText(seen)} ago`;
+}
+
+// A team history time in India time: "14:05" today, "30 Sept 14:05" before.
+function logTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+  const day = (x: Date) => x.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  return day(d) === day(new Date())
+    ? time
+    : `${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${time}`;
+}
+
+// One line of the team history in words. "You" when it was this login.
+function teamLogLine(e: TeamLogEntry, me: string | null): string {
+  const actor = me && e.actor === me ? 'You' : (e.actor_name || 'Someone');
+  const name = (key: string | null, n: string | null) => (key && me && key === me ? 'you' : n || 'a former member');
+  const to = e.to_owner ? name(e.to_owner, e.to_name) : 'the open pool';
+  switch (e.kind) {
+    case 'claim': return `${actor} took it (${e.reason === 'reply' ? 'first reply' : 'Take over'})`;
+    case 'take': return `${actor} took it from ${name(e.from_owner, e.from_name)}`;
+    case 'transfer': {
+      const from = e.from_owner && e.from_owner !== e.actor ? ` from ${name(e.from_owner, e.from_name)}` : '';
+      return e.to_owner ? `${actor} transferred it${from} to ${to}` : `${actor} put it back in the open pool${from ? ` (it was ${name(e.from_owner, e.from_name)}'s)` : ''}`;
+    }
+    case 'inherit': return e.reason === 'same_customer_handover'
+      ? `Needs a person: given to ${to} (had this customer's last chat)`
+      : `Came back: given to ${to} (had this customer's last chat)`;
+    case 'merge': return `Merged chats: given to ${to}`;
+    default: return `${actor}: ${e.kind}`;
+  }
+}
+
+// Transfer this chat: to whom, with a one-line note only the team sees (src/lib/chat/team-rules.ts:
+// the server lists who may get it and checks everything again). The note lives only in the team
+// history: never in the chat, the customer's widget or email, the AI, or search.
+function TransferDialog({ targets, team, me, busy, error, onCancel, onSend }: {
+  targets: TransferTarget[]; team: TeamMember[]; me: string | null; busy: boolean; error: string;
+  onCancel: () => void; onSend: (to: TransferTarget, note: string) => void;
+}) {
+  // The picked target's key ('' = Nobody); undefined = nothing picked yet.
+  const [pick, setPick] = useState<string | undefined>(undefined);
+  const [note, setNote] = useState('');
+  const keyOf = (t: TransferTarget) => t.key ?? '';
+  // The list refreshes with the thread; a target that left it is no longer picked.
+  const chosen = targets.find(t => keyOf(t) === pick) ?? null;
+  // The same test the server makes: 3+ characters, a letter, one line.
+  const clean = cleanTransferNote(note);
+  const ok = !!chosen && !!clean && !busy;
+  return (
+    <div className="modal-overlay" onClick={() => { if (!busy) onCancel(); }}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="transfer-title" onClick={e => e.stopPropagation()} style={{ maxWidth: '28rem' }}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-title" id="transfer-title">Transfer this chat</div>
+            <p className="modal-subtitle">Who answers this customer from now on</p>
+          </div>
+          <button type="button" className="btn-icon" onClick={onCancel} aria-label="Close" disabled={busy}><X size={16} /></button>
+        </div>
+        <form onSubmit={e => { e.preventDefault(); if (ok && chosen && clean) onSend(chosen, clean); }}>
+          {targets.length === 0 ? (
+            <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)', marginBottom: '0.875rem' }}>
+              You cannot transfer this chat any more. Close this and look at who has it now.
+            </p>
+          ) : (
+            <div role="radiogroup" aria-label="Transfer to" style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.875rem' }}>
+              {targets.map(t => {
+                const k = keyOf(t);
+                const member = t.key ? team.find(m => m.key === t.key) : undefined;
+                const bits = [t.senior ? 'Senior' : '', t.key && t.key !== me ? presenceText(t.away_min, member?.seen_min) : ''].filter(Boolean);
+                const picked = pick === k;
+                return (
+                  <label key={k || 'nobody'} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.5rem 0.625rem', borderRadius: 8, cursor: 'pointer',
+                    border: `1px solid ${picked ? 'var(--primary)' : 'var(--border)'}`, background: picked ? 'var(--primary-light)' : 'transparent',
+                  }}>
+                    <input type="radio" name="transfer-to" checked={picked} onChange={() => setPick(k)} disabled={busy} style={{ marginTop: 3 }} />
+                    <span style={{ minWidth: 0, fontSize: '0.8125rem' }}>
+                      <span style={{ fontWeight: 600 }}>{t.name}</span>
+                      {bits.length > 0 && (
+                        <span style={{ color: t.away_min != null ? '#b45309' : 'var(--fg-muted)' }}> · {bits.join(' · ')}</span>
+                      )}
+                      {t.key === null && (
+                        <span style={{ display: 'block', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                          Nobody has it: the next person to reply or press Take over gets it.
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.375rem' }}>Note for the team
+            <input className="form-input" style={{ marginTop: 4 }} value={note} maxLength={200} autoComplete="off" disabled={busy}
+              placeholder="Why? One line for the team" onChange={e => setNote(e.target.value)} />
+          </label>
+          <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <Lock size={11} style={{ flexShrink: 0 }} /> Only the team sees this note. The customer and the AI never see it.
+          </p>
+          {error && (
+            <p role="alert" style={{ fontSize: '0.75rem', color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+              <AlertCircle size={12} style={{ flexShrink: 0 }} /> {error}
+            </p>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="btn btn-outline" onClick={onCancel} disabled={busy}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={!ok}>
+              {busy ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Transferring…</> : <><ArrowRightLeft size={14} /> Transfer</>}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // The name the widget shows the customer above AI replies ("Vastora Support"),
 // built from the site name the same way public/widget.js builds it. The owner
-// asked for the brand, not "AI", on these messages; team replies say "You".
+// asked for the brand, not "AI", on these messages. A team reply says "You" when it
+// is this login's, else the writer's name (the customer only ever sees the brand).
 function supportLabel(siteName?: string | null): string {
   const name = (siteName || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   if (!name) return 'Support';
@@ -186,7 +358,9 @@ function supportLabel(siteName?: string | null): string {
 
 const STATUS_LABELS: Record<string, string> = {
   ai_handling: 'AI',
-  agent_handling: 'You',
+  // Every chat a person has taken over, whoever it is (owner, 2026-10-01): "With Rahul" in the
+  // thread header, "You" / the holder's name on a list row.
+  agent_handling: 'With team',
   resolved: 'Closed',
   human_needed: 'Needs you',
 };
@@ -233,7 +407,9 @@ const POLL_MS = 3000;
 // "Old check" legacy tags), Visitors the rest; the status tabs show everyone, whatever they have verified.
 // A problem tab is 'topic:<key>' (src/lib/chat/inbox-topics.ts): the open chats
 // about one problem, whatever their status.
-type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | `topic:${string}`;
+// My chats (chat team, owner 2026-10-01): this login's own chats in Needs you and With team (?mine=1).
+// With team keeps EVERY chat a person took over, so the Super Admin still sees them all in one place.
+type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'mine' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | `topic:${string}`;
 const TOPIC_ICONS: Record<string, typeof Inbox> = {
   risk: Flame, fraud: ShieldAlert, refund: Undo2, tracking: Link2, delay: Clock, address: MapPin, damaged: PackageX, exchange: RefreshCw,
 };
@@ -242,7 +418,8 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
   { v: 'visitors', label: 'Visitors', icon: Users, status: '', segment: 'visitors' },
   { v: 'customers', label: 'Customers', icon: UserCheck, status: '', segment: 'customers' },
   { v: 'human_needed', label: 'Needs you', icon: AlertCircle, status: 'human_needed', segment: '' },
-  { v: 'agent_handling', label: 'You are on it', icon: User, status: 'agent_handling', segment: '' },
+  { v: 'mine', label: 'My chats', icon: UserRoundCheck, status: '', segment: '' },
+  { v: 'agent_handling', label: 'With team', icon: User, status: 'agent_handling', segment: '' },
   { v: 'ai_handling', label: 'AI handling', icon: Bot, status: 'ai_handling', segment: '' },
   // Refund / Ship again (owner, 2026-10-01): a marked chat shows only here; no status of its own.
   { v: 'case:refund', label: 'Refund', icon: Undo2, status: '', segment: '' },
@@ -959,6 +1136,8 @@ export default function ChatSupportPage() {
   // The Refund / Ship again sections: how many chats each holds (and unread), and, for the open one,
   // who marked how many per day.
   const caseKey = tab.startsWith('case:') ? tab.slice(5) : '';
+  // My chats: the list asks for ?mine=1 (this login's own chats in Needs you and With team).
+  const mineTab = tab === 'mine';
   const [caseCounts, setCaseCounts] = useState<Record<string, { total: number; unread: number }>>({});
   const [caseSummary, setCaseSummary] = useState<{ marked_by: string; day: string; n: number }[]>([]);
 
@@ -1001,6 +1180,19 @@ export default function ChatSupportPage() {
   const [meOpen, setMeOpen] = useState(false);
   const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean } | null>(null);
   const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
+  // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
+  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [meKey, setMeKey] = useState<string | null>(null);
+  // held: the Super Admin's open chats one by one, exactly what "Give all N to the team" frees.
+  const [myChats, setMyChats] = useState<{ open: number; waiting: number; held: number }>({ open: 0, waiting: 0, held: 0 });
+  // From the thread's answer: what this login may do on the open chat and its team history, tied to
+  // their chat like the order line, so a fast switch never shows the last chat's buttons.
+  const [threadTeam, setThreadTeam] = useState<{ id: string; staff: StaffBlock | null; log: TeamLogEntry[] } | null>(null);
+  const [teamLogOpen, setTeamLogOpen] = useState(false);
+  const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
+  const [release, setRelease] = useState<'ask' | 'busy' | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // The same customer's older chats on this site (read-only, oldest first),
   // how many older chats they have in all, and their newer chat if any.
@@ -1033,6 +1225,19 @@ export default function ChatSupportPage() {
   const dragDepthRef = useRef(0);
   const composerRef = useRef<HTMLDivElement>(null);
   const fileKeyRef = useRef(0);
+
+  // What this login may do on the open chat, as the server said (never guessed here).
+  const staff = activeConv && threadTeam?.id === activeConv.id ? threadTeam.staff : null;
+  const teamLog = activeConv && threadTeam?.id === activeConv.id ? threadTeam.log : [];
+  // Someone else holds the open chat and this login may only read it (the Super Admin may act on any).
+  const othersChat = !!staff?.holder && !staff.can_act;
+  // The composer works only on a chat with the team (agent_handling) that this login may act on: its
+  // own, one nobody holds, or any chat for the Super Admin.
+  const replyOpen = !!activeConv && activeConv.status === 'agent_handling' && !!staff?.can_act;
+  // "Rahul's chat. Only Rahul or Super Admin can reply." (or the Super Admin's own chat).
+  const readOnlyReply = !othersChat || !staff?.holder ? ''
+    : staff.holder.owner ? "Super Admin's chat. Only Super Admin can reply."
+    : `${staff.holder.name}'s chat. Only ${staff.holder.name} or Super Admin can reply.`;
 
   const showAlert = (type: 'success' | 'error', message: string) => {
     setAlert({ type, message });
@@ -1104,11 +1309,17 @@ export default function ChatSupportPage() {
         if (caseKey) params.set('case', caseKey);
         // Closed chats never wait for an answer: Unread does not apply there.
         if (unreadOnly && statusFilter !== 'resolved') params.set('unread', '1');
+        if (mineTab) params.set('mine', '1');
       }
+      // activeHeaders(): this poll also says the person is here, only while they really use the tab
+      // (src/lib/presence-client.ts), so a screen left open does not keep them "around".
       const res = await fetch(`/api/chat/conversations?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, ...activeHeaders() },
       });
       const data = await res.json();
+      if (res.ok && Array.isArray(data.team)) setTeam(data.team);
+      if (res.ok && data.me !== undefined) setMeKey(data.me ?? null);
+      if (res.ok && data.mine) setMyChats({ open: data.mine.open ?? 0, waiting: data.mine.waiting ?? 0, held: data.mine.held ?? 0 });
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
         setListTotal(typeof data.total === 'number' ? data.total : null);
@@ -1119,7 +1330,7 @@ export default function ChatSupportPage() {
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, unreadOnly, searchActive, searchQ, listLimit]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, mineTab, unreadOnly, searchActive, searchQ, listLimit]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1128,11 +1339,12 @@ export default function ChatSupportPage() {
     if (!token) return;
     try {
       const res = await fetch(`/api/chat/conversations/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, ...activeHeaders() },
       });
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
+      setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [] });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable });
       setMessages(data.messages || []);
       const older = data.earlier ?? data.conversation?.earlier;
@@ -1144,8 +1356,13 @@ export default function ChatSupportPage() {
 
   useEffect(() => {
     if (activeId) fetchThread(activeId);
-    else { setActiveConv(null); setOrderInfo(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
+    else { setActiveConv(null); setOrderInfo(null); setThreadTeam(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
   }, [activeId, fetchThread]);
+
+  // The team history and the transfer dialog belong to the chat they were opened on; the release
+  // question to the tab it was asked on.
+  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); }, [activeId]);
+  useEffect(() => { setRelease(null); }, [tab]);
 
   /* ═══ POLLING ═══ */
   // There is no websocket in ShipTrack — the inbox asks again every few
@@ -1225,29 +1442,101 @@ export default function ChatSupportPage() {
   }, []);
 
   /* ═══ ACTIONS ═══ */
-  const changeStatus = async (status: string) => {
+  // Take over / Hand to AI / Close; take = "Take from X" (the chat becomes this login's).
+  const changeStatus = async (status: string, take = false) => {
     if (!activeId) return;
+    const id = activeId;
     try {
-      const res = await fetch(`/api/chat/conversations/${activeId}`, {
+      const res = await fetch(`/api/chat/conversations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(take ? { status, take: true } : { status }),
       });
       if (res.ok) {
-        // The closer as the server recorded it, not a guess made here.
+        // The closer and the holder as the server recorded them, not a guess made here.
         const d = await res.json().catch(() => ({} as Record<string, unknown>));
-        setActiveConv(c => (c ? {
+        setActiveConv(c => (c && c.id === id ? {
           ...c,
           status: status as Conversation['status'],
           auto_closed_at: (d.auto_closed_at as string | null | undefined) ?? null,
+          ...(d.assigned_to !== undefined ? { assigned_to: (d.assigned_to as string | null) ?? null } : {}),
           ...(status === 'resolved' ? { closed_by_name: (d.closed_by_name as string | null | undefined) ?? null, closed_at: (d.closed_at as string | null | undefined) ?? null } : {}),
         } : c));
+        // What this login may do now (a take or a claim opens the composer).
+        fetchThread(id, true);
         fetchConversations(true);
       } else {
-        const d = await res.json();
-        showAlert('error', d.error || 'Could not update that conversation');
+        const d = await res.json().catch(() => ({} as Record<string, unknown>));
+        showAlert('error', (d.error as string) || 'Could not update that conversation');
+        // Someone else has the chat now (409), or ShipTrack was starting (503): show what is true.
+        fetchThread(id, true);
+        fetchConversations(true);
       }
     } catch { showAlert('error', 'Could not update that conversation'); }
+  };
+
+  // Transfer (the dialog): to a member who can reply in this panel or the Super Admin ("Nobody" for
+  // the Super Admin), with a one-line note only the team sees.
+  const sendTransfer = async (to: TransferTarget, note: string) => {
+    if (!transferEdit || !token) return;
+    const convId = transferEdit.convId;
+    setTransferEdit({ convId, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ transferTo: to.key, note }),
+      });
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) {
+        const why = (d.error as string) || 'Could not transfer this chat';
+        // 409: the chat is no longer this login's to give, so the list in the dialog is out of date.
+        // Anything else (a note or a pick the server refused, ShipTrack starting) stays in the dialog.
+        if (res.status === 409) { setTransferEdit(null); showAlert('error', why); }
+        else setTransferEdit({ convId, busy: false, error: why });
+        fetchThread(convId, true);
+        fetchConversations(true);
+        return;
+      }
+      setTransferEdit(null);
+      setActiveConv(c => (c && c.id === convId ? {
+        ...c,
+        status: ((d.status as Conversation['status'] | undefined) || c.status),
+        assigned_to: (d.assigned_to as string | null | undefined) ?? null,
+        auto_closed_at: null,
+      } : c));
+      showAlert('success', to.key === null ? 'Back in the open pool: the next person to reply gets it'
+        : to.key === staff?.me ? 'This chat is yours now'
+        : `Transferred to ${(d.holder_name as string | null | undefined) || to.name}`);
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch {
+      setTransferEdit({ convId, busy: false, error: 'Could not transfer this chat' });
+    }
+  };
+
+  // "Give all N to the team" (Super Admin only, owner answer 3): every open chat he holds goes back
+  // to the open pool in one step, status unchanged. Asked inline first (no browser pop-up).
+  const releaseAll = async () => {
+    if (!token || release === 'busy') return;
+    setRelease('busy');
+    try {
+      const res = await fetch('/api/chat/team/release', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: '{}',
+      });
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) { showAlert('error', (d.error as string) || 'Could not give the chats back. Try again.'); return; }
+      const n = typeof d.released === 'number' ? d.released : 0;
+      showAlert('success', n === 0 ? 'You hold no open chats' : `${n} chat${n === 1 ? ' is' : 's are'} open to the team again`);
+      fetchConversations(true);
+      if (activeIdRef.current) fetchThread(activeIdRef.current, true);
+    } catch {
+      showAlert('error', 'Could not give the chats back. Try again.');
+    } finally {
+      setRelease(null);
+    }
   };
 
   // Refund / Ship again (chat-cases.sql). Internal only: nothing is sent to the customer.
@@ -1265,7 +1554,13 @@ export default function ChatSupportPage() {
         body: JSON.stringify({ caseKind: kind }),
       });
       const d = await res.json().catch(() => ({} as Record<string, unknown>));
-      if (!res.ok) { showAlert('error', (d.error as string) || 'Could not update that conversation'); return; }
+      if (!res.ok) {
+        showAlert('error', (d.error as string) || 'Could not update that conversation');
+        // A senior came back (403), or the chat changed: show what is true now.
+        fetchThread(activeId, true);
+        fetchConversations(true);
+        return;
+      }
       setActiveConv(c => (c ? {
         ...c,
         case_kind: (d.case_kind as Conversation['case_kind']) ?? null,
@@ -1331,8 +1626,8 @@ export default function ChatSupportPage() {
 
   const addFiles = (files: File[]) => {
     if (files.length === 0) return;
-    if (!activeId || activeConv?.status !== 'agent_handling') {
-      setFileError('Take over the conversation to attach files.');
+    if (!activeId || !replyOpen) {
+      setFileError(readOnlyReply || 'Take over the conversation to attach files.');
       return;
     }
     if (sending) {
@@ -1440,8 +1735,14 @@ export default function ChatSupportPage() {
         }),
       });
       const data = await res.json();
-      // On failure the text and files stay in the composer, ready to send again.
-      if (!res.ok) { showAlert('error', data.error || 'Could not send that reply'); return; }
+      // On failure the text and files stay in the composer, ready to send again. Someone else may
+      // have the chat now (409 naming them) or ShipTrack was starting (503): show what is true.
+      if (!res.ok) {
+        showAlert('error', data.error || 'Could not send that reply');
+        fetchThread(activeId, true);
+        fetchConversations(true);
+        return;
+      }
 
       setDraft('');
       const sentKeys = new Set(files.map(p => p.key));
@@ -1675,6 +1976,31 @@ export default function ChatSupportPage() {
     : '';
   const composerNotice = [fileError, sendHint].filter(Boolean).join(' · ');
 
+  // Chat team, for the open chat (all from the server's staff block). The header says who has it:
+  // "With you" / "With Rahul" / "With team" on a chat with the team, "For you" / "For Rahul" beside
+  // any other status (a Closed chat goes back to them if the customer writes again).
+  const holderIsMe = !!staff?.holder && staff.holder.key === staff.me;
+  const withText = holderIsMe ? 'With you' : staff?.holder ? `With ${staff.holder.name}` : 'With team';
+  const forText = !staff?.holder || activeConv?.status === 'agent_handling' ? null
+    : holderIsMe ? 'For you' : `For ${staff.holder.name}`;
+  const holderAway = staff?.holder?.away_min != null ? ` · away ${minutesText(staff.holder.away_min)}` : '';
+  // In place of the action buttons when this login may only read the chat.
+  const readOnlyText = activeConv?.merged_into ? "Merged into the customer's other chat · read only"
+    : staff?.holder ? `${staff.holder.name}'s chat · read only${holderAway}`
+    : 'Read only';
+  // The line above the composer when it is closed: why, and what to press.
+  const takeLabel = !staff?.take || !staff.holder ? ''
+    : staff.take === 'holder_away' ? `Take (${staff.holder.name} away${staff.holder.away_min != null ? ` ${minutesText(staff.holder.away_min)}` : ''})`
+    : `Take from ${staff.holder.name}`;
+  const composerHint = !activeConv || replyOpen ? ''
+    : othersChat && staff?.holder
+      ? `${staff.holder.name} has this chat. You can read it; ${takeLabel ? `press "${takeLabel}" above to answer`
+        : staff.holder.owner ? 'ask Super Admin to transfer it to you' : `ask ${staff.holder.name} or Super Admin to transfer it to you`}.`
+    : activeConv.merged_into ? "This chat was merged into the customer's other chat. Open that one to reply."
+    : activeConv.status === 'human_needed' ? 'This one is waiting on a person — take over to reply.'
+    : activeConv.status === 'ai_handling' ? 'The AI is handling this — take over to reply yourself.'
+    : '';
+
   // One message in the thread. readOnly = a message from an older chat of the
   // same customer: shown as it was, without the edit/delete menu.
   const renderMessage = (msg: ChatMessage, readOnly = false) => {
@@ -1715,8 +2041,11 @@ export default function ChatSupportPage() {
         display: 'flex', flexDirection: 'column',
         alignItems: mine ? 'flex-start' : 'flex-end',
       }}>
+        {/* A team reply: "You" when this login wrote it, else the writer's name today ("Team" when the
+            server could not tell). The customer only ever sees the brand. */}
         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
-          {msg.sender === 'visitor' ? 'Customer' : msg.sender === 'agent' ? 'You'
+          {msg.sender === 'visitor' ? 'Customer'
+            : msg.sender === 'agent' ? ((msg.author_key ? msg.author_key === (staff?.me ?? meKey) : (msg.metadata?.agent && msg.metadata.agent === user.username)) ? 'You' : (msg.author || 'Team'))
             : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
         </span>
         {!mine || readOnly ? bubble : (
@@ -1820,7 +2149,7 @@ export default function ChatSupportPage() {
         {/* Status filters: they scroll inside the sidebar when the screen is short, so the
             panel picker stays on top and Back to Orders / Sign out stay at the bottom. */}
         <nav style={{ padding: '0.5rem', flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          {INBOX_TABS.map(s => (
+          {INBOX_TABS.filter(s => s.v !== 'mine' || canReply).map(s => (
             <button
               key={s.v}
               onClick={() => { setTab(s.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
@@ -1838,6 +2167,13 @@ export default function ChatSupportPage() {
                   }}>{c.unread ? `${c.unread} waiting` : c.total}</span>
                 );
               })()}
+              {s.v === 'mine' && myChats.open > 0 && (
+                // My chats: how many open chats this login holds; red while any customer waits.
+                <span title={`${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}`} style={{
+                  fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
+                  background: myChats.waiting ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))', color: myChats.waiting ? '#b91c1c' : 'var(--fg-muted)',
+                }}>{myChats.open}</span>
+              )}
             </button>
           ))}
 
@@ -1924,7 +2260,7 @@ export default function ChatSupportPage() {
           <div className="chat-list">
             <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
               <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>
-                {searchActive ? 'Search results' : topicDef ? topicDef.label : 'Conversations'}
+                {searchActive ? 'Search results' : topicDef ? topicDef.label : mineTab ? 'My chats' : 'Conversations'}
                 <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
                   {listTotal ?? conversations.length}
                 </span>
@@ -1986,6 +2322,39 @@ export default function ChatSupportPage() {
                   ))}
                 </div>
               )}
+              {mineTab && !searchActive && (
+                // My chats. The Super Admin's own replies make chats his (owner answer Q2), so the team
+                // can only read them; "Give all N to the team" lets go of every one at once (owner answer 3).
+                <div style={{ marginTop: '0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
+                  <div>Chats you hold in Needs you and With team{myChats.waiting > 0 ? ` · ${myChats.waiting} waiting for an answer` : ''}</div>
+                  {/* N = what the release frees (every open chat he holds, AI handling and Refund / Ship
+                      again too), not the customers counted above; shown while he has chats here (owner answer 3). */}
+                  {isSuperAdmin(user) && myChats.open > 0 && myChats.held > 0 && (release === null ? (
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setRelease('ask')}
+                      title="Every open chat you hold goes back to the open pool: the next team member to reply or press Take over gets it"
+                      style={{ marginTop: '0.375rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <UsersRound size={13} /> Give all {myChats.held} to the team
+                    </button>
+                  ) : (
+                    <div role="group" aria-label="Give all your chats to the team" style={{
+                      marginTop: '0.375rem', border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.625rem',
+                      background: 'var(--bg-subtle, rgba(0,0,0,0.03))',
+                    }}>
+                      <div style={{ color: 'var(--fg)', fontSize: '0.75rem', marginBottom: '0.375rem' }}>
+                        Give every open chat you hold back to the team? Each one stays in its list with nobody holding it,
+                        and the next team member to reply or press Take over gets it. Customers are not told anything.
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button type="button" className="btn btn-primary btn-sm" disabled={release === 'busy'} onClick={releaseAll}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {release === 'busy' ? <><Loader2 size={13} style={{ animation: 'spin 0.6s linear infinite' }} /> Giving them back…</> : 'Yes, give them to the team'}
+                        </button>
+                        <button type="button" className="btn btn-outline btn-sm" disabled={release === 'busy'} onClick={() => setRelease(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {caseKey && !searchActive && (() => {
                 // Who marked how many, per day (India time), last 14 days: for the owner's experts.
                 const days = Array.from(new Set(caseSummary.map((r) => r.day)));
@@ -2038,6 +2407,13 @@ export default function ChatSupportPage() {
                     </>
                   ) : unreadOnly && statusFilter !== 'resolved' && !searchActive ? (
                     <p>Nobody here is waiting for an answer.</p>
+                  ) : mineTab && !searchActive ? (
+                    <>
+                      <p>No chats are yours right now.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        A chat becomes yours when you reply or press Take over on one nobody has, or when someone transfers it to you.
+                      </p>
+                    </>
                   ) : topicDef && !searchActive ? (
                     <>
                       <p>No open chats under “{topicDef.label}”.</p>
@@ -2092,9 +2468,23 @@ export default function ChatSupportPage() {
                     const open = c.status !== 'resolved';
                     const upset = customer && open && c.health_score != null && c.health_score >= 50;
                     const elsewhere = !!c.group_needs_human && c.status !== 'human_needed';
+                    // Who holds it (chat team): "You", their name, or "Team" when nobody does (a key no
+                    // longer on the team counts as nobody, as on the server).
+                    const holderKey = c.assigned_to || null;
+                    const rowHolderIsMe = !!holderKey && holderKey === meKey;
+                    const rowHolderName = rowHolderIsMe || !holderKey ? null : team.find(t => t.key === holderKey)?.name ?? null;
                     const pill = elsewhere
                       ? { text: STATUS_LABELS.human_needed, bg: STATUS_STYLE.human_needed.bg, fg: STATUS_STYLE.human_needed.fg, title: 'An older chat of this customer is waiting for a person' }
-                      : { text: closedInfo(c)?.short ?? STATUS_LABELS[c.status], bg: STATUS_STYLE[c.status]?.bg, fg: STATUS_STYLE[c.status]?.fg, title: undefined };
+                      : c.status === 'agent_handling'
+                        ? {
+                          text: rowHolderIsMe ? 'You' : rowHolderName || 'Team', bg: STATUS_STYLE.agent_handling.bg, fg: STATUS_STYLE.agent_handling.fg,
+                          title: rowHolderIsMe ? 'With you' : rowHolderName ? `With ${rowHolderName}` : 'With the team; nobody holds it yet (the next reply makes it theirs)',
+                        }
+                        : { text: closedInfo(c)?.short ?? STATUS_LABELS[c.status], bg: STATUS_STYLE[c.status]?.bg, fg: STATUS_STYLE[c.status]?.fg, title: undefined };
+                    // Any other status: who it is for ("For you" / "For Rahul"); a Closed one goes back
+                    // to them if the customer writes again.
+                    const forChip = (rowHolderIsMe || rowHolderName) && (c.status !== 'agent_handling' || elsewhere)
+                      ? (rowHolderIsMe ? 'For you' : `For ${rowHolderName}`) : null;
                     const about = c.subject_label ? displaySubjectLabel(c.subject_label) : (CATEGORY_LABELS[c.category] || '');
                     const aboutColor = c.subject_label ? subjectStyle(c.subject_label).fg : 'var(--fg-muted)';
                     const threat = customer && open && c.health_threat;
@@ -2118,7 +2508,14 @@ export default function ChatSupportPage() {
                           <span title={c.subject_summary || about} style={{ flex: 1, minWidth: 0, fontSize: '0.6875rem', fontWeight: 600, color: aboutColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {showPanelName ? `${c.panel_name || c.site_name} · ` : ''}{about}{(c.thread_count ?? 0) > 1 ? ` · ${c.thread_count} chats` : ''}
                           </span>
-                          <span title={pill.title} style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, background: pill.bg, color: pill.fg }}>{pill.text}</span>
+                          <span title={pill.title} style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, background: pill.bg, color: pill.fg, maxWidth: '9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pill.text}</span>
+                          {forChip && (
+                            <span title={c.status === 'resolved' ? `If the customer writes again, it goes to ${rowHolderIsMe ? 'you' : rowHolderName}` : `${rowHolderIsMe ? 'You have' : `${rowHolderName} has`} this chat`} style={{
+                              fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, maxWidth: '8rem',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              background: rowHolderIsMe ? 'var(--primary-light)' : 'var(--bg-subtle, rgba(0,0,0,0.05))', color: rowHolderIsMe ? 'var(--primary)' : 'var(--fg-muted)',
+                            }}>{forChip}</span>
+                          )}
                           {rowUnread(c) > 0 && (
                             <span title={rowWaiting(c) ? `${rowUnread(c)} new message${rowUnread(c) === 1 ? '' : 's'}; the customer is waiting for an answer` : `${rowUnread(c)} new message${rowUnread(c) === 1 ? '' : 's'}, already answered`}
                               style={{ background: rowWaiting(c) ? 'var(--danger)' : 'var(--muted, #e5e7eb)', color: rowWaiting(c) ? '#fff' : 'var(--fg-muted)', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700, flexShrink: 0 }}>
@@ -2196,7 +2593,10 @@ export default function ChatSupportPage() {
                   <button type="button" className="btn-icon chat-back" aria-label="Back to conversations" onClick={closeConversation}>
                     <ChevronLeft size={20} />
                   </button>
-                  <div style={{ minWidth: 0, flex: 1 }}>
+                  {/* Counts as 7rem when the header decides what fits on its first line: on a phone a
+                      wide actions group (the read-only label, Take / Transfer) then wraps to its own
+                      line instead of squeezing the customer's name to a few pixels. */}
+                  <div style={{ minWidth: 0, flex: '1 1 7rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                       <span title={nameNote(activeConv)} style={{ fontWeight: 700, fontStyle: nameFromOrder(activeConv) ? 'italic' : undefined }}>{convName(activeConv)}</span>
                       {nameFromOrder(activeConv) && (
@@ -2209,12 +2609,20 @@ export default function ChatSupportPage() {
                       }}>
                         {activeConv.source === 'email' ? <><Mail size={10} /> Email</> : <><MessageCircle size={10} /> Chat</>}
                       </span>
-                      <span style={{
+                      <span title={staff?.holder && holderAway ? `${staff.holder.name} has not been in ShipTrack for ${minutesText(staff.holder.away_min ?? 0)}` : undefined} style={{
                         fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
                         background: STATUS_STYLE[activeConv.status]?.bg, color: STATUS_STYLE[activeConv.status]?.fg,
                       }}>
-                        {STATUS_LABELS[activeConv.status]}
+                        {activeConv.status === 'agent_handling' ? withText : STATUS_LABELS[activeConv.status]}
                       </span>
+                      {forText && (
+                        <span title={activeConv.status === 'resolved' ? 'If the customer writes again, it goes to them' : undefined} style={{
+                          fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
+                          background: holderIsMe ? 'var(--primary-light)' : 'var(--bg-subtle, rgba(0,0,0,0.05))', color: holderIsMe ? 'var(--primary)' : 'var(--fg-muted)',
+                        }}>
+                          {forText}
+                        </span>
+                      )}
                       {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
                         : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
                       {activeWaiting && <WaitingChip since={activeWaiting} big />}
@@ -2244,7 +2652,9 @@ export default function ChatSupportPage() {
                   </div>
 
                   {canReply && (
-                    <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                    // May shrink (minWidth 0) so that, with Take from X and Transfer added, a narrow
+                    // thread wraps the buttons onto a second row instead of pushing them off screen.
+                    <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 1, minWidth: 0, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
                       {/* Refund / Ship again: verified customers only; internal, the customer is told nothing */}
                       {canCases && !isVisitorChat(activeConv) && (activeConv.case_kind ? (
                         <>
@@ -2253,21 +2663,58 @@ export default function ChatSupportPage() {
                         </>
                       ) : (
                         <>
-                          <button className="btn btn-outline btn-sm" title="Mark this customer for a refund. Internal only: the customer is not told." onClick={() => markCase('refund')}
+                          {/* Who may mark is the server's call (staff.can_mark_case: a senior or Super Admin;
+                              a junior only while every senior is away). Off: the reason on hover. */}
+                          {staff?.mark_override && staff.mark_note && (
+                            <span style={{ fontSize: '0.6875rem', fontWeight: 600, padding: '2px 8px', borderRadius: 9999, background: '#fef3c7', color: '#b45309' }}>
+                              {staff.mark_note}
+                            </span>
+                          )}
+                          <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
+                            title={staff?.can_mark_case ? 'Mark this customer for a refund. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
+                            onClick={() => markCase('refund')}
                             style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Undo2 size={13} /> Refund</button>
-                          <button className="btn btn-outline btn-sm" title="Mark this order to be shipped again. Internal only: the customer is not told." onClick={() => markCase('reship')}
+                          <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
+                            title={staff?.can_mark_case ? 'Mark this order to be shipped again. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
+                            onClick={() => markCase('reship')}
                             style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Truck size={13} /> Ship again</button>
                         </>
                       ))}
-                      {activeConv.status !== 'agent_handling' && (
-                        <button className="btn btn-primary btn-sm" onClick={() => changeStatus('agent_handling')}>Take over</button>
-                      )}
-                      {activeConv.status === 'agent_handling' && !activeConv.case_kind && (
-                        <button className="btn btn-outline btn-sm" onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
-                      )}
-                      {activeConv.status !== 'resolved' && (
-                        <button className="btn btn-outline btn-sm" onClick={() => changeStatus('resolved')}>Close</button>
-                      )}
+                      {/* Take over, Take from X, Transfer, Hand to AI, Close: only what the server says this
+                          login may do on this chat (staff). Someone else's chat: read only, with their name. */}
+                      {staff && (staff.can_act || staff.take) ? (
+                        <>
+                          {activeConv.status !== 'agent_handling' && staff.can_act && (
+                            <button className="btn btn-primary btn-sm" onClick={() => changeStatus('agent_handling')}
+                              title={staff.claims ? 'This chat becomes yours' : undefined}>Take over</button>
+                          )}
+                          {staff.take && staff.holder && (
+                            <button className={`btn btn-sm ${staff.can_act ? 'btn-outline' : 'btn-primary'}`} onClick={() => changeStatus('agent_handling', true)}
+                              title={staff.take === 'holder_away'
+                                ? `${staff.holder.name} has not been in ShipTrack for a while and the customer is waiting: this chat becomes yours`
+                                : `This chat becomes yours (${staff.holder.name} has it now)`}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Hand size={13} /> {takeLabel}
+                            </button>
+                          )}
+                          {staff.transfer_to.length > 0 && activeConv.status !== 'resolved' && (
+                            <button className="btn btn-outline btn-sm" onClick={() => setTransferEdit({ convId: activeConv.id, busy: false, error: '' })}
+                              title="Give this chat to someone else, with a one-line note for the team"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><ArrowRightLeft size={13} /> Transfer</button>
+                          )}
+                          {activeConv.status === 'agent_handling' && !activeConv.case_kind && staff.can_act && (
+                            <button className="btn btn-outline btn-sm" onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
+                          )}
+                          {activeConv.status !== 'resolved' && staff.can_act && (
+                            <button className="btn btn-outline btn-sm" onClick={() => changeStatus('resolved')}>Close</button>
+                          )}
+                        </>
+                      ) : staff ? (
+                        <span title={staff.holder ? `Ask ${staff.holder.owner ? 'Super Admin' : `${staff.holder.name} or Super Admin`} to transfer it to you` : undefined}
+                          style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                          <Lock size={12} /> {readOnlyText}
+                        </span>
+                      ) : null}
                     </div>
                   )}
 
@@ -2300,6 +2747,44 @@ export default function ChatSupportPage() {
                       )}
                     </div>
                   )}
+
+                  {/* Team only: the last transfer (who to whom, when, the note) and the History of who held
+                      the chat. STAFF ONLY and outside the message list, and it cannot be selected, so a
+                      note never ends up pasted into a reply: the customer and the AI never see it. */}
+                  {(() => {
+                    const lastTransfer = teamLog.find(e => e.kind === 'transfer');
+                    if (!lastTransfer) return null;
+                    const me = staff?.me ?? null;
+                    const side = (key: string | null, name: string | null) => (!key ? 'open pool' : me && key === me ? 'You' : name || 'a former member');
+                    const line = `${side(lastTransfer.from_owner, lastTransfer.from_name)} → ${side(lastTransfer.to_owner, lastTransfer.to_name)} · ${logTime(lastTransfer.created_at)}${lastTransfer.note ? ` · ${lastTransfer.note}` : ''}`;
+                    return (
+                      <div style={{
+                        flexBasis: '100%', minWidth: 0, fontSize: '0.75rem', padding: '0.375rem 0.625rem', borderRadius: 8,
+                        background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', userSelect: 'none', WebkitUserSelect: 'none',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', minWidth: 0 }}>
+                          <Lock size={12} style={{ flexShrink: 0 }} />
+                          <span title={`Team only: ${line}`} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <b>Team only</b> · {line}
+                          </span>
+                          <button type="button" onClick={() => setTeamLogOpen(o => !o)} aria-expanded={teamLogOpen}
+                            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 2, border: 'none', background: 'none', padding: 0, cursor: 'pointer', font: 'inherit', fontWeight: 600, color: 'inherit' }}>
+                            History <ChevronDown size={12} style={{ transition: 'transform .15s', transform: teamLogOpen ? 'rotate(180deg)' : 'none' }} />
+                          </button>
+                        </div>
+                        {teamLogOpen && (
+                          <ol style={{ listStyle: 'none', margin: '0.375rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {teamLog.map(e => (
+                              <li key={e.id} style={{ wordBreak: 'break-word' }}>
+                                <span style={{ fontVariantNumeric: 'tabular-nums', marginRight: '0.375rem', opacity: 0.8 }}>{logTime(e.created_at)}</span>
+                                {teamLogLine(e, me)}{e.note ? ` · “${e.note}”` : ''}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* How upset the customer is, right beside Take over / Close */}
                   {activeHealth && (
@@ -2393,14 +2878,12 @@ export default function ChatSupportPage() {
                         fontSize: '0.8125rem', fontWeight: 600,
                       }}>
                         <Paperclip size={15} />
-                        {activeConv.status === 'agent_handling' ? 'Drop file here' : 'Take over to attach files'}
+                        {replyOpen ? 'Drop file here' : othersChat ? 'Read only: this is not your chat' : 'Take over to attach files'}
                       </div>
                     )}
-                    {activeConv.status !== 'agent_handling' && (
+                    {composerHint && (
                       <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-                        {activeConv.status === 'human_needed'
-                          ? 'This one is waiting on a person — take over to reply.'
-                          : 'The AI is handling this — take over to reply yourself.'}
+                        {composerHint}
                       </p>
                     )}
                     {pendingFiles.length > 0 && (
@@ -2479,7 +2962,7 @@ export default function ChatSupportPage() {
                         className="btn btn-outline"
                         title="Attach files — JPG, PNG, WEBP, GIF or PDF, up to 10 MB each"
                         aria-label="Attach files"
-                        disabled={activeConv.status !== 'agent_handling' || sending || pendingFiles.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+                        disabled={!replyOpen || sending || pendingFiles.length >= MAX_ATTACHMENTS_PER_MESSAGE}
                         onClick={() => fileInputRef.current?.click()}
                         style={{ padding: 0, width: '2.5rem', flexShrink: 0 }}
                       >
@@ -2488,11 +2971,11 @@ export default function ChatSupportPage() {
                       <textarea
                         className="form-input"
                         rows={2}
-                        placeholder={activeConv.status === 'agent_handling'
+                        placeholder={replyOpen
                           ? (activeConv.source === 'email' ? 'Type your reply — it goes out by email…' : 'Type your reply…')
-                          : 'Take over to reply…'}
+                          : readOnlyReply || 'Take over to reply…'}
                         value={draft}
-                        disabled={activeConv.status !== 'agent_handling' || sending}
+                        disabled={!replyOpen || sending}
                         onChange={e => setDraft(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
@@ -2502,7 +2985,7 @@ export default function ChatSupportPage() {
                       <button
                         className="btn btn-primary"
                         disabled={
-                          sending || activeConv.status !== 'agent_handling'
+                          sending || !replyOpen
                           || pendingFiles.some(p => p.status !== 'ready')
                           || (!draft.trim() && pendingFiles.length === 0)
                         }
@@ -2539,6 +3022,10 @@ export default function ChatSupportPage() {
           <MyProfile token={token} onAlert={showAlert} onClose={() => setMeOpen(false)}
             onUserChanged={(name) => setUser((u) => (u ? { ...u, displayName: name } : u))} />
         ))}
+        {transferEdit && staff && activeConv?.id === transferEdit.convId && (
+          <TransferDialog targets={staff.transfer_to} team={team} me={staff.me} busy={transferEdit.busy} error={transferEdit.error}
+            onCancel={() => setTransferEdit(null)} onSend={sendTransfer} />
+        )}
         {addrEdit && activeAddress && activeConv?.id === addrEdit.convId && (
           <AddressDialog initial={activeAddress} orderId={activeAddress.order_id} busy={addrEdit.busy} error={addrEdit.error}
             onCancel={() => setAddrEdit(null)} onSave={saveAddress} />

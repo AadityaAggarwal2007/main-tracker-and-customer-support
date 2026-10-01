@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthFromRequest, AuthUser } from '@/lib/auth';
+import { getAuthFromRequest, AuthUser, teamLoaded } from '@/lib/auth';
 import crypto from 'crypto';
+import type { PoolClient } from 'pg';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can, canAccessPanel } from '@/lib/permissions';
+import { isOfficeHours } from '@/lib/office-hours';
+import {
+  canAct, claimsOnAct, cleanTransferNote, transferStatus, type Actor, type TakeKind,
+} from '@/lib/chat/team-rules';
+import {
+  CASE_GATE_MESSAGE, ChatActionError, STARTING_MESSAGE, actionError, actionsReady, authorNamer, caseMarkState, heldMessage, holderOf,
+  holderView, isKnownCustomer, lockChatGroup, logChatEvent, nameOfKey, setActor, shownAway, staffActor, takeFor, transferList,
+  type LockedChat,
+} from '@/lib/chat/team-routing';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +33,9 @@ interface ConversationRow {
   auto_closed_at: string | null;
   closed_by_name: string | null; closed_at: string | null;
   case_kind: string | null; case_marked_by: string | null; case_marked_at: string | null; case_order_id: string | null; case_prev_status: string | null;
+  // Who holds the chat (chat-team.sql): team_users.id, 'owner' (Super Admin) or null (nobody).
+  assigned_to: string | null; assigned_at: string | null;
+  merged_into: string | null;
 }
 
 // Reachable only if the conversation's panel is one this user may see.
@@ -34,6 +47,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.subject_label, c.subject_summary, c.subject_updated_at,
             c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at, c.closed_by_name, c.closed_at,
             c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id, c.case_prev_status,
+            c.assigned_to, c.assigned_at, c.merged_into,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
        FROM conversations c
@@ -233,80 +247,320 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     );
   }
 
+  // Who wrote each staff message, by name today ("You" is decided by the inbox). Staff only.
+  // A reply sent since chat-team.sql has its writer's KEY in its 'reply' event (messages/route.ts), so
+  // a member the owner renamed or removed keeps their own name (removed: the name they had then), and
+  // a username given to someone new later never takes their replies. metadata.agent is only the
+  // username at the time: it names the older replies (a member's today, else the Super Admin's own
+  // login). author_key lets the inbox say "You" after a rename. Before the table exists: usernames.
+  const author = authorNamer();
+  const agentIds = [...messages.rows, ...thread.earlier.flatMap((c) => c.messages)]
+    .filter((m) => m.sender === 'agent' && m.id != null)
+    .map((m) => String(m.id));
+  const writers = new Map<string, { key: string; name: string | null }>();
+  if (agentIds.length > 0 && teamLoaded()) {
+    const ev = await query<{ message_id: string; actor: string; actor_name: string | null }>(
+      `SELECT DISTINCT ON (message_id) message_id, actor, actor_name
+         FROM chat_events
+        WHERE kind = 'reply' AND message_id = ANY($1::text[])
+        ORDER BY message_id, id`,
+      [agentIds]
+    ).catch(() => ({ rows: [] as { message_id: string; actor: string; actor_name: string | null }[] }));
+    for (const e of ev.rows) writers.set(e.message_id, { key: e.actor, name: nameOfKey(e.actor) ?? e.actor_name ?? 'Team' });
+  }
+  const withAuthor = <M extends { sender: string; metadata: unknown }>(m: M) => {
+    if (m.sender !== 'agent') return m;
+    const w = writers.get(String((m as { id?: unknown }).id));
+    return w
+      ? { ...m, author: w.name, author_key: w.key }
+      : { ...m, author: author((m.metadata as { agent?: unknown } | null)?.agent), author_key: null };
+  };
+  const earlier = thread.earlier.map((c) => ({ ...c, messages: c.messages.map(withAuthor) }));
+
+  // The chat's team history (claims, takes, transfers with their note, returning customers,
+  // merges), newest first, names as they are today. STAFF ONLY: the note is never sent to the
+  // customer or the AI. Before chat-team.sql the table is missing: no history then.
+  const teamLog = await query<{
+    id: string; created_at: string; kind: string; actor: string; actor_name: string | null;
+    from_owner: string | null; to_owner: string | null; reason: string | null; note: string | null;
+  }>(
+    `SELECT id, created_at, kind, actor, actor_name, from_owner, to_owner, reason, note
+       FROM chat_events
+      WHERE conversation_id = $1 AND kind IN ('claim','take','transfer','inherit','merge')
+      ORDER BY id DESC LIMIT 10`,
+    [params.id]
+  ).then((r) => r.rows.map((e) => ({
+    ...e,
+    actor_name: nameOfKey(e.actor) ?? e.actor_name,
+    from_name: e.from_owner ? nameOfKey(e.from_owner) ?? 'A former member' : null,
+    to_name: e.to_owner ? nameOfKey(e.to_owner) ?? 'A former member' : null,
+  }))).catch(() => []);
+
   return NextResponse.json({
     conversation,
-    messages: messages.rows,
-    earlier: thread.earlier,
+    messages: messages.rows.map((m) => withAuthor(m as { sender: string; metadata: unknown })),
+    earlier,
     earlier_total: thread.earlierTotal,
     newer_chat: thread.newer,
     order_facts: orderFacts,
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
+    team_log: teamLog,
+    staff: await staffBlock(conversation, user),
   });
+}
+
+// What this person may do on this chat, decided here from team-rules.ts (the inbox draws it and
+// never guesses). Computed in memory; the waiting query runs only for away cover.
+async function staffBlock(conv: ConversationRow, user: AuthUser) {
+  const now = Date.now();
+  const actor = staffActor(user);
+  const h = holderOf(conv.assigned_to, conv.tracker_business_id, now);
+  // A merged shell on a stale screen: read only (the actions refuse it too).
+  const live = !!actor && !conv.merged_into;
+  const take: TakeKind | null = live && actor ? await takeFor(null, actor, h, conv.id).catch(() => null) : null;
+  const mark = actor ? caseMarkState(actor, now) : { allowed: false, override: false, note: null };
+  return {
+    me: actor?.key ?? null,
+    holder: holderView(h),
+    can_act: live && !!actor && canAct(actor, h),
+    claims: live && !!actor && claimsOnAct(actor, h),
+    take,
+    transfer_to: live && actor && conv.status !== 'resolved'
+      ? transferList(actor, h, conv.tracker_business_id, now).map((t) => ({
+        key: t.key, name: t.name, senior: t.senior,
+        away_min: shownAway(t.awayMin),
+      }))
+      : [],
+    can_mark_case: mark.allowed,
+    mark_override: mark.override,
+    mark_note: mark.note,
+    office_open: isOfficeHours(now),
+  };
 }
 
 // ── PATCH /api/chat/conversations/:id ──────────────────────────
 // Take over, hand back to the AI, or close. These were socket events in the old
 // app; with the inbox polling they are an ordinary request.
+//
+// Chat team (owner, 2026-10-01; src/lib/chat/team-rules.ts). One chat has at most one holder:
+//   { status }                 Take over / Hand to AI / Close: the holder, anyone on a chat nobody
+//                              holds, or the Super Admin. Take over on a chat nobody holds makes it
+//                              yours, with the customer's other open chats nobody holds. Close and
+//                              Hand to AI never change the holder.
+//   { status: 'agent_handling', take: true }
+//                              "Take from X": the Super Admin from anyone, a senior from a junior,
+//                              anyone from a member away 30+ min (office hours) while the customer waits.
+//   { transferTo, note }       Transfer, with a one-line note only the team sees.
+//   { caseKind }               Refund / Ship again (a senior or the Super Admin marks; setCase).
+// Each runs in ONE transaction with the chat and the customer's other open chats locked
+// (lockChatGroup), and every statement goes through that transaction's client. Someone else's chat
+// is a 409 naming them, and nothing is saved.
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+  // Rights come from the team list: right after a restart, wait for it rather than guess.
+  if (!(await actionsReady())) return NextResponse.json({ error: STARTING_MESSAGE }, { status: 503 });
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!can(user, 'chat.reply')) {
     return NextResponse.json({ error: 'You cannot change conversations' }, { status: 403 });
   }
+  const staff = staffActor(user);
+  if (!staff) return NextResponse.json({ error: STARTING_MESSAGE }, { status: 503 });
 
   const conversation = await loadForUser(params.id, user);
   if (!conversation) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   try {
     const body = await request.json();
+    const has = (key: string) => !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, key);
+
+    if (has('transferTo')) return await transfer(conversation, staff, body.transferTo, body.note);
 
     // Refund / Ship again (chat-cases.sql, owner 2026-10-01): { caseKind: 'refund' | 'reship' | null }.
-    if (body && Object.prototype.hasOwnProperty.call(body, 'caseKind')) {
+    if (has('caseKind')) {
       if (!can(user, 'chat.cases')) return NextResponse.json({ error: 'You cannot mark Refund / Ship again' }, { status: 403 });
-      return await setCase(conversation, body.caseKind, user);
+      const raw = body.caseKind;
+      const kind = raw === null || raw === '' ? null : String(raw);
+      if (kind !== null && !CASE_KINDS.includes(kind)) {
+        return NextResponse.json({ error: 'Unknown case' }, { status: 400 });
+      }
+      // Who marks (owner, 2026-10-01; rulebook 9.6): a senior or the Super Admin; a junior only while
+      // every senior has been away 30+ minutes in office hours (logged as an override). Switching
+      // between Refund and Ship again is a mark too. Remove: anyone with chat.cases (9.4).
+      let override = false;
+      if (kind) {
+        const gate = caseMarkState(staff);
+        if (!gate.allowed) return NextResponse.json({ error: CASE_GATE_MESSAGE }, { status: 403 });
+        override = gate.override;
+      }
+      const done = await withTransaction(async (client) => {
+        const { chat } = await lockChatGroup(client, conversation.id, conversation.site_id, conversation.customer_key);
+        return setCase(client, chat, kind, user, staff, override);
+      });
+      if (done.log) console.log(done.log);
+      return done.res;
     }
 
     const { status } = body;
     if (!VALID_STATUSES.includes(status)) {
       return NextResponse.json({ error: 'Unknown status' }, { status: 400 });
     }
+    return await changeStatus(conversation, user, staff, status, body.take === true);
+  } catch (err) {
+    // Our own refusals (409 someone else's chat, a merged shell), a lock that took over 5 s or a
+    // deadlock: nothing was saved, and the message says what to do.
+    const refused = actionError(err);
+    if (refused) return refused;
+    return NextResponse.json({ error: 'Could not update that conversation' }, { status: 500 });
+  }
+}
+
+// Take over, Take from X, Hand to AI, Close.
+async function changeStatus(conversation: ConversationRow, user: AuthUser, staff: Actor, status: string, take: boolean) {
+  const panel = conversation.tracker_business_id;
+  const updated = await withTransaction(async (client) => {
+    const now = Date.now();
+    const { chat, siblings } = await lockChatGroup(client, conversation.id, conversation.site_id, conversation.customer_key);
     // A Refund / Ship again chat is the team's: the AI stays off until the mark is removed.
-    if (status === 'ai_handling' && conversation.case_kind) {
-      return NextResponse.json({ error: 'Remove the Refund / Ship again mark before handing this chat to the AI' }, { status: 409 });
+    if (status === 'ai_handling' && chat.case_kind) {
+      throw new ChatActionError(409, 'Remove the Refund / Ship again mark before handing this chat to the AI');
     }
+
+    const h = holderOf(chat.assigned_to, panel, now);
+    let newOwner: string | null = null;
+    let took: TakeKind | null = null;
+    if (take && status === 'agent_handling') {
+      took = await takeFor(client, staff, h, chat.id);
+      if (!took) {
+        throw new ChatActionError(409, !h || h.key === staff.key
+          ? "Nothing to take: this chat is no longer someone else's."
+          : `Nothing to take: ${h.name}'s chat cannot be taken by you.`);
+      }
+      newOwner = staff.key;
+    } else {
+      if (!canAct(staff, h)) throw new ChatActionError(409, heldMessage(h!, await takeFor(client, staff, h, chat.id)));
+      if (status === 'agent_handling' && claimsOnAct(staff, h)) newOwner = staff.key;
+    }
+
+    // Logged as this person's status change (chat-team.sql trigger), with why.
+    await setActor(client, staff, status === 'resolved' ? 'close' : status === 'ai_handling' ? 'hand_to_ai' : took ? 'take' : 'take_over');
 
     // Close, Take over and Hand to AI are a person acting on the chat, so the
     // "came back after the auto-close" mark (chat-auto-close.sql) is cleared. A
     // Close also records who pressed it (chat-closed-by.sql), so a Closed chat says
     // "Closed by support" and not "Closed by AI". Closing a chat that is
-    // already Closed changes neither the mark nor the name.
-    const updated = await queryOne<{ status: string; closed_by_name: string | null; closed_at: string | null; auto_closed_at: string | null }>(
+    // already Closed changes neither the mark nor the name. The holder changes only on a
+    // claim or a take ($4); Close and Hand to AI keep it (owner decision 4).
+    const r = await client.query<{ status: string; closed_by_name: string | null; closed_at: string | null; auto_closed_at: string | null; assigned_to: string | null }>(
       `UPDATE conversations
           SET status = $1,
               unread_count = CASE WHEN $1 = 'resolved' THEN 0 ELSE unread_count END,
               closed_by_name = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN $3::text ELSE closed_by_name END,
               closed_at = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN now() ELSE closed_at END,
               auto_closed_at = CASE WHEN $1 = 'resolved' AND status = 'resolved' THEN auto_closed_at ELSE NULL END,
+              assigned_to = CASE WHEN $4::text IS NOT NULL THEN $4::text ELSE assigned_to END,
+              assigned_at = CASE WHEN $4::text IS NOT NULL THEN now() ELSE assigned_at END,
               updated_at = now()
         WHERE id = $2
-        RETURNING status, closed_by_name, closed_at, auto_closed_at`,
-      [status, params.id, (user.displayName || user.username || '').trim() || 'support']
+        RETURNING status, closed_by_name, closed_at, auto_closed_at, assigned_to`,
+      [status, conversation.id, (user.displayName || user.username || '').trim() || 'support', newOwner]
     );
 
-    // What the database now says about who closed it, so the screen shows that
-    // and not its own guess (a chat the auto-close closed a moment ago stays
-    // "Closed by AI" even if someone pressed Close on a stale screen).
-    return NextResponse.json({
-      success: true,
-      status,
-      closed_by_name: updated?.closed_by_name ?? null,
-      closed_at: updated?.closed_at ?? null,
-      auto_closed_at: updated?.auto_closed_at ?? null,
-    });
-  } catch {
-    return NextResponse.json({ error: 'Could not update that conversation' }, { status: 500 });
-  }
+    if (newOwner) {
+      // The customer comes along: on a take, their other open chats the same person held; on a
+      // claim, their other open chats nobody holds.
+      const group = siblings
+        .filter((s) => (took ? s.assigned_to === chat.assigned_to : holderOf(s.assigned_to, panel, now) === null))
+        .map((s) => s.id);
+      if (group.length > 0) {
+        await client.query(`UPDATE conversations SET assigned_to = $1, assigned_at = now() WHERE id = ANY($2::text[])`, [newOwner, group]);
+      }
+      await logChatEvent(client, staff, {
+        conversationId: chat.id, siteId: chat.site_id, kind: took ? 'take' : 'claim',
+        fromOwner: chat.assigned_to, toOwner: newOwner, fromStatus: chat.status, toStatus: status,
+        reason: took ? 'take' : 'take_over', meta: took ? { take: took, group } : { group },
+      });
+    }
+    return r.rows[0];
+  });
+
+  // What the database now says about who closed it, so the screen shows that
+  // and not its own guess (a chat the auto-close closed a moment ago stays
+  // "Closed by AI" even if someone pressed Close on a stale screen).
+  return NextResponse.json({
+    success: true,
+    status,
+    closed_by_name: updated?.closed_by_name ?? null,
+    closed_at: updated?.closed_at ?? null,
+    auto_closed_at: updated?.auto_closed_at ?? null,
+    assigned_to: updated?.assigned_to ?? null,
+  });
+}
+
+// ── Transfer ────────────────────────────────────────────────────────
+// The holder (or anyone on a chat nobody holds, or the Super Admin) gives the chat to someone who can
+// reply in its panel, with a one-line note for the team. The note is STAFF ONLY: it lives only in
+// chat_events (never in messages, metadata, search, the learner, the AI or the widget) and is never
+// written to the logs. A known customer goes to Needs you (the AI stops, auto-close leaves it, it
+// shows "For Rahul"); a visitor to agent_handling (only verified customers reach Needs you); a Refund /
+// Ship again chat and "Nobody" keep their status. The customer's other open chats that had the same
+// holder move too.
+const PICK_MESSAGE = 'Pick someone who can reply in this panel (not you, not the person who has it)';
+
+async function transfer(conversation: ConversationRow, staff: Actor, rawTo: unknown, rawNote: unknown) {
+  const note = cleanTransferNote(rawNote);
+  if (!note) return NextResponse.json({ error: 'Write one line for the team: why are you transferring it?' }, { status: 400 });
+  if (rawTo !== null && (typeof rawTo !== 'string' || !rawTo)) return NextResponse.json({ error: PICK_MESSAGE }, { status: 400 });
+  const to = rawTo as string | null;
+  const panel = conversation.tracker_business_id;
+
+  const out = await withTransaction(async (client) => {
+    const now = Date.now();
+    const { chat, siblings } = await lockChatGroup(client, conversation.id, conversation.site_id, conversation.customer_key);
+    if (chat.status === 'resolved') {
+      throw new ChatActionError(400, 'This chat is Closed. When the customer writes again it goes to whoever holds it.');
+    }
+    const h = holderOf(chat.assigned_to, panel, now);
+    if (!canAct(staff, h)) {
+      throw new ChatActionError(409, h!.superAdmin
+        ? 'Super Admin has this chat. Only Super Admin can transfer it.'
+        : `${h!.name} has this chat. Only ${h!.name} or Super Admin can transfer it.`);
+    }
+    if (to === null && !staff.superAdmin) throw new ChatActionError(403, 'Only Super Admin can put a chat back in the open pool');
+    if (!transferList(staff, h, panel, now).some((t) => t.key === to)) throw new ChatActionError(400, PICK_MESSAGE);
+    const status = transferStatus({ status: chat.status, case_kind: chat.case_kind, known: isKnownCustomer(chat) }, to === null) ?? chat.status;
+
+    await setActor(client, staff, 'transfer');
+    const r = await client.query<{ status: string; assigned_to: string | null }>(
+      `UPDATE conversations
+          SET assigned_to = $2::text, assigned_at = CASE WHEN $2::text IS NULL THEN NULL ELSE now() END,
+              status = $3, auto_closed_at = NULL, updated_at = now()
+        WHERE id = $1 RETURNING status, assigned_to`,
+      [chat.id, to, status]
+    );
+    const group = siblings.filter((s) => s.assigned_to === chat.assigned_to).map((s) => s.id);
+    if (group.length > 0) {
+      await client.query(
+        `UPDATE conversations SET assigned_to = $1::text, assigned_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END
+          WHERE id = ANY($2::text[])`,
+        [to, group]
+      );
+    }
+    // Required: the note lives only here, so a transfer that cannot be logged does not happen. For
+    // "Nobody" it also keeps the chat and its group (meta.group) in the open pool: the inherit trigger
+    // (chat-team.sql) never gives a chat named in a transfer to nobody back to its old holder.
+    await logChatEvent(client, staff, {
+      conversationId: chat.id, siteId: chat.site_id, kind: 'transfer', fromOwner: chat.assigned_to, toOwner: to,
+      fromStatus: chat.status, toStatus: status, reason: 'transfer', note, meta: { status_before: chat.status, group },
+    }, { required: true });
+    return { row: r.rows[0], from: chat.assigned_to };
+  });
+
+  console.log(`[chat] transfer conv ${conversation.id} from ${out.from ?? 'nobody'} to ${out.row?.assigned_to ?? 'nobody'} (note ${Array.from(note).length} chars)`);
+  return NextResponse.json({
+    success: true, status: out.row?.status, assigned_to: out.row?.assigned_to ?? null,
+    holder_name: nameOfKey(out.row?.assigned_to),
+  });
 }
 
 // ── Refund / Ship again ─────────────────────────────────────────────
@@ -314,71 +568,75 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 // never a visitor's. The chat leaves every other inbox list and shows only under its section, the
 // AI stops (agent_handling), and nothing is sent to the customer. Removing: the chat goes back to
 // the status it had before. Every mark and remove is kept in chat_case_events.
+// Runs inside PATCH's transaction on the locked row (`chat`); who may mark is checked before it.
+// Marking never needs or changes the holder. Returns the answer and the line to log after commit.
 const CASE_KINDS = ['refund', 'reship'];
 
-async function setCase(conversation: ConversationRow, raw: unknown, user: AuthUser) {
-  const kind = raw === null || raw === '' ? null : String(raw);
-  if (kind !== null && !CASE_KINDS.includes(kind)) {
-    return NextResponse.json({ error: 'Unknown case' }, { status: 400 });
-  }
+async function setCase(
+  client: PoolClient, chat: LockedChat, kind: string | null, user: AuthUser, staff: Actor, override: boolean,
+): Promise<{ res: NextResponse; log: string | null }> {
   const actor = (user.displayName || user.username || '').trim() || 'support';
-  const orderId = conversation.verified_order_id || conversation.phone_match_order_id || null;
+  const orderId = chat.verified_order_id || chat.phone_match_order_id || null;
 
   if (kind) {
     if (!orderId) {
-      return NextResponse.json({ error: 'Only a verified customer can be marked for a refund or to ship again' }, { status: 400 });
+      return { res: NextResponse.json({ error: 'Only a verified customer can be marked for a refund or to ship again' }, { status: 400 }), log: null };
     }
-    if (conversation.case_kind === kind) return NextResponse.json({ success: true, case_kind: kind });
-    const row = await withTransaction(async (client) => {
-      // Switching from one to the other keeps the status the chat had before the first mark.
-      const r = await client.query(
-        `UPDATE conversations
-            SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END,
-                case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4,
-                status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END,
-                auto_closed_at = NULL,
-                updated_at = now()
-          WHERE id = $1
-          RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status`,
-        [conversation.id, kind, actor, orderId]
-      );
-      if (conversation.case_kind) {
-        await client.query(
-          `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
-           VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
-          [crypto.randomUUID(), conversation.id, conversation.site_id, conversation.case_kind, conversation.case_order_id, actor, user.role]
-        );
-      }
-      await client.query(
-        `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
-         VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)`,
-        [crypto.randomUUID(), conversation.id, conversation.site_id, kind, orderId, actor, user.role]
-      );
-      return r.rows[0];
-    });
-    console.log(`[chat] conv ${conversation.id} marked ${kind} by ${actor}`);
-    return NextResponse.json({ success: true, ...row });
-  }
-
-  if (!conversation.case_kind) return NextResponse.json({ success: true, case_kind: null });
-  const row = await withTransaction(async (client) => {
+    if (chat.case_kind === kind) return { res: NextResponse.json({ success: true, case_kind: kind }), log: null };
+    await setActor(client, staff, 'case');
+    // Switching from one to the other keeps the status the chat had before the first mark.
     const r = await client.query(
       `UPDATE conversations
-          SET status = CASE WHEN status = 'resolved' THEN status
-                            ELSE COALESCE(case_prev_status, 'agent_handling') END,
-              case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL,
+          SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END,
+              case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4,
+              status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
               updated_at = now()
         WHERE id = $1
-        RETURNING status`,
-      [conversation.id]
+        RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status`,
+      [chat.id, kind, actor, orderId]
     );
+    if (chat.case_kind) {
+      await client.query(
+        `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+         VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
+        [crypto.randomUUID(), chat.id, chat.site_id, chat.case_kind, chat.case_order_id, actor, user.role]
+      );
+    }
     await client.query(
       `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
-       VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
-      [crypto.randomUUID(), conversation.id, conversation.site_id, conversation.case_kind, conversation.case_order_id, actor, user.role]
+       VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)`,
+      [crypto.randomUUID(), chat.id, chat.site_id, kind, orderId, actor, user.role]
     );
-    return r.rows[0];
+    const row = r.rows[0];
+    await logChatEvent(client, staff, {
+      conversationId: chat.id, siteId: chat.site_id, kind: 'case_mark', fromStatus: chat.status, toStatus: row?.status ?? null,
+      reason: 'case', meta: { case: kind, ...(chat.case_kind ? { from_case: chat.case_kind } : {}), ...(override ? { override: 'senior_away' } : {}) },
+    });
+    return { res: NextResponse.json({ success: true, ...row }), log: `[chat] conv ${chat.id} marked ${kind} by ${actor}${override ? ' (no senior around)' : ''}` };
+  }
+
+  if (!chat.case_kind) return { res: NextResponse.json({ success: true, case_kind: null }), log: null };
+  await setActor(client, staff, 'case');
+  const r = await client.query(
+    `UPDATE conversations
+        SET status = CASE WHEN status = 'resolved' THEN status
+                          ELSE COALESCE(case_prev_status, 'agent_handling') END,
+            case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL,
+            updated_at = now()
+      WHERE id = $1
+      RETURNING status`,
+    [chat.id]
+  );
+  await client.query(
+    `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+     VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
+    [crypto.randomUUID(), chat.id, chat.site_id, chat.case_kind, chat.case_order_id, actor, user.role]
+  );
+  const row = r.rows[0];
+  await logChatEvent(client, staff, {
+    conversationId: chat.id, siteId: chat.site_id, kind: 'case_remove', fromStatus: chat.status, toStatus: row?.status ?? null,
+    reason: 'case', meta: { case: chat.case_kind },
   });
-  console.log(`[chat] conv ${conversation.id} ${conversation.case_kind} mark removed by ${actor}`);
-  return NextResponse.json({ success: true, case_kind: null, status: row?.status });
+  return { res: NextResponse.json({ success: true, case_kind: null, status: row?.status }), log: `[chat] conv ${chat.id} ${chat.case_kind} mark removed by ${actor}` };
 }

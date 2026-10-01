@@ -8,9 +8,9 @@ const load = (f, from = '../../src/lib/chat') => {
   fs.writeFileSync(path.join(dir, f + '.js'), js);
   return require(path.join(dir, f + '.js'));
 };
-load('today-promise');
+const tp = load('today-promise');
 load('health-rules');
-load('address-conflict'); load('escalation');
+load('address-conflict'); const esc = load('escalation');
 const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier'), rb = load('rulebook'), ef = load('effort'), sc = load('self-check');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
@@ -262,6 +262,123 @@ t('withoutUnaskedCourier / asksAboutCourier', () => {
   assert.ok(rg.asksAboutCourier('kaun deliver kar raha hai'));
   assert.ok(!rg.asksAboutCourier('order kab aayega'));
 });
+// ── Night line (owner, 2026-10-01, decision 1): escalation.ts ──
+const EN = 'I want a refund for my order', HI = 'mujhe refund chahiye';
+t('escalation: the 10 day lines are byte-identical with no time and with null', () => {
+  const day = {
+    [EN]: [
+      'Our team will reply to you here in this chat within 1 hour.',
+      "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat within 1 hour.",
+      "Sorry to keep you waiting. I've passed your message to our team, and they will reply to you here in this chat.",
+      "I've noted your refund or cancellation request. Our team will reply to you here in this chat within 24 hours.",
+      "I've passed this to our team, and they will reply to you here in this chat.",
+    ],
+    [HI]: [
+      'Hamari team isi chat mein 1 ghante ke andar aapko jawab degi.',
+      'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team isi chat mein 1 ghante ke andar aapko jawab degi.',
+      'Sorry ki aapko wait karna pad raha hai. Maine aapki baat hamari team ko de di hai, team isi chat mein aapko jawab degi.',
+      'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team 24 ghante ke andar isi chat mein aapko jawab degi.',
+      'Maine ise hamari team ko de diya hai, team isi chat mein aapko jawab degi.',
+    ],
+  };
+  for (const [said, want] of Object.entries(day)) {
+    assert.deepStrictEqual([esc.teamWillReplyLine(said), esc.urgentAck(said), esc.handoffReply(said), esc.routineLine('refund', said), esc.routineLine('payment', said)], want);
+    assert.deepStrictEqual([esc.teamWillReplyLine(said, null), esc.urgentAck(said, null), esc.handoffReply(said), esc.routineLine('refund', said, null), esc.routineLine('payment', said, null)], want);
+  }
+});
+const NIGHT = {
+  tomorrow: {
+    en: [
+      'Our team will reply to you here in this chat tomorrow morning, after 10 AM.',
+      "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat tomorrow morning, after 10 AM.",
+      "I've noted your refund or cancellation request. Our team will reply to you here in this chat tomorrow morning, after 10 AM.",
+    ],
+    hi: [
+      'Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.',
+      'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.',
+      'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.',
+    ],
+  },
+  this_morning: {
+    en: [
+      'Our team will reply to you here in this chat this morning, after 10 AM.',
+      "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat this morning, after 10 AM.",
+      "I've noted your refund or cancellation request. Our team will reply to you here in this chat this morning, after 10 AM.",
+    ],
+    hi: [
+      'Hamari team aaj subah 10 baje ke baad isi chat mein aapko jawab degi.',
+      'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team aaj subah 10 baje ke baad isi chat mein aapko jawab degi.',
+      'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team aaj subah 10 baje ke baad isi chat mein aapko jawab degi.',
+    ],
+  },
+};
+t('escalation: the 12 night lines are exact, promise no hours and no "today"', () => {
+  let count = 0;
+  for (const after of ['tomorrow', 'this_morning']) {
+    for (const [lang, said] of [['en', EN], ['hi', HI]]) {
+      const got = [esc.teamWillReplyLine(said, after), esc.urgentAck(said, after), esc.routineLine('refund', said, after)];
+      assert.deepStrictEqual(got, NIGHT[after][lang], after + ' ' + lang);
+      for (const line of got) {
+        assert.ok(!/1 hour|24 hours|ghante|ghanta|घंट/.test(line), line);
+        assert.strictEqual(tp.promisesToday(line), false, line);
+        count++;
+      }
+      // Lines that promise no time are the same day and night.
+      assert.strictEqual(esc.routineLine('payment', said, after), esc.routineLine('payment', said));
+    }
+  }
+  assert.strictEqual(count, 12);
+});
+t('dropReplyTimes: an hour promise about the team goes, other hours and links stay', () => {
+  for (const promise of ['A person will answer here within 1 hour.', 'Our team will reply here within an hour.', 'Team 24 ghante ke andar jawab degi.', 'Team 1-2 hours mein reply karegi.']) {
+    const r = esc.dropReplyTimes(`Your order #4715 is shipped. ${promise} Track it here: https://shiptrack.store/track/abc.`);
+    assert.deepStrictEqual(r, { text: 'Your order #4715 is shipped. Track it here: https://shiptrack.store/track/abc.', removed: true }, promise);
+  }
+  for (const keep of ['Your order was shipped 24 hours ago.', 'Track it here: https://shiptrack.store/track/abc.', 'We are open 24/7.', 'Your refund of Rs 2.5 is noted. Our team will reply here.']) {
+    assert.deepStrictEqual(esc.dropReplyTimes(keep), { text: keep, removed: false }, keep);
+  }
+  // An email keeps its greeting, paragraphs and sign-off; Hindi sentences end at ।.
+  assert.strictEqual(
+    esc.dropReplyTimes('Hello Priya,\n\nYour order is shipped.\n\nOur team will get back to you within 24 hours.\n\nBest regards,\nVastora Support').text,
+    'Hello Priya,\n\nYour order is shipped.\n\nBest regards,\nVastora Support');
+  assert.strictEqual(esc.dropReplyTimes('आपका ऑर्डर भेज दिया गया है। हमारी टीम 24 घंटे में जवाब देगी।').text, 'आपका ऑर्डर भेज दिया गया है।');
+  // Never empty: a reply that is only the promise comes back as it was.
+  assert.deepStrictEqual(esc.dropReplyTimes('Our team will reply within 1 hour.'), { text: 'Our team will reply within 1 hour.', removed: false });
+});
+t('withHandOverLine: by day exactly the old inline lines; at night the morning line once', () => {
+  const ai = 'Your order #4715 is in transit. Track it here: https://shiptrack.store/track/abc';
+  const ai24 = 'Your refund request is noted. Our team will reply within 24 hours.';
+  const aiHour = 'Your order #4715 is in transit. A person will answer here within 1 hour.';
+  // Day (after = null): what the widget route wrote inline before.
+  assert.strictEqual(esc.withHandOverLine(ai, EN, 'accusation', null), `${ai}\n\n${esc.teamWillReplyLine(EN)}`);
+  assert.strictEqual(esc.withHandOverLine(ai, EN, 'refund', null), `${ai}\n\n${esc.routineLine('refund', EN)}`);
+  assert.strictEqual(esc.withHandOverLine(ai24, EN, 'refund', null), ai24);
+  assert.strictEqual(esc.withHandOverLine(ai, HI, 'payment', null), `${ai}\n\n${esc.routineLine('payment', HI)}`);
+  assert.strictEqual(esc.withHandOverLine(aiHour, EN, 'escalated', null), aiHour);
+  assert.strictEqual(esc.withHandOverLine(aiHour, EN, 'escalated'), aiHour);
+  // Night.
+  const tm = 'Our team will reply to you here in this chat tomorrow morning, after 10 AM.';
+  assert.strictEqual(esc.withHandOverLine(aiHour, EN, 'accusation', 'tomorrow'), `Your order #4715 is in transit.\n\n${tm}`);
+  assert.strictEqual(esc.withHandOverLine(ai24, EN, 'refund', 'tomorrow'), `Your refund request is noted.\n\n${NIGHT.tomorrow.en[2]}`);
+  assert.strictEqual(esc.withHandOverLine(ai, HI, 'refund', 'this_morning'), `${ai}\n\n${NIGHT.this_morning.hi[2]}`);
+  assert.strictEqual(esc.withHandOverLine(ai, EN, 'payment', 'tomorrow'), `${ai}\n\n${esc.routineLine('payment', EN)}`);
+  assert.strictEqual(esc.withHandOverLine(aiHour, EN, 'escalated', 'tomorrow'), `Your order #4715 is in transit.\n\n${tm}`);
+  assert.strictEqual(esc.withHandOverLine(ai, EN, 'escalated', 'tomorrow'), ai);
+  // A reply that was only the promise: the morning line alone, never both.
+  assert.strictEqual(esc.withHandOverLine('Our team will reply here within 1 hour.', EN, 'escalated', 'tomorrow'), tm);
+  // Twice: the line is added once.
+  const once = esc.withHandOverLine(aiHour, EN, 'escalated', 'tomorrow');
+  assert.strictEqual(esc.withHandOverLine(once, EN, 'escalated', 'tomorrow'), once);
+  // The guard's fixed hand-overs (lookup-guard.ts) come back unchanged at night, so its exact
+  // match (lastHandBackIndex) still finds them.
+  const guard = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/lookup-guard.ts'), 'utf8');
+  const handOver = Object.values(Function('return ' + guard.match(/const HAND_OVER = (\{[\s\S]*?\n\});/)[1])());
+  const oldHandOver = Function('return ' + guard.match(/const OLD_HAND_OVER = (\[[\s\S]*?\n\]);/)[1])();
+  assert.strictEqual(handOver.length + oldHandOver.length, 6);
+  for (const text of [...handOver, ...oldHandOver]) {
+    for (const after of ['tomorrow', 'this_morning']) assert.strictEqual(esc.withHandOverLine(text, 'kya hua', 'escalated', after), text);
+  }
+});
 t('rulebook: numbers unique and in order, every rule complete, panel values filled in', () => {
   const seen = new Set();
   rb.RULEBOOK.forEach((s, i) => {
@@ -280,6 +397,12 @@ t('rulebook: numbers unique and in order, every rule complete, panel values fill
   assert.ok(filled.includes('COD only for addresses in: Gujarat.') && filled.includes('treated as Valmo'));
   const none = JSON.stringify(rb.fillRulebook({ codStates: null, codAvailable: null }, null));
   assert.ok(none.includes('COD is not set') && none.includes('no default courier'));
+  // Night line (owner, 2026-10-01): 5.2, 6.2 and 6.3 say it, new 7.6 at the end of its section.
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  for (const id of ['5.2', '6.2', '6.3', '7.6']) assert.ok(rule(id).text.includes('after 10 AM'), id);
+  // Chat team (owner, 2026-10-01): 7.7-7.9 and 9.6; the Super Admin's own reply makes a chat his (owner Q2).
+  for (const id of ['7.7', '7.8', '7.9', '9.6']) assert.ok(rb.RULE_IDS.has(id), id);
+  assert.ok(/Super Admin's first reply or Take over/.test(rule('7.7').text));
 });
 t('effort: groups by score, visitors stay Normal, panel choice cleaned', () => {
   assert.strictEqual(ef.groupFor(false, 99), 'visitor');

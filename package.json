@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:ai": "node scripts/ai-tests/unit.js && node scripts/ai-tests/auth-flow.js && node scripts/ai-tests/webhook-items.js && node scripts/ai-tests/run.js"
+    "test:ai": "node scripts/ai-tests/unit.js && node scripts/ai-tests/team-unit.js && node scripts/ai-tests/auth-flow.js && node scripts/ai-tests/team-routing.js && node scripts/ai-tests/webhook-items.js && node scripts/ai-tests/run.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

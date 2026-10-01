@@ -7,6 +7,7 @@ import TeamCard from '@/components/TeamCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { ROLE_INFO, can, isSuperAdmin, type Permission, type Role } from '@/lib/permissions';
+import { activeHeaders } from '@/lib/presence-client';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, getStatusColorClass } from '@/lib/constants';
 import {
@@ -312,14 +313,16 @@ export default function AdminDashboard() {
   useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
 
-  // Sidebar badge: refresh on load, on panel switch, and every 30s.
+  // Sidebar badge: refresh on load, on panel switch, and every 30s. activeHeaders(): while the
+  // person is really using this tab, the poll also says they are in ShipTrack (chat team presence,
+  // src/lib/presence-client.ts), so working on Orders counts as "seen", not only the chat inbox.
   useEffect(() => {
     if (!token) return;
     let alive = true;
     const load = async () => {
       try {
         const qs = activePanelId ? `?businessId=${activePanelId}` : '';
-        const r = await fetch(`/api/chat/pending${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+        const r = await fetch(`/api/chat/pending${qs}`, { headers: { Authorization: `Bearer ${token}`, ...activeHeaders() } });
         if (!r.ok) return;
         const d = await r.json();
         if (!alive) return;

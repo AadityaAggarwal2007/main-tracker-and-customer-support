@@ -1,5 +1,6 @@
 import { PoolClient } from 'pg';
 import { queryOne, withTransaction } from '@/lib/db';
+import { logChatEvent } from './team-routing';
 
 // ── One chat per customer ──────────────────────────────────────
 // Asked for by the owner on 2026-09-30: a customer who verifies (order ID + full
@@ -16,6 +17,7 @@ interface ChatRow {
   visitor_id: string | null; visitor_name: string | null;
   verified_order_id: string | null; verified_via: string | null; customer_key: string | null;
   source: string; merged_into: string | null;
+  assigned_to?: string | null;
 }
 
 async function tableExists(name: string): Promise<boolean> {
@@ -27,6 +29,8 @@ async function tableExists(name: string): Promise<boolean> {
 // customer is talking again (a Closed chat goes back to the AI, or to Needs you when
 // the moved chat was already waiting for a person). The mark that the auto-close
 // closed it stays, so the inbox shows it as "Came back" until a person acts.
+// Who holds it (chat-team.sql): the target keeps its own holder; a target nobody holds takes the
+// merged chat's, so the person who was answering the customer still has them (logged as 'merge').
 export async function mergeChats(targetId: string, fromId: string): Promise<boolean> {
   if (!targetId || !fromId || targetId === fromId) return false;
   const withRevisions = await tableExists('message_revisions');
@@ -37,7 +41,8 @@ export async function mergeChats(targetId: string, fromId: string): Promise<bool
     const ids = [targetId, fromId].sort();
     const locked = await client.query<ChatRow & { ai_enabled: boolean | null }>(
       `SELECT c.id, c.site_id, c.status, c.unread_count, c.visitor_id, c.visitor_name,
-              c.verified_order_id, c.verified_via, c.customer_key, c.source, c.merged_into, s.ai_enabled
+              c.verified_order_id, c.verified_via, c.customer_key, c.source, c.merged_into, s.ai_enabled,
+              c.assigned_to
          FROM conversations c JOIN sites s ON s.id = c.site_id
         WHERE c.id = ANY($1::text[])
         ORDER BY c.id
@@ -68,10 +73,18 @@ export async function mergeChats(targetId: string, fromId: string): Promise<bool
               visitor_id = COALESCE($6, visitor_id),
               visitor_name = COALESCE(visitor_name, $7),
               last_message_at = GREATEST(COALESCE(last_message_at, now()), now()),
+              assigned_to = COALESCE(assigned_to, $8),
+              assigned_at = CASE WHEN assigned_to IS NULL AND $8::text IS NOT NULL THEN now() ELSE assigned_at END,
               updated_at = now()
         WHERE id = $1 AND id <> $2`,
-      [targetId, fromId, from.status, reopen, from.unread_count || 0, from.visitor_id, from.visitor_name]
+      [targetId, fromId, from.status, reopen, from.unread_count || 0, from.visitor_id, from.visitor_name, from.assigned_to ?? null]
     );
+    if (!target.assigned_to && from.assigned_to) {
+      await logChatEvent(client, 'system', {
+        conversationId: targetId, siteId: target.site_id, kind: 'merge', fromOwner: null, toOwner: from.assigned_to,
+        reason: 'merge', meta: { merged_from: fromId },
+      });
+    }
     await client.query(
       `UPDATE conversations SET merged_into = $1, status = 'resolved', unread_count = 0, updated_at = now() WHERE id = $2`,
       [targetId, fromId]

@@ -1,0 +1,1676 @@
+// Chat team, part 3 (owner, 2026-10-01): the REAL routes against a fake database (spec section 9,
+// R1-R20), built with the owner's answers: the Super Admin's own first reply or Take over on a chat
+// nobody holds makes it his (OWNER_ACTIONS_CLAIM = true), a waiting customer may be taken from an
+// away member (AWAY_TAKE = true, never from the Super Admin), and the Super Admin can give all his
+// open chats back to the team (POST /api/chat/team/release, R21).
+//
+// The fake database is small but strict where the real one is:
+//   - row locks: FOR NO KEY UPDATE (and every UPDATE inside a transaction) waits for the row; a wait
+//     needs SET LOCAL lock_timeout first, and fails with 55P03 when it runs out (5 s here = 50 ms);
+//   - a statement that fails inside a transaction aborts it until ROLLBACK (TO SAVEPOINT), and a
+//     COMMIT of an aborted transaction is a test failure (an error was swallowed);
+//   - a pool query made while the caller holds a transaction is a test failure (on the server it
+//     would wait on its own lock);
+//   - conversations.assigned_to and chat_events.note keep their CHECKs (chat-team.sql);
+//   - trg_chat_status_event is played: one 'status' row per real status change, named by the
+//     transaction's set_config, else customer / ai / system.
+// Every other statement must match one the routes are known to send, or the test fails.
+// The SQL itself (triggers, grants) is checked on the server in a rolled-back transaction.
+const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert');
+const { AsyncLocalStorage } = require('async_hooks');
+const ts = require('typescript');
+const SRC = path.resolve(__dirname, '../../src');
+// The real path: Node keys its module cache by it (on a Mac the temp folder is a symlink), and a
+// restart below drops the compiled modules from that cache.
+const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-routing-')));
+process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+process.env.AUTH_TOKEN_SECRET = 'test-secret-'.padEnd(48, 'x');
+process.env.ADMIN_USERNAME = 'Owner';
+process.env.ADMIN_PASSWORD = 'env-pass-123';
+
+// ── Fake modules ───────────────────────────────────────────────
+fs.writeFileSync(path.join(dir, 'next-server.js'), `
+class NextResponse {
+  constructor(body, init = {}) { this.status = init.status || 200; this.body = body; this.headers = init.headers || {}; }
+  static json(body, init = {}) { return new NextResponse(body, init); }
+}
+class NextRequest {}
+module.exports = { NextResponse, NextRequest };`);
+fs.writeFileSync(path.join(dir, 'db.js'), `
+const f = () => global.__fakeDb;
+module.exports = {
+  query: (sql, p) => f().run(sql, p, null),
+  queryOne: async (sql, p) => (await f().run(sql, p, null)).rows[0] ?? null,
+  withTransaction: (fn) => f().withTransaction(fn),
+};`);
+const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body);
+stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.__emails.push(a); } };');
+stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
+stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
+stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
+stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
+stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');
+stub('chikki-runs', 'module.exports = { recordChikkiRun: async () => {} };');
+stub('chat-history', 'module.exports = { recentVisitorMessages: async () => [] };');
+// The model, scripted: the widget route's night line is what is tested, not the AI.
+stub('ai', `module.exports = {
+  AI_BUSY_REPLY: 'Sorry, that took longer than expected on my end. Could you send that again?',
+  getAIResponse: async (...a) => { global.__ai.calls.push(a); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: false, toolCallMeta: null }; },
+};`);
+global.__emails = [];
+global.__ai = { calls: [], next: { content: '' } };
+
+// ── Compile the real code next to the fakes ────────────────────
+const compile = (from, to) => {
+  const src = fs.readFileSync(path.join(SRC, from), 'utf8')
+    .replace(/from '@\/lib\/chat\/([\w-]+)'/g, "from './$1'")
+    .replace(/from '@\/lib\/([\w-]+)'/g, "from './$1'")
+    .replace(/from 'next\/server'/g, "from './next-server'");
+  fs.writeFileSync(path.join(dir, to + '.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText);
+};
+for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
+  'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified']) compile(`lib/chat/${f}.ts`, f);
+compile('app/api/chat/messages/route.ts', 'r-messages');
+compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
+compile('app/api/chat/conversations/route.ts', 'r-list');
+compile('app/api/chat/team/release/route.ts', 'r-release');
+compile('app/api/widget/messages/[conversationId]/route.ts', 'r-widget-messages');
+compile('app/api/widget/message/route.ts', 'r-widget-message');
+const wsql = require(path.join(dir, 'waiting-sql.js'));
+const esc = require(path.join(dir, 'escalation.js'));
+
+// ── The fake database ──────────────────────────────────────────
+const RAHUL = '11111111-1111-4111-8111-111111111111';   // senior (chat.senior)
+const ANURAG = '22222222-2222-4222-8222-222222222222';  // junior
+const OFF = '33333333-3333-4333-8333-333333333333';     // switched off
+const PRIYA = '44444444-4444-4444-8444-444444444444';   // replies, but only in panel P2
+const VIEWER = '55555555-5555-4555-8555-555555555555';  // reads chats, cannot reply
+const GONE = '66666666-6666-4666-8666-666666666666';    // removed from the team (not in team_users)
+const CHAT_PERMS = ['orders.view', 'chat.view', 'chat.reply', 'chat.cases', 'chat.edit'];
+const member = (id, username, name, role, perms, extra = {}) => ({ id, username, display_name: name, role, is_active: true, business_ids: null, permissions: perms, session_version: 7, ...extra });
+const TEAM = () => [
+  member(RAHUL, 'rahul', 'Rahul', 'manager', [...CHAT_PERMS, 'orders.update', 'chat.senior']),
+  member(ANURAG, 'anurag', 'Anurag', 'agent', [...CHAT_PERMS]),
+  member(OFF, 'old.agent', 'Old Agent', 'agent', [...CHAT_PERMS], { is_active: false }),
+  member(PRIYA, 'priya', 'Priya', 'agent', [...CHAT_PERMS], { business_ids: ['P2'] }),
+  member(VIEWER, 'viewer', 'Vikas', 'viewer', ['chat.view']),
+];
+
+const SCALE = 0.01;                  // lock_timeout '5s' = 50 ms here
+const NO_TIMEOUT_CAP_MS = 1500;      // a lock wait with no lock_timeout set fails the test after this
+const db = {
+  team: TEAM(), admin: null,
+  sites: [
+    { id: 'S1', name: 'Vastora', panel: 'P1', ai_enabled: true, widget_key: 'key-s1', system_prompt: null, cod_available: true },
+    { id: 'S2', name: 'Other', panel: 'P2', ai_enabled: true, widget_key: 'key-s2', system_prompt: null, cod_available: true },
+  ],
+  convs: [], messages: [], events: [], caseEvents: [], presence: [], attachments: [],
+  waiting: {}, waitingAsked: [], stmts: [], fail: [], after: [], lockWaits: 0,
+  teamGate: null, presenceMissing: false, eventsBroken: false,
+  list: null, unanswered: { n: 4, mine_open: 2, mine_waiting: 1 },
+};
+const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+const rows = (r) => ({ rows: r, rowCount: r.length });
+const conv = (id) => db.convs.find((c) => c.id === id);
+const siteOf = (id) => db.sites.find((s) => s.id === id);
+const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k] === undefined ? null : clone(o[k])]));
+const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const pgErr = (code, message) => Object.assign(new Error(message), { code });
+const nowIso = () => new Date(Date.now()).toISOString();
+const norm = (s) => s.replace(/\s+/g, ' ').trim();
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+let seq = 0;
+
+// Row locks, held to the end of the transaction.
+const lockOwner = new Map(), waiters = new Map();
+async function lockRow(tx, id) {
+  for (;;) {
+    const owner = lockOwner.get(id);
+    if (!owner || owner === tx) { lockOwner.set(id, tx); tx.locks.add(id); return; }
+    db.lockWaits++;
+    const ms = tx.lockTimeoutMs ?? NO_TIMEOUT_CAP_MS;
+    const got = await new Promise((resolve) => {
+      const list = waiters.get(id) || []; waiters.set(id, list);
+      const wake = () => { clearTimeout(timer); resolve(true); };
+      const timer = setTimeout(() => { const i = list.indexOf(wake); if (i >= 0) list.splice(i, 1); resolve(false); }, ms);
+      list.push(wake);
+    });
+    if (!got) {
+      if (tx.lockTimeoutMs == null) throw new Error(`fake db: waited for chat ${id} with no lock_timeout set (on the server this hangs)`);
+      throw pgErr('55P03', 'canceling statement due to lock timeout');
+    }
+  }
+}
+function releaseLocks(tx) {
+  for (const id of tx.locks) {
+    if (lockOwner.get(id) === tx) lockOwner.delete(id);
+    const list = waiters.get(id) || []; waiters.delete(id);
+    for (const w of list) w();
+  }
+  tx.locks.clear();
+}
+// Another action holding a chat and not letting go (a stuck transaction).
+function holdLock(id) {
+  const tx = { id: 'stuck', locks: new Set() };
+  lockOwner.set(id, tx); tx.locks.add(id);
+  return () => releaseLocks(tx);
+}
+
+// Writes inside a transaction are undone by ROLLBACK (TO SAVEPOINT).
+function add(tx, arr, item) {
+  arr.push(item);
+  if (tx) tx.undo.push(() => { const i = arr.indexOf(item); if (i >= 0) arr.splice(i, 1); });
+}
+function setRow(tx, obj, patch) {
+  const before = { ...obj };
+  if ('assigned_to' in patch && !(patch.assigned_to === null || patch.assigned_to === 'owner' || UUID.test(patch.assigned_to))) {
+    throw pgErr('23514', 'new row for relation "conversations" violates check constraint "conversations_assigned_to_check"');
+  }
+  if (tx) { const old = {}; for (const k of Object.keys(patch)) old[k] = obj[k]; tx.undo.push(() => Object.assign(obj, old)); }
+  Object.assign(obj, patch);
+  // trg_chat_status_event (chat-team.sql): AFTER UPDATE OF status, a real change only. Never blocks.
+  if ('status' in patch && before.status !== obj.status && db.convs.includes(obj) && !db.eventsBroken) {
+    const who = tx && tx.actor;
+    add(tx, db.events, {
+      id: ++seq, conversation_id: obj.id, site_id: obj.site_id, kind: 'status',
+      actor: who ? who.key : before.status === 'resolved' ? 'customer' : before.status === 'ai_handling' && obj.status === 'human_needed' ? 'ai' : 'system',
+      actor_name: who ? who.name : null, from_owner: before.assigned_to, to_owner: obj.assigned_to,
+      from_status: before.status, to_status: obj.status, reason: who ? who.reason : null, note: null, message_id: null, meta: null,
+    });
+  }
+}
+// An UPDATE inside a transaction locks the row, like Postgres.
+async function rowFor(tx, id) {
+  const c = conv(id);
+  if (c && tx) await lockRow(tx, id);
+  return c;
+}
+const need = (tx, q) => { if (!tx) throw new Error('fake db: must run inside the action\'s transaction: ' + q.slice(0, 90)); };
+
+const LOCK_COLS = ['id', 'site_id', 'status', 'assigned_to', 'case_kind', 'case_order_id', 'merged_into', 'verified_order_id', 'phone_match_order_id', 'customer_key', 'source'];
+const WAITING_Q = norm(`SELECT (${wsql.WAITING_SINCE_SQL}) IS NOT NULL AS w FROM conversations c ${wsql.WAITING_LATERAL} WHERE c.id = $1`);
+// The Refund / Ship again SQL exactly as it was before the chat team (cb29348): byte-identical.
+const OLD_CASE_SQL = {
+  mark: "UPDATE conversations SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END, case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4, status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END, auto_closed_at = NULL, updated_at = now() WHERE id = $1 RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status",
+  remove: "UPDATE conversations SET status = CASE WHEN status = 'resolved' THEN status ELSE COALESCE(case_prev_status, 'agent_handling') END, case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL, updated_at = now() WHERE id = $1 RETURNING status",
+  eventMark: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)",
+  eventRemove: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)",
+};
+
+async function handle(q, p, tx) {
+  let m;
+  // ── Transactions ──
+  if (q === 'BEGIN') return rows([]);
+  if (q === 'COMMIT') {
+    if (tx.aborted) throw new Error('fake db: COMMIT of an aborted transaction (an error inside it was swallowed)');
+    tx.open = false; releaseLocks(tx); return rows([]);
+  }
+  if (q === 'ROLLBACK') { while (tx.undo.length) tx.undo.pop()(); tx.open = false; releaseLocks(tx); return rows([]); }
+  if ((m = q.match(/^SAVEPOINT (\w+)$/))) { need(tx, q); tx.sp.set(m[1], tx.undo.length); return rows([]); }
+  if ((m = q.match(/^RELEASE SAVEPOINT (\w+)$/))) { tx.sp.delete(m[1]); return rows([]); }
+  if ((m = q.match(/^ROLLBACK TO SAVEPOINT (\w+)$/))) {
+    const mark = tx.sp.get(m[1]);
+    if (mark === undefined) throw new Error('fake db: no savepoint ' + m[1]);
+    while (tx.undo.length > mark) tx.undo.pop()();
+    tx.aborted = false; return rows([]);
+  }
+  if ((m = q.match(/^SET LOCAL lock_timeout = '(\d+)s'$/))) { need(tx, q); tx.lockTimeoutMs = Number(m[1]) * 1000 * SCALE; return rows([]); }
+  if (q === "SELECT set_config('shiptrack.actor', $1, true), set_config('shiptrack.actor_name', $2, true), set_config('shiptrack.reason', $3, true)") {
+    need(tx, q); tx.actor = { key: p[0], name: p[1], reason: p[2] }; return rows([{}]);
+  }
+
+  // ── Logins and presence (src/lib/auth.ts) ──
+  if (q === 'SELECT id, username, display_name, role, is_active, business_ids, permissions, session_version FROM team_users') {
+    if (db.teamGate) await db.teamGate;
+    return rows(clone(db.team));
+  }
+  if (q === 'SELECT username, password_hash, session_version, updated_at FROM admin_login WHERE id = 1') return rows(db.admin ? [clone(db.admin)] : []);
+  if (q === 'INSERT INTO staff_presence (actor, last_seen_at) SELECT * FROM unnest($1::text[], $2::timestamptz[]) ON CONFLICT (actor) DO UPDATE SET last_seen_at = GREATEST(staff_presence.last_seen_at, EXCLUDED.last_seen_at)') {
+    if (db.presenceMissing) throw pgErr('42P01', 'relation "staff_presence" does not exist');
+    p[0].forEach((actor, i) => {
+      const row = db.presence.find((x) => x.actor === actor);
+      if (!row) db.presence.push({ actor, last_seen_at: p[1][i] });
+      else if (Date.parse(p[1][i]) > Date.parse(row.last_seen_at)) row.last_seen_at = p[1][i];
+    });
+    return rows([]);
+  }
+  if (q === 'SELECT actor, last_seen_at FROM staff_presence') {
+    if (db.presenceMissing) throw pgErr('42P01', 'relation "staff_presence" does not exist');
+    return rows(clone(db.presence));
+  }
+
+  // ── The chat team's locks and events (src/lib/chat/team-routing.ts) ──
+  if (q === "SELECT c.id, c.site_id, c.status, c.assigned_to, c.case_kind, c.case_order_id, c.merged_into, c.verified_order_id, c.phone_match_order_id, c.customer_key, c.source FROM conversations c WHERE c.id = $1 OR ($2::text IS NOT NULL AND c.source = 'chat' AND c.site_id = $3 AND c.customer_key = $2 AND c.merged_into IS NULL AND c.status <> 'resolved') ORDER BY c.id FOR NO KEY UPDATE") {
+    need(tx, q);
+    if (tx.lockTimeoutMs == null) throw new Error('fake db: a chat lock taken before SET LOCAL lock_timeout');
+    const [id, key, siteId] = p;
+    const match = (c) => c.id === id || (key != null && c.source === 'chat' && c.site_id === siteId && c.customer_key === key && !c.merged_into && c.status !== 'resolved');
+    const ids = db.convs.filter(match).map((c) => c.id).sort();
+    for (const x of ids) await lockRow(tx, x);
+    return rows(db.convs.filter((c) => ids.includes(c.id) && match(c)).sort(byId).map((c) => pick(c, LOCK_COLS)));
+  }
+  if (q === WAITING_Q) { db.waitingAsked.push(p[0]); return rows(conv(p[0]) ? [{ w: !!db.waiting[p[0]] }] : []); }
+  if (q === 'INSERT INTO chat_events (conversation_id, site_id, kind, actor, actor_name, from_owner, to_owner, from_status, to_status, reason, note, message_id, meta) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)') {
+    if (db.eventsBroken) throw pgErr('42501', 'permission denied for table chat_events');
+    const [conversation_id, site_id, kind, actor, actor_name, from_owner, to_owner, from_status, to_status, reason, note, message_id, meta] = p;
+    if (note != null && (Array.from(note).length < 3 || Array.from(note).length > 200)) throw pgErr('23514', 'chat_events_note_check');
+    add(tx, db.events, { id: ++seq, conversation_id, site_id, kind, actor, actor_name, from_owner, to_owner, from_status, to_status, reason, note, message_id, meta: meta == null ? null : JSON.parse(meta) });
+    return rows([]);
+  }
+  if (q === 'UPDATE conversations SET assigned_to = $1, assigned_at = now() WHERE id = ANY($2::text[])') {
+    need(tx, q);
+    for (const id of p[1]) setRow(tx, await rowFor(tx, id), { assigned_to: p[0], assigned_at: nowIso() });
+    return rows([]);
+  }
+
+  // ── Reply (/api/chat/messages) ──
+  if (q === 'SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1') {
+    const c = conv(p[0]);
+    return rows(c ? [{ id: c.id, source: c.source, tracker_business_id: siteOf(c.site_id).panel, site_id: c.site_id, customer_key: c.customer_key }] : []);
+  }
+  if (q === 'SELECT id, file_name, mime_type, size_bytes, kind FROM chat_attachments WHERE id = ANY($1::text[]) AND conversation_id = $2 AND message_id IS NULL FOR UPDATE') {
+    need(tx, q);
+    return rows(db.attachments.filter((a) => p[0].includes(a.id) && a.conversation_id === p[1] && !a.message_id).map((a) => pick(a, ['id', 'file_name', 'mime_type', 'size_bytes', 'kind'])));
+  }
+  if (q === 'UPDATE chat_attachments SET message_id = $1 WHERE id = ANY($2::text[])') {
+    for (const a of db.attachments) if (p[1].includes(a.id)) setRow(tx, a, { message_id: p[0] });
+    return rows([]);
+  }
+  if (q === "INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at) VALUES (gen_random_uuid()::text, $1, 'agent', $2, $3::jsonb, now()) RETURNING id, sender, content, metadata, created_at") {
+    need(tx, q);
+    const msg = { id: 'msg-' + (++seq), conversation_id: p[0], sender: 'agent', content: p[1], metadata: JSON.parse(p[2]), created_at: nowIso(), deleted_at: null, edited_at: null };
+    add(tx, db.messages, msg);
+    return rows([pick(msg, ['id', 'sender', 'content', 'metadata', 'created_at'])]);
+  }
+  if (q === "UPDATE conversations SET status = 'agent_handling', last_message_at = now(), auto_closed_at = NULL, updated_at = now(), assigned_to = CASE WHEN $2::boolean THEN $3::text ELSE assigned_to END, assigned_at = CASE WHEN $2::boolean THEN now() ELSE assigned_at END WHERE id = $1") {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    setRow(tx, c, { status: 'agent_handling', last_message_at: nowIso(), auto_closed_at: null, ...(p[1] ? { assigned_to: p[2], assigned_at: nowIso() } : {}) });
+    return rows([]);
+  }
+  if (q === "UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('emailed', $2::boolean) WHERE id = $1") {
+    const msg = db.messages.find((x) => x.id === p[0]); if (msg) msg.metadata = { ...(msg.metadata || {}), emailed: p[1] };
+    return rows([]);
+  }
+
+  // ── The thread (/api/chat/conversations/[id]) ──
+  if (/^SELECT c\.id, c\.site_id, c\.visitor_name, .* FROM conversations c JOIN sites s ON s\.id = c\.site_id LEFT JOIN businesses b .* WHERE c\.id = \$1$/.test(q)) {
+    const c = conv(p[0]);
+    if (!c) return rows([]);
+    const s = siteOf(c.site_id);
+    const r = { ...clone(c), display_name: c.visitor_name, name_from_order: false, site_name: s.name, tracker_business_id: s.panel, panel_name: 'Panel ' + s.panel };
+    // Only the columns the SELECT names (an older SELECT without them gives undefined).
+    for (const col of ['assigned_to', 'assigned_at', 'merged_into']) if (!q.includes('c.' + col)) delete r[col];
+    return rows([r]);
+  }
+  if (/^SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by, \(SELECT u\.notes FROM brain_usage u WHERE u\.message_id = messages\.id\) AS brain FROM messages WHERE conversation_id = \$1 AND /.test(q)) {
+    return rows(db.messages.filter((x) => x.conversation_id === p[0] && x.sender !== 'tool_result' && !(x.metadata && x.metadata.hidden))
+      .map((x) => ({ ...pick(x, ['id', 'sender', 'content', 'metadata', 'created_at', 'edited_at', 'edited_by', 'deleted_at', 'deleted_by']), brain: null })));
+  }
+  if (/^WITH older AS \( SELECT c\.id, c\.created_at, c\.status, /.test(q)) {
+    // The same customer's other chats on the site, with their messages (enough for the authors).
+    const [siteId, key, id] = p;
+    const others = db.convs.filter((c) => c.site_id === siteId && c.customer_key === key && c.source === 'chat' && c.id !== id && c.older);
+    const out = [];
+    for (const o of others) {
+      const msgs = db.messages.filter((x) => x.conversation_id === o.id);
+      for (const x of msgs.length ? msgs : [null]) {
+        out.push({ conversation_id: o.id, conv_created_at: o.created_at, conv_status: o.status, older_total: others.length,
+          ...(x ? pick(x, ['id', 'sender', 'content', 'metadata', 'created_at', 'edited_at', 'edited_by', 'deleted_at', 'deleted_by']) : { id: null }) });
+      }
+    }
+    return rows(out);
+  }
+  if (/^SELECT c\.id AS conversation_id, c\.created_at, c\.last_message_at, c\.status FROM conversations c /.test(q)) return rows([]);
+  if (q === 'UPDATE conversations SET unread_count = 0, updated_at = now() WHERE id = $1') { const c = conv(p[0]); if (c) c.unread_count = 0; return rows([]); }
+  if (q === 'UPDATE conversations SET unread_count = 0, updated_at = now() WHERE id = ANY($1::text[]) AND unread_count > 0') { for (const c of db.convs) if (p[0].includes(c.id)) c.unread_count = 0; return rows([]); }
+  if (q === "SELECT id, created_at, kind, actor, actor_name, from_owner, to_owner, reason, note FROM chat_events WHERE conversation_id = $1 AND kind IN ('claim','take','transfer','inherit','merge') ORDER BY id DESC LIMIT 10") {
+    return rows(db.events.filter((e) => e.conversation_id === p[0] && ['claim', 'take', 'transfer', 'inherit', 'merge'].includes(e.kind))
+      .sort((a, b) => b.id - a.id).slice(0, 10).map((e) => pick(e, ['id', 'created_at', 'kind', 'actor', 'actor_name', 'from_owner', 'to_owner', 'reason', 'note'])));
+  }
+  // Who wrote each staff reply: its 'reply' event (the writer's key and their name then).
+  if (q === "SELECT DISTINCT ON (message_id) message_id, actor, actor_name FROM chat_events WHERE kind = 'reply' AND message_id = ANY($1::text[]) ORDER BY message_id, id") {
+    const out = new Map();
+    for (const e of [...db.events].sort((a, b) => a.id - b.id)) {
+      if (e.kind === 'reply' && e.message_id && p[0].includes(e.message_id) && !out.has(e.message_id)) out.set(e.message_id, pick(e, ['message_id', 'actor', 'actor_name']));
+    }
+    return rows([...out.values()]);
+  }
+  // Take over / Take from X / Hand to AI / Close
+  if (q === "UPDATE conversations SET status = $1, unread_count = CASE WHEN $1 = 'resolved' THEN 0 ELSE unread_count END, closed_by_name = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN $3::text ELSE closed_by_name END, closed_at = CASE WHEN $1 = 'resolved' AND status <> 'resolved' THEN now() ELSE closed_at END, auto_closed_at = CASE WHEN $1 = 'resolved' AND status = 'resolved' THEN auto_closed_at ELSE NULL END, assigned_to = CASE WHEN $4::text IS NOT NULL THEN $4::text ELSE assigned_to END, assigned_at = CASE WHEN $4::text IS NOT NULL THEN now() ELSE assigned_at END, updated_at = now() WHERE id = $2 RETURNING status, closed_by_name, closed_at, auto_closed_at, assigned_to") {
+    need(tx, q);
+    const c = await rowFor(tx, p[1]);
+    const [st, , name, owner] = p;
+    const was = c.status;
+    setRow(tx, c, {
+      status: st, unread_count: st === 'resolved' ? 0 : c.unread_count,
+      closed_by_name: st === 'resolved' && was !== 'resolved' ? name : c.closed_by_name,
+      closed_at: st === 'resolved' && was !== 'resolved' ? nowIso() : c.closed_at,
+      auto_closed_at: st === 'resolved' && was === 'resolved' ? c.auto_closed_at : null,
+      ...(owner != null ? { assigned_to: owner, assigned_at: nowIso() } : {}),
+    });
+    return rows([pick(c, ['status', 'closed_by_name', 'closed_at', 'auto_closed_at', 'assigned_to'])]);
+  }
+  // Transfer
+  if (q === 'UPDATE conversations SET assigned_to = $2::text, assigned_at = CASE WHEN $2::text IS NULL THEN NULL ELSE now() END, status = $3, auto_closed_at = NULL, updated_at = now() WHERE id = $1 RETURNING status, assigned_to') {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    setRow(tx, c, { assigned_to: p[1], assigned_at: p[1] == null ? null : nowIso(), status: p[2], auto_closed_at: null });
+    return rows([pick(c, ['status', 'assigned_to'])]);
+  }
+  if (q === 'UPDATE conversations SET assigned_to = $1::text, assigned_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END WHERE id = ANY($2::text[])') {
+    need(tx, q);
+    for (const id of p[1]) setRow(tx, await rowFor(tx, id), { assigned_to: p[0], assigned_at: p[0] == null ? null : nowIso() });
+    return rows([]);
+  }
+  // Refund / Ship again (byte-identical to before)
+  if (q === OLD_CASE_SQL.mark) {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    setRow(tx, c, {
+      case_prev_status: c.case_kind == null ? c.status : c.case_prev_status, case_kind: p[1], case_marked_by: p[2], case_marked_at: nowIso(), case_order_id: p[3],
+      status: c.status === 'resolved' ? c.status : 'agent_handling', auto_closed_at: null,
+    });
+    return rows([pick(c, ['case_kind', 'case_marked_by', 'case_marked_at', 'case_order_id', 'status'])]);
+  }
+  if (q === OLD_CASE_SQL.remove) {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    setRow(tx, c, { status: c.status === 'resolved' ? c.status : (c.case_prev_status || 'agent_handling'), case_kind: null, case_marked_by: null, case_marked_at: null, case_order_id: null, case_prev_status: null });
+    return rows([pick(c, ['status'])]);
+  }
+  if (q === OLD_CASE_SQL.eventMark || q === OLD_CASE_SQL.eventRemove) {
+    need(tx, q);
+    add(tx, db.caseEvents, { id: p[0], conversation_id: p[1], site_id: p[2], kind: p[3], action: q === OLD_CASE_SQL.eventMark ? 'mark' : 'remove', order_id: p[4], actor: p[5], actor_role: p[6] });
+    return rows([]);
+  }
+
+  // ── The Super Admin's release (/api/chat/team/release) ──
+  if (q === "SELECT id, site_id, status FROM conversations WHERE assigned_to = $1 AND status <> 'resolved' AND merged_into IS NULL ORDER BY id FOR NO KEY UPDATE") {
+    need(tx, q);
+    if (tx.lockTimeoutMs == null) throw new Error('fake db: release locks before SET LOCAL lock_timeout');
+    const match = (c) => c.assigned_to === p[0] && c.status !== 'resolved' && !c.merged_into;
+    const ids = db.convs.filter(match).map((c) => c.id).sort();
+    for (const id of ids) await lockRow(tx, id);
+    return rows(db.convs.filter((c) => ids.includes(c.id) && match(c)).sort(byId).map((c) => pick(c, ['id', 'site_id', 'status'])));
+  }
+  if (q === 'UPDATE conversations SET assigned_to = NULL, assigned_at = NULL WHERE id = ANY($1::text[])') {
+    need(tx, q);
+    for (const id of p[0]) setRow(tx, await rowFor(tx, id), { assigned_to: null, assigned_at: null });
+    return rows([]);
+  }
+  if (q === "INSERT INTO chat_events (conversation_id, site_id, kind, actor, actor_name, from_owner, to_owner, from_status, to_status, reason, note, meta) SELECT x.id, x.site_id, 'transfer', $4, $5, $4, NULL, x.status, x.status, 'transfer', $6, $7::jsonb FROM unnest($1::text[], $2::text[], $3::text[]) AS x(id, site_id, status)") {
+    need(tx, q);
+    if (db.eventsBroken) throw pgErr('42501', 'permission denied for table chat_events');
+    p[0].forEach((id, i) => add(tx, db.events, {
+      id: ++seq, conversation_id: id, site_id: p[1][i], kind: 'transfer', actor: p[3], actor_name: p[4], from_owner: p[3], to_owner: null,
+      from_status: p[2][i], to_status: p[2][i], reason: 'transfer', note: p[5], message_id: null, meta: JSON.parse(p[6]),
+    }));
+    return rows([]);
+  }
+
+  // ── The inbox list (/api/chat/conversations) ──
+  if (/^SELECT count\(DISTINCT x\.gk\) FILTER .* FROM \(SELECT c\.subject_label, c\.health_score, c\.health_signals, /.test(q)) return rows([{}]);
+  if (/^SELECT count\(DISTINCT x\.gk\) FILTER \(WHERE x\.waiting_since IS NOT NULL\)::int AS n, /.test(q)) {
+    db.list = { ...(db.list || {}), unansweredSql: q, unansweredParams: p };
+    return rows([{ ...db.unanswered }]);
+  }
+  if (/^WITH .*base AS \( SELECT c\.id, c\.visitor_name, /.test(q)) { db.list = { ...(db.list || {}), sql: q, params: p }; return rows([]); }
+  if (/^SELECT c\.case_kind, count\(\*\)::int AS total, /.test(q)) return rows([]);
+  // The Super Admin's "Give all N": exactly the release's WHERE.
+  if (q === "SELECT count(*)::int AS n FROM conversations WHERE assigned_to = $1 AND status <> 'resolved' AND merged_into IS NULL") {
+    db.list = { ...(db.list || {}), heldParams: p };
+    return rows([{ n: db.convs.filter((c) => c.assigned_to === p[0] && c.status !== 'resolved' && !c.merged_into).length }]);
+  }
+  if (/^SELECT COALESCE\(c\.case_marked_by, '\?'\) AS marked_by, /.test(q)) return rows([]);
+
+  // ── The widget (/api/widget/messages/[id], /api/widget/message) ──
+  if (q === 'SELECT id, name, ai_enabled, system_prompt, tracker_business_id, cod_available FROM sites WHERE widget_key = $1') {
+    const s = db.sites.find((x) => x.widget_key === p[0]);
+    return rows(s ? [{ id: s.id, name: s.name, ai_enabled: s.ai_enabled, system_prompt: s.system_prompt, tracker_business_id: s.panel, cod_available: s.cod_available }] : []);
+  }
+  if (q === 'SELECT id, site_id, status, merged_into FROM conversations WHERE id = $1 AND site_id = $2') {
+    const c = conv(p[0]);
+    return rows(c && c.site_id === p[1] ? [pick(c, ['id', 'site_id', 'status', 'merged_into'])] : []);
+  }
+  if ((m = q.match(/^SELECT id, conversation_id, sender, CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content, CASE WHEN deleted_at IS NULL THEN (metadata(?: - 'agent')?) END AS metadata, created_at, edited_at, \(deleted_at IS NOT NULL\) AS deleted, GREATEST\(created_at, edited_at, deleted_at\) AS changed_at FROM messages WHERE conversation_id = \$1 AND (.*) ORDER BY created_at ASC$/))) {
+    const stripAgent = m[1] !== 'metadata';
+    const visibleOnly = / AND deleted_at IS NULL/.test(m[2]);
+    return rows(db.messages
+      .filter((x) => x.conversation_id === p[0] && x.sender !== 'tool_result' && !(x.metadata && x.metadata.hidden) && x.content && x.content.trim())
+      .filter((x) => !visibleOnly || !x.deleted_at)
+      .map((x) => {
+        let meta = null;
+        if (!x.deleted_at && x.metadata) { meta = clone(x.metadata); if (stripAgent) delete meta.agent; }
+        return { id: x.id, conversation_id: x.conversation_id, sender: x.sender, content: x.deleted_at ? '' : x.content, metadata: meta,
+          created_at: x.created_at, edited_at: x.edited_at || null, deleted: !!x.deleted_at, changed_at: x.deleted_at || x.created_at };
+      }));
+  }
+  if (q === "INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at) VALUES (gen_random_uuid()::text, $1, 'visitor', $2, $3::jsonb, now()) RETURNING id, conversation_id, sender, content, metadata, created_at") {
+    const msg = { id: 'msg-' + (++seq), conversation_id: p[0], sender: 'visitor', content: p[1], metadata: p[2] == null ? null : JSON.parse(p[2]), created_at: nowIso() };
+    db.messages.push(msg);
+    return rows([clone(msg)]);
+  }
+  if (/^UPDATE conversations SET unread_count = unread_count \+ 1, last_message_at = now\(\), updated_at = now\(\), status = CASE WHEN status = 'resolved' AND source = 'chat' /.test(q)) {
+    const c = conv(p[0]);
+    if (c.status === 'resolved' && c.source === 'chat') setRow(null, c, { status: c.case_kind ? 'agent_handling' : p[1] ? 'ai_handling' : 'human_needed' });
+    c.unread_count = (c.unread_count || 0) + 1;
+    return rows([{ status: c.status }]);
+  }
+  if (q === 'SELECT (verified_order_id IS NOT NULL OR phone_match_order_id IS NOT NULL) AS v FROM conversations WHERE id = $1') {
+    const c = conv(p[0]); return rows(c ? [{ v: !!(c.verified_order_id || c.phone_match_order_id) }] : []);
+  }
+  if (q === 'SELECT id, site_id, status, unread_count, visitor_id, visitor_name, verified_order_id, verified_via, customer_key, source, merged_into FROM conversations WHERE id = $1') {
+    const c = conv(p[0]); return rows(c ? [pick(c, ['id', 'site_id', 'status', 'unread_count', 'visitor_id', 'visitor_name', 'verified_order_id', 'verified_via', 'customer_key', 'source', 'merged_into'])] : []);
+  }
+  if (/^SELECT content FROM messages WHERE conversation_id = \$1 AND sender = 'ai' AND deleted_at IS NULL /.test(q)) {
+    return rows(db.messages.filter((x) => x.conversation_id === p[0] && x.sender === 'ai').reverse().slice(0, 3).map((x) => ({ content: x.content })));
+  }
+  if (q === "UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'") {
+    const c = conv(p[0]); if (c && c.status === 'ai_handling') setRow(null, c, { status: 'human_needed' });
+    return rows([]);
+  }
+  if (q === "INSERT INTO messages (id, conversation_id, sender, content, created_at) VALUES (gen_random_uuid()::text, $1, 'ai', $2, now()) RETURNING id, conversation_id, sender, content, metadata, created_at") {
+    const msg = { id: 'msg-' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: null, created_at: nowIso() };
+    db.messages.push(msg);
+    return rows([clone(msg)]);
+  }
+  if (q === 'UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1') { const c = conv(p[0]); if (c) c.last_message_at = nowIso(); return rows([]); }
+
+  // ── Merging two chats of one customer (merge-chats.ts) ──
+  if (q === 'SELECT to_regclass($1) IS NOT NULL AS ok') return rows([{ ok: true }]);
+  if (q === 'SELECT c.id, c.site_id, c.status, c.unread_count, c.visitor_id, c.visitor_name, c.verified_order_id, c.verified_via, c.customer_key, c.source, c.merged_into, s.ai_enabled, c.assigned_to FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = ANY($1::text[]) ORDER BY c.id FOR UPDATE OF c') {
+    need(tx, q);
+    const ids = db.convs.filter((c) => p[0].includes(c.id)).map((c) => c.id).sort();
+    for (const id of ids) await lockRow(tx, id);
+    return rows(ids.map((id) => { const c = conv(id); return { ...pick(c, ['id', 'site_id', 'status', 'unread_count', 'visitor_id', 'visitor_name', 'verified_order_id', 'verified_via', 'customer_key', 'source', 'merged_into', 'assigned_to']), ai_enabled: siteOf(c.site_id).ai_enabled }; }));
+  }
+  if (q === 'UPDATE messages SET conversation_id = $1 WHERE conversation_id = $2') { for (const x of db.messages) if (x.conversation_id === p[1]) setRow(tx, x, { conversation_id: p[0] }); return rows([]); }
+  if (q === 'UPDATE chat_attachments SET conversation_id = $1 WHERE conversation_id = $2' || q === 'UPDATE message_revisions SET conversation_id = $1 WHERE conversation_id = $2') return rows([]);
+  if (/^UPDATE conversations SET status = CASE WHEN \$3 = 'human_needed' THEN 'human_needed' .* assigned_to = COALESCE\(assigned_to, \$8\), assigned_at = CASE WHEN assigned_to IS NULL AND \$8::text IS NOT NULL THEN now\(\) ELSE assigned_at END, updated_at = now\(\) WHERE id = \$1 AND id <> \$2$/.test(q)) {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    const status = p[2] === 'human_needed' ? 'human_needed' : c.status === 'resolved' && c.case_kind ? 'agent_handling' : c.status === 'resolved' ? p[3] : c.status;
+    setRow(tx, c, { status, unread_count: (c.unread_count || 0) + p[4], assigned_to: c.assigned_to ?? p[7], assigned_at: c.assigned_to == null && p[7] != null ? nowIso() : c.assigned_at });
+    return rows([]);
+  }
+  if (q === "UPDATE conversations SET merged_into = $1, status = 'resolved', unread_count = 0, updated_at = now() WHERE id = $2") {
+    need(tx, q);
+    setRow(tx, await rowFor(tx, p[1]), { merged_into: p[0], status: 'resolved', unread_count: 0 });
+    return rows([]);
+  }
+
+  throw new Error('fake db: unexpected SQL: ' + q.slice(0, 200));
+}
+
+const als = new AsyncLocalStorage();
+let txSeq = 0;
+async function run(sql, params = [], tx = null) {
+  const q = norm(sql);
+  const inTx = als.getStore();
+  if (!tx && inTx && inTx.open && !/team_users|admin_login|staff_presence/.test(q)) {
+    throw new Error('fake db: a pool query inside a locked action (it would wait on its own lock): ' + q.slice(0, 120));
+  }
+  db.stmts.push({ tx: tx ? tx.id : null, q });
+  if (tx && tx.aborted && !/^ROLLBACK/.test(q)) throw new Error('fake db: current transaction is aborted, commands ignored until end of transaction block: ' + q.slice(0, 80));
+  try {
+    for (const f of db.fail) {
+      if (f.re.test(q)) { if (f.once) db.fail.splice(db.fail.indexOf(f), 1); throw pgErr(f.code, f.message || 'injected failure ' + f.code); }
+    }
+    const out = await handle(q, params || [], tx);
+    for (const h of db.after.splice(0)) { if (h.re.test(q)) h.fn(); else db.after.push(h); }
+    return out;
+  } catch (e) {
+    if (tx && !/^ROLLBACK/.test(q)) tx.aborted = true;
+    throw e;
+  }
+}
+async function withTransaction(fn) {
+  const tx = { id: ++txSeq, undo: [], sp: new Map(), locks: new Set(), lockTimeoutMs: null, aborted: false, open: true, actor: null };
+  const client = { query: (sql, params) => run(sql, params, tx) };
+  await run('BEGIN', [], tx);
+  try {
+    const r = await als.run(tx, () => fn(client));
+    await run('COMMIT', [], tx);
+    return r;
+  } catch (e) {
+    if (tx.open) await run('ROLLBACK', [], tx);
+    throw e;
+  }
+}
+global.__fakeDb = { run, withTransaction };
+
+// ── Requests, people, the clock ────────────────────────────────
+let mod;
+function fresh() {
+  // A restart: new module instances and an empty login cache.
+  const g = global.__shiptrackTeam;
+  if (g && g.timer) clearInterval(g.timer);
+  delete global.__shiptrackTeam;
+  for (const k of Object.keys(require.cache)) if (k.startsWith(dir)) delete require.cache[k];
+  const r = (f) => require(path.join(dir, f + '.js'));
+  mod = {
+    auth: r('auth'), routing: r('team-routing'), rules: r('team-rules'), messages: r('r-messages'), thread: r('r-thread'), list: r('r-list'),
+    release: r('r-release'), widgetMessages: r('r-widget-messages'), widgetMessage: r('r-widget-message'), merge: r('merge-chats'),
+  };
+  return mod;
+}
+async function restart() {
+  db.presence = [];
+  fresh();
+  await mod.auth.refreshTeamCache();
+}
+const tokens = {};
+function makeTokens() {
+  const a = mod.auth;
+  const m = (u) => a.generateToken(u.username, u.role, u.business_ids, { name: u.display_name, perms: u.permissions, sv: u.session_version, uid: u.id });
+  tokens.owner = a.generateToken('Owner', 'admin', null, { name: 'Super Admin' });
+  for (const u of db.team) tokens[u.username === 'old.agent' ? 'off' : u.username] = m(u);
+}
+function req(who, body, { method = 'POST', active = false, url = 'http://x/api' } = {}) {
+  return {
+    method, url,
+    headers: { get: (k) => {
+      k = k.toLowerCase();
+      if (k === 'authorization') return who && tokens[who] ? `Bearer ${tokens[who]}` : null;
+      if (k === 'x-st-active') return active ? '1' : null;
+      return null;
+    } },
+    json: async () => { if (body === undefined) throw new Error('no body'); return clone(body); },
+  };
+}
+const reply = (who, id, content = 'Hello, checking this for you', extra = {}) => mod.messages.POST(req(who, { conversationId: id, content, ...extra }));
+const patch = (who, id, body) => mod.thread.PATCH(req(who, body, { method: 'PATCH' }), { params: { id } });
+const thread = (who, id) => mod.thread.GET(req(who, undefined, { method: 'GET', active: true }), { params: { id } });
+const list = (who, qs = '') => mod.list.GET(req(who, undefined, { method: 'GET', url: 'http://x/api/chat/conversations' + qs }));
+const release = (who) => mod.release.POST(req(who, {}));
+const takeOver = (who, id) => patch(who, id, { status: 'agent_handling' });
+const takeFrom = (who, id) => patch(who, id, { status: 'agent_handling', take: true });
+
+// IST wall time -> the instant (India is +5:30 all year).
+const ist = (h, m = 0, day = 1) => Date.UTC(2026, 9, day, h, m) - 330 * 60_000;
+const realNow = Date.now;
+let clock = ist(15, 0);
+Date.now = () => clock;
+const at = (ms) => { clock = ms; };
+// Someone does something in ShipTrack at `ms` (presence is noted by any POST).
+function touch(who, ms) {
+  const keep = clock; clock = ms;
+  assert.ok(mod.auth.getAuthFromRequest(req(who, undefined, { method: 'POST' })), 'touch: login refused for ' + who);
+  clock = keep;
+}
+
+let convSeq = 0;
+function newConv(o = {}) {
+  const id = o.id || 'c' + (++convSeq);
+  const c = {
+    id, site_id: 'S1', source: 'chat', status: 'ai_handling', assigned_to: null, assigned_at: null, customer_key: null, merged_into: null,
+    case_kind: null, case_order_id: null, case_prev_status: null, case_marked_by: null, case_marked_at: null,
+    verified_order_id: null, verified_via: null, phone_match_order_id: null, unread_count: 0, auto_closed_at: null,
+    closed_by_name: null, closed_at: null, visitor_name: 'Visitor', visitor_phone: null, visitor_id: 'v-' + id, category: 'others',
+    subject_label: null, subject_summary: null, subject_updated_at: null, health_score: null, health_reason: null, health_updated_at: null,
+    created_at: new Date(clock - 3600_000).toISOString(), last_message_at: new Date(clock - 60_000).toISOString(),
+    ...o,
+  };
+  db.convs.push(c);
+  return c;
+}
+// A known customer (verified by the widget form).
+const known = (o = {}) => newConv({ verified_order_id: '#' + (o.id || 'x'), verified_via: 'form', ...o });
+const C = (id) => conv(id);
+const evs = (id, kind) => db.events.filter((e) => e.conversation_id === id && (!kind || e.kind === kind));
+const agentMsgs = (id) => db.messages.filter((x) => x.conversation_id === id && x.sender === 'agent');
+// The statements sent since position n, and those of each transaction among them (in order).
+const since = (n) => db.stmts.slice(n);
+const txStmts = (n) => {
+  const s = since(n).filter((x) => x.tx !== null);
+  const ids = [...new Set(s.map((x) => x.tx))];
+  return ids.map((id) => s.filter((x) => x.tx === id).map((x) => x.q));
+};
+
+// Console output is kept, and shown only when a test fails (the routes log as they work).
+const logged = [];
+const realConsole = { log: console.log, error: console.error, warn: console.warn };
+for (const k of ['log', 'error', 'warn']) console[k] = (...a) => logged.push(`[${k}] ` + a.map((x) => (typeof x === 'string' ? x : x instanceof Error ? x.message : JSON.stringify(x))).join(' '));
+
+let n = 0;
+const t = async (name, fn) => {
+  try { await fn(); n++; } catch (e) {
+    Object.assign(console, realConsole);
+    console.error('FAIL ' + name);
+    console.error(logged.slice(-25).join('\n'));
+    throw e;
+  }
+};
+const eq = assert.strictEqual, deq = assert.deepStrictEqual, ok = assert.ok;
+const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${want}, got ${r.status}: ${JSON.stringify(r.body)}`);
+
+(async () => {
+  at(ist(15, 0));
+  await restart();
+  makeTokens();
+
+  // ── R1-R2: the first reply on a chat nobody holds ─────────────
+  await t('R1 a junior\'s first reply on a known customer\'s free Needs you chat makes it hers', async () => {
+    known({ id: 'r1', status: 'human_needed', auto_closed_at: 'x' });
+    const s0 = db.stmts.length;
+    const r = await reply('anurag', 'r1', 'Hi, I am checking your order now');
+    status(r, 200);
+    const c = C('r1');
+    deq([c.assigned_to, c.status, c.auto_closed_at, !!c.assigned_at], [ANURAG, 'agent_handling', null, true]);
+    deq(agentMsgs('r1').map((x) => x.metadata), [{ agent: 'anurag' }]);          // metadata exactly as before
+    deq(evs('r1').map((e) => e.kind), ['status', 'claim', 'reply']);
+    const [st, claim, rep] = evs('r1');
+    // The status trigger saw the person: set_config ran before the status UPDATE, in the same transaction.
+    deq([st.actor, st.actor_name, st.reason, st.from_status, st.to_status, st.from_owner, st.to_owner], [ANURAG, 'Anurag', 'reply', 'human_needed', 'agent_handling', null, ANURAG]);
+    deq([claim.actor, claim.actor_name, claim.from_owner, claim.to_owner, claim.reason, claim.from_status, claim.to_status], [ANURAG, 'Anurag', null, ANURAG, 'reply', 'human_needed', 'agent_handling']);
+    deq(claim.meta, { tier: 'junior', group: [] });
+    deq([rep.message_id, rep.to_owner, rep.meta], [agentMsgs('r1')[0].id, ANURAG, { tier: 'junior' }]);
+    const [tx] = txStmts(s0);
+    eq(tx[0], 'BEGIN'); eq(tx[1], "SET LOCAL lock_timeout = '5s'"); ok(/FOR NO KEY UPDATE$/.test(tx[2]));
+    const iSet = tx.findIndex((q) => q.startsWith('SELECT set_config')), iUpd = tx.findIndex((q) => q.startsWith("UPDATE conversations SET status = 'agent_handling'"));
+    ok(iSet > 0 && iSet < iUpd, 'set_config before the status UPDATE');
+    eq(tx[tx.length - 1], 'COMMIT');
+    eq(r.body.emailed, null);
+  });
+
+  await t('R1 the chat is locked before its files (the same order as a merge)', async () => {
+    known({ id: 'r1f' });
+    const fileId = 'a'.repeat(64);
+    db.attachments.push({ id: fileId, conversation_id: 'r1f', message_id: null, file_name: 'label.png', mime_type: 'image/png', size_bytes: 1200, kind: 'image' });
+    const s0 = db.stmts.length;
+    status(await reply('anurag', 'r1f', '', { attachmentIds: [fileId] }), 200);
+    const [tx] = txStmts(s0);
+    const iLock = tx.findIndex((q) => /FOR NO KEY UPDATE$/.test(q)), iFiles = tx.findIndex((q) => q.startsWith('SELECT id, file_name'));
+    ok(iLock >= 0 && iLock < iFiles);
+    const meta = agentMsgs('r1f')[0].metadata;
+    deq([meta.agent, meta.captionless, meta.attachments.length], ['anurag', true, 1]);
+    eq(db.attachments[0].message_id, agentMsgs('r1f')[0].id);
+  });
+
+  await t('R1 an email thread: the reply is claimed and saved first, the email goes out after the commit', async () => {
+    newConv({ id: 'r1e', source: 'email', status: 'human_needed', verified_order_id: '#r1e' });
+    global.__emails.length = 0;
+    const r = await reply('anurag', 'r1e', 'We have checked your order.');
+    status(r, 200);
+    deq([r.body.emailed, C('r1e').assigned_to, global.__emails.length], [true, ANURAG, 1]);
+    deq(agentMsgs('r1e')[0].metadata, { agent: 'anurag', emailed: true });
+  });
+
+  await t('R2 the customer\'s other open chats nobody holds come along (one claim event); others stay', async () => {
+    const K = '9000000002';
+    known({ id: 'r2a', customer_key: K, status: 'agent_handling' });
+    known({ id: 'r2b', customer_key: K, status: 'ai_handling' });                         // free: moves, status kept
+    known({ id: 'r2c', customer_key: K, status: 'human_needed', assigned_to: OFF });      // a switched-off holder holds nothing: moves
+    known({ id: 'r2d', customer_key: K, status: 'agent_handling', assigned_to: RAHUL });  // Rahul's: stays
+    known({ id: 'r2e', customer_key: K, status: 'resolved' });                            // Closed: not touched
+    known({ id: 'r2f', customer_key: K, site_id: 'S2' });                                 // another site
+    newConv({ id: 'r2g', customer_key: K, source: 'email' });                             // an email thread
+    status(await reply('anurag', 'r2a'), 200);
+    deq(['r2a', 'r2b', 'r2c', 'r2d', 'r2e', 'r2f', 'r2g'].map((id) => C(id).assigned_to), [ANURAG, ANURAG, ANURAG, RAHUL, null, null, null]);
+    deq(['r2b', 'r2c'].map((id) => C(id).status), ['ai_handling', 'human_needed']);
+    deq(evs('r2a', 'claim').map((e) => e.meta.group), [['r2b', 'r2c']]);
+    eq(db.events.filter((e) => e.kind === 'claim' && ['r2b', 'r2c'].includes(e.conversation_id)).length, 0);
+  });
+
+  await t('R2 a holder who was switched off, removed, lost chat.reply or the panel holds nothing (old id logged)', async () => {
+    for (const [id, holder] of [['r2x1', OFF], ['r2x2', GONE], ['r2x3', VIEWER], ['r2x4', PRIYA]]) {
+      known({ id, status: 'agent_handling', assigned_to: holder });
+      const g = await thread('anurag', id);
+      deq([g.body.staff.holder, g.body.staff.can_act, g.body.staff.claims], [null, true, true], id);
+      status(await reply('anurag', id), 200, id);
+      eq(C(id).assigned_to, ANURAG);
+      deq([evs(id, 'claim')[0].from_owner, evs(id, 'claim')[0].to_owner], [holder, ANURAG]);
+    }
+  });
+
+  await t('R2 a customer key set between the route\'s first read and the lock: 409 "try again", nothing saved, no second lock; the retry claims the group', async () => {
+    // The AI's lookup can set customer_key in between (ai.ts). Locking that customer's other chats
+    // after this one would break the id order (a deadlock with mergeChats, which locks them in id
+    // order and would lose the merge), so the action is refused and the retry reads the new key.
+    // r2j sorts before r2k: the chat a second lock would have taken out of order.
+    known({ id: 'r2k', status: 'human_needed' });
+    known({ id: 'r2j', status: 'ai_handling', customer_key: '9000000022' });
+    db.after.push({ re: /^SELECT c\.id, c\.source, s\.tracker_business_id/, fn: () => { C('r2k').customer_key = '9000000022'; } });
+    const snapshot = clone(db.convs), m0 = db.messages.length, e0 = db.events.length, s0 = db.stmts.length;
+    const r = await reply('anurag', 'r2k');
+    status(r, 409);
+    eq(r.body.error, 'Someone else is changing this chat right now. Try again.');
+    snapshot.find((c) => c.id === 'r2k').customer_key = '9000000022';   // only the lookup's own change
+    deq(db.convs, snapshot);
+    deq([db.messages.length, db.events.length], [m0, e0]);
+    const [tx] = txStmts(s0);
+    eq(tx.filter((q) => /FOR NO KEY UPDATE$/.test(q)).length, 1, 'one lock statement only');
+    eq(tx[tx.length - 1], 'ROLLBACK');
+    // The same on the thread's actions (they share lockChatGroup).
+    known({ id: 'r2m', status: 'human_needed' });
+    db.after.push({ re: /^SELECT c\.id, c\.site_id, c\.visitor_name, /, fn: () => { C('r2m').customer_key = '9000000022'; } });
+    status(await takeOver('anurag', 'r2m'), 409);
+    eq(C('r2m').assigned_to, null);
+    // Pressed again: the new key is read first, the whole group is locked in id order and claimed.
+    status(await reply('anurag', 'r2k'), 200);
+    deq(['r2k', 'r2j', 'r2m'].map((id) => C(id).assigned_to), [ANURAG, ANURAG, ANURAG]);
+    deq(evs('r2k', 'claim')[0].meta.group, ['r2j', 'r2m']);
+  });
+
+  // ── R3-R5: someone else's chat ────────────────────────────────
+  await t('R3 a junior on a senior\'s chat: 409 with his name, nothing saved', async () => {
+    known({ id: 'r3', status: 'agent_handling', assigned_to: RAHUL });
+    const before = clone(C('r3')), s0 = db.stmts.length;
+    const r = await reply('anurag', 'r3', 'Let me help');
+    status(r, 409);
+    eq(r.body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+    deq(C('r3'), before);
+    eq(agentMsgs('r3').length, 0);
+    eq(evs('r3').length, 0);
+    ok(!since(s0).some((x) => /^INSERT INTO messages|^UPDATE conversations/.test(x.q)));
+    ok(txStmts(s0)[0].includes('ROLLBACK'));
+    for (const body of [{ status: 'resolved' }, { status: 'ai_handling' }, { status: 'agent_handling' }]) {
+      const p = await patch('anurag', 'r3', body);
+      status(p, 409, JSON.stringify(body));
+      eq(p.body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+    }
+    deq(C('r3'), before);
+  });
+
+  await t('R4 a senior on a junior\'s chat: "Take from Anurag" first, then it is his', async () => {
+    const K = '9000000004';
+    known({ id: 'r4', status: 'agent_handling', assigned_to: ANURAG, customer_key: K });
+    known({ id: 'r4b', status: 'human_needed', assigned_to: ANURAG, customer_key: K });   // Anurag's too: comes along
+    known({ id: 'r4c', status: 'ai_handling', customer_key: K });                         // nobody's: stays nobody's
+    const r = await reply('rahul', 'r4');
+    status(r, 409);
+    eq(r.body.error, 'Anurag has this chat. Press "Take from Anurag" first.');
+    eq(agentMsgs('r4').length, 0);
+    const g = await thread('rahul', 'r4');
+    deq([g.body.staff.take, g.body.staff.can_act, g.body.staff.holder.name], ['senior', false, 'Anurag']);
+    const w0 = db.waitingAsked.length;
+    const tk = await takeFrom('rahul', 'r4');
+    status(tk, 200);
+    deq([tk.body.assigned_to, tk.body.status], [RAHUL, 'agent_handling']);
+    deq(['r4', 'r4b', 'r4c'].map((id) => C(id).assigned_to), [RAHUL, RAHUL, null]);
+    eq(C('r4b').status, 'human_needed');
+    const ev = evs('r4', 'take')[0];
+    deq([ev.actor, ev.from_owner, ev.to_owner, ev.reason, ev.meta], [RAHUL, ANURAG, RAHUL, 'take', { tier: 'senior', take: 'senior', group: ['r4b'] }]);
+    eq(db.waitingAsked.length, w0, 'a senior\'s take never asks whether the customer waits');
+    status(await reply('rahul', 'r4'), 200);
+    eq(evs('r4', 'claim').length, 0);
+    status(await reply('anurag', 'r4'), 409);
+    // Taking what is already yours, or a chat nobody holds, is refused (Take over is the button there).
+    eq((await takeFrom('rahul', 'r4')).body.error, "Nothing to take: this chat is no longer someone else's.");
+    known({ id: 'r4d' });
+    status(await takeFrom('rahul', 'r4d'), 409);
+  });
+
+  await t('R4 a senior cannot take another senior\'s chat', async () => {
+    db.team.find((u) => u.id === ANURAG).permissions.push('chat.senior');
+    await mod.auth.refreshTeamCache(true);
+    known({ id: 'r4s', status: 'agent_handling', assigned_to: ANURAG });
+    const r = await takeFrom('rahul', 'r4s');
+    status(r, 409);
+    eq(r.body.error, "Nothing to take: Anurag's chat cannot be taken by you.");
+    eq((await reply('rahul', 'r4s')).body.error, 'Anurag has this chat. You can read it; ask Anurag or Super Admin to transfer it to you.');
+    db.team.find((u) => u.id === ANURAG).permissions = [...CHAT_PERMS];
+    await mod.auth.refreshTeamCache(true);
+  });
+
+  await t('R5 away cover: a waiting customer\'s chat can be taken from a member away 30+ min in office hours only', async () => {
+    known({ id: 'r5', status: 'agent_handling', assigned_to: RAHUL });
+    db.waiting.r5 = true;
+    at(ist(15, 0)); touch('rahul', ist(14, 55));
+    let w0 = db.waitingAsked.length;
+    let r = await takeFrom('anurag', 'r5');
+    status(r, 409);
+    eq(r.body.error, "Nothing to take: Rahul's chat cannot be taken by you.");
+    eq(db.waitingAsked.length, w0, 'Rahul was around: no need to ask whether the customer waits');
+    touch('rahul', ist(14, 15));                       // 45 min away at 15:00
+    db.waiting.r5 = false;
+    w0 = db.waitingAsked.length;
+    status(await takeFrom('anurag', 'r5'), 409);       // the customer is not waiting
+    eq(db.waitingAsked.length, w0 + 1);
+    let g = await thread('anurag', 'r5');
+    deq([g.body.staff.take, g.body.staff.holder.away_min, g.body.staff.can_act], [null, 45, false]);
+    eq((await reply('anurag', 'r5')).body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+    db.waiting.r5 = true;
+    g = await thread('anurag', 'r5');
+    eq(g.body.staff.take, 'holder_away');
+    eq((await reply('anurag', 'r5')).body.error, 'Rahul has this chat. Press "Take from Rahul" first.');
+    r = await takeFrom('anurag', 'r5');
+    status(r, 200);
+    eq(C('r5').assigned_to, ANURAG);
+    deq(evs('r5', 'take')[0].meta, { tier: 'junior', take: 'holder_away', group: [] });
+    // At night nobody is "away": no away cover.
+    known({ id: 'r5n', status: 'agent_handling', assigned_to: RAHUL });
+    db.waiting.r5n = true;
+    at(ist(21, 0));
+    w0 = db.waitingAsked.length;
+    status(await takeFrom('anurag', 'r5n'), 409);
+    eq(db.waitingAsked.length, w0);
+    eq((await thread('anurag', 'r5n')).body.staff.take, null);
+    // Never for the Super Admin's chats, however long he is away.
+    at(ist(15, 0));
+    known({ id: 'r5o', status: 'agent_handling', assigned_to: 'owner' });
+    db.waiting.r5o = true;
+    touch('owner', ist(11, 0));
+    for (const who of ['anurag', 'rahul']) {
+      const x = await takeFrom(who, 'r5o');
+      status(x, 409, who);
+      eq(x.body.error, "Nothing to take: Super Admin's chat cannot be taken by you.");
+    }
+    eq(C('r5o').assigned_to, 'owner');
+  });
+
+  // ── R6: the Super Admin (owner answers Q2 and 3) ──────────────
+  await t('R6 the Super Admin\'s first reply on a free chat makes it his, with the customer\'s free chats', async () => {
+    at(ist(16, 0));
+    const K = '9000000006';
+    known({ id: 'r6a', customer_key: K, status: 'human_needed' });
+    known({ id: 'r6b', customer_key: K, status: 'ai_handling' });
+    status(await reply('owner', 'r6a', 'Main dekh raha hoon'), 200);
+    deq([C('r6a').assigned_to, C('r6b').assigned_to, C('r6a').status], ['owner', 'owner', 'agent_handling']);
+    deq(agentMsgs('r6a').map((x) => x.metadata), [{ agent: 'Owner' }]);
+    const claim = evs('r6a', 'claim')[0];
+    deq([claim.actor, claim.actor_name, claim.to_owner, claim.reason, claim.meta], ['owner', 'Super Admin', 'owner', 'reply', { tier: 'owner', group: ['r6b'] }]);
+    deq([evs('r6a', 'status')[0].actor, evs('r6a', 'reply')[0].actor], ['owner', 'owner']);
+    // The team only reads his chats.
+    eq((await reply('anurag', 'r6a')).body.error, 'Super Admin has this chat. You can read it; ask Super Admin to transfer it to you.');
+    eq((await takeFrom('rahul', 'r6a')).body.error, "Nothing to take: Super Admin's chat cannot be taken by you.");
+    const tr = await patch('anurag', 'r6a', { transferTo: RAHUL, note: 'please take this one' });
+    status(tr, 409);
+    eq(tr.body.error, 'Super Admin has this chat. Only Super Admin can transfer it.');
+    status(await patch('rahul', 'r6a', { status: 'resolved' }), 409);
+    const g = await thread('rahul', 'r6a');
+    deq([g.body.staff.can_act, g.body.staff.take, g.body.staff.transfer_to, g.body.staff.holder], [false, null, [], { key: 'owner', name: 'Super Admin', senior: false, owner: true, away_min: null }]);
+  });
+
+  await t('R6 the Super Admin on a member\'s chat: acts without taking it; "Take from" and Take over claim', async () => {
+    known({ id: 'r6c', status: 'agent_handling', assigned_to: ANURAG });
+    status(await reply('owner', 'r6c'), 200);
+    eq(C('r6c').assigned_to, ANURAG);
+    eq(evs('r6c', 'claim').length, 0);
+    eq(evs('r6c', 'reply')[0].to_owner, ANURAG);
+    const g = await thread('owner', 'r6c');
+    deq([g.body.staff.can_act, g.body.staff.claims, g.body.staff.take], [true, false, 'owner']);
+    status(await takeFrom('owner', 'r6c'), 200);
+    eq(C('r6c').assigned_to, 'owner');
+    deq(evs('r6c', 'take')[0].meta, { tier: 'owner', take: 'owner', group: [] });
+    status(await reply('anurag', 'r6c'), 409);
+    // Take over on a chat nobody holds claims too (reason take_over), the AI stops.
+    known({ id: 'r6d', status: 'human_needed' });
+    const r = await takeOver('owner', 'r6d');
+    status(r, 200);
+    deq([r.body.assigned_to, C('r6d').status], ['owner', 'agent_handling']);
+    const ev = evs('r6d', 'claim')[0];
+    deq([ev.reason, ev.meta], ['take_over', { tier: 'owner', group: [] }]);
+    eq(evs('r6d', 'status')[0].reason, 'take_over');
+  });
+
+  await t('R6 Transfer to "Me (Super Admin)" and to "Nobody (open pool)"', async () => {
+    known({ id: 'r6e', status: 'agent_handling', assigned_to: ANURAG });
+    const g = await thread('owner', 'r6e');
+    deq(g.body.staff.transfer_to.map((x) => [x.key, x.name]), [[RAHUL, 'Rahul'], ['owner', 'Me (Super Admin)'], [null, 'Nobody (open pool)']]);
+    const toHolder = await patch('owner', 'r6e', { transferTo: ANURAG, note: 'she already has it' });
+    status(toHolder, 400);
+    eq(toHolder.body.error, 'Pick someone who can reply in this panel (not you, not the person who has it)');
+    let r = await patch('owner', 'r6e', { transferTo: 'owner', note: 'I will handle this one' });
+    status(r, 200);
+    deq([r.body.assigned_to, r.body.holder_name, r.body.status], ['owner', 'Super Admin', 'human_needed']);   // a known customer: Needs you
+    r = await patch('owner', 'r6e', { transferTo: null, note: 'Back to the team please' });
+    status(r, 200);
+    deq([r.body.assigned_to, r.body.holder_name, r.body.status, C('r6e').assigned_at], [null, null, 'human_needed', null]);   // Nobody keeps the status
+    const ev = evs('r6e', 'transfer').pop();
+    deq([ev.from_owner, ev.to_owner, ev.note, ev.meta.tier], ['owner', null, 'Back to the team please', 'owner']);
+    // Nobody is offered only on a held chat.
+    ok(!(await thread('owner', 'r6e')).body.staff.transfer_to.some((x) => x.key === null));
+    status(await patch('owner', 'r6e', { transferTo: null, note: 'again to nobody' }), 400);
+    // His Close keeps him as the holder.
+    status(await takeOver('owner', 'r6e'), 200);
+    status(await patch('owner', 'r6e', { status: 'resolved' }), 200);
+    deq([C('r6e').assigned_to, C('r6e').status, C('r6e').closed_by_name], ['owner', 'resolved', 'Super Admin']);
+  });
+
+  // ── R7: Transfer ──────────────────────────────────────────────
+  await t('R7 transfer: refused cleanly when the note, the target or the person is wrong', async () => {
+    at(ist(16, 30)); touch('owner', ist(16, 29));
+    known({ id: 'r7x', status: 'agent_handling', assigned_to: ANURAG });
+    const before = clone(C('r7x')), e0 = db.events.length;
+    const bad = [
+      [{ transferTo: RAHUL }, 400, 'Write one line for the team: why are you transferring it?'],
+      [{ transferTo: RAHUL, note: '   ' }, 400, 'Write one line for the team: why are you transferring it?'],
+      [{ transferTo: RAHUL, note: '12!' }, 400, 'Write one line for the team: why are you transferring it?'],
+      [{ transferTo: RAHUL, note: 'ab' }, 400, 'Write one line for the team: why are you transferring it?'],
+      [{ transferTo: ANURAG, note: 'to myself' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: OFF, note: 'switched off' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: PRIYA, note: 'not her panel' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: VIEWER, note: 'cannot reply' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: GONE, note: 'removed member' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: 5, note: 'a number' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: '', note: 'empty' }, 400, 'Pick someone who can reply in this panel (not you, not the person who has it)'],
+      [{ transferTo: null, note: 'to the pool' }, 403, 'Only Super Admin can put a chat back in the open pool'],
+    ];
+    for (const [body, code, msg] of bad) {
+      const r = await patch('anurag', 'r7x', body);
+      status(r, code, JSON.stringify(body));
+      eq(r.body.error, msg);
+    }
+    const r = await patch('rahul', 'r7x', { transferTo: 'owner', note: 'not mine to give' });
+    status(r, 409);
+    eq(r.body.error, 'Anurag has this chat. Only Anurag or Super Admin can transfer it.');
+    status(await patch('viewer', 'r7x', { transferTo: RAHUL, note: 'viewer tries' }), 403);
+    deq(C('r7x'), before);
+    eq(db.events.length, e0);
+    // The list offered to the holder: members who can reply in the panel, then the Super Admin.
+    const g = await thread('anurag', 'r7x');
+    deq(g.body.staff.transfer_to, [{ key: RAHUL, name: 'Rahul', senior: true, away_min: null }, { key: 'owner', name: 'Super Admin', senior: false, away_min: null }]);
+  });
+
+  await t('R7 transfer: a known customer goes to Needs you "For Rahul", the same holder\'s other chats move, the note stays staff only', async () => {
+    const K = '9000000007';
+    known({ id: 'r7', status: 'agent_handling', assigned_to: ANURAG, customer_key: K, auto_closed_at: 'x' });
+    known({ id: 'r7b', status: 'agent_handling', assigned_to: ANURAG, customer_key: K });  // same holder: moves, status kept
+    known({ id: 'r7c', status: 'ai_handling', customer_key: K });                         // nobody's: stays
+    const s0 = db.stmts.length, l0 = logged.length;
+    const note = 'Customer angry,\nrefund asked 2nd time \t‮ok';
+    const r = await patch('anurag', 'r7', { transferTo: RAHUL, note });
+    status(r, 200);
+    deq(r.body, { success: true, status: 'human_needed', assigned_to: RAHUL, holder_name: 'Rahul' });
+    deq([C('r7').status, C('r7').assigned_to, C('r7').auto_closed_at], ['human_needed', RAHUL, null]);
+    deq([C('r7b').assigned_to, C('r7b').status, C('r7c').assigned_to], [RAHUL, 'agent_handling', null]);
+    const ev = evs('r7', 'transfer')[0];
+    deq([ev.actor, ev.from_owner, ev.to_owner, ev.from_status, ev.to_status, ev.reason, ev.note], [ANURAG, ANURAG, RAHUL, 'agent_handling', 'human_needed', 'transfer', 'Customer angry, refund asked 2nd time ok']);
+    deq(ev.meta, { tier: 'junior', status_before: 'agent_handling', group: ['r7b'] });
+    deq([evs('r7', 'status')[0].actor, evs('r7', 'status')[0].reason], [ANURAG, 'transfer']);
+    ok(!since(s0).some((x) => /INSERT INTO messages/.test(x.q)), 'a transfer writes no message');
+    const out = logged.slice(l0).join('\n');
+    ok(/transfer conv r7 from .* to .* \(note \d+ chars\)/.test(out) && !/angry|refund asked/.test(out), 'the log line names no note: ' + out);
+    ok(!db.messages.some((x) => /angry/.test(x.content)));
+    // Rahul now holds it; the team log shows the note to staff.
+    status(await reply('anurag', 'r7'), 409);
+    const g = await thread('rahul', 'r7');
+    deq(pick(g.body.team_log[0], ['kind', 'note', 'from_name', 'to_name', 'actor_name']), { kind: 'transfer', note: 'Customer angry, refund asked 2nd time ok', from_name: 'Anurag', to_name: 'Rahul', actor_name: 'Anurag' });
+    deq([g.body.staff.can_act, g.body.staff.holder.key], [true, RAHUL]);
+    status(await reply('rahul', 'r7'), 200);
+  });
+
+  await t('R7 transfer: long notes are cut to 200 characters, never mid-letter', async () => {
+    known({ id: 'r7l', status: 'agent_handling', assigned_to: ANURAG });
+    status(await patch('anurag', 'r7l', { transferTo: RAHUL, note: 'a'.repeat(250) }), 200);
+    eq(evs('r7l', 'transfer')[0].note, 'a'.repeat(200));
+    known({ id: 'r7h', status: 'agent_handling', assigned_to: ANURAG });
+    status(await patch('anurag', 'r7h', { transferTo: RAHUL, note: 'ग्राहक नाराज़ है 😡 '.repeat(20) }), 200);
+    const note = evs('r7h', 'transfer')[0].note;
+    ok(Array.from(note).length <= 200 && !/�/.test(note) && !/[\uD800-\uDBFF]$/.test(note));
+  });
+
+  await t('R7 transfer: a visitor never reaches Needs you; a case chat keeps its status; a Closed chat is refused', async () => {
+    newConv({ id: 'r7v', status: 'agent_handling', assigned_to: ANURAG });                   // a visitor
+    let r = await patch('anurag', 'r7v', { transferTo: 'owner', note: 'visitor asks for the owner' });
+    status(r, 200);
+    deq([r.body.status, r.body.assigned_to, C('r7v').status], ['agent_handling', 'owner', 'agent_handling']);
+    known({ id: 'r7k', status: 'agent_handling', assigned_to: ANURAG, case_kind: 'refund', case_order_id: '#r7k' });
+    r = await patch('anurag', 'r7k', { transferTo: RAHUL, note: 'refund case for the senior' });
+    status(r, 200);
+    deq([C('r7k').status, C('r7k').assigned_to], ['agent_handling', RAHUL]);
+    known({ id: 'r7z', status: 'resolved', assigned_to: ANURAG });
+    r = await patch('anurag', 'r7z', { transferTo: RAHUL, note: 'closed one' });
+    status(r, 400);
+    eq(r.body.error, 'This chat is Closed. When the customer writes again it goes to whoever holds it.');
+    eq(C('r7z').assigned_to, ANURAG);
+    deq((await thread('anurag', 'r7z')).body.staff.transfer_to, []);
+    // Anyone may transfer a chat nobody holds (they may act on it).
+    known({ id: 'r7u', status: 'human_needed' });
+    status(await patch('anurag', 'r7u', { transferTo: RAHUL, note: 'for the senior' }), 200);
+    deq([C('r7u').assigned_to, evs('r7u', 'transfer')[0].from_owner], [RAHUL, null]);
+    // To someone away: allowed, the list says so.
+    at(ist(16, 30)); touch('rahul', ist(15, 40));
+    known({ id: 'r7w', status: 'agent_handling', assigned_to: ANURAG });
+    const g = await thread('anurag', 'r7w');
+    eq(g.body.staff.transfer_to.find((x) => x.key === RAHUL).away_min, 50);
+    status(await patch('anurag', 'r7w', { transferTo: RAHUL, note: 'for when he is back' }), 200);
+  });
+
+  // ── R8: Close and Hand to AI ──────────────────────────────────
+  await t('R8 Close and Hand to AI: the holder only; they keep the holder', async () => {
+    known({ id: 'r8', status: 'agent_handling', assigned_to: RAHUL, auto_closed_at: 'x', unread_count: 3 });
+    for (const st of ['resolved', 'ai_handling']) status(await patch('anurag', 'r8', { status: st }), 409, st);
+    let r = await patch('rahul', 'r8', { status: 'ai_handling' });
+    status(r, 200);
+    deq([r.body.status, r.body.assigned_to, C('r8').assigned_to, C('r8').auto_closed_at], ['ai_handling', RAHUL, RAHUL, null]);
+    deq([evs('r8', 'status')[0].actor, evs('r8', 'status')[0].reason], [RAHUL, 'hand_to_ai']);
+    r = await patch('rahul', 'r8', { status: 'resolved' });
+    status(r, 200);
+    deq([r.body.closed_by_name, r.body.assigned_to, C('r8').unread_count, C('r8').status], ['Rahul', RAHUL, 0, 'resolved']);
+    eq(evs('r8', 'status')[1].reason, 'close');
+    // Take over on his own Closed chat reopens it; no claim, it is already his.
+    r = await takeOver('rahul', 'r8');
+    status(r, 200);
+    deq([C('r8').status, C('r8').assigned_to, evs('r8', 'claim').length], ['agent_handling', RAHUL, 0]);
+    // Take over on his own Needs you chat: the status only.
+    known({ id: 'r8n', status: 'human_needed', assigned_to: RAHUL });
+    status(await takeOver('rahul', 'r8n'), 200);
+    deq([C('r8n').status, evs('r8n', 'claim').length], ['agent_handling', 0]);
+    // A Refund / Ship again chat never goes back to the AI.
+    known({ id: 'r8k', status: 'agent_handling', assigned_to: RAHUL, case_kind: 'reship', case_order_id: '#r8k' });
+    r = await patch('rahul', 'r8k', { status: 'ai_handling' });
+    status(r, 409);
+    eq(r.body.error, 'Remove the Refund / Ship again mark before handing this chat to the AI');
+    eq(C('r8k').status, 'agent_handling');
+    status(await patch('rahul', 'r8k', { status: 'bogus' }), 400);
+    // Close and Hand to AI on a chat nobody holds: allowed, and still nobody's.
+    known({ id: 'r8f', status: 'human_needed' });
+    status(await patch('anurag', 'r8f', { status: 'ai_handling' }), 200);
+    deq([C('r8f').status, C('r8f').assigned_to, evs('r8f', 'claim').length], ['ai_handling', null, 0]);
+    status(await patch('anurag', 'r8f', { status: 'resolved' }), 200);
+    deq([C('r8f').status, C('r8f').assigned_to, C('r8f').closed_by_name, evs('r8f', 'claim').length], ['resolved', null, 'Anurag', 0]);
+    known({ id: 'r8g', status: 'agent_handling' });
+    status(await patch('owner', 'r8g', { status: 'resolved' }), 200);
+    eq(C('r8g').assigned_to, null);
+    status(await patch('viewer', 'r8k', { status: 'resolved' }), 403);
+  });
+
+  // ── R9: Refund / Ship again ───────────────────────────────────
+  await t('R9 a senior or the Super Admin marks any chat, without holding it; the SQL and chat_case_events are as before', async () => {
+    await restart();                                       // presence starts empty
+    at(ist(15, 0));
+    known({ id: 'r9', status: 'human_needed' });
+    const s0 = db.stmts.length;
+    const r = await patch('rahul', 'r9', { caseKind: 'refund' });
+    status(r, 200);
+    deq(pick(r.body, ['success', 'case_kind', 'case_marked_by', 'case_order_id', 'status']), { success: true, case_kind: 'refund', case_marked_by: 'Rahul', case_order_id: '#r9', status: 'agent_handling' });
+    eq(C('r9').assigned_to, null, 'marking never claims');
+    const ce = db.caseEvents.filter((e) => e.conversation_id === 'r9');
+    deq(ce.map((e) => [e.site_id, e.kind, e.action, e.order_id, e.actor, e.actor_role]), [['S1', 'refund', 'mark', '#r9', 'Rahul', 'manager']]);
+    ok(UUID.test(ce[0].id));
+    const [tx] = txStmts(s0);
+    ok(tx.includes(OLD_CASE_SQL.mark) && tx.includes(OLD_CASE_SQL.eventMark));
+    deq(evs('r9', 'case_mark')[0].meta, { tier: 'senior', case: 'refund' });
+    deq([evs('r9', 'status')[0].actor, evs('r9', 'status')[0].reason], [RAHUL, 'case']);
+    known({ id: 'r9o', status: 'ai_handling' });
+    status(await patch('owner', 'r9o', { caseKind: 'reship' }), 200);
+    deq(evs('r9o', 'case_mark')[0].meta, { tier: 'owner', case: 'reship' });
+    newConv({ id: 'r9v' });
+    eq((await patch('rahul', 'r9v', { caseKind: 'refund' })).body.error, 'Only a verified customer can be marked for a refund or to ship again');
+  });
+
+  await t('R9 a junior marks only while every senior has been away 30+ min, 10:00-19:30', async () => {
+    at(ist(15, 5));                                        // Rahul was seen at 15:00 (his mark)
+    let r = await patch('anurag', 'r9', { caseKind: 'reship' });
+    status(r, 403);
+    eq(r.body.error, 'A senior marks Refund / Ship again. You can mark it while no senior has been in ShipTrack for 30 minutes (10:00-19:30).');
+    eq(C('r9').case_kind, 'refund');
+    let g = await thread('anurag', 'r9');
+    deq([g.body.staff.can_mark_case, g.body.staff.mark_override, g.body.staff.mark_note], [false, false, 'A senior marks this. You can mark it while no senior has been in ShipTrack for 30 minutes (10:00-19:30).']);
+    at(ist(15, 31));
+    g = await thread('anurag', 'r9');
+    deq([g.body.staff.can_mark_case, g.body.staff.mark_override, g.body.staff.mark_note], [true, true, 'Rahul not seen for 31 min: you can mark Refund / Ship again']);
+    r = await patch('anurag', 'r9', { caseKind: 'reship' });
+    status(r, 200);
+    deq(db.caseEvents.filter((e) => e.conversation_id === 'r9').slice(-2).map((e) => [e.kind, e.action, e.actor, e.actor_role]), [['refund', 'remove', 'Anurag', 'agent'], ['reship', 'mark', 'Anurag', 'agent']]);
+    deq(evs('r9', 'case_mark').pop().meta, { tier: 'junior', case: 'reship', from_case: 'refund', override: 'senior_away' });
+    // Remove: anyone with chat.cases, any time.
+    at(ist(21, 0));
+    r = await patch('anurag', 'r9', { caseKind: null });
+    status(r, 200);
+    deq([r.body.case_kind, r.body.status, C('r9').status], [null, 'human_needed', 'human_needed']);
+    deq(evs('r9', 'case_remove')[0].meta, { tier: 'junior', case: 'reship' });
+    // At night nobody is away: a junior waits for the morning.
+    status(await patch('anurag', 'r9', { caseKind: 'refund' }), 403);
+    // 10:20 the next day, Rahul not seen since yesterday: 20 minutes is not away yet.
+    at(ist(10, 20, 2));
+    status(await patch('anurag', 'r9', { caseKind: 'refund' }), 403);
+    at(ist(10, 30, 2));
+    eq((await thread('anurag', 'r9')).body.staff.mark_note, 'Rahul not seen for 30 min: you can mark Refund / Ship again');
+    // Rahul is back and marks; Anurag switching it while he is around is a mark too: 403.
+    at(ist(10, 40, 2));
+    status(await patch('rahul', 'r9', { caseKind: 'refund' }), 200);
+    status(await patch('anurag', 'r9', { caseKind: 'reship' }), 403);
+    eq(C('r9').case_kind, 'refund');
+    // A junior re-marking the same kind is still the gate's call (the gate runs before the lock).
+    status(await patch('anurag', 'r9', { caseKind: 'refund' }), 403);
+  });
+
+  await t('R9 while nobody has the Senior tick: today\'s rule, chat.cases is enough, day and night', async () => {
+    const rahul = db.team.find((u) => u.id === RAHUL);
+    rahul.permissions = rahul.permissions.filter((x) => x !== 'chat.senior');
+    await mod.auth.refreshTeamCache(true);
+    at(ist(15, 0, 2)); touch('rahul', ist(14, 59, 2));
+    let r = await patch('anurag', 'r9', { caseKind: 'reship' });
+    status(r, 200);
+    deq(evs('r9', 'case_mark').pop().meta, { tier: 'junior', case: 'reship', from_case: 'refund' });
+    at(ist(21, 0, 2));
+    status(await patch('anurag', 'r9', { caseKind: 'refund' }), 200);
+    const g = await thread('anurag', 'r9');
+    deq([g.body.staff.can_mark_case, g.body.staff.mark_override, g.body.staff.mark_note], [true, false, null]);
+    // And Rahul (no tick now) cannot take Anurag's chat.
+    known({ id: 'r9t', status: 'agent_handling', assigned_to: ANURAG });
+    status(await takeFrom('rahul', 'r9t'), 409);
+    rahul.permissions.push('chat.senior');
+    await mod.auth.refreshTeamCache(true);
+    eq((await thread('rahul', 'r9t')).body.staff.take, 'senior');
+  });
+
+  // ── R10-R12: races, locks, a broken log ───────────────────────
+  await t('R10 two replies or two Take overs at once on a free chat: one wins, the other gets 409', async () => {
+    at(ist(16, 0, 2));
+    known({ id: 'r10', status: 'human_needed' });
+    const w0 = db.lockWaits;
+    const rs = await Promise.all([reply('anurag', 'r10', 'Reply A'), reply('rahul', 'r10', 'Reply B')]);
+    deq(rs.map((r) => r.status).sort(), [200, 409]);
+    ok(db.lockWaits > w0, 'the second reply waited for the first one\'s lock');
+    const winner = rs[0].status === 200 ? ANURAG : RAHUL;
+    eq(C('r10').assigned_to, winner);
+    eq(agentMsgs('r10').length, 1);
+    eq(evs('r10', 'claim').length, 1);
+    known({ id: 'r10b', status: 'human_needed' });
+    const ts2 = await Promise.all([takeOver('rahul', 'r10b'), takeOver('anurag', 'r10b')]);
+    deq(ts2.map((r) => r.status).sort(), [200, 409]);
+    eq(evs('r10b', 'claim').length, 1);
+    // The Super Admin and a member at once: whoever locks first claims it; the Super Admin may act on
+    // a member's chat, so both may succeed, but the chat gets exactly one holder and one claim.
+    known({ id: 'r10c', status: 'human_needed' });
+    const ts3 = await Promise.all([reply('owner', 'r10c', 'Owner here'), reply('anurag', 'r10c', 'Anurag here')]);
+    eq(evs('r10c', 'claim').length, 1);
+    eq(C('r10c').assigned_to, evs('r10c', 'claim')[0].to_owner);
+    eq(agentMsgs('r10c').length, ts3.filter((r) => r.status === 200).length);
+  });
+
+  await t('R11 a lock held too long (55P03) or a deadlock (40P01): 409 "try again", nothing saved', async () => {
+    known({ id: 'r11', status: 'human_needed' });
+    const before = clone(C('r11')), e0 = db.events.length, m0 = db.messages.length;
+    const let_go = holdLock('r11');
+    const busy = 'Someone else is changing this chat right now. Try again.';
+    for (const [label, call] of [
+      ['reply', () => reply('anurag', 'r11')],
+      ['take over', () => takeOver('anurag', 'r11')],
+      ['close', () => patch('anurag', 'r11', { status: 'resolved' })],
+      ['transfer', () => patch('anurag', 'r11', { transferTo: RAHUL, note: 'for the senior' })],
+      ['mark', () => patch('rahul', 'r11', { caseKind: 'refund' })],
+    ]) {
+      const r = await call();
+      status(r, 409, label);
+      eq(r.body.error, busy, label);
+    }
+    let_go();
+    deq(C('r11'), before);
+    deq([db.events.length, db.messages.length], [e0, m0]);
+    db.fail.push({ re: /FOR NO KEY UPDATE$/, code: '40P01', once: true });
+    const r = await reply('anurag', 'r11');
+    status(r, 409);
+    eq(r.body.error, busy);
+    deq(C('r11'), before);
+    status(await reply('anurag', 'r11'), 200);             // and then it works
+  });
+
+  await t('R12 chat_events broken: a reply is still saved; a transfer (its note lives there) is not', async () => {
+    known({ id: 'r12', status: 'human_needed' });
+    db.eventsBroken = true;
+    const l0 = logged.length;
+    const r = await reply('anurag', 'r12');
+    status(r, 200);
+    deq([agentMsgs('r12').length, C('r12').status, C('r12').assigned_to], [1, 'agent_handling', ANURAG]);
+    eq(evs('r12').length, 0);
+    const secret = 'customer said private things here';
+    const t1 = await patch('anurag', 'r12', { transferTo: RAHUL, note: secret });
+    status(t1, 500);
+    deq([C('r12').assigned_to, C('r12').status], [ANURAG, 'agent_handling']);
+    const out = logged.slice(l0).join('\n');
+    ok(/claim event not logged/.test(out) && /reply event not logged/.test(out));
+    ok(!out.includes(secret), 'a note never reaches the logs');
+    db.eventsBroken = false;
+    status(await patch('anurag', 'r12', { transferTo: RAHUL, note: secret }), 200);
+    eq(C('r12').assigned_to, RAHUL);
+  });
+
+  // ── R13: right after a restart ────────────────────────────────
+  await t('R13 restart, team list not read: actions answer 503 after the wait; a read shows a stored holder as held', async () => {
+    known({ id: 'r13', status: 'agent_handling', assigned_to: RAHUL });
+    known({ id: 'r13f', status: 'human_needed' });
+    db.messages.push({ id: 'r13m', conversation_id: 'r13', sender: 'agent', content: 'hello', metadata: { agent: 'rahul' }, created_at: nowIso() });
+    let open; db.teamGate = new Promise((r) => { open = r; });
+    fresh();
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms, ...a) => realSetTimeout(fn, ms >= 1000 ? ms / 100 : ms, ...a);   // 3 s = 30 ms
+    try {
+      const starting = 'ShipTrack is starting. Try again in a moment.';
+      for (const [label, call] of [
+        ['reply', () => reply('anurag', 'r13f')],
+        ['patch', () => takeOver('anurag', 'r13f')],
+        ['transfer', () => patch('rahul', 'r13', { transferTo: 'owner', note: 'for the owner' })],
+        ['release', () => release('owner')],
+      ]) {
+        const r = await call();
+        status(r, 503, label);
+        eq(r.body.error, starting, label);
+      }
+      eq(C('r13f').assigned_to, null);
+      const g = await thread('anurag', 'r13');
+      status(g, 200);
+      deq(g.body.staff.holder, { key: RAHUL, name: 'a team member', senior: true, owner: false, away_min: null });
+      deq([g.body.staff.me, g.body.staff.can_act, g.body.staff.claims, g.body.staff.take, g.body.staff.transfer_to], [ANURAG, false, false, null, []]);
+      eq(g.body.messages.find((x) => x.id === 'r13m').author, null);     // "Team" until the names are known
+      const l = await list('anurag', '?mine=1');
+      status(l, 200);
+      deq([l.body.me, l.body.team.map((x) => x.key)], [ANURAG, ['owner']]);
+    } finally {
+      global.setTimeout = realSetTimeout;
+      db.teamGate = null; open();
+    }
+    await mod.auth.refreshTeamCache();
+    status(await reply('anurag', 'r13f'), 200);
+    eq(C('r13f').assigned_to, ANURAG);
+    eq((await thread('anurag', 'r13')).body.staff.holder.name, 'Rahul');
+  });
+
+  await t('R13 restart, logins read but presence not yet: nobody is away (no junior mark, no away take) until it is', async () => {
+    // The logins are read first; staff_presence after them, and here it fails (not the "table
+    // missing" case). Everyone would look unseen since 10:00, so Rahul, here a minute ago, would
+    // look away 5 hours: a restart must give no extra rights.
+    known({ id: 'r13p', status: 'agent_handling', assigned_to: RAHUL });
+    known({ id: 'r13q', status: 'human_needed' });
+    db.waiting.r13p = true;
+    at(ist(15, 0, 4));
+    const fail = { re: /^SELECT actor, last_seen_at FROM staff_presence$/, code: 'XX000', message: 'server closed the connection' };
+    db.fail.push(fail);
+    try {
+      await restart();
+      ok(mod.auth.teamLoaded() && !mod.auth.presenceRead());
+      let r = await patch('anurag', 'r13q', { caseKind: 'refund' });
+      status(r, 403, 'junior mark');
+      eq(r.body.error, 'A senior marks Refund / Ship again. You can mark it while no senior has been in ShipTrack for 30 minutes (10:00-19:30).');
+      r = await takeFrom('anurag', 'r13p');
+      status(r, 409, 'away take');
+      eq(r.body.error, "Nothing to take: Rahul's chat cannot be taken by you.");
+      const g = (await thread('anurag', 'r13p')).body.staff;
+      deq([g.holder.away_min, g.take, g.can_mark_case, g.mark_override], [null, null, false, false]);
+      ok((await list('anurag')).body.team.every((x) => x.away_min === null), 'nobody shown away');
+      deq([C('r13p').assigned_to, C('r13q').case_kind], [RAHUL, null]);
+    } finally {
+      db.fail.splice(db.fail.indexOf(fail), 1);
+    }
+    // Read once (Rahul really not seen today): the away rules apply again.
+    await mod.auth.refreshTeamCache();
+    ok(mod.auth.presenceRead());
+    status(await takeFrom('anurag', 'r13p'), 200);
+    eq(C('r13p').assigned_to, ANURAG);
+    eq(evs('r13p', 'take').pop().meta.take, 'holder_away');
+    status(await patch('anurag', 'r13q', { caseKind: 'refund' }), 200);
+    eq(evs('r13q', 'case_mark').pop().meta.override, 'senior_away');
+  });
+
+  // ── R14: presence ─────────────────────────────────────────────
+  await t('R14 presence: a POST or an active GET counts, a background GET does not; one upsert per reload', async () => {
+    await restart();
+    const a = mod.auth;
+    at(ist(11, 0, 2));
+    const ins = () => db.stmts.filter((x) => x.q.startsWith('INSERT INTO staff_presence')).length;
+    const sel = () => db.stmts.filter((x) => x.q === 'SELECT actor, last_seen_at FROM staff_presence').length;
+    ok(a.getAuthFromRequest(req('rahul', undefined, { method: 'GET' })));
+    eq(a.lastSeenMs(RAHUL), null);
+    ok(a.getAuthFromRequest(req('rahul', undefined, { method: 'GET', active: true })));
+    eq(a.lastSeenMs(RAHUL), ist(11, 0, 2));
+    at(ist(11, 5, 2));
+    ok(a.getAuthFromRequest(req('anurag', undefined, { method: 'PATCH' })));
+    ok(a.getAuthFromRequest(req('owner', undefined, { method: 'DELETE' })));
+    deq([a.lastSeenMs(ANURAG), a.lastSeenMs('owner')], [ist(11, 5, 2), ist(11, 5, 2)]);
+    // A token that is no longer good is not anyone's presence.
+    const stale = a.generateToken('anurag', 'agent', null, { sv: 1, uid: ANURAG });
+    tokens.stale = stale;
+    eq(a.getAuthFromRequest(req('stale', undefined, { method: 'POST' })), null);
+    let i0 = ins();
+    await a.refreshTeamCache(true);
+    eq(ins(), i0 + 1, 'one upsert for everyone seen since the last reload');
+    deq(db.presence.map((x) => x.actor).sort(), [RAHUL, ANURAG, 'owner'].sort());
+    i0 = ins();
+    await a.refreshTeamCache(true);
+    eq(ins(), i0, 'nothing new: no upsert');
+    // Read back: what another process saved counts (the newer of the two).
+    db.presence.push({ actor: PRIYA, last_seen_at: new Date(ist(10, 50, 2)).toISOString() });
+    await a.refreshTeamCache(true);
+    eq(a.lastSeenMs(PRIYA), ist(10, 50, 2));
+  });
+
+  await t('R14 staff_presence missing (chat-team.sql not applied): logins still work, asked again only after 10 min', async () => {
+    const a = mod.auth;
+    db.presenceMissing = true;
+    at(ist(12, 0, 2));
+    ok(a.getAuthFromRequest(req('anurag', undefined, { method: 'POST' })));
+    const s0 = db.stmts.length;
+    await a.refreshTeamCache(true);
+    ok(a.teamLoaded());
+    ok(a.getAuthFromRequest(req('rahul', undefined, { method: 'POST' })));
+    const asked = () => since(s0).filter((x) => /staff_presence/.test(x.q)).length;
+    eq(asked(), 1);
+    at(ist(12, 9, 2));
+    await a.refreshTeamCache(true);
+    eq(asked(), 1, 'not asked again within 10 minutes');
+    db.presenceMissing = false;
+    at(ist(12, 11, 2));
+    await a.refreshTeamCache(true);
+    ok(asked() >= 2);
+    ok(Date.parse(db.presence.find((x) => x.actor === ANURAG).last_seen_at) === ist(12, 0, 2), 'the kept presence was saved once the table exists');
+  });
+
+  // ── R15: the list ─────────────────────────────────────────────
+  await t('R15 the list: My chats, the unanswered count unchanged, the order unchanged, the team directory', async () => {
+    at(ist(16, 0, 2));
+    let r = await list('anurag', '?mine=1');
+    status(r, 200);
+    const L = db.list;
+    const mineCond = L.sql.match(/c\.assigned_to = \$(\d+) AND c\.status IN \('human_needed', 'agent_handling'\)/);
+    ok(mineCond, 'My chats condition');
+    eq(L.params[Number(mineCond[1]) - 1], ANURAG);
+    ok(L.sql.includes('c.case_kind IS NULL') && L.sql.includes('c.merged_into IS NULL'));
+    ok(/ORDER BY g\.last_message_at DESC NULLS LAST, g\.created_at DESC LIMIT \$\d+$/.test(L.sql), 'newest activity first, as before');
+    ok(L.sql.includes('WINDOW w AS (PARTITION BY f.site_id, f.group_key ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)'));
+    ok(L.sql.includes('g.assigned_to, g.assigned_at'));
+    eq((L.unansweredSql.match(/count\(DISTINCT x\.gk\) FILTER \(WHERE/g) || []).length, 3);
+    ok(!/\) x WHERE/.test(L.unansweredSql), 'no outer WHERE: n is the number it always was');
+    ok(L.unansweredSql.includes("c.status <> 'resolved' AND c.case_kind IS NULL"));
+    eq(L.unansweredParams[L.unansweredParams.length - 1], ANURAG);
+    deq([r.body.me, r.body.unanswered_total, r.body.mine, r.body.office_open], [ANURAG, 4, { open: 2, waiting: 1, held: 0 }, true]);
+    ok(!db.stmts.some((x) => x.q.startsWith('SELECT count(*)::int AS n FROM conversations WHERE assigned_to')), 'held is asked for the Super Admin only');
+    deq(r.body.team.map((x) => [x.key, x.name, x.senior, x.owner]), [[RAHUL, 'Rahul', true, false], [ANURAG, 'Anurag', false, false], [PRIYA, 'Priya', false, false], ['owner', 'Super Admin', false, true]]);
+    for (const e of r.body.team) deq(Object.keys(e).sort(), ['away_min', 'key', 'name', 'owner', 'seen_min', 'senior']);
+    // Without mine, and in a search, no holder condition.
+    r = await list('anurag');
+    ok(!/c\.assigned_to = \$/.test(db.list.sql));
+    r = await list('anurag', '?mine=1&q=order%201234');
+    ok(!/c\.assigned_to = \$/.test(db.list.sql));
+    r = await list('owner', '?mine=1');
+    deq([r.body.me, db.list.unansweredParams, db.list.heldParams], ['owner', ['owner'], ['owner']]);
+    eq(r.body.mine.held, db.convs.filter((c) => c.assigned_to === 'owner' && c.status !== 'resolved' && !c.merged_into).length);
+    at(ist(21, 0, 2));
+    eq((await list('owner')).body.office_open, false);
+    const v = await list('viewer', '?mine=1');
+    status(v, 200);
+    eq(v.body.me, VIEWER);
+  });
+
+  // ── R16: the widget never gets the staff username ─────────────
+  await t('R16 the widget\'s messages: no metadata.agent; files and captionless kept; a deleted message carries nothing', async () => {
+    newConv({ id: 'r16', status: 'agent_handling' });
+    const files = [{ id: 'f'.repeat(64), url: '/api/widget/files/x', name: 'label.png', mimeType: 'image/png', size: 10, kind: 'image', status: 'sent' }];
+    db.messages.push(
+      { id: 'w1', conversation_id: 'r16', sender: 'visitor', content: 'where is my order', metadata: null, created_at: '2026-10-02T10:00:00.000Z' },
+      { id: 'w2', conversation_id: 'r16', sender: 'agent', content: '📎 label.png', metadata: { agent: 'anurag', attachments: files, captionless: true }, created_at: '2026-10-02T10:01:00.000Z' },
+      { id: 'w3', conversation_id: 'r16', sender: 'agent', content: 'gone', metadata: { agent: 'rahul' }, created_at: '2026-10-02T10:02:00.000Z', deleted_at: '2026-10-02T10:03:00.000Z' },
+      { id: 'w4', conversation_id: 'r16', sender: 'tool_result', content: '{}', metadata: { hidden: true }, created_at: '2026-10-02T10:01:30.000Z' },
+    );
+    const get = (qs) => mod.widgetMessages.GET(req(null, undefined, { method: 'GET', url: 'http://x/api/widget/messages/r16?siteKey=key-s1' + qs }), { params: { conversationId: 'r16' } });
+    let r = await get('');
+    status(r, 200);
+    deq(Object.keys(r.body).sort(), ['conversationId', 'messages', 'siteName', 'status']);
+    deq(r.body.messages.map((x) => x.id), ['w1', 'w2']);
+    deq(r.body.messages[1].metadata, { attachments: files, captionless: true });
+    ok(r.body.messages.every((x) => !x.metadata || !('agent' in x.metadata)));
+    eq(r.headers['Access-Control-Allow-Origin'], '*');
+    r = await get('&since=2026-10-02T09:00:00.000Z&changes=1');
+    const gone = r.body.messages.find((x) => x.id === 'w3');
+    deq([gone.deleted, gone.content, gone.metadata], [true, '', null]);
+    eq(db.messages.find((x) => x.id === 'w2').metadata.agent, 'anurag');   // still stored for the team
+    status(await mod.widgetMessages.GET(req(null, undefined, { method: 'GET', url: 'http://x/api/widget/messages/r16?siteKey=key-s2' }), { params: { conversationId: 'r16' } }), 403);
+  });
+
+  // ── R17: merging two chats of one customer ────────────────────
+  await t('R17 a merge: a target nobody holds takes the merged chat\'s holder (merge event); a held target keeps its own', async () => {
+    known({ id: 'm-t1', customer_key: 'K17', status: 'resolved' });
+    known({ id: 'm-f1', customer_key: 'K17', status: 'agent_handling', assigned_to: ANURAG });
+    eq(await mod.merge.mergeChats('m-t1', 'm-f1'), true);
+    deq([C('m-t1').assigned_to, !!C('m-t1').assigned_at, C('m-f1').merged_into, C('m-f1').status], [ANURAG, true, 'm-t1', 'resolved']);
+    const ev = evs('m-t1', 'merge');
+    eq(ev.length, 1);
+    deq(pick(ev[0], ['actor', 'actor_name', 'from_owner', 'to_owner', 'reason', 'meta']), { actor: 'system', actor_name: 'System', from_owner: null, to_owner: ANURAG, reason: 'merge', meta: { merged_from: 'm-f1' } });
+    known({ id: 'm-t2', customer_key: 'K18', status: 'agent_handling', assigned_to: RAHUL });
+    known({ id: 'm-f2', customer_key: 'K18', status: 'agent_handling', assigned_to: ANURAG });
+    eq(await mod.merge.mergeChats('m-t2', 'm-f2'), true);
+    eq(C('m-t2').assigned_to, RAHUL);
+    eq(evs('m-t2', 'merge').length, 0);
+    known({ id: 'm-t3', customer_key: 'K19' }); known({ id: 'm-f3', customer_key: 'K19' });
+    eq(await mod.merge.mergeChats('m-t3', 'm-f3'), true);
+    deq([C('m-t3').assigned_to, evs('m-t3', 'merge').length], [null, 0]);
+  });
+
+  // ── R18-R19: what the thread shows ────────────────────────────
+  await t('R18 the thread: staff names today ("Super Admin" for his logins, old or new) and the staff block for each person', async () => {
+    at(ist(16, 0, 2)); touch('anurag', ist(15, 59, 2));
+    known({ id: 'r18', status: 'agent_handling', assigned_to: ANURAG, customer_key: 'K18x', unread_count: 2 });
+    known({ id: 'r18old', status: 'resolved', customer_key: 'K18x', older: true });
+    db.messages.push(
+      { id: 'a1', conversation_id: 'r18', sender: 'agent', content: 'one', metadata: { agent: 'anurag' }, created_at: nowIso() },
+      { id: 'a2', conversation_id: 'r18', sender: 'agent', content: 'two', metadata: { agent: 'Owner' }, created_at: nowIso() },
+      { id: 'a3', conversation_id: 'r18', sender: 'agent', content: 'three', metadata: { agent: 'Aaditya' }, created_at: nowIso() },
+      { id: 'a4', conversation_id: 'r18', sender: 'ai', content: 'ai text', metadata: null, created_at: nowIso() },
+      { id: 'a5', conversation_id: 'r18', sender: 'visitor', content: 'hi', metadata: null, created_at: nowIso() },
+      { id: 'a6', conversation_id: 'r18old', sender: 'agent', content: 'earlier', metadata: { agent: 'rahul' }, created_at: nowIso() },
+    );
+    const g = await thread('rahul', 'r18');
+    status(g, 200);
+    deq(g.body.messages.map((x) => [x.id, x.author]), [['a1', 'Anurag'], ['a2', 'Super Admin'], ['a3', 'Super Admin'], ['a4', undefined], ['a5', undefined]]);
+    deq(g.body.earlier[0].messages.map((x) => x.author), ['Rahul']);
+    deq(pick(g.body.conversation, ['assigned_to', 'merged_into']), { assigned_to: ANURAG, merged_into: null });
+    ok(g.body.conversation.assigned_at !== undefined);
+    deq(g.body.staff, {
+      me: RAHUL, holder: { key: ANURAG, name: 'Anurag', senior: false, owner: false, away_min: null },
+      can_act: false, claims: false, take: 'senior', transfer_to: [], can_mark_case: true, mark_override: false, mark_note: null, office_open: true,
+    });
+    const ga = (await thread('anurag', 'r18')).body.staff;
+    deq([ga.me, ga.can_act, ga.claims, ga.take, ga.transfer_to.map((x) => x.key)], [ANURAG, true, false, null, [RAHUL, 'owner']]);
+    const go = (await thread('owner', 'r18')).body.staff;
+    deq([go.me, go.can_act, go.claims, go.take, go.transfer_to.map((x) => x.key), go.can_mark_case], ['owner', true, false, 'owner', [RAHUL, 'owner', null], true]);
+    const gv = (await thread('viewer', 'r18')).body.staff;
+    deq([gv.me, gv.can_act, gv.claims, gv.take, gv.transfer_to, gv.can_mark_case, gv.mark_note], [VIEWER, false, false, null, [], false, null]);
+    known({ id: 'r18f' });
+    const gf = (await thread('anurag', 'r18f')).body.staff;
+    deq([gf.holder, gf.can_act, gf.claims, gf.take], [null, true, true, null]);
+    eq(C('r18').unread_count, 0);
+  });
+
+  await t('R18 a reply keeps its writer after the owner renames or removes them (named by its reply event, not the username)', async () => {
+    at(ist(16, 30, 2));
+    known({ id: 'r18n', status: 'human_needed', customer_key: 'K18n' });
+    known({ id: 'r18n0', status: 'resolved', customer_key: 'K18n', older: true });
+    status(await reply('anurag', 'r18n0'), 200);           // an earlier chat of the customer, shown under "earlier"
+    status(await reply('anurag', 'r18n', 'Checking your order'), 200);
+    status(await reply('owner', 'r18n', 'I am looking too'), 200);
+    const [mA, mO] = agentMsgs('r18n'), [mE] = agentMsgs('r18n0');
+    const authors = async () => {
+      const b = (await thread('rahul', 'r18n')).body;
+      return [...b.earlier.flatMap((c) => c.messages), ...b.messages].filter((x) => x.sender === 'agent').map((x) => [x.id, x.author, x.author_key]);
+    };
+    deq(await authors(), [[mE.id, 'Anurag', ANURAG], [mA.id, 'Anurag', ANURAG], [mO.id, 'Super Admin', 'owner']]);
+    const saved = clone(db.team);
+    try {
+      // Renamed (login and name): his replies follow him, never "Super Admin".
+      Object.assign(db.team.find((u) => u.id === ANURAG), { username: 'anurag.k', display_name: 'Anurag Kumar' });
+      await mod.auth.refreshTeamCache();
+      deq(await authors(), [[mE.id, 'Anurag Kumar', ANURAG], [mA.id, 'Anurag Kumar', ANURAG], [mO.id, 'Super Admin', 'owner']]);
+      // Removed, and a new member later given the old username: the name he had when he wrote them.
+      db.team = db.team.filter((u) => u.id !== ANURAG);
+      db.team.push(member('77777777-7777-4777-8777-777777777777', 'anurag', 'Naveen', 'agent', [...CHAT_PERMS]));
+      await mod.auth.refreshTeamCache();
+      deq(await authors(), [[mE.id, 'Anurag', ANURAG], [mA.id, 'Anurag', ANURAG], [mO.id, 'Super Admin', 'owner']]);
+    } finally {
+      db.team = saved;
+      await mod.auth.refreshTeamCache();
+    }
+    // A reply whose event could not be logged (or from before chat-team.sql): the username, as before.
+    db.messages.push({ id: 'r18n-x', conversation_id: 'r18n', sender: 'agent', content: 'x', metadata: { agent: 'rahul' }, created_at: nowIso() });
+    deq((await authors()).pop(), ['r18n-x', 'Rahul', null]);
+  });
+
+  await t('R19 a merged shell on a stale screen: every action is a 409 "open the other chat"; the thread is read only', async () => {
+    known({ id: 'r19', status: 'resolved', merged_into: 'r18' });
+    const msg = "This chat was merged into the customer's other chat. Open that one.";
+    for (const [label, call] of [
+      ['reply', () => reply('anurag', 'r19')],
+      ['take over', () => takeOver('anurag', 'r19')],
+      ['take from', () => takeFrom('owner', 'r19')],
+      ['transfer', () => patch('owner', 'r19', { transferTo: RAHUL, note: 'stale screen' })],
+      ['mark', () => patch('rahul', 'r19', { caseKind: 'refund' })],
+    ]) {
+      const r = await call();
+      status(r, 409, label);
+      eq(r.body.error, msg, label);
+    }
+    const s = (await thread('owner', 'r19')).body.staff;
+    deq([s.can_act, s.claims, s.take, s.transfer_to], [false, false, null, []]);
+    eq(agentMsgs('r19').length, 0);
+  });
+
+  // ── R20: the night line in the widget (commit A) ──────────────
+  await t('R20 the widget\'s hand-over lines: day exactly as before, night says the morning, visitors and guard texts untouched', async () => {
+    known({ id: 'r20' });
+    newConv({ id: 'r20v' });
+    const send = async (id, said, ai, ms) => {
+      at(ms);
+      C(id).status = 'ai_handling';
+      global.__ai.next = ai;
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    const fraud = 'This is a fraud site, you people are scammers';
+    const aiFraud = 'I understand your concern. Your order is In Transit, track it here: https://shiptrack.store/track/abc. Our team will look into this and reply within 1 hour.';
+    // 22:00: the hour promise goes, the morning line comes; a person takes it.
+    let out = await send('r20', fraud, { content: aiFraud }, ist(22, 0, 2));
+    eq(out, 'I understand your concern. Your order is In Transit, track it here: https://shiptrack.store/track/abc.\n\nOur team will reply to you here in this chat tomorrow morning, after 10 AM.');
+    ok(!/1 hour/.test(out));
+    eq(C('r20').status, 'human_needed');
+    // 14:00: exactly what the widget sent before the night line.
+    out = await send('r20', fraud, { content: aiFraud }, ist(14, 0, 2));
+    eq(out, `${aiFraud}\n\n${esc.teamWillReplyLine(fraud)}`);
+    eq(out, `${aiFraud}\n\nOur team will reply to you here in this chat within 1 hour.`);
+    // 08:00 refund: "this morning", the line always added, never next to a 24-hour promise.
+    const refund = 'I want a refund for my order';
+    out = await send('r20', refund, { content: 'Sure, I can help with that.' }, ist(8, 0, 3));
+    eq(out, "Sure, I can help with that.\n\nI've noted your refund or cancellation request. Our team will reply to you here in this chat this morning, after 10 AM.");
+    out = await send('r20', refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(8, 0, 3));
+    eq(out, "I've noted your refund or cancellation request. Our team will reply to you here in this chat this morning, after 10 AM.");
+    // By day a reply that already says 24 hours stays as it was (before: no line added).
+    out = await send('r20', refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(14, 0, 3));
+    eq(out, 'Your refund request is with our team, they will reply within 24 hours.');
+    out = await send('r20', 'mujhe refund chahiye', { content: 'Theek hai.' }, ist(23, 0, 3));
+    eq(out, 'Theek hai.\n\nAapki refund ya cancellation ki request maine note kar li hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.');
+    // A threat at night: the fixed reply, no AI text, the morning line.
+    const calls = global.__ai.calls.length;
+    out = await send('r20', 'I will file a police complaint against you', { content: 'should not be used' }, ist(22, 30, 3));
+    eq(out, "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat tomorrow morning, after 10 AM.");
+    eq(global.__ai.calls.length, calls);
+    // A visitor at night: the AI's own words, no team line, nobody moves the chat.
+    out = await send('r20v', fraud, { content: aiFraud }, ist(22, 0, 3));
+    eq(out, aiFraud);
+    eq(C('r20v').status, 'ai_handling');
+    // The guard's fixed hand-over texts come back exactly as written, day and night.
+    const guard = fs.readFileSync(path.join(SRC, 'lib/chat/lookup-guard.ts'), 'utf8');
+    const handOver = Object.values(Function('return ' + guard.match(/const HAND_OVER = (\{[\s\S]*?\n\});/)[1])());
+    const oldHandOver = Function('return ' + guard.match(/const OLD_HAND_OVER = (\[[\s\S]*?\n\]);/)[1])();
+    for (const text of [...handOver, ...oldHandOver]) {
+      eq(await send('r20', 'where is my order', { content: text, escalated: true }, ist(22, 0, 3)), text);
+      eq(await send('r20', 'where is my order', { content: text, escalated: true }, ist(14, 0, 3)), text);
+    }
+    // An AI hand-over that promised an hour, at night: the morning line instead.
+    out = await send('r20', 'where is my order', { content: 'I have passed this to our team, they will reply within 1 hour.', escalated: true }, ist(22, 0, 3));
+    eq(out, 'Our team will reply to you here in this chat tomorrow morning, after 10 AM.');
+  });
+
+  // ── R21: "Give all my open chats to the team" (owner answer 3) ─
+  await t('R21 release: Super Admin only; only his open chats go back to the pool, status unchanged, one transfer event each', async () => {
+    at(ist(17, 0, 3));
+    known({ id: 'rel1', status: 'agent_handling', assigned_to: 'owner' });
+    known({ id: 'rel2', status: 'human_needed', assigned_to: 'owner' });
+    known({ id: 'rel3', status: 'ai_handling', assigned_to: 'owner' });
+    known({ id: 'rel4', status: 'resolved', assigned_to: 'owner' });                                  // Closed: keeps him
+    known({ id: 'rel5', status: 'agent_handling', assigned_to: 'owner', merged_into: 'rel1' });       // a merged shell: left alone
+    known({ id: 'rel6', status: 'agent_handling', assigned_to: 'owner', case_kind: 'refund', case_order_id: '#rel6' });
+    known({ id: 'rel7', status: 'agent_handling', assigned_to: ANURAG });
+    known({ id: 'rel8', status: 'human_needed' });
+    const mine = () => db.convs.filter((c) => c.assigned_to === 'owner' && c.status !== 'resolved' && !c.merged_into).map((c) => c.id).sort();
+    const open = mine();
+    ok(open.length >= 4 && ['rel1', 'rel2', 'rel3', 'rel6'].every((id) => open.includes(id)));
+    const snapshot = clone(db.convs), e0 = db.events.length;
+    for (const who of ['anurag', 'rahul', 'viewer']) {
+      const r = await release(who);
+      status(r, 403, who);
+      eq(r.body.error, 'Only Super Admin can give his chats back to the team');
+    }
+    status(await release(null), 401);
+    // A chat of his busy in another action: 409, nothing freed.
+    const let_go = holdLock('rel2');
+    let r = await release('owner');
+    status(r, 409);
+    eq(r.body.error, 'Someone else is changing this chat right now. Try again.');
+    let_go();
+    db.fail.push({ re: /^SELECT id, site_id, status FROM conversations WHERE assigned_to = \$1/, code: '40P01', once: true });
+    status(await release('owner'), 409);
+    deq(db.convs, snapshot);
+    eq(db.events.length, e0);
+    // The button's N ("Give all N to the team") is exactly what the release frees: every open chat he
+    // holds, one by one (AI handling and Refund / Ship again too), not the customers in My chats.
+    eq((await list('owner', '?mine=1')).body.mine.held, open.length);
+    const s0 = db.stmts.length;
+    r = await release('owner');
+    status(r, 200);
+    deq(r.body, { released: open.length });
+    eq((await list('owner', '?mine=1')).body.mine.held, 0);
+    for (const id of open) deq([C(id).assigned_to, C(id).assigned_at, C(id).status], [null, null, snapshot.find((c) => c.id === id).status], id);
+    deq(['rel4', 'rel5', 'rel7', 'rel8'].map((id) => C(id).assigned_to), ['owner', 'owner', ANURAG, null]);
+    const ev = db.events.slice(e0);
+    eq(ev.length, open.length);
+    for (const e of ev) {
+      const was = snapshot.find((c) => c.id === e.conversation_id);
+      deq(pick(e, ['kind', 'actor', 'actor_name', 'from_owner', 'to_owner', 'from_status', 'to_status', 'reason', 'note', 'meta']),
+        { kind: 'transfer', actor: 'owner', actor_name: 'Super Admin', from_owner: 'owner', to_owner: null, from_status: was.status, to_status: was.status, reason: 'transfer', note: 'Released by Super Admin', meta: { tier: 'owner', bulk: true } });
+    }
+    deq(ev.map((e) => e.conversation_id).sort(), open);
+    const tx = txStmts(s0);
+    eq(tx.length, 1, 'one transaction');
+    deq(tx[0].slice(0, 2), ['BEGIN', "SET LOCAL lock_timeout = '5s'"]);
+    // Nothing left: 0. The team can now answer them; the history shows the release.
+    deq((await release('owner')).body, { released: 0 });
+    status(await reply('anurag', 'rel1'), 200);
+    eq(C('rel1').assigned_to, ANURAG);
+    const log = (await thread('rahul', 'rel2')).body.team_log[0];
+    deq(pick(log, ['kind', 'note', 'from_name', 'to_name']), { kind: 'transfer', note: 'Released by Super Admin', from_name: 'Super Admin', to_name: null });
+  });
+
+  // ── R22: put back in the open pool on purpose stays there (trg_chat_inherit_owner) ─
+  await t('R22 a released or "Nobody" chat is logged so the inherit trigger leaves it in the open pool', async () => {
+    // The trigger itself is checked on the server (rolled-back trial). Here: (1) it keys on what the
+    // routes write: every chat whose holder was cleared has a transfer to nobody naming it, by its
+    // own id (release) or in meta.group (a "Nobody" transfer's other chats); (2) the SQL has the guard.
+    at(ist(17, 30, 3));
+    const K = '9000000222';
+    known({ id: 'r22x', status: 'resolved', customer_key: K, assigned_to: 'owner' });           // Closed: keeps him
+    known({ id: 'r22y', status: 'ai_handling', customer_key: K, assigned_to: 'owner' });         // his, AI answering
+    known({ id: 'r22z', status: 'agent_handling', customer_key: '9000000223', assigned_to: ANURAG });
+    known({ id: 'r22z2', status: 'ai_handling', customer_key: '9000000223', assigned_to: ANURAG });
+    const emptied = (id) => db.events.some((e) => e.kind === 'transfer' && e.to_owner === null
+      && (e.conversation_id === id || (Array.isArray(e.meta && e.meta.group) && e.meta.group.includes(id))));
+    deq(['r22x', 'r22y', 'r22z', 'r22z2'].map(emptied), [false, false, false, false]);
+    status(await release('owner'), 200);
+    status(await patch('owner', 'r22z', { transferTo: null, note: 'Back to the team please' }), 200);
+    deq(['r22x', 'r22y', 'r22z', 'r22z2'].map((id) => C(id).assigned_to), ['owner', null, null, null]);
+    deq(['r22x', 'r22y', 'r22z', 'r22z2'].map(emptied), [false, true, true, true]);
+    // Every chat with no holder that once had one got there this way (nothing else clears a holder).
+    for (const c of db.convs) {
+      if (c.assigned_to === null && db.events.some((e) => e.conversation_id === c.id && e.to_owner)) ok(emptied(c.id), 'cleared without a transfer to nobody: ' + c.id);
+    }
+    // The SQL: the guard comes before the sibling lookup, and an emptied latest chat means "nobody".
+    const sql = fs.readFileSync(path.resolve(__dirname, '../../chat-team.sql'), 'utf8');
+    const fn = sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION chat_inherit_owner()'), sql.indexOf('CREATE OR REPLACE TRIGGER trg_chat_inherit_owner'));
+    const sel = fn.indexOf('SELECT o.assigned_to INTO prev');
+    ok(sel > 0);
+    ok(/IF EXISTS \(SELECT 1 FROM chat_events e\s+WHERE e\.kind = 'transfer' AND e\.to_owner IS NULL\s+AND \(e\.conversation_id = NEW\.id OR e\.meta->'group' \? NEW\.id\)\) THEN\s+RETURN NEW;/.test(fn.slice(0, sel)), 'guard before the lookup');
+    ok(/OR \(o\.assigned_to IS NULL\s+AND EXISTS \(SELECT 1 FROM chat_events e\s+WHERE e\.kind = 'transfer' AND e\.to_owner IS NULL\s+AND \(e\.conversation_id = o\.id OR e\.meta->'group' \? o\.id\)\)\)\)/.test(fn.slice(sel)), 'an emptied sibling counts as held by nobody');
+    ok(!/o\.assigned_to IS NOT NULL/.test(fn), 'emptied siblings are no longer skipped');
+    ok(/CREATE INDEX IF NOT EXISTS chat_events_emptied_idx ON chat_events \(conversation_id\)\s+WHERE kind = 'transfer' AND to_owner IS NULL;/.test(sql));
+    ok(/CREATE INDEX IF NOT EXISTS chat_events_message_idx ON chat_events \(message_id\) WHERE message_id IS NOT NULL;/.test(sql));
+  });
+
+  Object.assign(console, realConsole);
+  Date.now = realNow;
+  console.log(`TEAM-ROUTING: ${n} groups passed`);
+  process.exit(0);
+})().catch((e) => { Object.assign(console, realConsole); console.error(e); process.exit(1); });

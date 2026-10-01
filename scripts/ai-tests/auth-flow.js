@@ -121,6 +121,14 @@ async function handle(sql, params = []) {
     return rows([{ address_edited_at: o.address_edited_at }]);
   }
   if (/^INSERT INTO order_address_changes/.test(q)) { db.addressChanges.push(params); return rows([]); }
+  // Presence (chat-team.sql): the 30 s reload saves who was active and reads everyone back.
+  // The chat team's own tests (team-routing.js) check what is saved; here it only has to work.
+  if (/^INSERT INTO staff_presence \(actor, last_seen_at\) SELECT \* FROM unnest\(\$1::text\[\], \$2::timestamptz\[\]\) ON CONFLICT \(actor\) DO UPDATE/.test(q)) {
+    db.presence = db.presence || [];
+    params[0].forEach((actor, i) => { db.presence = db.presence.filter((p) => p.actor !== actor).concat({ actor, last_seen_at: params[1][i] }); });
+    return rows([]);
+  }
+  if (/^SELECT actor, last_seen_at FROM staff_presence$/.test(q)) return rows((db.presence || []).map((p) => ({ ...p })));
   throw new Error('fake db: unexpected SQL: ' + q.slice(0, 120));
 }
 global.__fakeDb = { handle };

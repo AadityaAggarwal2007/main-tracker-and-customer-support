@@ -12,7 +12,8 @@ import { maskSensitive, sensitiveWarning } from './sensitive';
 import { chatIsVerified } from './verified';
 import { addressConflict } from './address-conflict';
 import { recentVisitorMessages } from './chat-history';
-import { insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
+import { dropReplyTimes, insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
+import { afterHours } from '@/lib/office-hours';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -392,8 +393,14 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
             const routine = routineHandOverKind(masked.text);
             const handOverNow = verifiedNow && (urgent === 'accusation' || !!routine);
             if (handOverNow) {
-              const line = urgent === 'accusation' ? teamWillReplyLine(masked.text) : routineLine(routine!, masked.text);
-              if (urgent === 'accusation' || routine !== 'refund' || !saysRefundTime(aiResult.content)) {
+              // Night (19:30-10:00 IST, owner 2026-10-01): the line says the team replies
+              // in the morning, after 10 AM, and an hour promise the AI wrote itself
+              // ("within 24 hours") is taken out first so the email does not say both.
+              // At night the refund line always goes in, as it carries the morning time.
+              const after = afterHours(Date.now());
+              if (after) aiResult.content = dropReplyTimes(aiResult.content).text;
+              const line = urgent === 'accusation' ? teamWillReplyLine(masked.text, after) : routineLine(routine!, masked.text, after);
+              if (urgent === 'accusation' || routine !== 'refund' || !!after || !saysRefundTime(aiResult.content)) {
                 aiResult.content = insertEmailNote(aiResult.content, line, 'bottom');
               }
               await query(

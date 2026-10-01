@@ -4,6 +4,10 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import { can, canAccessPanel } from '@/lib/permissions';
+import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
+import {
+  STARTING_MESSAGE, actionError, actionsReady, heldMessage, holderOf, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,
+} from '@/lib/chat/team-routing';
 import {
   ATTACHMENT_ID_PATTERN, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, AttachmentKind, attachmentUrl,
@@ -22,12 +26,23 @@ class ReplyError extends Error {
 // Body: { conversationId, content, attachmentIds? } — attachmentIds are files
 // already uploaded to /api/chat/attachments for this conversation. A reply
 // needs text, files, or both.
+//
+// Chat team (owner, 2026-10-01; src/lib/chat/team-rules.ts): only the person who holds the chat,
+// anyone on a chat nobody holds, and the Super Admin may reply. Someone else's chat is a 409 with
+// their name and nothing is saved (the inbox keeps the draft). The first reply on a chat nobody
+// holds makes it the replier's (the Super Admin's too, owner answer Q2), with the customer's other
+// open chats nobody holds. The chat is locked for the whole reply, so two people answering the same
+// free chat at once cannot both win: the second gets the 409.
 export async function POST(request: NextRequest) {
+  // Rights come from the team list: right after a restart, wait for it rather than guess.
+  if (!(await actionsReady())) return NextResponse.json({ error: STARTING_MESSAGE }, { status: 503 });
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!can(user, 'chat.reply')) {
     return NextResponse.json({ error: 'You cannot reply' }, { status: 403 });
   }
+  const actor = staffActor(user);
+  if (!actor) return NextResponse.json({ error: STARTING_MESSAGE }, { status: 503 });
 
   try {
     const { conversationId, content, attachmentIds } = await request.json();
@@ -48,8 +63,10 @@ export async function POST(request: NextRequest) {
     }
     const ids = fileIds as string[];
 
-    const conversation = await queryOne<{ id: string; source: string; tracker_business_id: string | null }>(
-      `SELECT c.id, c.source, s.tracker_business_id
+    const conversation = await queryOne<{
+      id: string; source: string; tracker_business_id: string | null; site_id: string; customer_key: string | null;
+    }>(
+      `SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
         WHERE c.id = $1`,
@@ -64,8 +81,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // The message and the files it carries are saved together, or not at all.
+    // The message, the files it carries and the chat's new status and holder are saved together, or
+    // not at all. Every statement in here goes through `client` (a pool query would wait on our own
+    // lock). The chat is locked first, before its files, the same order as mergeChats.
     const message = await withTransaction(async client => {
+      const now = Date.now();
+      const { chat, siblings } = await lockChatGroup(client, conversationId, conversation.site_id, conversation.customer_key);
+      const panel = conversation.tracker_business_id;
+      const h = holderOf(chat.assigned_to, panel, now);
+      if (!canAct(actor, h)) {
+        throw new ReplyError(409, heldMessage(h!, await takeFor(client, actor, h, chat.id)));
+      }
+
       let files: StoredAttachment[] = [];
       if (ids.length > 0) {
         const found = await client.query<{
@@ -120,17 +147,39 @@ export async function POST(request: NextRequest) {
           [row.id, ids]
         );
       }
+
+      // A person answering means the AI stands down for this thread, and the
+      // "came back after the auto-close" mark (chat-auto-close.sql) is done with.
+      // The status change is logged as this person's (chat-team.sql trigger).
+      await setActor(client, actor, 'reply');
+      const claim = claimsOnAct(actor, h);
+      await client.query(
+        `UPDATE conversations
+            SET status = 'agent_handling', last_message_at = now(), auto_closed_at = NULL, updated_at = now(),
+                assigned_to = CASE WHEN $2::boolean THEN $3::text ELSE assigned_to END,
+                assigned_at = CASE WHEN $2::boolean THEN now() ELSE assigned_at END
+          WHERE id = $1`,
+        [conversationId, claim, actor.key]
+      );
+
+      // A first reply on a free chat: it is now this person's, and so are the customer's other open
+      // chats nobody holds (one person per customer).
+      if (claim) {
+        const group = siblings.filter((s) => holderOf(s.assigned_to, panel, now) === null).map((s) => s.id);
+        if (group.length > 0) {
+          await client.query(`UPDATE conversations SET assigned_to = $1, assigned_at = now() WHERE id = ANY($2::text[])`, [actor.key, group]);
+        }
+        await logChatEvent(client, actor, {
+          conversationId: chat.id, siteId: chat.site_id, kind: 'claim', fromOwner: chat.assigned_to, toOwner: actor.key,
+          fromStatus: chat.status, toStatus: 'agent_handling', reason: 'reply', meta: { group },
+        });
+      }
+      await logChatEvent(client, actor, {
+        conversationId: chat.id, siteId: chat.site_id, kind: 'reply', messageId: row.id, reason: 'reply',
+        fromStatus: chat.status, toStatus: 'agent_handling', toOwner: claim ? actor.key : chat.assigned_to,
+      });
       return row;
     });
-
-    // A person answering means the AI stands down for this thread, and the
-    // "came back after the auto-close" mark (chat-auto-close.sql) is done with.
-    await query(
-      `UPDATE conversations
-          SET status = 'agent_handling', last_message_at = now(), auto_closed_at = NULL, updated_at = now()
-        WHERE id = $1`,
-      [conversationId]
-    );
 
     // The message is already saved, so a failing mail server must not lose the
     // agent's reply — it is reported instead.
@@ -156,6 +205,9 @@ export async function POST(request: NextRequest) {
     if (err instanceof ReplyError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
+    // A merged shell, a lock that took over 5 s, a deadlock: nothing was saved, try again.
+    const refused = actionError(err);
+    if (refused) return refused;
     console.error('[chat] agent reply error:', err);
     return NextResponse.json({ error: 'Could not send that reply' }, { status: 500 });
   }

@@ -11,6 +11,10 @@ export interface AuthUser {
   role: Role;
   businessIds: string[] | null; // null = all panels, string[] = specific panels only
   permissions: Permission[];    // what this login may do, resolved from the role and its ticks
+  // team_users.id of a team member: the key the chat team uses (who holds a chat, chat_events,
+  // staff_presence), because it survives renames. undefined for the Super Admin (his key is
+  // 'owner', src/lib/chat/team-routing.ts).
+  id?: string;
 }
 
 // ── Login tokens ───────────────────────────────────────────────
@@ -177,6 +181,12 @@ type TeamCache = {
   // goes up when the account route sets it directly, so a load that started before that change
   // cannot put the old one back.
   admin?: AdminEntry | null; adminLoadedAt?: number; adminGen?: number;
+  // Presence (chat team, owner 2026-10-01): when each person last did something in ShipTrack, by key
+  // (team_users.id, or 'owner' for the Super Admin). seen is what the server knows; seenDirty is what
+  // is not yet saved in staff_presence (chat-team.sql). Saved by the 30 s reload, never per request.
+  // presenceMissingUntil: staff_presence is missing (SQL not applied yet): do not ask again until then.
+  // presenceReadAt: when staff_presence was first read back (0 / unset = not yet since this start).
+  seen?: Map<string, number>; seenDirty?: Map<string, number>; presenceMissingUntil?: number; presenceReadAt?: number;
 };
 const g = globalThis as unknown as { __shiptrackTeam?: TeamCache };
 const cache: TeamCache = g.__shiptrackTeam || (g.__shiptrackTeam = { map: new Map(), loadedAt: 0, loading: null, timer: null });
@@ -229,12 +239,94 @@ export async function refreshTeamCache(force = false): Promise<void> {
     } catch (err) {
       console.error('[auth] super admin refresh failed:', (err as Error)?.message);
     }
+    // Last, and on its own: a presence problem must never hold up or undo the logins above.
+    try {
+      await syncPresence();
+    } catch (err) {
+      if ((err as { code?: string })?.code === '42P01') cache.presenceMissingUntil = Date.now() + PRESENCE_RETRY_MS;
+      else console.error('[auth] presence sync failed:', (err as Error)?.message);
+    }
   })().finally(() => { cache.loading = null; });
   if (!cache.timer) {
     cache.timer = setInterval(() => { void refreshTeamCache(); }, 30_000);
     (cache.timer as { unref?: () => void }).unref?.();
   }
   return cache.loading;
+}
+
+// ── Presence: who was in ShipTrack, and when ───────────────────
+// For the chat team: a holder not seen for 30 minutes in office hours may lose a waiting customer's
+// chat, and a junior may mark Refund / Ship again while every senior is away (src/lib/office-hours.ts,
+// src/lib/chat/team-rules.ts). Only a person doing something counts: any POST / PATCH / DELETE, or a
+// GET the screen sends with x-st-active: 1 (tab visible and touched in the last 5 minutes,
+// src/lib/presence-client.ts). The inbox's 3 s poll from a forgotten tab does not count. A request
+// only writes to memory; the 30 s reload saves it (one upsert) and reads everyone else's back, so a
+// restart forgets at most 30 seconds.
+const PRESENCE_RETRY_MS = 10 * 60_000;
+
+function notePresence(key: string, request: NextRequest) {
+  const method = (request as { method?: string }).method;
+  if (!((method && method !== 'GET') || request.headers.get('x-st-active') === '1')) return;
+  const now = Date.now();
+  (cache.seen ??= new Map()).set(key, now);
+  (cache.seenDirty ??= new Map()).set(key, now);
+}
+
+async function syncPresence() {
+  if ((cache.presenceMissingUntil ?? 0) > Date.now()) return;
+  const dirtyMap = (cache.seenDirty ??= new Map());
+  const dirty = Array.from(dirtyMap.entries());
+  if (dirty.length > 0) {
+    await query(
+      `INSERT INTO staff_presence (actor, last_seen_at)
+       SELECT * FROM unnest($1::text[], $2::timestamptz[])
+       ON CONFLICT (actor) DO UPDATE SET last_seen_at = GREATEST(staff_presence.last_seen_at, EXCLUDED.last_seen_at)`,
+      [dirty.map(([k]) => k), dirty.map(([, ms]) => new Date(ms).toISOString())]
+    );
+    // A key seen again while the upsert ran stays dirty for the next reload.
+    for (const [k, ms] of dirty) if (dirtyMap.get(k) === ms) dirtyMap.delete(k);
+  }
+  const r = await query<{ actor: string; last_seen_at: string | Date }>(`SELECT actor, last_seen_at FROM staff_presence`);
+  const seen = (cache.seen ??= new Map());
+  for (const row of r.rows) {
+    const ms = new Date(row.last_seen_at).getTime();
+    if (Number.isFinite(ms) && ms > (seen.get(row.actor) ?? 0)) seen.set(row.actor, ms);
+  }
+  cache.presenceMissingUntil = 0;
+  cache.presenceReadAt ??= Date.now();
+}
+
+// Has staff_presence been read back since this process started? Until it has, nobody counts as away
+// (src/lib/chat/team-routing.ts): the logins are read first and must never wait for presence, and an
+// empty memory would make everyone look unseen since 10:00 (a restart must give no extra rights).
+export function presenceRead(): boolean {
+  return !!cache.presenceReadAt;
+}
+
+// When this person (team_users.id, or 'owner') was last seen doing something; null = not since
+// staff_presence started.
+export function lastSeenMs(key: string): number | null {
+  return cache.seen?.get(key) ?? null;
+}
+
+// Has the team list been read since this process started? The chat team's rights (who holds a chat,
+// who is Senior) come from it, so the action routes refuse (503) until it has, instead of guessing.
+export function teamLoaded(): boolean {
+  return !!cache.loadedAt;
+}
+
+// Every team member as the last reload saw them (switched-off ones too), for the chat team's rules
+// and names. Server only.
+export function teamEntries(): { id: string; username: string; name: string; active: boolean; role: Role; permissions: string[] | null; businessIds: string[] | null }[] {
+  return Array.from(cache.map.entries()).map(([username, e]) => ({
+    id: e.id, username, name: e.name, active: e.active, role: e.role, permissions: e.permissions, businessIds: e.businessIds,
+  }));
+}
+
+// The Super Admin's current login name (saved in the panel, else the .env one). Server only: it
+// tells an old staff message signed by him apart from a member's; never sent to a screen.
+export function superAdminUsername(): string | null {
+  return cache.admin?.username ?? process.env.ADMIN_USERNAME ?? null;
 }
 
 // For /api/auth/session: the first answer after a restart waits (up to 3 s) for the first load.
@@ -320,18 +412,24 @@ export function getAuthFromRequest(request: NextRequest): AuthUser | null {
     // Only the owner's own login is the super admin, and only one made since his last change.
     if (!cache.adminLoadedAt) { void refreshTeamCache(); return null; }
     const now = cache.admin ?? (process.env.ADMIN_USERNAME ? { username: process.env.ADMIN_USERNAME, sv: ENV_SESSION_VERSION } : null);
-    return now && t.username === now.username && sv === now.sv ? base : null;
+    if (!(now && t.username === now.username && sv === now.sv)) return null;
+    notePresence('owner', request);
+    return { ...base, id: undefined };
   }
-  if (!cache.loadedAt) { void refreshTeamCache(); return base; }
+  // Before the first load the token's own member id is all there is (nothing is noted: presence is
+  // keyed by the id the team list confirms).
+  if (!cache.loadedAt) { void refreshTeamCache(); return { ...base, id: uid ?? undefined }; }
   const e = cache.map.get(t.username);
   // Removed, switched off, a new password or username since, or another person's old username.
   if (!e || !e.active || e.sv !== sv || (uid && uid !== e.id)) return null;
+  notePresence(e.id, request);
   return {
     username: t.username,
     displayName: e.name,
     role: e.role,
     businessIds: e.businessIds,
     permissions: resolvePermissions(e.role, e.permissions),
+    id: e.id,
   };
 }
 

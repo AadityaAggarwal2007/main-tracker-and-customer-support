@@ -51,18 +51,39 @@ export function looksHinglish(text: string): boolean {
 // (master rules sections 15 and 16).
 export const URGENT_SLA_HOURS = 1;
 
+// ── Night (owner, 2026-10-01, decision 1) ──────────────────────
+// The team works 10:00-19:30 IST, every day. A customer told "within 1 hour" at
+// 22:00 waits all night for a promise that was broken the moment it was made, so
+// from 19:30 to 10:00 the 1-hour and 24-hour lines say the team replies in the
+// morning, after 10 AM, instead. 'tomorrow' from 19:30 to midnight, 'this_morning'
+// from midnight to 10:00 (a customer writing at 1 AM is not told "kal"). null =
+// office hours: every line is exactly what it was before. The value comes from
+// afterHours() in src/lib/office-hours.ts; the type is repeated here so this file
+// keeps no imports. Lines that promise no time (handoffReply, the payment line)
+// are the same day and night.
+export type AfterHours = 'tomorrow' | 'this_morning' | null;
+const MORNING = {
+  tomorrow: { en: 'tomorrow morning, after 10 AM', hi: 'kal subah 10 baje ke baad' },
+  this_morning: { en: 'this morning, after 10 AM', hi: 'aaj subah 10 baje ke baad' },
+} as const;
+
 // The one line that says a person has it and when they answer.
-export function teamWillReplyLine(customerText: string): string {
+export function teamWillReplyLine(customerText: string, after: AfterHours = null): string {
+  if (after) {
+    return looksHinglish(customerText)
+      ? `Hamari team ${MORNING[after].hi} isi chat mein aapko jawab degi.`
+      : `Our team will reply to you here in this chat ${MORNING[after].en}.`;
+  }
   return looksHinglish(customerText)
     ? `Hamari team isi chat mein ${URGENT_SLA_HOURS} ghante ke andar aapko jawab degi.`
     : `Our team will reply to you here in this chat within ${URGENT_SLA_HOURS} hour.`;
 }
 
 // The whole reply for a threat: no argument, no defence, no AI text at all.
-export function urgentAck(customerText: string): string {
+export function urgentAck(customerText: string, after: AfterHours = null): string {
   return looksHinglish(customerText)
-    ? `Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. ${teamWillReplyLine(customerText)}`
-    : `I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. ${teamWillReplyLine(customerText)}`;
+    ? `Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. ${teamWillReplyLine(customerText, after)}`
+    : `I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. ${teamWillReplyLine(customerText, after)}`;
 }
 
 // When the AI could not answer or keeps repeating itself: a person takes over.
@@ -110,10 +131,16 @@ export function routineHandOverKind(text: string | null | undefined): RoutineKin
 
 export const REFUND_SLA_HOURS = 24;
 
-// Says it is noted and with the team, and when a refund request is answered.
-export function routineLine(kind: RoutineKind, customerText: string): string {
+// Says it is noted and with the team, and when a refund request is answered
+// (at night: in the morning, after 10 AM; see AfterHours above).
+export function routineLine(kind: RoutineKind, customerText: string, after: AfterHours = null): string {
   const hi = looksHinglish(customerText);
   if (kind === 'refund') {
+    if (after) {
+      return hi
+        ? `Aapki refund ya cancellation ki request maine note kar li hai. Hamari team ${MORNING[after].hi} isi chat mein aapko jawab degi.`
+        : `I've noted your refund or cancellation request. Our team will reply to you here in this chat ${MORNING[after].en}.`;
+    }
     return hi
       ? `Aapki refund ya cancellation ki request maine note kar li hai. Hamari team ${REFUND_SLA_HOURS} ghante ke andar isi chat mein aapko jawab degi.`
       : `I've noted your refund or cancellation request. Our team will reply to you here in this chat within ${REFUND_SLA_HOURS} hours.`;
@@ -126,6 +153,86 @@ export function routineLine(kind: RoutineKind, customerText: string): string {
 // True when the reply already tells the customer the 24 hours.
 export function saysRefundTime(reply: string): boolean {
   return /\b24 ?(hours?|hrs?|ghante|ghanta)\b/i.test(reply);
+}
+
+// ── The AI's own hour promises, at night ───────────────────────
+// The prompt still asks the model to say "within 1 hour" / "within 24 hours" when
+// it hands over, and it does not know the time of day. At night such a sentence
+// would sit right above the "after 10 AM" line and contradict it, so on a
+// hand-over reply sent at night it is taken out. A sentence goes only when it has
+// BOTH an hour amount and a word about the team answering: "shipped 24 hours ago",
+// "open 24/7" or a tracking link stay. Sentences end at . ! ? or । followed by a
+// space or the end, or at a line break, so "shiptrack.store" and "2.5" are not
+// cut. Pure; the rest of the text is kept exactly as it was.
+const HOUR_AMOUNT = /\b(?:\d{1,2}(?:\s*(?:-|to)\s*\d{1,2})?|one|an|ek|twenty[\s-]?four)\s*(?:hours?|hrs?|ghante|ghanta|ghanton)\b|(?:\d{1,2}|एक|चौबीस)\s*घंट/i;
+const TEAM_ANSWERS = /\b(?:team|reply|replies|respond|get back|revert|jawab|answer|update|review|look into|contact|reach out)\b|टीम|जवाब/i;
+const promisesHours = (sentence: string) => HOUR_AMOUNT.test(sentence) && TEAM_ANSWERS.test(sentence);
+
+// One line cut into sentences, each with its ending and the spaces after it, so
+// joining the pieces gives the line back exactly.
+function sentencesOf(line: string): string[] {
+  const out: string[] = [];
+  const end = /[.!?।]+(?=\s|$)\s*/g;
+  let start = 0;
+  for (let m = end.exec(line); m; m = end.exec(line)) {
+    out.push(line.slice(start, m.index + m[0].length));
+    start = m.index + m[0].length;
+  }
+  if (start < line.length) out.push(line.slice(start));
+  return out;
+}
+
+// `empty`: every sentence was a promise, nothing would be left.
+function dropHourPromises(text: string): { text: string; removed: boolean; empty: boolean } {
+  let removed = false;
+  const lines: string[] = [];
+  for (const line of text.split('\n')) {
+    const pieces = sentencesOf(line);
+    const kept = pieces.filter((x) => !promisesHours(x));
+    if (kept.length === pieces.length) { lines.push(line); continue; }
+    removed = true;
+    const rest = kept.join('').trimEnd();
+    if (rest.trim()) lines.push(rest);          // a line that held only the promise goes away
+  }
+  if (!removed) return { text, removed: false, empty: false };
+  const out = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd();
+  return out.trim() ? { text: out, removed: true, empty: false } : { text, removed: false, empty: true };
+}
+
+// The reply without its hour promises. Never empty: when nothing would be left
+// the original comes back (removed = false).
+export function dropReplyTimes(text: string): { text: string; removed: boolean } {
+  const r = dropHourPromises(String(text ?? ''));
+  return { text: r.text, removed: r.removed };
+}
+
+// The hand-over line under an AI reply in the chat widget (master rules 11, 15, 16,
+// 17). By day (after = null) it is exactly what the widget route added before the
+// night line: the 1-hour line after a fraud claim, the 24-hour line after a refund
+// request unless the AI already said 24 hours, the payment line, and nothing on an
+// escalation (the AI or a guard already said the team replies). At night the AI's
+// own hour promises are taken out first and the morning line goes in; an escalation
+// gets the morning line only when a promise was taken out, so a guard's fixed
+// hand-over text (lookup-guard.ts HAND_OVER, which promises no time) is never
+// changed: the guard finds its own hand-over again by an exact match. Running it
+// twice adds the line once: the morning line has no hour amount.
+export function withHandOverLine(
+  text: string,
+  said: string,
+  kind: 'accusation' | RoutineKind | 'escalated',
+  after: AfterHours = null,
+): string {
+  if (!after) {
+    if (kind === 'accusation') return `${text}\n\n${teamWillReplyLine(said)}`;
+    if (kind === 'refund') return !saysRefundTime(text) ? `${text}\n\n${routineLine('refund', said)}` : text;
+    if (kind === 'payment') return `${text}\n\n${routineLine('payment', said)}`;
+    return text;
+  }
+  const d = dropHourPromises(text);
+  const line = kind === 'refund' || kind === 'payment' ? routineLine(kind, said, after) : teamWillReplyLine(said, after);
+  if (kind === 'escalated' && !d.removed && !d.empty) return text;
+  // Only promises in the reply: the morning line alone, never a contradiction.
+  return d.empty ? line : `${d.text}\n\n${line}`;
 }
 
 // ── Putting a line into an email reply ─────────────────────────

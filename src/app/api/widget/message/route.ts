@@ -7,7 +7,8 @@ import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
-import { handoffReply, isCourtesyOnly, looksHinglish, isRepeatedReply, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentAck, urgentKind } from '@/lib/chat/escalation';
+import { handoffReply, isCourtesyOnly, looksHinglish, isRepeatedReply, routineHandOverKind, urgentAck, urgentKind, withHandOverLine } from '@/lib/chat/escalation';
+import { afterHours } from '@/lib/office-hours';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
@@ -104,6 +105,11 @@ export async function POST(request: NextRequest) {
     const status = updated?.status ?? conversation.status;
     if (status !== conversation.status) console.log(`[widget] reopened conv ${conversationId} on a new message`);
 
+    // Night (19:30-10:00 IST, owner 2026-10-01): the 1-hour and 24-hour lines say the
+    // team replies in the morning instead (escalation.ts AfterHours). Read once, when
+    // the customer's message came in, so one reply never mixes day and night lines.
+    const after = afterHours(Date.now());
+
     // AI response if in ai_handling mode
     let aiMessage: StoredMessage | null = null;
     if (status === 'ai_handling' && site.ai_enabled) {
@@ -157,7 +163,7 @@ export async function POST(request: NextRequest) {
         } else if (urgent === 'threat' && verified) {
           // No AI text at all: nothing to argue, nothing to defend.
           await handOver('threat');
-          aiMessage = await saveAiMessage(aiReply(urgentAck(said)));
+          aiMessage = await saveAiMessage(aiReply(urgentAck(said, after)));
         } else {
           const brainUsage: { brain: { id: string; title: string }[]; effort?: EffortUsage } = { brain: [] };
           const aiStarted = Date.now();
@@ -210,14 +216,20 @@ export async function POST(request: NextRequest) {
           } else if (urgent === 'accusation') {
             // A fraud or fake-site claim (section 16): the AI answered with what
             // it can prove (tracking link, order status); a person takes it now.
-            text = `${text}\n\n${teamWillReplyLine(said)}`;
+            text = withHandOverLine(text, said, 'accusation', after);
             await handOver('fraud claim');
           } else if (!aiResult.escalated && routineHandOverKind(said)) {
             // A refund or cancellation request, or a payment problem (sections
             // 11 and 17): noted and handed to a person, whatever the AI said.
             const kind = routineHandOverKind(said)!;
-            if (kind !== 'refund' || !saysRefundTime(text)) text = `${text}\n\n${routineLine(kind, said)}`;
+            text = withHandOverLine(text, said, kind, after);
             await handOver(kind);
+          } else if (aiResult.escalated) {
+            // The AI (or a guard) handed a verified customer over and already said the
+            // team replies. By day the text stands as it is; at night an hour promise
+            // the AI wrote is swapped for the morning line. A guard's fixed hand-over
+            // text has no hours, so it comes back unchanged.
+            text = withHandOverLine(text, said, 'escalated', after);
           }
 
           // Save the visible reply. When the customer sent payment details, the
