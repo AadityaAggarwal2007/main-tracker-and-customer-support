@@ -104,6 +104,10 @@ export async function GET(request: NextRequest) {
   // ?unread=1 lists only chats with messages nobody has read yet (the inbox's "Unread" filter).
   const unreadOnly = searchParams.get('unread') === '1';
   const topic = topicByKey(searchParams.get('topic'));
+  // ?case=refund|reship: the Refund / Ship again section (chat-cases.sql). A marked chat shows ONLY
+  // there (and in a search); every other list leaves it out.
+  const caseParam = searchParams.get('case') || '';
+  const caseKind = caseParam === 'refund' || caseParam === 'reship' ? caseParam : '';
   const limit = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
 
   const conditions: string[] = [];
@@ -136,12 +140,18 @@ export async function GET(request: NextRequest) {
     params.push(...search.params);
     pi += search.params.length;
   } else {
-    if (status) { conditions.push(`c.status = $${pi++}`); params.push(status); }
+    if (caseKind) {
+      conditions.push(`c.case_kind = $${pi++}`);
+      params.push(caseKind);
+    } else {
+      conditions.push('c.case_kind IS NULL');
+    }
+    if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
     if (unreadOnly) conditions.push('c.unread_count > 0');
-    if (segment === 'visitors') conditions.push(`NOT ${KNOWN_CUSTOMER}`);
-    else if (segment === 'customers') conditions.push(KNOWN_CUSTOMER);
-    if (topic) {
+    if (segment === 'visitors' && !caseKind) conditions.push(`NOT ${KNOWN_CUSTOMER}`);
+    else if (segment === 'customers' && !caseKind) conditions.push(KNOWN_CUSTOMER);
+    if (topic && !caseKind) {
       conditions.push("c.status <> 'resolved'");
       conditions.push(KNOWN_CUSTOMER);   // problem tabs are for customers; visitors stay under Visitors
       conditions.push(topicCondition(topic.key, topic.labels, 'c'));
@@ -180,7 +190,7 @@ export async function GET(request: NextRequest) {
                          THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END AS gk
                FROM conversations c
                JOIN sites s ON s.id = c.site_id
-              WHERE ${[...scopeConditions, "c.status <> 'resolved'", KNOWN_CUSTOMER].join(' AND ')}) x`;
+              WHERE ${[...scopeConditions, "c.status <> 'resolved'", KNOWN_CUSTOMER, 'c.case_kind IS NULL'].join(' AND ')}) x`;
   const countsPromise = query<Record<string, number>>(countsSql, scopeParams).catch((err) => {
     // Before chat-health.sql / chat-subject.sql are applied the columns are missing.
     console.error('[inbox] topic counts failed:', (err as Error)?.message);
@@ -196,6 +206,7 @@ export async function GET(request: NextRequest) {
               c.subject_label, c.subject_summary, c.subject_updated_at,
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
               c.auto_closed_at, c.closed_by_name, c.closed_at,
+              c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
@@ -264,6 +275,7 @@ export async function GET(request: NextRequest) {
             COALESCE((g.health_signals->>'accuse')::int, 0) > 0 AS health_accuse,
             g.is_pinned AS health_pinned,
             g.returned, g.auto_closed_at, g.closed_by_name, g.closed_at,
+            g.case_kind, g.case_marked_by, g.case_marked_at, g.case_order_id,
             g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             ${search.snippet} AS match_snippet,
@@ -284,5 +296,37 @@ export async function GET(request: NextRequest) {
   );
 
   const counts = (await countsPromise).rows[0] || {};
-  return NextResponse.json({ conversations: result.rows, topic_counts: counts });
+
+  // How many chats each section holds (and unread), for the sidebar; for the section that is open,
+  // who marked how many per day (India time) over the last 14 days, for the owner's experts.
+  const caseCounts: Record<string, { total: number; unread: number }> = { refund: { total: 0, unread: 0 }, reship: { total: 0, unread: 0 } };
+  let caseSummary: { marked_by: string; day: string; n: number }[] = [];
+  try {
+    const cc = await query<{ case_kind: string; total: number; unread: number }>(
+      `SELECT c.case_kind, count(*)::int AS total, COALESCE(sum(c.unread_count), 0)::int AS unread
+         FROM conversations c JOIN sites s ON s.id = c.site_id
+        WHERE ${[...scopeConditions, 'c.case_kind IS NOT NULL'].join(' AND ')}
+        GROUP BY c.case_kind`,
+      scopeParams
+    );
+    for (const r of cc.rows) caseCounts[r.case_kind] = { total: r.total, unread: r.unread };
+    if (caseKind) {
+      const sm = await query<{ marked_by: string; day: string; n: number }>(
+        `SELECT COALESCE(c.case_marked_by, '?') AS marked_by,
+                to_char(c.case_marked_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day,
+                count(*)::int AS n
+           FROM conversations c JOIN sites s ON s.id = c.site_id
+          WHERE ${[...scopeConditions, `c.case_kind = $${scopeParams.length + 1}`, `c.case_marked_at > now() - interval '14 days'`].join(' AND ')}
+          GROUP BY 1, 2
+          ORDER BY 2 DESC, 3 DESC`,
+        [...scopeParams, caseKind]
+      );
+      caseSummary = sm.rows;
+    }
+  } catch (err) {
+    // Before chat-cases.sql is applied the columns are missing.
+    console.error('[inbox] case counts failed:', (err as Error)?.message);
+  }
+
+  return NextResponse.json({ conversations: result.rows, topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary });
 }

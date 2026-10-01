@@ -91,7 +91,9 @@ export async function POST(request: NextRequest) {
       `UPDATE conversations
           SET unread_count = unread_count + 1, last_message_at = now(), updated_at = now(),
               status = CASE WHEN status = 'resolved' AND source = 'chat'
-                            THEN CASE WHEN $2::boolean THEN 'ai_handling' ELSE 'human_needed' END
+                            -- A Refund / Ship again chat (chat-cases.sql) stays with the team: no AI.
+                            THEN CASE WHEN case_kind IS NOT NULL THEN 'agent_handling'
+                                      WHEN $2::boolean THEN 'ai_handling' ELSE 'human_needed' END
                             ELSE status END
         WHERE id = $1
         RETURNING status`,

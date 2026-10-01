@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest, AuthUser } from '@/lib/auth';
-import { query, queryOne } from '@/lib/db';
+import crypto from 'crypto';
+import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 
@@ -19,6 +20,7 @@ interface ConversationRow {
   health_score: number | null; health_reason: string | null; health_updated_at: string | null;
   auto_closed_at: string | null;
   closed_by_name: string | null; closed_at: string | null;
+  case_kind: string | null; case_marked_by: string | null; case_marked_at: string | null; case_order_id: string | null; case_prev_status: string | null;
 }
 
 // Reachable only if the conversation's panel is one this user may see.
@@ -29,6 +31,7 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
             c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at, c.closed_by_name, c.closed_at,
+            c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id, c.case_prev_status,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
        FROM conversations c
@@ -245,9 +248,20 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   if (!conversation) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   try {
-    const { status } = await request.json();
+    const body = await request.json();
+
+    // Refund / Ship again (chat-cases.sql, owner 2026-10-01): { caseKind: 'refund' | 'reship' | null }.
+    if (body && Object.prototype.hasOwnProperty.call(body, 'caseKind')) {
+      return await setCase(conversation, body.caseKind, user);
+    }
+
+    const { status } = body;
     if (!VALID_STATUSES.includes(status)) {
       return NextResponse.json({ error: 'Unknown status' }, { status: 400 });
+    }
+    // A Refund / Ship again chat is the team's: the AI stays off until the mark is removed.
+    if (status === 'ai_handling' && conversation.case_kind) {
+      return NextResponse.json({ error: 'Remove the Refund / Ship again mark before handing this chat to the AI' }, { status: 409 });
     }
 
     // Close, Take over and Hand to AI are a person acting on the chat, so the
@@ -281,4 +295,78 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   } catch {
     return NextResponse.json({ error: 'Could not update that conversation' }, { status: 500 });
   }
+}
+
+// ── Refund / Ship again ─────────────────────────────────────────────
+// Marking: only a known customer's chat (verified, or an old phone match: the Customers list),
+// never a visitor's. The chat leaves every other inbox list and shows only under its section, the
+// AI stops (agent_handling), and nothing is sent to the customer. Removing: the chat goes back to
+// the status it had before. Every mark and remove is kept in chat_case_events.
+const CASE_KINDS = ['refund', 'reship'];
+
+async function setCase(conversation: ConversationRow, raw: unknown, user: AuthUser) {
+  const kind = raw === null || raw === '' ? null : String(raw);
+  if (kind !== null && !CASE_KINDS.includes(kind)) {
+    return NextResponse.json({ error: 'Unknown case' }, { status: 400 });
+  }
+  const actor = (user.displayName || user.username || '').trim() || 'support';
+  const orderId = conversation.verified_order_id || conversation.phone_match_order_id || null;
+
+  if (kind) {
+    if (!orderId) {
+      return NextResponse.json({ error: 'Only a verified customer can be marked for a refund or to ship again' }, { status: 400 });
+    }
+    if (conversation.case_kind === kind) return NextResponse.json({ success: true, case_kind: kind });
+    const row = await withTransaction(async (client) => {
+      // Switching from one to the other keeps the status the chat had before the first mark.
+      const r = await client.query(
+        `UPDATE conversations
+            SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END,
+                case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4,
+                status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END,
+                auto_closed_at = NULL,
+                updated_at = now()
+          WHERE id = $1
+          RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status`,
+        [conversation.id, kind, actor, orderId]
+      );
+      if (conversation.case_kind) {
+        await client.query(
+          `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+           VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
+          [crypto.randomUUID(), conversation.id, conversation.site_id, conversation.case_kind, conversation.case_order_id, actor, user.role]
+        );
+      }
+      await client.query(
+        `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+         VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)`,
+        [crypto.randomUUID(), conversation.id, conversation.site_id, kind, orderId, actor, user.role]
+      );
+      return r.rows[0];
+    });
+    console.log(`[chat] conv ${conversation.id} marked ${kind} by ${actor}`);
+    return NextResponse.json({ success: true, ...row });
+  }
+
+  if (!conversation.case_kind) return NextResponse.json({ success: true, case_kind: null });
+  const row = await withTransaction(async (client) => {
+    const r = await client.query(
+      `UPDATE conversations
+          SET status = CASE WHEN status = 'resolved' THEN status
+                            ELSE COALESCE(case_prev_status, 'agent_handling') END,
+              case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING status`,
+      [conversation.id]
+    );
+    await client.query(
+      `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+       VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`,
+      [crypto.randomUUID(), conversation.id, conversation.site_id, conversation.case_kind, conversation.case_order_id, actor, user.role]
+    );
+    return r.rows[0];
+  });
+  console.log(`[chat] conv ${conversation.id} ${conversation.case_kind} mark removed by ${actor}`);
+  return NextResponse.json({ success: true, case_kind: null, status: row?.status });
 }

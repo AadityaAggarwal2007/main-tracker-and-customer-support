@@ -37,6 +37,11 @@ interface Conversation {
   // chat-closed-by.sql. The system's own closes are marked by auto_closed_at.
   closed_by_name?: string | null;
   closed_at?: string | null;
+  // Refund / Ship again (chat-cases.sql): the section this chat is in, who marked it and when.
+  case_kind?: 'refund' | 'reship' | null;
+  case_marked_by?: string | null;
+  case_marked_at?: string | null;
+  case_order_id?: string | null;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
   source: 'chat' | 'email';
@@ -221,7 +226,7 @@ const POLL_MS = 3000;
 // "Old check" legacy tags), Visitors the rest; the status tabs show everyone, whatever they have verified.
 // A problem tab is 'topic:<key>' (src/lib/chat/inbox-topics.ts): the open chats
 // about one problem, whatever their status.
-type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'resolved' | `topic:${string}`;
+type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | `topic:${string}`;
 const TOPIC_ICONS: Record<string, typeof Inbox> = {
   risk: Flame, fraud: ShieldAlert, refund: Undo2, tracking: Link2, delay: Clock, address: MapPin, damaged: PackageX, exchange: RefreshCw,
 };
@@ -232,6 +237,9 @@ const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; status: stri
   { v: 'human_needed', label: 'Needs you', icon: AlertCircle, status: 'human_needed', segment: '' },
   { v: 'agent_handling', label: 'You are on it', icon: User, status: 'agent_handling', segment: '' },
   { v: 'ai_handling', label: 'AI handling', icon: Bot, status: 'ai_handling', segment: '' },
+  // Refund / Ship again (owner, 2026-10-01): a marked chat shows only here; no status of its own.
+  { v: 'case:refund', label: 'Refund', icon: Undo2, status: '', segment: '' },
+  { v: 'case:reship', label: 'Ship again', icon: Truck, status: '', segment: '' },
   { v: 'resolved', label: 'Closed', icon: Check, status: 'resolved', segment: '' },
 ];
 
@@ -387,6 +395,23 @@ function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big
       fontWeight: 700, background: '#dbeafe', color: '#1d4ed8',
     }}>
       <RotateCw size={big ? 11 : 10} /> Came back
+    </span>
+  );
+}
+
+// Refund / Ship again (chat-cases.sql): which section, who marked it, when.
+const CASE_LABELS: Record<string, string> = { refund: 'Refund', reship: 'Ship again' };
+function CaseChip({ kind, by, at, big = false }: { kind: string; by?: string | null; at?: string | null; big?: boolean }) {
+  const when = at ? new Date(at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '';
+  const refund = kind === 'refund';
+  return (
+    <span title={`${CASE_LABELS[kind] || kind}${by ? ` · marked by ${by}` : ''}${when ? ` · ${when}` : ''}. Internal only: the customer is not told.`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
+      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4, fontWeight: 700,
+      background: refund ? '#fef3c7' : '#e0e7ff', color: refund ? '#92400e' : '#3730a3',
+    }}>
+      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {CASE_LABELS[kind] || kind}
+      {big && by ? <span style={{ fontWeight: 500 }}>· {by}{when ? `, ${when}` : ''}</span> : null}
     </span>
   );
 }
@@ -823,6 +848,11 @@ export default function ChatSupportPage() {
   const segment = tabDef.segment;
   // Open customers per problem tab, from the list's own answer.
   const [topicCounts, setTopicCounts] = useState<Record<string, number>>({});
+  // The Refund / Ship again sections: how many chats each holds (and unread), and, for the open one,
+  // who marked how many per day.
+  const caseKey = tab.startsWith('case:') ? tab.slice(5) : '';
+  const [caseCounts, setCaseCounts] = useState<Record<string, { total: number; unread: number }>>({});
+  const [caseSummary, setCaseSummary] = useState<{ marked_by: string; day: string; n: number }[]>([]);
 
   // The search box. searchQ trails what is typed by a moment, so the list is
   // not asked for on every key. A search looks at ALL chats of the chosen
@@ -933,6 +963,7 @@ export default function ChatSupportPage() {
         if (statusFilter) params.set('status', statusFilter);
         if (segment) params.set('segment', segment);
         if (topicKey) params.set('topic', topicKey);
+        if (caseKey) params.set('case', caseKey);
         if (unreadOnly) params.set('unread', '1');
       }
       const res = await fetch(`/api/chat/conversations?${params}`, {
@@ -942,10 +973,12 @@ export default function ChatSupportPage() {
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
         if (data.topic_counts) setTopicCounts(data.topic_counts);
+        if (data.case_counts) setCaseCounts(data.case_counts);
+        setCaseSummary(Array.isArray(data.case_summary) ? data.case_summary : []);
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, unreadOnly, searchActive, searchQ]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, unreadOnly, searchActive, searchQ]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1070,6 +1103,35 @@ export default function ChatSupportPage() {
         const d = await res.json();
         showAlert('error', d.error || 'Could not update that conversation');
       }
+    } catch { showAlert('error', 'Could not update that conversation'); }
+  };
+
+  // Refund / Ship again (chat-cases.sql). Internal only: nothing is sent to the customer.
+  const markCase = async (kind: 'refund' | 'reship' | null) => {
+    if (!activeId || !activeConv) return;
+    const label = kind ? CASE_LABELS[kind] : CASE_LABELS[activeConv.case_kind || 'refund'];
+    const ok = kind
+      ? confirm(`Mark this chat for ${label}?\n\nIt moves to the ${label} list (and out of every other list), the AI stops replying here, and the customer is NOT told anything.`)
+      : confirm(`Take this chat out of ${label}?\n\nIt goes back to where it was. The history keeps who marked and who removed it.`);
+    if (!ok) return;
+    try {
+      const res = await fetch(`/api/chat/conversations/${activeId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ caseKind: kind }),
+      });
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) { showAlert('error', (d.error as string) || 'Could not update that conversation'); return; }
+      setActiveConv(c => (c ? {
+        ...c,
+        case_kind: (d.case_kind as Conversation['case_kind']) ?? null,
+        case_marked_by: (d.case_marked_by as string | null | undefined) ?? null,
+        case_marked_at: (d.case_marked_at as string | null | undefined) ?? null,
+        case_order_id: (d.case_order_id as string | null | undefined) ?? null,
+        status: ((d.status as Conversation['status'] | undefined) || c.status),
+      } : c));
+      showAlert('success', kind ? `Moved to ${label}` : `Taken out of ${label}`);
+      fetchConversations(true);
     } catch { showAlert('error', 'Could not update that conversation'); }
   };
 
@@ -1588,7 +1650,17 @@ export default function ChatSupportPage() {
               className={`nav-btn ${tab === s.v ? 'active' : ''}`}
               style={{ width: '100%' }}
             >
-              <s.icon size={16} /> {s.label}
+              <s.icon size={16} />
+              <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{s.label}</span>
+              {s.v.startsWith('case:') && (caseCounts[s.v.slice(5)]?.total ?? 0) > 0 && (() => {
+                const c = caseCounts[s.v.slice(5)];
+                return (
+                  <span title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} unread` : ''}`} style={{
+                    fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
+                    background: c.unread ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))', color: c.unread ? '#b91c1c' : 'var(--fg-muted)',
+                  }}>{c.unread ? `${c.unread} new` : c.total}</span>
+                );
+              })()}
             </button>
           ))}
 
@@ -1718,6 +1790,32 @@ export default function ChatSupportPage() {
                   ))}
                 </div>
               )}
+              {caseKey && !searchActive && (() => {
+                // Who marked how many, per day (India time), last 14 days: for the owner's experts.
+                const days = Array.from(new Set(caseSummary.map((r) => r.day)));
+                const total = caseSummary.reduce((n, r) => n + r.n, 0);
+                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                const fmt = (d: string) => d === today ? 'Today' : new Date(`${d}T00:00:00+05:30`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
+                return (
+                  <div style={{ marginTop: '0.5rem', border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.625rem', fontSize: '0.75rem', maxHeight: 180, overflowY: 'auto' }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                      Marked for {CASE_LABELS[caseKey]} · last 14 days: {total}
+                    </div>
+                    {!days.length && <div style={{ color: 'var(--fg-muted)' }}>Nothing marked yet.</div>}
+                    {days.map((d) => (
+                      <div key={d} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '2px 0' }}>
+                        <span style={{ minWidth: 52, color: 'var(--fg-muted)' }}>{fmt(d)}</span>
+                        {caseSummary.filter((r) => r.day === d).map((r) => (
+                          <span key={r.marked_by} style={{ fontWeight: 600 }}>{r.marked_by} {r.n}</span>
+                        ))}
+                      </div>
+                    ))}
+                    <div style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: '0.6875rem' }}>
+                      Internal only: customers are never told. These chats show only here; the AI does not reply in them.
+                    </div>
+                  </div>
+                );
+              })()}
               {searchActive && (
                 <div style={{ marginTop: '0.375rem', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
                   In all chats{activePanelId ? ` of ${businesses.find(b => b.id === activePanelId)?.name || 'this panel'}` : ''}, including Closed ones and visitors.
@@ -1735,7 +1833,14 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  {unreadOnly && !searchActive ? (
+                  {caseKey && !searchActive ? (
+                    <>
+                      <p>No chats marked for {CASE_LABELS[caseKey]}{unreadOnly ? ' with unread messages' : ''}.</p>
+                      <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                        Open a verified customer&apos;s chat and press {CASE_LABELS[caseKey]} at the top. It moves here and leaves every other list.
+                      </p>
+                    </>
+                  ) : unreadOnly && !searchActive ? (
                     <p>No unread chats here. Everything is read.</p>
                   ) : topicDef && !searchActive ? (
                     <>
@@ -1863,6 +1968,7 @@ export default function ChatSupportPage() {
                     {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
                     {c.waiting_since && !isVisitorChat(c) && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
                     {c.returned && <span style={{ marginLeft: '0.5rem' }}><CameBackChip closedAt={c.auto_closed_at} /></span>}
+                    {c.case_kind && <span style={{ marginLeft: '0.5rem' }}><CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} /></span>}
                   </div>
                 </button>
               ))}
@@ -1936,11 +2042,25 @@ export default function ChatSupportPage() {
                   </div>
 
                   {canReply && (
-                    <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                      {/* Refund / Ship again: verified customers only; internal, the customer is told nothing */}
+                      {!isVisitorChat(activeConv) && (activeConv.case_kind ? (
+                        <>
+                          <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} big />
+                          <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>
+                        </>
+                      ) : (
+                        <>
+                          <button className="btn btn-outline btn-sm" title="Mark this customer for a refund. Internal only: the customer is not told." onClick={() => markCase('refund')}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Undo2 size={13} /> Refund</button>
+                          <button className="btn btn-outline btn-sm" title="Mark this order to be shipped again. Internal only: the customer is not told." onClick={() => markCase('reship')}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Truck size={13} /> Ship again</button>
+                        </>
+                      ))}
                       {activeConv.status !== 'agent_handling' && (
                         <button className="btn btn-primary btn-sm" onClick={() => changeStatus('agent_handling')}>Take over</button>
                       )}
-                      {activeConv.status === 'agent_handling' && (
+                      {activeConv.status === 'agent_handling' && !activeConv.case_kind && (
                         <button className="btn btn-outline btn-sm" onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
                       )}
                       {activeConv.status !== 'resolved' && (

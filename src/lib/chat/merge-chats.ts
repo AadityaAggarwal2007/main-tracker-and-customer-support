@@ -61,6 +61,7 @@ export async function mergeChats(targetId: string, fromId: string): Promise<bool
     await client.query(
       `UPDATE conversations
           SET status = CASE WHEN $3 = 'human_needed' THEN 'human_needed'
+                            WHEN status = 'resolved' AND case_kind IS NOT NULL THEN 'agent_handling'
                             WHEN status = 'resolved' THEN $4
                             ELSE status END,
               unread_count = unread_count + $5::int,

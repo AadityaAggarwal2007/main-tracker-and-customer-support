@@ -18,7 +18,8 @@ export async function GET(request: NextRequest) {
 
   const businessId = new URL(request.url).searchParams.get('businessId') || '';
 
-  const conditions: string[] = [`c.status = 'human_needed'`];
+  // A Refund / Ship again chat (chat-cases.sql) is counted under its own section, not here.
+  const conditions: string[] = [`c.status = 'human_needed'`, 'c.case_kind IS NULL'];
   const params: unknown[] = [];
   let pi = 1;
 

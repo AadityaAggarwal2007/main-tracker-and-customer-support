@@ -248,11 +248,13 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // auto_closed_at, so the inbox shows it as "Came back".
         if (conversation.status === 'resolved') {
           const reopened = account.ai_enabled ? 'ai_handling' : 'human_needed';
-          await query(
-            `UPDATE conversations SET status = $2, updated_at = now() WHERE id = $1 AND status = 'resolved'`,
+          // A Refund / Ship again thread (chat-cases.sql) stays with the team: no AI.
+          const back = await queryOne<{ status: string }>(
+            `UPDATE conversations SET status = CASE WHEN case_kind IS NOT NULL THEN 'agent_handling' ELSE $2 END, updated_at = now()
+              WHERE id = $1 AND status = 'resolved' RETURNING status`,
             [conversation.id, reopened]
           );
-          conversation.status = reopened;
+          conversation.status = back?.status || reopened;
         }
 
         // Card number, CVV, expiry, OTP, UPI PIN or a password in the email is

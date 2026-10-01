@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
       conversation = await queryOne<{ id: string; status: string }>(
         `UPDATE conversations
             SET visitor_id = $1,
-                status = CASE WHEN status = 'resolved' THEN 'ai_handling' ELSE status END,
+                status = CASE WHEN status = 'resolved' THEN (CASE WHEN case_kind IS NOT NULL THEN 'agent_handling' ELSE 'ai_handling' END) ELSE status END,
                 verified_order_id = $2,
                 verified_at = now(),
                 verified_via = 'form',
@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
       if (!own) own = await getOrCreateVisitorConversation(site.id, visitorId);
       conversation = await queryOne<{ id: string; status: string }>(
         `UPDATE conversations
-            SET status = CASE WHEN status = 'resolved' THEN 'ai_handling' ELSE status END,
+            SET status = CASE WHEN status = 'resolved' THEN (CASE WHEN case_kind IS NOT NULL THEN 'agent_handling' ELSE 'ai_handling' END) ELSE status END,
                 verified_order_id = $1,
                 verified_at = now(),
                 verified_via = 'form',
