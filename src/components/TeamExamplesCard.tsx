@@ -15,8 +15,9 @@ interface Situation { key: string; label: string }
 
 const muted = { border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' };
 
-export default function TeamExamplesCard({ token, businessId, canEdit, onAlert }: {
+export default function TeamExamplesCard({ token, businessId, canEdit, onAlert, onPending }: {
   token: string | null; businessId: string | null; canEdit: boolean; onAlert: (type: string, message: string) => void;
+  onPending?: (n: number) => void;
 }) {
   const [examples, setExamples] = useState<Ex[]>([]);
   const [situations, setSituations] = useState<Situation[]>([]);
@@ -34,8 +35,9 @@ export default function TeamExamplesCard({ token, businessId, canEdit, onAlert }
       if (!r.ok) return;
       const d = await r.json();
       setExamples(d.examples || []); setSituations(d.situations || []); setReviewed(d.reviewed || 0);
+      onPending?.((d.examples || []).filter((e: Ex) => e.status === 'pending').length);
     } catch { /* keep what is on screen */ }
-  }, [token, businessId]);
+  }, [token, businessId, onPending]);
   useEffect(() => { load(); }, [load]);
 
   const act = async (body: Record<string, unknown>, ok?: string) => {

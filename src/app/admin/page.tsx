@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import BrainCard from '@/components/BrainCard';
-import TeamExamplesCard from '@/components/TeamExamplesCard';
+import SavedAnswersCard from '@/components/SavedAnswersCard';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, ROLE_PERMISSIONS, getStatusColorClass } from '@/lib/constants';
 import {
@@ -1992,65 +1992,11 @@ export default function AdminDashboard() {
                         </div>
 
                         {/* ── SAVED ANSWERS (Q&A) ── */}
-                        <div className="form-group">
-                          <label className="form-label">💬 Saved Answers ({faqs.length})</label>
-                          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-                            Write a question and the exact answer you want given. The agent uses your wording
-                            instead of working it out itself, including when the customer asks it differently or in
-                            Hindi. Edits apply to the very next message — no restart needed.
-                          </div>
-
-                          {faqs.length > 0 && (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                              {faqs.map((f) => (
-                                <div key={f.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem 0.75rem', opacity: f.is_enabled ? 1 : 0.5 }}>
-                                  <input
-                                    className="form-input"
-                                    style={{ fontWeight: 600, marginBottom: '0.375rem' }}
-                                    defaultValue={f.question}
-                                    onBlur={(e) => { if (e.target.value.trim() !== f.question) faqRequest('PATCH', { businessId: activePanelId, id: f.id, question: e.target.value }); }}
-                                  />
-                                  <textarea
-                                    className="form-input"
-                                    rows={2}
-                                    defaultValue={f.answer}
-                                    onBlur={(e) => { if (e.target.value.trim() !== f.answer) faqRequest('PATCH', { businessId: activePanelId, id: f.id, answer: e.target.value }); }}
-                                  />
-                                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.375rem' }}>
-                                    <button className="btn btn-sm" disabled={faqBusy}
-                                      onClick={() => faqRequest('PATCH', { businessId: activePanelId, id: f.id, isEnabled: !f.is_enabled })}
-                                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>
-                                      {f.is_enabled ? 'Turn off' : 'Turn on'}
-                                    </button>
-                                    <button className="btn btn-sm" disabled={faqBusy}
-                                      onClick={() => { if (confirm('Delete this saved answer?')) faqRequest('DELETE', undefined, `?businessId=${activePanelId}&id=${f.id}`); }}
-                                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--danger, #ef4444)' }}>
-                                      Delete
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: '0.75rem' }}>
-                            <input className="form-input" style={{ marginBottom: '0.375rem' }}
-                              placeholder="Question — e.g. Jhumka box ke saath earrings aayenge?"
-                              value={faqDraft.question}
-                              onChange={(e) => setFaqDraft({ ...faqDraft, question: e.target.value })} />
-                            <textarea className="form-input" rows={2}
-                              placeholder="Answer — exactly what the agent should say"
-                              value={faqDraft.answer}
-                              onChange={(e) => setFaqDraft({ ...faqDraft, answer: e.target.value })} />
-                            <button className="btn btn-sm btn-primary" style={{ marginTop: '0.375rem' }} disabled={faqBusy} onClick={addFaq}>
-                              + Add saved answer
-                            </button>
-                          </div>
-                        </div>
+                        <SavedAnswersCard faqs={faqs} busy={faqBusy} businessId={activePanelId} request={faqRequest}
+                          draft={faqDraft} setDraft={setFaqDraft} onAdd={addFaq} />
 
                         {/* ── BRAIN (notes the agent reads when they fit) ── */}
                         <BrainCard token={token} businessId={activePanelId} onAlert={showAlert} />
-                        <TeamExamplesCard token={token} businessId={activePanelId} canEdit={user?.role === 'admin'} onAlert={showAlert} />
 
                         <div className="form-group">
                           <label className="form-label">Cash on Delivery</label>

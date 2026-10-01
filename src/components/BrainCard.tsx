@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import TeamExamplesCard from './TeamExamplesCard';
 
 // The Brain card in Panel Settings (src/app/api/panel-brain, src/lib/chat/brain.ts): the
 // notes the support agent reads. Anyone on the panel can read them; only an admin can
@@ -29,7 +30,10 @@ export default function BrainCard({ token, businessId, onAlert }: {
   const [canEditCommon, setCanEditCommon] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(EMPTY);
-  const [showLocked, setShowLocked] = useState(false);
+  const [tab, setTab] = useState<'notes' | 'suggestions' | 'team' | 'locked'>('notes');
+  const [noteQ, setNoteQ] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [teamPending, setTeamPending] = useState(0);
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState({ title: '', body: '', topics: [] as string[], always: false, kind: 'lesson' as Note['kind'], audience: 'all' as Note['audience'] });
 
@@ -179,50 +183,44 @@ export default function BrainCard({ token, businessId, onAlert }: {
     </div>
   );
 
+  const filterNotes = (list: Note[]) => {
+    const n = noteQ.trim().toLowerCase();
+    return n ? list.filter((x) => `${x.title} ${x.body}`.toLowerCase().includes(n)) : list;
+  };
+  const tabBtn = (key: typeof tab, label: string, badge?: number) => (
+    <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
+      style={{ padding: '0.375rem 0.75rem', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', background: 'transparent', border: 'none',
+        borderBottom: `2px solid ${tab === key ? 'var(--primary)' : 'transparent'}`, color: tab === key ? 'var(--primary)' : 'var(--fg-muted)' }}>
+      {label}
+      {badge ? <span style={{ marginLeft: 6, fontSize: '0.6875rem', padding: '0 6px', borderRadius: 999, background: 'var(--primary)', color: '#fff' }}>{badge}</span> : null}
+    </button>
+  );
+
   return (
     <div className="form-group">
-      <label className="form-label">🧠 Brain ({notes.length})</label>
-      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-        What the agent has learned about your store and about real chats. On every message it reads only the
-        notes that fit what the customer wrote (plus the ones marked Always). Edits apply to the very next
-        message. {canEdit ? '' : 'Only an admin can change these.'}
+      <label className="form-label">🧠 Brain</label>
+      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem', lineHeight: 1.6 }}>
+        <b>Saved answer</b> (above) = a fixed reply to one question. <b>Note</b> = something the agent should know or a way to act.
+        <b> Team example</b> = how your team talks to a difficult customer. Nothing learned from chats is used until you approve it.
+        {canEdit ? '' : ' Only an admin can change these.'}
       </div>
 
-      {suggestions.length > 0 && (
-        <div style={{ marginBottom: '0.75rem', border: '1px solid var(--primary)', borderRadius: 8, padding: '0.625rem 0.75rem' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--primary)', marginBottom: '0.25rem' }}>
-            Suggested from real chats ({suggestions.length})
-          </div>
-          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-            The system read chats your team answered and drafted these. The agent does NOT use them until you approve. Change the wording first if you like.
-          </div>
-          {suggestions.map((sg) => {
-            const e = sugEdit[sg.id] || { title: sg.title, body: sg.body, topics: sg.topics };
-            return (
-              <div key={sg.id} style={{ borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
-                <input className="form-input" style={{ fontWeight: 600, marginBottom: '0.375rem' }} value={e.title} disabled={!canEdit} maxLength={120}
-                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, title: ev.target.value } })} />
-                <textarea className="form-input" rows={3} value={e.body} disabled={!canEdit} maxLength={900}
-                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, body: ev.target.value } })} />
-                {topicPicker(e.topics, (v) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, topics: v } }), false, () => {})}
-                {sg.why && <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>Why: {sg.why}</div>}
-                {canEdit && (
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => decide(sg, 'approve')}>Approve: add to the Brain</button>
-                    <button className="btn btn-sm" disabled={busy} onClick={() => decide(sg, 'reject')}
-                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>Reject</button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <div role="tablist" style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border)', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+        {tabBtn('notes', `Notes (${notes.length})`)}
+        {tabBtn('suggestions', 'Suggested lessons', suggestions.length)}
+        {tabBtn('team', 'Team examples', teamPending)}
+        {tabBtn('locked', 'Locked rules')}
+      </div>
 
-      {group('For this panel', notes.filter((n) => n.site_id !== null))}
-      {group('For every panel', notes.filter((n) => n.site_id === null))}
-
-      {canEdit && (
+      {tab === 'notes' && (
+        <>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.625rem', flexWrap: 'wrap' }}>
+            <input className="form-input" style={{ flex: 1, minWidth: 180 }} type="search" placeholder="Search notes" value={noteQ} onChange={(e) => setNoteQ(e.target.value)} aria-label="Search notes" />
+            {canEdit && !adding && <button className="btn btn-sm btn-primary" onClick={() => setAdding(true)}>+ Add a note</button>}
+          </div>
+          {adding && (
+            <>
+              {canEdit && (
         <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: '0.75rem', marginBottom: '0.75rem' }}>
           <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.375rem' }}>
             <select className="form-input" style={{ width: 'auto' }} value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value as Note['kind'] })}>
@@ -244,15 +242,76 @@ export default function BrainCard({ token, businessId, onAlert }: {
         </div>
       )}
 
-      <button type="button" onClick={() => setShowLocked(!showLocked)}
-        style={{ border: 'none', background: 'transparent', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}>
-        {showLocked ? 'Hide' : 'Show'} the locked rules ({locked.length}): they always win over a note and can only be changed in the code
-      </button>
-      {showLocked && (
-        <div style={{ marginTop: '0.5rem', border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem 0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto' }}>
-          {locked.join('\n\n')}
-        </div>
+              <button className="btn btn-sm" onClick={() => setAdding(false)} style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)', marginBottom: '0.75rem' }}>Close</button>
+            </>
+          )}
+          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+            On every message the agent reads only the notes that fit what the customer wrote (plus the ones marked Always).
+          </div>
+          {group('For this panel', filterNotes(notes.filter((n) => n.site_id !== null)))}
+          {group('For every panel', filterNotes(notes.filter((n) => n.site_id === null)))}
+          {noteQ.trim() && !filterNotes(notes).length && <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No note matches “{noteQ}”.</div>}
+        </>
       )}
+
+      {tab === 'suggestions' && (
+        <>
+          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+            Every few hours the system reads chats your team answered and drafts lessons. The agent does NOT use them until you
+            approve. Change the wording first if you like; anything that goes against your locked rules is refused.
+          </div>
+          {!suggestions.length && <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Nothing waiting. New suggestions appear here as your team answers chats.</div>}
+          {suggestions.map((sg) => {
+            const e = sugEdit[sg.id] || { title: sg.title, body: sg.body, topics: sg.topics };
+            return (
+              <div key={sg.id} style={{ borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                <input className="form-input" style={{ fontWeight: 600, marginBottom: '0.375rem' }} value={e.title} disabled={!canEdit} maxLength={120}
+                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, title: ev.target.value } })} />
+                <textarea className="form-input" rows={3} value={e.body} disabled={!canEdit} maxLength={900}
+                  onChange={(ev) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, body: ev.target.value } })} />
+                {topicPicker(e.topics, (v) => setSugEdit({ ...sugEdit, [sg.id]: { ...e, topics: v } }), false, () => {})}
+                {sg.why && <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>Why: {sg.why}</div>}
+                {canEdit && (
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => decide(sg, 'approve')}>Approve: add to the Brain</button>
+                    <button className="btn btn-sm" disabled={busy} onClick={() => decide(sg, 'reject')}
+                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' }}>Reject</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {tab === 'team' && (
+        <TeamExamplesCard token={token} businessId={businessId} canEdit={canEdit} onAlert={onAlert} onPending={setTeamPending} />
+      )}
+
+      {tab === 'locked' && (
+        <>
+          <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+            Your locked rules. They always win over a saved answer, a note or a team example, and can only be changed in the code with your OK.
+          </div>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem 0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', maxHeight: 360, overflowY: 'auto' }}>
+            {locked.join('\n\n')}
+          </div>
+        </>
+      )}
+      {/* The team-example count for the tab badge, loaded even before that tab is opened. */}
+      {tab !== 'team' && <TeamExamplesCount token={token} businessId={businessId} onPending={setTeamPending} />}
     </div>
   );
+}
+
+// Only fetches the number of team examples waiting for approval (for the tab badge).
+function TeamExamplesCount({ token, businessId, onPending }: { token: string | null; businessId: string | null; onPending: (n: number) => void }) {
+  useEffect(() => {
+    if (!token || !businessId) return;
+    fetch(`/api/panel-brain/examples?businessId=${businessId}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) onPending((d.examples || []).filter((e: { status: string }) => e.status === 'pending').length); })
+      .catch(() => {});
+  }, [token, businessId, onPending]);
+  return null;
 }
