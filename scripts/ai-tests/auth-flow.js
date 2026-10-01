@@ -45,6 +45,16 @@ async function handle(sql, params = []) {
       : { username, password_hash, session_version: 2, updated_at: new Date().toISOString(), updated_by };
     return rows([{ username: db.adminRow.username, session_version: db.adminRow.session_version, updated_at: db.adminRow.updated_at }]);
   }
+  if (/^UPDATE team_users SET session_version = session_version \+ 1, updated_at = now\(\)$/.test(q)) {
+    for (const u of db.team) u.session_version += 1;
+    return { rows: [], rowCount: db.team.length };
+  }
+  if (/^UPDATE admin_login SET session_version = session_version \+ 1 WHERE id = 1 RETURNING username, session_version$/.test(q)) {
+    if (!db.adminRow) return rows([]);
+    db.adminRow = { ...db.adminRow, session_version: db.adminRow.session_version + 1 };
+    return rows([{ username: db.adminRow.username, session_version: db.adminRow.session_version }]);
+  }
+  if (/^SELECT count\(\*\)::text AS n FROM team_users$/.test(q)) return rows([{ n: String(db.team.length) }]);
   if (/^SELECT id, username, display_name, role, is_active, business_ids, permissions, session_version FROM team_users$/.test(q)) {
     return rows(db.team.map((u) => ({ ...u })));
   }
@@ -312,6 +322,60 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
     const reset = await team.PATCH(reqOf(tok3, { id: ravi.id, resetPassword: true }));
     assert.ok(reset.body.password && reset.body.password.length === 12);
     assert.strictEqual((await team.POST(reqOf(H(tk) ? tk : 'x', { displayName: 'X', username: 'xyz', role: 'agent' }))).status, 403);
+  });
+
+  await t('login change: "also sign out the team" signs out every member; without it they stay', async () => {
+    const m = db.team.find((u) => u.username === 'ravi.k');
+    assert.strictEqual((await team.PATCH(reqOf(tok3, { id: m.id, password: 'Team-pass-1357' }))).status, 200);
+    const mt = (await auth.authenticateUser('ravi.k', 'Team-pass-1357')).token;
+    const a = await account.POST(reqOf(tok3, { currentPassword: 'Reset-pass-5555', newPassword: 'Owner-pass-2468' }));
+    assert.strictEqual(a.status, 200);
+    assert.strictEqual(a.body.teamSignedOut, null);
+    assert.strictEqual(H(mt).username, 'ravi.k');                               // team untouched
+    assert.strictEqual(H(tok3), null);
+    const b = await account.POST(reqOf(a.body.token, { currentPassword: 'Owner-pass-2468', newPassword: 'Owner-pass-3579', signOutTeam: true }));
+    assert.strictEqual(b.status, 200);
+    assert.strictEqual(b.body.teamSignedOut, db.team.length);
+    assert.strictEqual(H(mt), null);                                           // every member out
+    assert.strictEqual(H(a.body.token), null);
+    assert.strictEqual(H(b.body.token).role, 'admin');
+    assert.ok(await auth.authenticateUser('ravi.k', 'Team-pass-1357'));        // their own password still works
+    tok3 = b.body.token;
+  });
+
+  await t('sign out everyone: everyone else out, the owner stays, nothing else changes', async () => {
+    const mt = (await auth.authenticateUser('ravi.k', 'Team-pass-1357')).token;
+    const otherOwner = (await auth.authenticateUser('jatin.owner', 'Owner-pass-3579')).token;   // another device
+    const before = await account.GET(reqOf(tok3));
+    assert.strictEqual(before.body.teamCount, db.team.length);
+    const hashBefore = db.adminRow.password_hash, svBefore = db.adminRow.session_version;
+    const r = await account.POST(reqOf(tok3, { action: 'signOutEveryone' }));
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.teamSignedOut, db.team.length);
+    assert.strictEqual(H(mt), null);
+    assert.strictEqual(H(otherOwner), null);
+    assert.strictEqual(H(tok3), null);
+    assert.strictEqual(H(r.body.token).role, 'admin');
+    assert.strictEqual(db.adminRow.session_version, svBefore + 1);
+    assert.strictEqual(db.adminRow.password_hash, hashBefore);                 // password unchanged
+    const after = await account.GET(reqOf(r.body.token));
+    assert.strictEqual(after.body.changedAt, before.body.changedAt);           // not shown as a login change
+    assert.ok(await auth.authenticateUser('jatin.owner', 'Owner-pass-3579'));
+    assert.strictEqual((await account.POST(reqOf(null, { action: 'signOutEveryone' }))).status, 403);
+    tok3 = r.body.token;
+  });
+
+  await t('sign out everyone is refused while the old .env login is still the one', async () => {
+    const saved = db.adminRow; db.adminRow = null;
+    await auth.refreshTeamCache(true);
+    const envOwner = auth.generateToken('Owner', 'admin', null, { name: 'Super Admin' });
+    const r = await account.POST(reqOf(envOwner, { action: 'signOutEveryone' }));
+    assert.strictEqual(r.status, 409);
+    assert.strictEqual(db.adminRow, null);
+    db.adminRow = saved;
+    await auth.refreshTeamCache(true);
+    assert.strictEqual(H(envOwner), null);
+    assert.strictEqual(H(tok3).role, 'admin');
   });
 
   // ── Chat address ─────────────────────────────────────────────

@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
+import OwnerLoginDialog from '@/components/OwnerLogin';
 import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, getStatusColorClass } from '@/lib/constants';
 import {
-  Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail,
+  Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail, ShieldCheck,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
   Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight
@@ -55,6 +56,8 @@ export default function AdminDashboard() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState('');
+  // Login & security (the owner's own login), opened from the sidebar's Super Admin.
+  const [securityOpen, setSecurityOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -985,14 +988,22 @@ export default function AdminDashboard() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="sidebar-user">
+          <div className="sidebar-user"
+            {...(user.role === 'admin' ? { role: 'button', tabIndex: 0, title: 'Login & security', onClick: () => setSecurityOpen(true),
+              onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSecurityOpen(true); } },
+              style: { cursor: 'pointer' } } : {})}>
             <div className="sidebar-avatar">{user.displayName.charAt(0).toUpperCase()}</div>
             <div className="sidebar-user-info">
               <div className="sidebar-user-name">{user.displayName}</div>
               <span className="role-pill">{user.role}</span>
             </div>
           </div>
-          <button className="nav-btn" onClick={logout} style={{ marginTop: '0.5rem' }}>
+          {user.role === 'admin' && (
+            <button className="nav-btn" onClick={() => setSecurityOpen(true)}>
+              <ShieldCheck size={18} /> Login &amp; security
+            </button>
+          )}
+          <button className="nav-btn" onClick={logout} style={{ marginTop: '0.25rem' }}>
             <LogOut size={18} /> Sign out
           </button>
         </div>
@@ -2081,9 +2092,14 @@ export default function AdminDashboard() {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.5rem', alignItems: 'end' }}>
                       <div className="form-group" style={{ margin: 0 }}>
                         <label className="form-label">Email address</label>
+                        {/* Not a login form: stop browsers filling the owner's ShipTrack login in here (it did, 2026-10-01). */}
                         <input
                           className="form-input"
                           type="email"
+                          name="mailbox-address"
+                          autoComplete="off"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
                           placeholder="support@yourstore.com"
                           value={newPanelEmail.email}
                           onChange={(e) => setNewPanelEmail({ ...newPanelEmail, email: e.target.value })}
@@ -2094,6 +2110,10 @@ export default function AdminDashboard() {
                         <input
                           className="form-input"
                           type="password"
+                          name="mailbox-app-password"
+                          autoComplete="new-password"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
                           placeholder="abcd efgh ijkl mnop"
                           value={newPanelEmail.appPassword}
                           onChange={(e) => setNewPanelEmail({ ...newPanelEmail, appPassword: e.target.value })}
@@ -2150,6 +2170,11 @@ export default function AdminDashboard() {
                 </div>
               )}
             </div>
+          )}
+
+          {securityOpen && user?.role === 'admin' && (
+            <OwnerLoginDialog token={token} onAlert={showAlert} onClose={() => setSecurityOpen(false)}
+              onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />
           )}
 
           {/* ════════ TEAM TAB ════════ */}
