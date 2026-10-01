@@ -4,14 +4,15 @@ import { useMemo, useState } from 'react';
 
 // Saved Answers in Panel Settings: the same data and the same saving as before (the admin page
 // keeps faqRequest / addFaq and /api/panel-faq); this is only the layout: search, a size meter,
-// the add form on top, turned-off answers apart, a long list folded.
+// the add form on top, turned-off answers apart, a long list folded. Since 2026-10-01 it is the
+// first tab of Chikki (ChikkiCard, `embedded`: no heading of its own).
 
 interface Faq { id: string; question: string; answer: string; is_enabled: boolean }
 
 // Keep in step with FAQ_CHAR_BUDGET in src/lib/chat/ai.ts.
 const BUDGET = 25000;
 
-export default function SavedAnswersCard({ faqs, busy, businessId, request, draft, setDraft, onAdd }: {
+export default function SavedAnswersCard({ faqs, busy, businessId, request, draft, setDraft, onAdd, embedded = false }: {
   faqs: Faq[];
   busy: boolean;
   businessId: string | null;
@@ -19,6 +20,7 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
   draft: { question: string; answer: string };
   setDraft: (d: { question: string; answer: string }) => void;
   onAdd: () => Promise<void>;
+  embedded?: boolean;
 }) {
   const [q, setQ] = useState('');
   const [adding, setAdding] = useState(false);
@@ -84,14 +86,16 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
   };
 
   return (
-    <div className="form-group">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <label className="form-label" style={{ marginBottom: 0 }}>💬 Saved Answers</label>
-        <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{on.length} on{off.length ? ` · ${off.length} off` : ''}</span>
-      </div>
-      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', margin: '0.25rem 0 0.5rem' }}>
-        A fixed reply for one question. The agent gives your wording, also when the customer asks it differently or in
-        Hindi. Edits apply to the very next message.
+    <div className={embedded ? undefined : 'form-group'}>
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <label className="form-label" style={{ marginBottom: 0 }}>💬 Saved Answers</label>
+          <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{on.length} on{off.length ? ` · ${off.length} off` : ''}</span>
+        </div>
+      )}
+      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', margin: embedded ? '0 0 0.5rem' : '0.25rem 0 0.5rem', lineHeight: 1.6 }}>
+        A fixed reply for one question. {embedded ? 'Chikki' : 'The agent'} gives your wording, also when the customer asks it differently or in
+        Hindi. Edits apply to the very next message.{embedded ? ` ${on.length} on${off.length ? `, ${off.length} off` : ''}.` : ''}
       </div>
 
       {/* How much of the agent's space the answers take */}
@@ -125,8 +129,8 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
         </div>
       )}
 
-      {/* The list scrolls inside its own box, so the page below (Brain, COD...) stays close. */}
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, maxHeight: 460, overflowY: 'auto' }}>
+      {/* The list scrolls inside its own box, so the page stays short. */}
+      <div style={{ border: '1px solid var(--border)', borderRadius: embedded ? 10 : 8, maxHeight: embedded ? 480 : 460, overflowY: 'auto' }}>
         {list.map(item)}
         {needle && !list.length && <div style={{ padding: '0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answer matches “{q}”.</div>}
         {!needle && !faqs.length && <div style={{ padding: '0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answers yet.</div>}

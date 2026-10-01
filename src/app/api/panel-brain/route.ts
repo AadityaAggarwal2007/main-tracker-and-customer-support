@@ -5,6 +5,7 @@ import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
 import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS, noteProblem } from '@/lib/chat/brain';
 import { getLockedRules } from '@/lib/chat/ai';
+import { fillRulebook } from '@/lib/chat/rulebook';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,10 +52,28 @@ export async function GET(request: NextRequest) {
       `SELECT ${COLS} FROM brain_notes WHERE site_id = $1 OR site_id IS NULL ORDER BY (site_id IS NULL), sort_order, created_at`,
       [siteId]
     );
+    // Chikki's rulebook, with this panel's COD and courier filled in, and the changes the
+    // owner asked for (chikki-rule-changes.sql; an empty list until that file is applied).
+    const site = await queryOne<{ cod_available: boolean | null; cod_states: string | null }>(
+      `SELECT cod_available, cod_states FROM sites WHERE id = $1`, [siteId]
+    );
+    const biz = await queryOne<{ default_courier: string | null }>(`SELECT default_courier FROM businesses WHERE id = $1`, [businessId]);
+    let ruleChanges: unknown[] = [];
+    try {
+      ruleChanges = (await query(
+        `SELECT id, rule_id, body, status, created_by, created_at, closed_at, closed_note
+           FROM chikki_rule_changes ORDER BY created_at DESC LIMIT 200`
+      )).rows;
+    } catch { /* table not there yet */ }
     const res = NextResponse.json({
       notes: rows.rows,
       topics: BRAIN_TOPICS.map((t) => ({ key: t.key, label: t.label })),
       locked: getLockedRules(),
+      rulebook: fillRulebook(
+        { codStates: site?.cod_states ?? null, codAvailable: site?.cod_available ?? null },
+        biz?.default_courier ?? null,
+      ),
+      ruleChanges,
       canEdit: user.role === 'admin',
       canEditCommon: isGlobalAdmin(user),
     });

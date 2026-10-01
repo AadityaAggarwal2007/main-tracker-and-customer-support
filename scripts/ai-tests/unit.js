@@ -11,7 +11,7 @@ const load = (f) => {
 load('today-promise');
 load('health-rules');
 load('address-conflict'); load('escalation');
-const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier'), rb = load('rulebook');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -261,5 +261,22 @@ t('withoutUnaskedCourier / asksAboutCourier', () => {
   assert.ok(rg.asksAboutCourier('mera order kaunse courier se aa raha hai?'));
   assert.ok(rg.asksAboutCourier('kaun deliver kar raha hai'));
   assert.ok(!rg.asksAboutCourier('order kab aayega'));
+});
+t('rulebook: numbers unique and in order, every rule complete, panel values filled in', () => {
+  const seen = new Set();
+  rb.RULEBOOK.forEach((s, i) => {
+    assert.ok(s.key && s.title && s.rules.length, 'section ' + (i + 1));
+    s.rules.forEach((r, j) => {
+      assert.strictEqual(r.id, `${i + 1}.${j + 1}`, 'rule numbers follow the sections: ' + r.id);
+      assert.ok(!seen.has(r.id)); seen.add(r.id);
+      assert.ok(r.title && r.text && ['told', 'code', 'auto', 'setting', 'later'].includes(r.how), r.id);
+    });
+  });
+  assert.strictEqual(rb.RULE_IDS.size, seen.size);
+  const filled = JSON.stringify(rb.fillRulebook({ codStates: 'Gujarat', codAvailable: null }, 'Valmo'));
+  assert.ok(!filled.includes('{cod}') && !filled.includes('{courier}'));
+  assert.ok(filled.includes('COD only for addresses in: Gujarat.') && filled.includes('treated as Valmo'));
+  const none = JSON.stringify(rb.fillRulebook({ codStates: null, codAvailable: null }, null));
+  assert.ok(none.includes('COD is not set') && none.includes('no default courier'));
 });
 console.log(`UNIT: ${n} groups passed`);

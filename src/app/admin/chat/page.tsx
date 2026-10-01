@@ -134,7 +134,7 @@ interface ChatMessage {
   edited_by?: string | null;
   deleted_at?: string | null;
   deleted_by?: string | null;
-  // The Brain notes the agent was shown for this reply (staff only).
+  // The Chikki (Brain) notes the agent was shown for this reply (staff only).
   brain?: { id: string; title: string }[] | null;
 }
 
@@ -1592,8 +1592,8 @@ export default function ChatSupportPage() {
           </span>
         )}
         {!deleted && msg.sender === 'ai' && Array.isArray(msg.brain) && msg.brain.length > 0 && (
-          <span title="The Brain notes the agent was shown for this reply" style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
-            🧠 {msg.brain.map((n) => n.title).join(' · ')}
+          <span title="Chikki's notes used for this reply" style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
+            🤖 Chikki: {msg.brain.map((n) => n.title).join(' · ')}
           </span>
         )}
         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
