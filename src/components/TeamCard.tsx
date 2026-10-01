@@ -16,6 +16,8 @@ type TeamRole = Exclude<Role, 'admin'>;
 interface Member {
   id: string; username: string; display_name: string; role: TeamRole; is_active: boolean;
   last_login: string | null; created_at: string; business_ids: string[] | null; permissions: string[] | null; effective: Permission[];
+  // The latest name change (team-profile.sql): by the member ('self', My profile) or by the owner.
+  last_rename_from?: string | null; last_rename_by?: string | null; last_rename_at?: string | null;
 }
 interface Panel { id: string; name: string; logo_url?: string | null; primary_color?: string | null }
 interface Draft { id?: string; origUsername?: string; displayName: string; username: string; role: TeamRole; allPanels: boolean; panels: string[]; perms: Permission[] }
@@ -231,6 +233,11 @@ export default function TeamCard({ token, panels, onAlert, onLoginChanged }: {
               <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginTop: 2 }}>
                 {m.business_ids && m.business_ids.length ? m.business_ids.map(panelName).join(', ') : 'All panels'} · {m.effective.length} of {ALL_PERMS.length} permissions · {ago(m.last_login)}
               </div>
+              {m.last_rename_at && m.last_rename_from && (
+                <div style={{ fontSize: '0.6875rem', color: m.last_rename_by === 'self' ? '#92400e' : 'var(--fg-muted)', marginTop: 2 }}>
+                  {m.last_rename_by === 'self' ? 'Renamed themselves' : 'Renamed by you'} {since(m.last_rename_at)} · was &ldquo;{m.last_rename_from}&rdquo;
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button className="btn btn-sm" style={muted} disabled={busy} onClick={() => openEdit(m)}><Pencil size={13} /> Edit</button>

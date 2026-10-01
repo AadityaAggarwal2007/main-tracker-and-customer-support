@@ -5,11 +5,12 @@ import ChikkiCard from '@/components/ChikkiCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
-import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
+import MyProfile from '@/components/MyProfile';
+import { ROLE_INFO, can, isSuperAdmin, type Permission, type Role } from '@/lib/permissions';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, getStatusColorClass } from '@/lib/constants';
 import {
-  Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail, ShieldCheck,
+  Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail, ShieldCheck, UserRound,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
   Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight
@@ -56,8 +57,11 @@ export default function AdminDashboard() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState('');
-  // Login & security (the owner's own login), opened from the sidebar's Super Admin.
+  // Login & security (the owner's own login), opened from the sidebar's Super Admin; My profile for a
+  // team member (their name, role, panels), opened from their name in the sidebar.
   const [securityOpen, setSecurityOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const openMe = () => (user?.role === 'admin' ? setSecurityOpen(true) : setProfileOpen(true));
   const [activeTab, setActiveTab] = useState<TabType>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -988,19 +992,21 @@ export default function AdminDashboard() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="sidebar-user"
-            {...(user.role === 'admin' ? { role: 'button', tabIndex: 0, title: 'Login & security', onClick: () => setSecurityOpen(true),
-              onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSecurityOpen(true); } },
-              style: { cursor: 'pointer' } } : {})}>
+          <div className="sidebar-user" role="button" tabIndex={0} title={user.role === 'admin' ? 'Login & security' : 'My profile'} onClick={openMe}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMe(); } }} style={{ cursor: 'pointer' }}>
             <div className="sidebar-avatar">{user.displayName.charAt(0).toUpperCase()}</div>
             <div className="sidebar-user-info">
               <div className="sidebar-user-name">{user.displayName}</div>
-              <span className="role-pill">{user.role}</span>
+              <span className="role-pill">{user.role === 'admin' ? 'Owner' : (ROLE_INFO[user.role as Exclude<Role, 'admin'>]?.label ?? user.role)}</span>
             </div>
           </div>
-          {user.role === 'admin' && (
+          {user.role === 'admin' ? (
             <button className="nav-btn" onClick={() => setSecurityOpen(true)}>
               <ShieldCheck size={18} /> Login &amp; security
+            </button>
+          ) : (
+            <button className="nav-btn" onClick={() => setProfileOpen(true)}>
+              <UserRound size={18} /> My profile
             </button>
           )}
           <button className="nav-btn" onClick={logout} style={{ marginTop: '0.25rem' }}>
@@ -2172,6 +2178,10 @@ export default function AdminDashboard() {
             </div>
           )}
 
+          {profileOpen && user && user.role !== 'admin' && (
+            <MyProfile token={token} onAlert={showAlert} onClose={() => setProfileOpen(false)}
+              onUserChanged={(name) => setUser((u) => (u ? { ...u, displayName: name } : u))} />
+          )}
           {securityOpen && user?.role === 'admin' && (
             <OwnerLoginDialog token={token} onAlert={showAlert} onClose={() => setSecurityOpen(false)}
               onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />

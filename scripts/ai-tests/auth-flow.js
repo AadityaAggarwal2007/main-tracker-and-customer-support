@@ -30,6 +30,27 @@ async function handle(sql, params = []) {
   const q = sql.replace(/\s+/g, ' ').trim();
   db.log.push(q.slice(0, 60));
   const rows = (r) => ({ rows: r, rowCount: r.length });
+  // My profile / names (team-profile.sql)
+  if (/^SELECT id, username, display_name, role, business_ids, permissions, name_changed_at, is_active FROM team_users WHERE username = \$1$/.test(q)) {
+    return rows(db.team.filter((u) => u.username === params[0]).map((u) => ({ ...u, name_changed_at: u.name_changed_at ?? null })));
+  }
+  if (/^SELECT id::text AS id, name FROM businesses/.test(q)) return rows(db.businesses.filter((b) => !params[0] || params[0].includes(b.id)).map((b) => ({ id: b.id, name: 'Panel ' + b.id })));
+  if (/^SELECT display_name FROM team_users WHERE id <> \$1$/.test(q)) return rows(db.team.filter((u) => u.id !== params[0]).map((u) => ({ display_name: u.display_name })));
+  if (/^SELECT display_name FROM team_users WHERE \$1::text IS NULL OR id::text <> \$1::text$/.test(q)) return rows(db.team.filter((u) => params[0] == null || u.id !== params[0]).map((u) => ({ display_name: u.display_name })));
+  if (/^UPDATE team_users SET display_name = \$1, name_changed_at = now\(\), updated_at = now\(\) WHERE id = \$2 AND is_active AND \(name_changed_at IS NULL OR name_changed_at <= now\(\) - make_interval\(days => \$3\)\)/.test(q)) {
+    const u = db.team.find((x) => x.id === params[1] && x.is_active);
+    if (!u) return rows([]);
+    if (u.name_changed_at && Date.now() - Date.parse(u.name_changed_at) < params[2] * 864e5) return rows([]);
+    u.display_name = params[0]; u.name_changed_at = new Date().toISOString();
+    return rows([{ ...u }]);
+  }
+  if (/^INSERT INTO team_name_changes/.test(q)) { db.nameChanges = db.nameChanges || []; db.nameChanges.push({ user_id: params[0], old_name: params[1], new_name: params[2], changed_by: q.includes("'self'") ? 'self' : 'owner' }); return rows([]); }
+  if (/FROM team_users t LEFT JOIN LATERAL/.test(q)) {
+    return rows(db.team.map((u) => {
+      const last = (db.nameChanges || []).filter((n) => n.user_id === u.id).slice(-1)[0];
+      return { ...cols(u), name_changed_at: u.name_changed_at ?? null, last_rename_from: last ? last.old_name : null, last_rename_by: last ? last.changed_by : null, last_rename_at: last ? new Date().toISOString() : null };
+    }));
+  }
   if (/FROM admin_login WHERE id = 1/.test(q)) {
     // The row as it was when the read began (a held read returns what it saw then).
     const snap = db.adminRow ? { ...db.adminRow } : null;
@@ -71,7 +92,7 @@ async function handle(sql, params = []) {
     db.team.push(u);
     return rows([cols(u)]);
   }
-  if (/^SELECT role, username FROM team_users WHERE id::text = \$1/.test(q)) return rows(db.team.filter((u) => u.id === params[0]).map((u) => ({ role: u.role, username: u.username })));
+  if (/^SELECT role, username, display_name FROM team_users WHERE id::text = \$1/.test(q)) return rows(db.team.filter((u) => u.id === params[0]).map((u) => ({ role: u.role, username: u.username, display_name: u.display_name })));
   if (/^UPDATE team_users SET /.test(q)) {
     const set = q.slice('UPDATE team_users SET '.length, q.indexOf(' WHERE '));
     const idParam = Number(q.match(/WHERE id::text = \$(\d+)/)[1]);
@@ -119,6 +140,7 @@ const compile = (from, to) => {
     .replace(/from '@\/lib\/permissions'/g, "from './permissions'")
     .replace(/from '@\/lib\/chat\/order-address-db'/g, "from './order-address-db'")
     .replace(/from '@\/lib\/chat\/order-address'/g, "from './order-address'")
+    .replace(/from '@\/lib\/team-names'/g, "from './team-names'")
     .replace(/from 'next\/server'/g, "from './next-server'");
   fs.writeFileSync(path.join(dir, to + '.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText);
 };
@@ -128,13 +150,15 @@ compile('app/api/auth/account/route.ts', 'account');
 compile('app/api/team/route.ts', 'team');
 compile('app/api/auth/session/route.ts', 'session');
 compile('lib/chat/order-address.ts', 'order-address');
+compile('lib/team-names.ts', 'team-names');
+compile('app/api/auth/profile/route.ts', 'profile');
 compile('lib/chat/order-address-db.ts', 'order-address-db');
 compile('app/api/chat/conversations/[id]/address/route.ts', 'address');
 const fresh = () => {
   // A restart: new module instances and an empty login cache.
   delete global.__shiptrackTeam; delete global.__shiptrackAccountFails;
   for (const k of Object.keys(require.cache)) if (k.startsWith(dir)) delete require.cache[k];
-  return { auth: require(path.join(dir, 'auth.js')), account: require(path.join(dir, 'account.js')), team: require(path.join(dir, 'team.js')), session: require(path.join(dir, 'session.js')), address: require(path.join(dir, 'address.js')) };
+  return { auth: require(path.join(dir, 'auth.js')), account: require(path.join(dir, 'account.js')), team: require(path.join(dir, 'team.js')), session: require(path.join(dir, 'session.js')), address: require(path.join(dir, 'address.js')), profile: require(path.join(dir, 'profile.js')) };
 };
 const reqOf = (token, body, url = 'http://x/api') => ({
   headers: { get: (k) => (k.toLowerCase() === 'authorization' && token ? `Bearer ${token}` : null) },
@@ -146,7 +170,7 @@ let n = 0;
 const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.error('FAIL ' + name); throw e; } };
 
 (async () => {
-  let { auth, account, team, session, address } = fresh();
+  let { auth, account, team, session, address, profile } = fresh();
   const who = (token) => auth.getAuthFromRequest(reqOf(token));
 
   await t('cold start: a super-admin token waits for the first read, then counts', async () => {
@@ -255,7 +279,7 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
   });
 
   await t('restart after a change: old tokens stay dead, the new one comes back', async () => {
-    ({ auth, account, team, session, address } = fresh());
+    ({ auth, account, team, session, address, profile } = fresh());
     assert.strictEqual((await session.GET(reqOf(tok3))).status, 200);
     assert.strictEqual(auth.getAuthFromRequest(reqOf(envTok)), null);
     assert.strictEqual(auth.getAuthFromRequest(reqOf(tok2)), null);
@@ -270,12 +294,12 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
 
   await t('before admin-login.sql: the .env login still works', async () => {
     const saved = db.adminRow; db.adminRow = null; db.adminTable = false;
-    ({ auth, account, team, session, address } = fresh());
+    ({ auth, account, team, session, address, profile } = fresh());
     const r = await auth.authenticateUser('Owner', 'env-pass-123');
     assert.ok(r);
     assert.strictEqual((await session.GET(reqOf(r.token))).status, 200);
     db.adminTable = true; db.adminRow = saved;
-    ({ auth, account, team, session, address } = fresh());
+    ({ auth, account, team, session, address, profile } = fresh());
   });
 
   const H = (tk) => auth.getAuthFromRequest(reqOf(tk));
@@ -376,6 +400,40 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
     await auth.refreshTeamCache(true);
     assert.strictEqual(H(envOwner), null);
     assert.strictEqual(H(tok3).role, 'admin');
+  });
+
+  await t('my profile: own name once every 15 days; the owner any time; bad names refused; the owner sees it', async () => {
+    const m = db.team.find((u) => u.username === 'ravi.k');
+    const mt = (await auth.authenticateUser('ravi.k', 'Team-pass-1357')).token;
+    const g = await profile.GET(reqOf(mt));
+    assert.strictEqual(g.status, 200);
+    assert.deepStrictEqual([g.body.displayName, g.body.roleLabel, g.body.allPanels, g.body.nextNameChangeAt], [m.display_name, 'Chat agent', true, null]);
+    assert.ok(g.body.permissions.includes('chat.reply') && g.body.panels.length === 2);
+    const patch = (tk, displayName) => profile.PATCH(reqOf(tk, { displayName }));
+    assert.strictEqual((await patch(mt, 'x')).status, 400);                      // too short
+    assert.strictEqual((await patch(mt, 'Admin')).status, 400);                  // reserved
+    assert.strictEqual((await patch(mt, 'vastora support')).status, 400);
+    assert.strictEqual((await patch(mt, 'New Ravi')).status, 400);               // another member's name
+    const ok1 = await patch(mt, 'Ravi Kumar');
+    assert.strictEqual(ok1.status, 200);
+    assert.ok(ok1.body.nextNameChangeAt);
+    assert.strictEqual(H(mt).displayName, 'Ravi Kumar');                        // the screen sees it at once
+    assert.strictEqual(db.nameChanges.slice(-1)[0].changed_by, 'self');
+    assert.strictEqual((await patch(mt, 'Ravi K')).status, 429);                // not again within 15 days
+    assert.strictEqual(m.display_name, 'Ravi Kumar');
+    const byOwner = await team.PATCH(reqOf(tok3, { id: m.id, displayName: 'Ravi Kapoor' }));
+    assert.strictEqual(byOwner.status, 200);                                     // the owner: any time
+    assert.strictEqual(db.nameChanges.slice(-1)[0].changed_by, 'owner');
+    assert.strictEqual((await team.PATCH(reqOf(tok3, { id: m.id, displayName: 'Support' }))).status, 400);
+    m.name_changed_at = new Date(Date.now() - 16 * 864e5).toISOString();      // 16 days later
+    assert.strictEqual((await patch(mt, 'Ravi K')).status, 200);
+    const list = await team.GET(reqOf(tok3));
+    const row = list.body.users.find((u) => u.id === m.id);
+    assert.deepStrictEqual([row.display_name, row.last_rename_by, row.last_rename_from], ['Ravi K', 'self', 'Ravi Kapoor']);
+    assert.strictEqual((await profile.PATCH(reqOf(tok3, { displayName: 'Boss' }))).status, 400);   // the owner is "Super Admin"
+    const og = await profile.GET(reqOf(tok3));
+    assert.ok(og.body.superAdmin && og.body.roleLabel === 'Owner');
+    assert.strictEqual((await profile.GET(reqOf(null))).status, 401);
   });
 
   // ── Chat address ─────────────────────────────────────────────

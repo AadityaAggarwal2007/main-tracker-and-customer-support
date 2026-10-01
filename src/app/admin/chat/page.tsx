@@ -10,7 +10,9 @@ import {
   BadgeCheck, ChevronDown,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
-import { can } from '@/lib/permissions';
+import { ROLE_INFO, can, type Role } from '@/lib/permissions';
+import MyProfile from '@/components/MyProfile';
+import OwnerLoginDialog from '@/components/OwnerLogin';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
@@ -995,6 +997,8 @@ export default function ChatSupportPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   // The open chat's order line; tied to its chat so a fast switch never shows the last one's.
+  // My profile / Login & security, opened from the name at the bottom of the sidebar.
+  const [meOpen, setMeOpen] = useState(false);
   const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean } | null>(null);
   const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1875,6 +1879,17 @@ export default function ChatSupportPage() {
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '0.75rem', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+          {/* Who is signed in: their name and role; opens My profile (Login & security for the owner). */}
+          {user && (
+            <button type="button" className="nav-btn" onClick={() => setMeOpen(true)} style={{ width: '100%', marginBottom: '0.25rem' }}
+              title={user.role === 'admin' ? 'Login & security' : 'My profile'}>
+              <UserCheck size={16} />
+              <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.displayName}</span>
+              <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--fg-muted)' }}>
+                {user.role === 'admin' ? 'Owner' : (ROLE_INFO[user.role as Exclude<Role, 'admin'>]?.label ?? user.role)}
+              </span>
+            </button>
+          )}
           <button className="nav-btn" onClick={() => router.push('/admin')} style={{ width: '100%' }}>
             <ShoppingBag size={16} /> Back to Orders
           </button>
@@ -2517,6 +2532,13 @@ export default function ChatSupportPage() {
         {details && (
           <MessageDetailsDialog details={details.data} error={details.error} onClose={() => setDetails(null)} />
         )}
+        {meOpen && user && (user.role === 'admin' ? (
+          <OwnerLoginDialog token={token} onAlert={(t, m) => showAlert(t === 'success' ? 'success' : 'error', m)} onClose={() => setMeOpen(false)}
+            onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />
+        ) : (
+          <MyProfile token={token} onAlert={showAlert} onClose={() => setMeOpen(false)}
+            onUserChanged={(name) => setUser((u) => (u ? { ...u, displayName: name } : u))} />
+        ))}
         {addrEdit && activeAddress && activeConv?.id === addrEdit.convId && (
           <AddressDialog initial={activeAddress} orderId={activeAddress.order_id} busy={addrEdit.busy} error={addrEdit.error}
             onCancel={() => setAddrEdit(null)} onSave={saveAddress} />

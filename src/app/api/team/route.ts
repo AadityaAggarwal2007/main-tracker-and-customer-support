@@ -3,6 +3,7 @@ import { randomInt } from 'crypto';
 import { getAuthFromRequest, hashPassword, ownerUsernames, refreshTeamCache } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ROLE_INFO, TEAM_ROLES, cleanPermissions, isSuperAdmin, resolvePermissions, type Role } from '@/lib/permissions';
+import { cleanDisplayName, nameProblem } from '@/lib/team-names';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ export const dynamic = 'force-dynamic';
 // a random session_version, so an old login of a removed or renamed member with the same username
 // never fits them. Every change refreshes the copy auth.ts checks requests against.
 
-const COLS = `id, username, display_name, role, is_active, last_login, created_at, business_ids, permissions, created_by`;
+const COLS = `id, username, display_name, role, is_active, last_login, created_at, business_ids, permissions, created_by, name_changed_at`;
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 function newPassword(len = 12): string {
@@ -34,7 +35,12 @@ function passwordProblem(p: string, username: string): string | null {
   return null;
 }
 
-const cleanName = (x: unknown) => String(x ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+const cleanName = cleanDisplayName;
+// The other members' names, so two people never share one (the owner and My profile use the same rule).
+async function otherNames(exceptId: string | null): Promise<string[]> {
+  const r = await query<{ display_name: string }>(`SELECT display_name FROM team_users WHERE $1::text IS NULL OR id::text <> $1::text`, [exceptId]);
+  return r.rows.map((x) => x.display_name);
+}
 const cleanUsername = (x: unknown) => String(x ?? '').trim().toLowerCase();
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 
@@ -64,7 +70,15 @@ function shape(u: Record<string, unknown>) {
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can manage the team' }, { status: 403 });
-  const result = await query(`SELECT ${COLS} FROM team_users ORDER BY created_at DESC`);
+  // The latest name change of each member (team-profile.sql): the owner sees what they renamed themselves to.
+  const result = await query(
+    `SELECT ${COLS.split(', ').map((c) => 't.' + c).join(', ')},
+            n.old_name AS last_rename_from, n.changed_by AS last_rename_by, n.changed_at AS last_rename_at
+       FROM team_users t
+       LEFT JOIN LATERAL (SELECT old_name, changed_by, changed_at FROM team_name_changes x
+                           WHERE x.user_id = t.id ORDER BY changed_at DESC LIMIT 1) n ON true
+      ORDER BY t.created_at DESC`
+  ).catch(() => query(`SELECT ${COLS} FROM team_users ORDER BY created_at DESC`)); // before team-profile.sql
   return NextResponse.json({ users: result.rows.map(shape), superAdmin: { username: user!.username, displayName: user!.displayName } });
 }
 
@@ -76,7 +90,8 @@ export async function POST(request: NextRequest) {
     const displayName = cleanName(raw.displayName);
     const username = cleanUsername(raw.username);
     const role = String(raw.role || '') as Exclude<Role, 'admin'>;
-    if (displayName.length < 2) return NextResponse.json({ error: 'Write the member\'s name' }, { status: 400 });
+    const badName = nameProblem(displayName, await otherNames(null));
+    if (badName) return NextResponse.json({ error: badName }, { status: 400 });
     if (!USERNAME_RE.test(username)) return NextResponse.json({ error: 'Username: 3-32 small letters, numbers, dot, dash or underscore' }, { status: 400 });
     if ((await ownerUsernames()).includes(username)) return NextResponse.json({ error: 'That username is taken' }, { status: 409 });
     if (!TEAM_ROLES.includes(role)) return NextResponse.json({ error: 'Pick a role' }, { status: 400 });
@@ -107,7 +122,7 @@ export async function PATCH(request: NextRequest) {
     const raw = await request.json();
     const id = String(raw.id || '');
     if (!id) return NextResponse.json({ error: 'Member id required' }, { status: 400 });
-    const current = await queryOne<{ role: string; username: string }>(`SELECT role, username FROM team_users WHERE id::text = $1`, [id]);
+    const current = await queryOne<{ role: string; username: string; display_name: string }>(`SELECT role, username, display_name FROM team_users WHERE id::text = $1`, [id]);
     if (!current) return NextResponse.json({ error: 'Member not found' }, { status: 404 });
 
     const sets: string[] = []; const params: unknown[] = []; let pi = 1;
@@ -122,10 +137,16 @@ export async function PATCH(request: NextRequest) {
     }
     const role = (raw.role !== undefined ? String(raw.role) : current.role) as Exclude<Role, 'admin'>;
     if (!TEAM_ROLES.includes(role)) return NextResponse.json({ error: 'Pick a role' }, { status: 400 });
+    let renamedTo: string | null = null;
     if (raw.displayName !== undefined) {
       const name = cleanName(raw.displayName);
-      if (name.length < 2) return NextResponse.json({ error: 'Write the member\'s name' }, { status: 400 });
-      sets.push(`display_name = $${pi++}`); params.push(name);
+      if (name !== current.display_name) {
+        const badName = nameProblem(name, await otherNames(id));
+        if (badName) return NextResponse.json({ error: badName }, { status: 400 });
+        // The owner renames any time; it does not use up the member's own once-in-15-days change.
+        sets.push(`display_name = $${pi++}`); params.push(name);
+        renamedTo = name;
+      }
     }
     if (raw.role !== undefined) { sets.push(`role = $${pi++}`); params.push(role); }
     if (raw.permissions !== undefined || raw.role !== undefined) {
@@ -155,6 +176,10 @@ export async function PATCH(request: NextRequest) {
     sets.push('updated_at = now()');
     params.push(id);
     const row = await queryOne(`UPDATE team_users SET ${sets.join(', ')} WHERE id::text = $${pi} RETURNING ${COLS}`, params);
+    if (renamedTo !== null) {
+      await query(`INSERT INTO team_name_changes (user_id, old_name, new_name, changed_by) VALUES ($1, $2, $3, 'owner')`, [id, current.display_name, renamedTo])
+        .catch((err) => console.error('team rename log failed:', (err as Error)?.message));
+    }
     await refreshTeamCache(true);
     return NextResponse.json({ user: shape(row as Record<string, unknown>), ...(password ? { password } : {}) });
   } catch (err) {
