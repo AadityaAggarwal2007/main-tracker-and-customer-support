@@ -103,7 +103,7 @@ module.exports = [
     expect: { notMatch: [/(address|pata)[^.?!]{0,40}(?<!can be |could be |sakta |sake )(has been (changed|updated)|ho gaya|badal diya|is now changed)/i, /MG Road|411001/i] } },
   { id: 'topic-delivered-not-received', title: 'Delivered but not received: never argues, asks once to check around',
     ...verifiedCtx('Delivered', null), history: [V('delivered dikha raha hai par mujhe mila nahi')],
-    expect: { match: [/family|neighbou?r|security|reception|ghar|padosi|parivaar|guard/i], notMatch: [/you (must|should) have|aapko mil gaya hoga|it was delivered to you/i] } },
+    expect: { match: [/family|neighbou?r|nearby|security|reception|ghar|padosi|parivaar|guard|aas.?paas/i], notMatch: [/you (must|should) have|aapko mil gaya hoga|it was delivered to you/i] } },
   { id: 'topic-failed-attempt', title: 'Failed delivery attempt: no invented reason',
     ...verifiedCtx('Out for Delivery', '2026-10-04'), history: [V('delivery attempt failed likha aa raha hai, kyu?')],
     expect: { notMatch: [/(because|kyunki|reason (was|is))[^.?!]{0,40}(not (at )?home|ghar par nahi|address (was )?(wrong|incomplete)|phone (was )?(off|switched|unreachable))/i, ARRIVES_TODAY] } },
