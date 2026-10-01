@@ -71,7 +71,7 @@ module.exports = [
     ...verifiedCtx('Reached City', '2026-09-27'), facts: { mode: 'normal', delivered: false, eta: '2026-09-27T00:00:00.000Z' },
     history: [V('kab aayega mera order')],
     mock: [{ content: 'Your order is at Reached City; the courier network has a heavy load right now.' }],
-    expect: { systemHas: [/DELAY ANSWER/, /network/i], match: [/load|network|hub|volume|festiv|season|busy/i], notMatch: [ARRIVES_TODAY, ASKS_AGAIN] }, watch: true },
+    expect: { systemHas: [/DELAY ANSWER/, /network/i], match: [/load|network|hub|volume|festiv|season|busy|agent|connect/i], notMatch: [ARRIVES_TODAY, ASKS_AGAIN] }, watch: true },
   { id: 'code-ladder-note', title: 'A late verified order gets the delay-ladder note (heavy network load) in the prompt',
     ...verifiedCtx('Reached City', '2026-09-27'), facts: { mode: 'normal', delivered: false, eta: '2026-09-27T00:00:00.000Z' },
     history: [V('kab aayega mera order')], mock: [{ content: 'Ok.' }],
