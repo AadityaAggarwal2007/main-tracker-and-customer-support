@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ATTACHMENT_ID_PATTERN } from '@/lib/chat/attachment-rules';
+import { can, canAccessPanel } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,8 +12,8 @@ export const dynamic = 'force-dynamic';
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot change files' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot change files' }, { status: 403 });
   }
   if (!ATTACHMENT_ID_PATTERN.test(params.id)) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });

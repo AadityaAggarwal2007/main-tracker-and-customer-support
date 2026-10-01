@@ -3,8 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
+import TeamCard from '@/components/TeamCard';
+import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
 import { useRouter } from 'next/navigation';
-import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, ROLE_PERMISSIONS, getStatusColorClass } from '@/lib/constants';
+import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, getStatusColorClass } from '@/lib/constants';
 import {
   Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
@@ -25,8 +27,7 @@ interface Order {
   notes: string; created_at: string; updated_at: string; order_items: OrderItem[];
   business_id: string;
 }
-interface AuthUser { username: string; displayName: string; role: 'admin' | 'manager' | 'viewer'; businessIds: string[] | null; }
-interface TeamUser { id: string; username: string; display_name: string; role: string; is_active: boolean; last_login: string; created_at: string; business_ids: string[] | null; }
+interface AuthUser { username: string; displayName: string; role: string; businessIds: string[] | null; permissions?: string[] }
 interface Business {
   id: string; name: string; logo_url: string; support_email: string; support_phone: string;
   is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null; origin_city: string | null;
@@ -110,11 +111,6 @@ export default function AdminDashboard() {
   const [detailOrder, setDetailOrder] = useState<Order | null>(null);
 
   // Team
-  const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
-  const [showTeamModal, setShowTeamModal] = useState(false);
-  const [newTeamUser, setNewTeamUser] = useState({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] as string[] });
-  const [editingUserPanels, setEditingUserPanels] = useState<string | null>(null);
-  const [editUserPanelIds, setEditUserPanelIds] = useState<string[]>([]);
 
   // Panel switcher
   const [activePanelId, setActivePanelId] = useState<string>('');
@@ -181,19 +177,34 @@ export default function AdminDashboard() {
     setActivePanelId(savedPanel);
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
+    // The session answer also carries the login's current role, panels and permissions (the
+    // owner may have changed them in Team since this login), so the screens follow it.
     fetch('/api/auth/session', { headers: { Authorization: `Bearer ${savedToken}` } })
-      .then(res => {
-        if (res.status !== 401) return;
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('auth_user');
-        router.push('/login');
+      .then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('auth_user');
+          router.push('/login');
+          return;
+        }
+        const d = await res.json().catch(() => null);
+        if (d?.user) { setUser(d.user); localStorage.setItem('auth_user', JSON.stringify(d.user)); }
       })
       .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
 
+  // The screens' old permission names, now answered by src/lib/permissions.ts (the API routes
+  // check the same rules for real). Team = the super admin only.
+  const LEGACY_PERMS: Record<string, Permission | 'super' | 'settings'> = {
+    upload_csv: 'orders.upload', update_status: 'orders.update', cancel_order: 'orders.cancel', delete_order: 'orders.delete',
+    view_orders: 'orders.view', manage_team: 'super', manage_businesses: 'settings',
+  };
   const hasPermission = (perm: string) => {
     if (!user) return false;
-    return ROLE_PERMISSIONS[user.role]?.includes(perm) ?? false;
+    const m = LEGACY_PERMS[perm];
+    if (m === 'super') return isSuperAdmin(user);
+    if (m === 'settings') return isSuperAdmin(user) || can(user, 'settings.panel') || can(user, 'chikki.edit');
+    return m ? can(user, m) : false;
   };
 
   const showAlert = (type: string, message: string) => {
@@ -260,15 +271,6 @@ export default function AdminDashboard() {
     } catch { /* ignore */ }
   }, [token]);
 
-  const fetchTeamUsers = useCallback(async () => {
-    if (!token || user?.role !== 'admin') return;
-    try {
-      const res = await fetch('/api/team', { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      if (res.ok) setTeamUsers(data.users);
-    } catch { /* ignore */ }
-  }, [token, user]);
-
   const fetchBusinesses = useCallback(async () => {
     if (!token) return;
     try {
@@ -291,7 +293,6 @@ export default function AdminDashboard() {
 
   useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
-  useEffect(() => { if (activeTab === 'team') fetchTeamUsers(); }, [activeTab, fetchTeamUsers]);
 
   // Sidebar badge: refresh on load, on panel switch, and every 30s.
   useEffect(() => {
@@ -500,24 +501,6 @@ export default function AdminDashboard() {
         }
       }
     } catch { showAlert('error', 'Update failed'); }
-  };
-
-  /* ═══ TEAM ═══ */
-  const handleCreateTeamUser = async () => {
-    try {
-      const res = await fetch('/api/team', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(newTeamUser),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showAlert('success', `User ${newTeamUser.username} created`);
-        setShowTeamModal(false);
-        setNewTeamUser({ username: '', password: '', displayName: '', role: 'viewer', businessIds: [] });
-        fetchTeamUsers();
-      } else { showAlert('error', data.error || 'Failed'); }
-    } catch { showAlert('error', 'Failed'); }
   };
 
   /* ═══ SHOPIFY CONNECT ═══ */
@@ -738,35 +721,6 @@ export default function AdminDashboard() {
     finally { setDeletingPanel(false); }
   };
 
-  /* ═══ PANEL ACCESS ═══ */
-  const handleUpdateUserPanels = async (userId: string) => {
-    try {
-      await fetch('/api/team', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ id: userId, businessIds: editUserPanelIds }),
-      });
-      showAlert('success', 'Panel access updated');
-      setEditingUserPanels(null);
-      fetchTeamUsers();
-    } catch { showAlert('error', 'Failed'); }
-  };
-
-  const handleToggleTeamUser = async (userId: string, isActive: boolean) => {
-    try {
-      await fetch('/api/team', { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: userId, isActive }) });
-      fetchTeamUsers();
-    } catch { /* ignore */ }
-  };
-
-  const handleDeleteTeamUser = async (userId: string) => {
-    if (!confirm('Delete this team member?')) return;
-    try {
-      await fetch(`/api/team?id=${userId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      fetchTeamUsers(); showAlert('success', 'User deleted');
-    } catch { /* ignore */ }
-  };
-
   /* ═══ HELPERS ═══ */
   const copyTrackingLink = (trackingToken: string) => {
     const link = `${window.location.origin}/track/${trackingToken}`;
@@ -881,7 +835,7 @@ export default function AdminDashboard() {
   /* ═══════════════════════════════════════ */
 
   const navItems = [
-    { id: 'orders' as TabType, label: 'Orders', icon: ShoppingBag, show: true },
+    { id: 'orders' as TabType, label: 'Orders', icon: ShoppingBag, show: hasPermission('view_orders') },
     { id: 'upload' as TabType, label: 'Upload CSV', icon: Upload, show: hasPermission('upload_csv') },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
@@ -989,32 +943,34 @@ export default function AdminDashboard() {
               {item.label}
             </button>
           ))}
-          {/* Chat Support — chat widget conversations and email in one inbox */}
-          <button
-            className="nav-btn"
-            onClick={() => router.push('/admin/chat')}
-            style={{ borderTop: '1px solid var(--border)', marginTop: '0.25rem', paddingTop: '0.75rem' }}
-          >
-            <MessageCircle size={18} />
-            <span style={{ flex: 1, textAlign: 'left' }}>Chat Support</span>
-            {humanNeeded > 0 && (
-              <span
-                title={
-                  emailWaiting > 0
-                    ? `${humanNeeded} waiting for a person — ${emailWaiting} by email, and those customers get no reply until you answer`
-                    : `${humanNeeded} waiting for a person`
-                }
-                style={{
-                  minWidth: 20, height: 20, padding: '0 6px', borderRadius: 9999,
-                  background: 'var(--danger, #ef4444)', color: '#fff',
-                  fontSize: '0.6875rem', fontWeight: 700,
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                }}
-              >
-                {humanNeeded}
-              </span>
-            )}
-          </button>
+          {/* Chat Support — chat widget conversations and email in one inbox (for logins that may open it) */}
+          {user && can(user, 'chat.view') && (
+            <button
+              className="nav-btn"
+              onClick={() => router.push('/admin/chat')}
+              style={{ borderTop: '1px solid var(--border)', marginTop: '0.25rem', paddingTop: '0.75rem' }}
+            >
+              <MessageCircle size={18} />
+              <span style={{ flex: 1, textAlign: 'left' }}>Chat Support</span>
+              {humanNeeded > 0 && (
+                <span
+                  title={
+                    emailWaiting > 0
+                      ? `${humanNeeded} waiting for a person — ${emailWaiting} by email, and those customers get no reply until you answer`
+                      : `${humanNeeded} waiting for a person`
+                  }
+                  style={{
+                    minWidth: 20, height: 20, padding: '0 6px', borderRadius: 9999,
+                    background: 'var(--danger, #ef4444)', color: '#fff',
+                    fontSize: '0.6875rem', fontWeight: 700,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  {humanNeeded}
+                </span>
+              )}
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-footer">
@@ -1529,6 +1485,7 @@ export default function AdminDashboard() {
               {activeBusiness && (
                 <>
                   {/* Brand settings card */}
+                  {user && can(user, 'settings.panel') && (
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.25rem' }}>
                       <Building2 size={16} style={{ color: 'var(--primary)' }} />
@@ -1631,7 +1588,11 @@ export default function AdminDashboard() {
                       </button>
                     </div>
                   </div>
+                  )}
 
+                  {/* Shopify, the API connection and the mailboxes: the super admin only (team logins
+                      do not see them; the routes check it too). Their own content is unchanged. */}
+                  {isSuperAdmin(user) && (<>
                   {/* Shopify Connect card */}
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -1921,8 +1882,10 @@ export default function AdminDashboard() {
                       next email that arrives.
                     </p>
                   </div>
+                  </>)}
 
                   {/* ── Chat widget ── */}
+                  {user && can(user, 'settings.panel') && (
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                       <MessageCircle size={16} style={{ color: 'var(--primary)' }} />
@@ -1979,6 +1942,7 @@ export default function AdminDashboard() {
                           </div>
                         </div>
 
+                        {isSuperAdmin(user) && (
                         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                           <button
                             className="btn btn-outline"
@@ -1991,9 +1955,11 @@ export default function AdminDashboard() {
                             Regenerate key
                           </button>
                         </div>
+                        )}
                       </>
                     )}
                   </div>
+                  )}
 
                   {/* ── CHIKKI: the panel's AI in one card (saved answers, notes, lessons, team examples, rules, settings) ── */}
                   {chatSite && (
@@ -2001,6 +1967,7 @@ export default function AdminDashboard() {
                       token={token} businessId={activePanelId} panelName={activeBusiness?.name} onAlert={showAlert}
                       faqs={faqs} faqBusy={faqBusy} faqRequest={faqRequest} faqDraft={faqDraft} setFaqDraft={setFaqDraft} onAddFaq={addFaq}
                       aiEnabled={chatSite.aiEnabled} aiBusy={savingChat} onToggleAi={() => saveChatSettings({ aiEnabled: !chatSite.aiEnabled })}
+                      canSettings={!!user && can(user, 'settings.panel')}
                       settings={(
                         <>
                           <div className="form-group">
@@ -2142,111 +2109,8 @@ export default function AdminDashboard() {
 
           {/* ════════ TEAM TAB ════════ */}
           {activeTab === 'team' && hasPermission('manage_team') && (
-            <div className="space-y-6 animate-fade-in-up">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div>
-                  <h2 className="page-title">Team</h2>
-                  <p className="page-subtitle">Manage team members, roles, and panel access</p>
-                </div>
-                <button className="btn btn-primary" onClick={() => setShowTeamModal(true)}>
-                  <UserPlus size={16} /> Add Member
-                </button>
-              </div>
-
-              <div className="info-box">
-                <Info size={16} />
-                <div>
-                  <p className="info-box-text">
-                    <strong>Admin</strong> — Full access to all panels &nbsp;|&nbsp;
-                    <strong>Manager</strong> — Upload, update, cancel &nbsp;|&nbsp;
-                    <strong>Viewer</strong> — View only
-                  </p>
-                </div>
-              </div>
-
-              <div className="table-card">
-                <table className="tf-table">
-                  <thead>
-                    <tr>
-                      <th>Member</th>
-                      <th className="col-hide-sm">Role</th>
-                      <th>Panel Access</th>
-                      <th className="col-hide-lg">Last Login</th>
-                      <th style={{ textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {/* Super admin */}
-                    <tr>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                          <div className="sidebar-avatar" style={{ width: '2rem', height: '2rem', fontSize: '0.75rem' }}>S</div>
-                          <div>
-                            <p style={{ fontWeight: 500 }}>Super Admin</p>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>env credentials</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="col-hide-sm"><span className="role-pill">admin</span></td>
-                      <td><span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>All panels</span></td>
-                      <td className="col-hide-lg" style={{ color: 'var(--fg-muted)' }}>—</td>
-                      <td style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>System account</td>
-                    </tr>
-                    {teamUsers.map((tu) => (
-                      <>
-                        <tr key={tu.id}>
-                          <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                              <div className="sidebar-avatar" style={{ width: '2rem', height: '2rem', fontSize: '0.75rem' }}>{tu.display_name.charAt(0)}</div>
-                              <div>
-                                <p style={{ fontWeight: 500 }}>{tu.display_name}</p>
-                                <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>@{tu.username}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="col-hide-sm"><span className="role-pill">{tu.role}</span></td>
-                          <td>
-                            {editingUserPanels === tu.id ? (
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', alignItems: 'center' }}>
-                                {businesses.map(biz => (
-                                  <label key={biz.id} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.6875rem', cursor: 'pointer', padding: '0.125rem 0.375rem', borderRadius: '9999px', border: '1px solid var(--border)', background: editUserPanelIds.includes(biz.id) ? 'var(--primary-light)' : 'transparent', color: editUserPanelIds.includes(biz.id) ? 'var(--primary)' : 'var(--fg-muted)' }}>
-                                    <input type="checkbox" style={{ display: 'none' }} checked={editUserPanelIds.includes(biz.id)} onChange={(e) => {
-                                      if (e.target.checked) setEditUserPanelIds([...editUserPanelIds, biz.id]);
-                                      else setEditUserPanelIds(editUserPanelIds.filter(id => id !== biz.id));
-                                    }} />
-                                    {biz.name}
-                                  </label>
-                                ))}
-                                <button className="btn btn-primary btn-sm" style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem' }} onClick={() => handleUpdateUserPanels(tu.id)}>Save</button>
-                                <button className="btn btn-outline btn-sm" style={{ fontSize: '0.625rem', padding: '0.125rem 0.5rem' }} onClick={() => setEditingUserPanels(null)}>Cancel</button>
-                              </div>
-                            ) : (
-                              <button onClick={() => { setEditingUserPanels(tu.id); setEditUserPanelIds(tu.business_ids || []); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.6875rem', color: 'var(--primary)', textDecoration: 'underline' }}>
-                                {tu.business_ids && tu.business_ids.length > 0
-                                  ? businesses.filter(b => tu.business_ids!.includes(b.id)).map(b => b.name).join(', ') || 'Set panels'
-                                  : 'All panels'}
-                              </button>
-                            )}
-                          </td>
-                          <td className="col-hide-lg" style={{ color: 'var(--fg-muted)' }}>
-                            {tu.last_login ? new Date(tu.last_login).toLocaleDateString() : 'Never'}
-                          </td>
-                          <td>
-                            <div className="table-actions">
-                              <button className="btn-icon" onClick={() => handleToggleTeamUser(tu.id, !tu.is_active)} title={tu.is_active ? 'Disable' : 'Enable'}>
-                                {tu.is_active ? <Lock size={16} /> : <Unlock size={16} />}
-                              </button>
-                              <button className="btn-icon" onClick={() => handleDeleteTeamUser(tu.id)} title="Delete" style={{ color: 'var(--danger)' }}>
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      </>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <div className="animate-fade-in-up">
+              <TeamCard token={token} panels={businesses} onAlert={showAlert} />
             </div>
           )}
         </div>
@@ -2389,34 +2253,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* Add Team Member Modal */}
-      {showTeamModal && (
-        <div className="modal-overlay" onClick={() => setShowTeamModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">Add Team Member</h3>
-              <button className="btn-icon" onClick={() => setShowTeamModal(false)}><X size={16} /></button>
-            </div>
-            <div className="space-y-4">
-              <div className="form-group"><label className="form-label">Display Name</label><input type="text" className="form-input" placeholder="John Doe" value={newTeamUser.displayName} onChange={(e) => setNewTeamUser({ ...newTeamUser, displayName: e.target.value })} /></div>
-              <div className="form-group"><label className="form-label">Username</label><input type="text" className="form-input" placeholder="johndoe" value={newTeamUser.username} onChange={(e) => setNewTeamUser({ ...newTeamUser, username: e.target.value })} /></div>
-              <div className="form-group"><label className="form-label">Password</label><input type="password" className="form-input" placeholder="Secure password" value={newTeamUser.password} onChange={(e) => setNewTeamUser({ ...newTeamUser, password: e.target.value })} /></div>
-              <div className="form-group">
-                <label className="form-label">Role</label>
-                <select className="form-select" style={{ width: '100%' }} value={newTeamUser.role} onChange={(e) => setNewTeamUser({ ...newTeamUser, role: e.target.value })}>
-                  <option value="viewer">Viewer (read-only)</option>
-                  <option value="manager">Manager (upload + update)</option>
-                  <option value="admin">Admin (full access)</option>
-                </select>
-              </div>
-              <div className="modal-actions">
-                <button className="btn btn-outline" onClick={() => setShowTeamModal(false)}>Cancel</button>
-                <button className="btn btn-primary" onClick={handleCreateTeamUser} disabled={!newTeamUser.username || !newTeamUser.password || !newTeamUser.displayName}>Create User</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
 
 

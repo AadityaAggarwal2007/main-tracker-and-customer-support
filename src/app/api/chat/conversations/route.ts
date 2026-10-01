@@ -6,6 +6,7 @@ import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
 import { NO_REPLY_NEEDED_REGEX, WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
+import { can } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -92,6 +93,7 @@ function topicCondition(key: string, labels: string[], a: string): string {
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!can(user, 'chat.view')) return NextResponse.json({ error: 'You cannot open Chat Support' }, { status: 403 });
 
   const { searchParams } = new URL(request.url);
   const businessId = searchParams.get('businessId') || '';

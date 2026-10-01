@@ -50,12 +50,14 @@ const help = { fontSize: '0.6875rem', color: 'var(--fg-muted)', lineHeight: 1.6 
 export default function ChikkiCard({
   token, businessId, panelName, onAlert,
   faqs, faqBusy, faqRequest, faqDraft, setFaqDraft, onAddFaq,
-  aiEnabled, aiBusy, onToggleAi, settings,
+  aiEnabled, aiBusy, onToggleAi, settings, canSettings = true,
 }: {
   token: string | null; businessId: string | null; panelName?: string; onAlert: (type: string, message: string) => void;
   faqs: Faq[]; faqBusy: boolean; faqRequest: (method: string, body?: unknown, qs?: string) => Promise<boolean>;
   faqDraft: { question: string; answer: string }; setFaqDraft: (d: { question: string; answer: string }) => void; onAddFaq: () => Promise<void>;
   aiEnabled: boolean; aiBusy: boolean; onToggleAi: () => void; settings?: ReactNode;
+  // The AI switch and the Settings tab need the 'settings.panel' permission (src/lib/permissions.ts).
+  canSettings?: boolean;
 }) {
   const [tab, setTabState] = useState<Tab>('answers');
   const [notes, setNotes] = useState<Note[]>([]);
@@ -212,6 +214,7 @@ export default function ChikkiCard({
   };
 
   const toggleAi = () => {
+    if (!canSettings) return;
     if (aiEnabled && !confirm('Put Chikki to sleep? Every new chat and email will wait for your team until you turn it back on.')) return;
     onToggleAi();
   };
@@ -454,7 +457,7 @@ export default function ChikkiCard({
             <span style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600 }}>{aiEnabled ? 'Answers customers' : 'AI is off'}</span>
             <span style={{ display: 'block', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>{aiEnabled ? 'automatically' : 'everything waits for a person'}</span>
           </span>
-          <button type="button" role="switch" aria-checked={aiEnabled} aria-label="Chikki answers customers automatically" disabled={aiBusy} onClick={toggleAi}
+          <button type="button" role="switch" aria-checked={aiEnabled} aria-label="Chikki answers customers automatically" disabled={aiBusy || !canSettings} onClick={toggleAi}
             style={{ position: 'relative', width: 44, height: 24, borderRadius: 999, border: 'none', cursor: 'inherit', flexShrink: 0, transition: 'background .2s',
               background: aiEnabled ? 'linear-gradient(90deg, #4f6bed, #8b5cf6)' : '#cbd0da' }}>
             <span style={{ position: 'absolute', top: 3, left: aiEnabled ? 23 : 3, width: 18, height: 18, borderRadius: 999, background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.25)', transition: 'left .2s' }} />
@@ -470,7 +473,7 @@ export default function ChikkiCard({
         {tabBtn('team', <GraduationCap size={14} />, 'Team examples', teamPending, true)}
         {tabBtn('rules', <ShieldCheck size={14} />, 'Rules', ruleCount)}
         {tabBtn('logic', <BrainCircuit size={14} />, 'Logic')}
-        {settings && tabBtn('settings', <Settings2 size={14} />, 'Settings')}
+        {settings && canSettings && tabBtn('settings', <Settings2 size={14} />, 'Settings')}
       </div>
 
       <div style={{ padding: '0.875rem 1.5rem 1.25rem' }}>
@@ -630,7 +633,7 @@ export default function ChikkiCard({
 
         {tab === 'logic' && <ChikkiLogic data={effortData} canEdit={canEdit} busy={busy} onSave={saveEffort} />}
 
-        {tab === 'settings' && settings}
+        {tab === 'settings' && canSettings && settings}
       </div>
     </div>
   );

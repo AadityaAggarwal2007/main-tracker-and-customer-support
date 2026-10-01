@@ -5,6 +5,7 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, isOurMessage } from '@/lib/chat/message-rules';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
+import { can, canAccessPanel } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,8 +99,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot change messages' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot change messages' }, { status: 403 });
   }
 
   try {
@@ -160,8 +161,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot change messages' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot change messages' }, { status: 403 });
   }
 
   try {

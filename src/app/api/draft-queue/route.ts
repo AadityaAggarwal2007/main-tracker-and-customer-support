@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
+import { can } from '@/lib/permissions';
+import { orderNumbersInScope } from '@/lib/scope';
 
 // POST /api/draft-queue — enqueue order IDs for draft creation
 // GET  /api/draft-queue — return queue stats { pending, processing, done, failed, total }
 
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'orders.email')) {
+    return NextResponse.json({ error: 'You cannot send tracking emails' }, { status: 403 });
   }
 
   try {
@@ -18,6 +20,9 @@ export async function POST(request: NextRequest) {
     if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
       return NextResponse.json({ error: 'No order IDs provided' }, { status: 400 });
     }
+    // A login limited to some panels emails only its own panels' orders.
+    const inScope = new Set(await orderNumbersInScope(user, orderIds.map(String)));
+    if (inScope.size < orderIds.length) return NextResponse.json({ error: 'Some of these orders are not in your panels' }, { status: 403 });
 
     // Deduplicate: find order_ids already in queue (pending/processing/done)
     const alreadyQueued = new Set<string>();

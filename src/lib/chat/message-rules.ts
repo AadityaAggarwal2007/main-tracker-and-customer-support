@@ -8,9 +8,12 @@
 // tool_result rows and hidden tool bookkeeping are never shown, so never
 // managed.
 //
-//   admin    edit/delete any of our messages
-//   manager  edit/delete AI messages and their own replies
-//   viewer   read only (copy, view details)
+//   'chat.edit'   edit/delete any of our messages (the super admin and Team "Admin")
+//   'chat.reply'  edit/delete AI messages and their own replies
+//   neither       read only (copy, view details)
+// (src/lib/permissions.ts; until 2026-10-01 these were the roles admin / manager / viewer.)
+
+import { can, type PermissionHolder } from '../permissions';
 
 export const MAX_MESSAGE_LENGTH = 4000;
 
@@ -20,9 +23,8 @@ export interface MessageForRules {
   deleted_at?: string | null;
 }
 
-export interface RulesUser {
+export interface RulesUser extends PermissionHolder {
   username: string;
-  role: 'admin' | 'manager' | 'viewer';
 }
 
 export function isOurMessage(m: MessageForRules): boolean {
@@ -33,8 +35,8 @@ export function isOurMessage(m: MessageForRules): boolean {
 
 export function canChangeMessage(user: RulesUser, m: MessageForRules): boolean {
   if (!isOurMessage(m) || m.deleted_at) return false;
-  if (user.role === 'admin') return true;
-  if (user.role !== 'manager') return false;
+  if (can(user, 'chat.edit')) return true;
+  if (!can(user, 'chat.reply')) return false;
   if (m.sender === 'agent') return m.metadata?.agent === user.username;
   return true;
 }

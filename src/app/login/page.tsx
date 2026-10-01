@@ -34,7 +34,9 @@ export default function LoginPage() {
 
       localStorage.setItem('auth_token', data.token);
       localStorage.setItem('auth_user', JSON.stringify(data.user));
-      router.push('/admin');
+      // A login that may not see orders (a chat-only team member) starts in Chat Support.
+      const perms: string[] = Array.isArray(data.user?.permissions) ? data.user.permissions : [];
+      router.push(data.user?.role === 'admin' || perms.includes('orders.view') ? '/admin' : '/admin/chat');
     } catch {
       setError('Network error. Please try again.');
       setLoading(false);

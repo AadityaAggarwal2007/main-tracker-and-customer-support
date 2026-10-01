@@ -1,118 +1,146 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthFromRequest } from '@/lib/auth';
+import { randomInt } from 'crypto';
+import { getAuthFromRequest, hashPassword, refreshTeamCache } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
-import { simpleHash } from '@/lib/auth';
+import { ROLE_INFO, TEAM_ROLES, cleanPermissions, isSuperAdmin, resolvePermissions, type Role } from '@/lib/permissions';
 
-// ── GET - list team users ───────────────────────────────────────
+export const dynamic = 'force-dynamic';
+
+// ── Team logins (owner, 2026-10-01) ────────────────────────────
+// Only the super admin (the owner's own login) sees or changes the team. Each member gets a role,
+// the panels they may use and, if wanted, their own ticks (src/lib/permissions.ts). A password is
+// made here, shown ONCE in the answer for the owner to share with the login link, and only its
+// scrypt hash is kept. A reset makes a new one and signs the member out everywhere
+// (session_version). Every change refreshes the copy auth.ts checks requests against.
+
+const COLS = `id, username, display_name, role, is_active, last_login, created_at, business_ids, permissions, created_by`;
+const ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function newPassword(len = 12): string {
+  let out = '';
+  for (let i = 0; i < len; i++) out += ALPHABET[randomInt(ALPHABET.length)];
+  return out;
+}
+
+const cleanName = (x: unknown) => String(x ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+const cleanUsername = (x: unknown) => String(x ?? '').trim().toLowerCase();
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+
+// Saved ticks: NULL when they are exactly the role's own list, so a later change to the role's
+// list reaches the member too.
+function ticksFor(role: Exclude<Role, 'admin'>, raw: unknown): string[] | null {
+  if (raw === undefined || raw === null) return null;
+  const ticks = cleanPermissions(raw);
+  const base = ROLE_INFO[role].perms;
+  const same = ticks.length === base.length && base.every((p) => ticks.includes(p));
+  return same ? null : ticks;
+}
+
+async function cleanPanels(raw: unknown): Promise<string[] | null | 'bad'> {
+  if (raw === null || raw === undefined) return null; // every panel
+  if (!Array.isArray(raw)) return 'bad';
+  const ids = Array.from(new Set(raw.map(String))).filter(Boolean);
+  if (!ids.length) return 'bad';
+  const found = await query<{ id: string }>(`SELECT id FROM businesses WHERE id::text = ANY($1::text[])`, [ids]);
+  return found.rows.length === ids.length ? ids : 'bad';
+}
+
+function shape(u: Record<string, unknown>) {
+  return { ...u, effective: resolvePermissions(String(u.role), (u.permissions as string[] | null) ?? null) };
+}
+
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const result = await query(
-    `SELECT id, username, display_name, role, is_active, last_login, created_at, business_ids
-     FROM team_users
-     ORDER BY created_at DESC`
-  );
-
-  return NextResponse.json({ users: result.rows });
+  if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can manage the team' }, { status: 403 });
+  const result = await query(`SELECT ${COLS} FROM team_users ORDER BY created_at DESC`);
+  return NextResponse.json({ users: result.rows.map(shape), superAdmin: { username: user!.username, displayName: user!.displayName } });
 }
 
-// ── POST - create team user ─────────────────────────────────────
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+  if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can add team members' }, { status: 403 });
   try {
-    const { username, password, displayName, role, businessIds } = await request.json();
-
-    if (!username || !password || !displayName || !role) {
-      return NextResponse.json({ error: 'All fields required' }, { status: 400 });
-    }
-
-    if (!['admin', 'manager', 'viewer'].includes(role)) {
-      return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
-    }
-
-    // business_ids: null = all panels (admin), array = specific panels
-    const bids = Array.isArray(businessIds) && businessIds.length > 0 ? businessIds : null;
-
-    const data = await queryOne(
-      `INSERT INTO team_users (username, password_hash, display_name, role, business_ids)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, username, display_name, role, is_active, created_at, business_ids`,
-      [username, simpleHash(password), displayName, role, bids]
+    const raw = await request.json();
+    const displayName = cleanName(raw.displayName);
+    const username = cleanUsername(raw.username);
+    const role = String(raw.role || '') as Exclude<Role, 'admin'>;
+    if (displayName.length < 2) return NextResponse.json({ error: 'Write the member\'s name' }, { status: 400 });
+    if (!USERNAME_RE.test(username)) return NextResponse.json({ error: 'Username: 3-32 small letters, numbers, dot, dash or underscore' }, { status: 400 });
+    if (username === (process.env.ADMIN_USERNAME || '').toLowerCase()) return NextResponse.json({ error: 'That username is taken' }, { status: 409 });
+    if (!TEAM_ROLES.includes(role)) return NextResponse.json({ error: 'Pick a role' }, { status: 400 });
+    const panels = await cleanPanels(raw.businessIds);
+    if (panels === 'bad') return NextResponse.json({ error: 'Pick the panels again' }, { status: 400 });
+    const password = newPassword();
+    const row = await queryOne(
+      `INSERT INTO team_users (username, password_hash, display_name, role, business_ids, permissions, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${COLS}`,
+      [username, hashPassword(password), displayName, role, panels, ticksFor(role, raw.permissions), user!.username]
     );
-
-    return NextResponse.json({ user: data });
+    await refreshTeamCache();
+    return NextResponse.json({ user: shape(row as Record<string, unknown>), password });
   } catch (err: unknown) {
-    // Unique constraint violation (username already exists)
     if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
-      return NextResponse.json({ error: 'Username already exists' }, { status: 409 });
+      return NextResponse.json({ error: 'That username is taken' }, { status: 409 });
     }
-    return NextResponse.json({ error: 'Failed to create user' }, { status: 500 });
+    console.error('team POST error:', (err as Error)?.message);
+    return NextResponse.json({ error: 'Could not add the member' }, { status: 500 });
   }
 }
 
-// ── PATCH - update team user ────────────────────────────────────
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+  if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can change the team' }, { status: 403 });
   try {
-    const { id, displayName, role, isActive, password, businessIds } = await request.json();
+    const raw = await request.json();
+    const id = String(raw.id || '');
+    if (!id) return NextResponse.json({ error: 'Member id required' }, { status: 400 });
+    const current = await queryOne<{ role: string }>(`SELECT role FROM team_users WHERE id::text = $1`, [id]);
+    if (!current) return NextResponse.json({ error: 'Member not found' }, { status: 404 });
 
-    if (!id) {
-      return NextResponse.json({ error: 'User ID required' }, { status: 400 });
+    const sets: string[] = []; const params: unknown[] = []; let pi = 1;
+    const role = (raw.role !== undefined ? String(raw.role) : current.role) as Exclude<Role, 'admin'>;
+    if (!TEAM_ROLES.includes(role)) return NextResponse.json({ error: 'Pick a role' }, { status: 400 });
+    if (raw.displayName !== undefined) {
+      const name = cleanName(raw.displayName);
+      if (name.length < 2) return NextResponse.json({ error: 'Write the member\'s name' }, { status: 400 });
+      sets.push(`display_name = $${pi++}`); params.push(name);
     }
-
-    const sets: string[] = [];
-    const params: unknown[] = [];
-    let pi = 1;
-
-    if (displayName !== undefined) { sets.push(`display_name = $${pi++}`);   params.push(displayName); }
-    if (role !== undefined)        { sets.push(`role = $${pi++}`);            params.push(role); }
-    if (isActive !== undefined)    { sets.push(`is_active = $${pi++}`);       params.push(isActive); }
-    if (password)                  { sets.push(`password_hash = $${pi++}`);   params.push(simpleHash(password)); }
-    if (businessIds !== undefined) {
-      const bids = Array.isArray(businessIds) && businessIds.length > 0 ? businessIds : null;
-      sets.push(`business_ids = $${pi++}`);
-      params.push(bids);
+    if (raw.role !== undefined) { sets.push(`role = $${pi++}`); params.push(role); }
+    if (raw.permissions !== undefined || raw.role !== undefined) {
+      sets.push(`permissions = $${pi++}`); params.push(ticksFor(role, raw.permissions ?? null));
     }
-
-    if (sets.length === 0) {
-      return NextResponse.json({ success: true });
+    if (raw.businessIds !== undefined) {
+      const panels = await cleanPanels(raw.businessIds);
+      if (panels === 'bad') return NextResponse.json({ error: 'Pick the panels again' }, { status: 400 });
+      sets.push(`business_ids = $${pi++}`); params.push(panels);
     }
-
+    if (raw.isActive !== undefined) { sets.push(`is_active = $${pi++}`); params.push(!!raw.isActive); }
+    let password: string | undefined;
+    if (raw.resetPassword === true) {
+      password = newPassword();
+      sets.push(`password_hash = $${pi++}`); params.push(hashPassword(password));
+      sets.push(`session_version = session_version + 1`);
+    }
+    if (!sets.length) return NextResponse.json({ success: true });
+    sets.push('updated_at = now()');
     params.push(id);
-    await query(`UPDATE team_users SET ${sets.join(', ')} WHERE id = $${pi}`, params);
-
-    return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: 'Update failed' }, { status: 500 });
+    const row = await queryOne(`UPDATE team_users SET ${sets.join(', ')} WHERE id::text = $${pi} RETURNING ${COLS}`, params);
+    await refreshTeamCache();
+    return NextResponse.json({ user: shape(row as Record<string, unknown>), ...(password ? { password } : {}) });
+  } catch (err) {
+    console.error('team PATCH error:', (err as Error)?.message);
+    return NextResponse.json({ error: 'Could not save' }, { status: 500 });
   }
 }
 
-// ── DELETE - delete team user ───────────────────────────────────
 export async function DELETE(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { searchParams } = new URL(request.url);
-  const id = searchParams.get('id');
-
-  if (!id) {
-    return NextResponse.json({ error: 'User ID required' }, { status: 400 });
-  }
-
-  await query(`DELETE FROM team_users WHERE id = $1`, [id]);
-
+  if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can remove team members' }, { status: 403 });
+  const id = new URL(request.url).searchParams.get('id');
+  if (!id) return NextResponse.json({ error: 'Member id required' }, { status: 400 });
+  const r = await query(`DELETE FROM team_users WHERE id::text = $1`, [id]);
+  await refreshTeamCache();
+  if (!r.rowCount) return NextResponse.json({ error: 'Member not found' }, { status: 404 });
   return NextResponse.json({ success: true });
 }

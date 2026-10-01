@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
+import { can, canAccessPanel } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -177,6 +178,7 @@ async function loadCustomerThread(conv: ConversationRow, user: AuthUser): Promis
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!can(user, 'chat.view')) return NextResponse.json({ error: 'You cannot open Chat Support' }, { status: 403 });
 
   const conversation = await loadForUser(params.id, user);
   if (!conversation) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -240,8 +242,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot change conversations' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot change conversations' }, { status: 403 });
   }
 
   const conversation = await loadForUser(params.id, user);
@@ -252,6 +254,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
     // Refund / Ship again (chat-cases.sql, owner 2026-10-01): { caseKind: 'refund' | 'reship' | null }.
     if (body && Object.prototype.hasOwnProperty.call(body, 'caseKind')) {
+      if (!can(user, 'chat.cases')) return NextResponse.json({ error: 'You cannot mark Refund / Ship again' }, { status: 403 });
       return await setCase(conversation, body.caseKind, user);
     }
 

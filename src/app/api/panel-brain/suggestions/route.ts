@@ -5,6 +5,7 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
 import { BRAIN_TOPIC_KEYS, defaultAudience, noteProblem } from '@/lib/chat/brain';
 import { hasPersonalDetail } from '@/lib/chat/brain-learn';
+import { can } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +45,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') return NextResponse.json({ error: 'Only an admin can decide a suggestion' }, { status: 403 });
+  if (!user || !can(user, 'chikki.edit')) return NextResponse.json({ error: 'You cannot decide a lesson' }, { status: 403 });
   try {
     const raw = await request.json();
     const { businessId, id, action } = raw;

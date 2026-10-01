@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
 import crypto from 'crypto';
+import { can } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,7 +42,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role === 'viewer') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'chikki.edit')) return NextResponse.json({ error: 'You cannot change saved answers' }, { status: 403 });
 
   try {
     const { businessId, question, answer } = await request.json();
@@ -73,7 +74,7 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role === 'viewer') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'chikki.edit')) return NextResponse.json({ error: 'You cannot change saved answers' }, { status: 403 });
 
   try {
     const { businessId, id, question, answer, isEnabled } = await request.json();
@@ -106,7 +107,7 @@ export async function PATCH(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role === 'viewer') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'chikki.edit')) return NextResponse.json({ error: 'You cannot change saved answers' }, { status: 403 });
 
   const { searchParams } = new URL(request.url);
   const businessId = searchParams.get('businessId') || '';

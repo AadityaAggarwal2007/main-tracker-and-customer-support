@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
+import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
 
 // ── GET all businesses ─────────────────────────────────────────
 // With ?impactId=<uuid>: returns what deleting that panel would destroy,
@@ -73,8 +74,10 @@ export async function GET(request: NextRequest) {
   const result = await query(
     `SELECT * FROM businesses ORDER BY created_at ASC`
   );
+  // A login limited to some panels sees only those.
+  const rows = result.rows.filter((b: { id: string }) => canAccessPanel(user, b.id));
 
-  return NextResponse.json({ businesses: result.rows });
+  return NextResponse.json({ businesses: rows });
 }
 
 // ── POST create business ───────────────────────────────────────
@@ -113,8 +116,8 @@ export async function POST(request: NextRequest) {
 // ── PATCH update business ──────────────────────────────────────
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'settings.panel')) {
+    return NextResponse.json({ error: 'You cannot change panel settings' }, { status: 403 });
   }
 
   try {
@@ -123,6 +126,9 @@ export async function PATCH(request: NextRequest) {
     if (!id) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
     }
+    if (!canAccessPanel(user, id)) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+    // Which panel is the default affects every panel: the super admin only.
+    if (isDefault !== undefined && !isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can change the default panel' }, { status: 403 });
 
     // If setting as default, unset other defaults
     if (isDefault) {

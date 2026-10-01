@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, queryCount } from '@/lib/db';
+import { can, isSuperAdmin } from '@/lib/permissions';
+import { orderNumbersInScope } from '@/lib/scope';
 
 const BATCH_SIZE = 500; // pg .in() equivalent
 
@@ -9,6 +11,9 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!can(user, 'orders.view')) {
+    return NextResponse.json({ error: 'You cannot see orders' }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -199,16 +204,24 @@ export async function GET(request: NextRequest) {
 // ── PATCH - bulk update status ─────────────────────────────────
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role === 'viewer') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'orders.update')) {
+    return NextResponse.json({ error: 'You cannot change order status' }, { status: 403 });
   }
 
   try {
-    const { orderIds, status, trackingId, courierPartner, notes, estimatedDelivery } = await request.json();
+    const body = await request.json();
+    const { status, trackingId, courierPartner, notes, estimatedDelivery } = body;
 
-    if (!orderIds || !Array.isArray(orderIds) || !status) {
+    if (!body.orderIds || !Array.isArray(body.orderIds) || !status) {
       return NextResponse.json({ error: 'orderIds array and status required' }, { status: 400 });
     }
+    if (status === 'Cancelled' && !can(user, 'orders.cancel')) {
+      return NextResponse.json({ error: 'You cannot cancel orders' }, { status: 403 });
+    }
+    // A login limited to some panels changes only its own panels' orders (order numbers can
+    // repeat across panels: the UPDATE below is limited to them too).
+    const orderIds: string[] = await orderNumbersInScope(user, body.orderIds.map(String));
+    const scoped = !!(user.businessIds && user.businessIds.length);
 
     // Build SET clause dynamically
     const setClauses = ['tracking_status = $1', 'status_updated_at = NOW()'];
@@ -238,8 +251,8 @@ export async function PATCH(request: NextRequest) {
       const result = await query(
         `UPDATE orders
          SET ${setClauses.join(', ')}
-         WHERE order_id = ANY($${pi}::text[])`,
-        [...setParams, batch]
+         WHERE order_id = ANY($${pi}::text[])${scoped ? ` AND business_id::text = ANY($${pi + 1}::text[])` : ''}`,
+        scoped ? [...setParams, batch, user.businessIds] : [...setParams, batch]
       );
       totalUpdated += result.rowCount ?? 0;
     }
@@ -269,8 +282,8 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE - delete single order or all orders ─────────────────
 export async function DELETE(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized — admin only' }, { status: 401 });
+  if (!user || !can(user, 'orders.delete')) {
+    return NextResponse.json({ error: 'You cannot delete orders' }, { status: 403 });
   }
 
   try {
@@ -278,6 +291,8 @@ export async function DELETE(request: NextRequest) {
     const { orderId, deleteAll } = body;
 
     if (deleteAll === true) {
+      // The Danger Zone: the super admin only.
+      if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can delete all orders' }, { status: 403 });
       // Cascade deletes handle related rows automatically (FK ON DELETE CASCADE)
       await query(`DELETE FROM email_logs`);
       await query(`DELETE FROM tracking_history`);
@@ -291,8 +306,11 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'orderId required' }, { status: 400 });
     }
 
-    // CASCADE handles related rows
-    const result = await query(`DELETE FROM orders WHERE order_id = $1`, [orderId]);
+    // CASCADE handles related rows. A login limited to some panels deletes only its own copy.
+    const scopedDelete = !!(user.businessIds && user.businessIds.length);
+    const result = scopedDelete
+      ? await query(`DELETE FROM orders WHERE order_id = $1 AND business_id::text = ANY($2::text[])`, [orderId, user.businessIds])
+      : await query(`DELETE FROM orders WHERE order_id = $1`, [orderId]);
     if ((result.rowCount ?? 0) === 0) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }

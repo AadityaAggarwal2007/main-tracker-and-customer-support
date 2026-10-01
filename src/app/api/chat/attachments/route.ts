@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
+import { can, canAccessPanel } from '@/lib/permissions';
 import {
   MAX_ATTACHMENT_BYTES, TOO_LARGE_MESSAGE, UNSUPPORTED_TYPE_MESSAGE, EMPTY_FILE_MESSAGE,
   cleanFileName, sniffAttachmentType,
@@ -17,8 +18,8 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot send files' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot send files' }, { status: 403 });
   }
 
   // Refuse an oversized body before reading it into memory. The multipart

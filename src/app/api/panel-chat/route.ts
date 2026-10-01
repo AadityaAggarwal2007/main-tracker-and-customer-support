@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
 import { cleanCodStates } from '@/lib/chat/cod';
+import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,12 +15,13 @@ export const dynamic = 'force-dynamic';
 // ── GET /api/panel-chat?businessId= ────────────────────────────
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
+  if (!user || !(can(user, 'settings.panel') || can(user, 'chikki.edit'))) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const businessId = new URL(request.url).searchParams.get('businessId');
   if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
+  if (!canAccessPanel(user, businessId)) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
 
   // Read-only: a panel that has never used chat has no site yet, and asking
   // about it should not create one.
@@ -50,13 +52,16 @@ export async function GET(request: NextRequest) {
 // genuinely starts using chat — so the site is created here if missing.
 export async function PATCH(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || user.role !== 'admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'settings.panel')) {
+    return NextResponse.json({ error: 'You cannot change panel settings' }, { status: 403 });
   }
 
   try {
     const { businessId, aiEnabled, systemPrompt, codAvailable, codStates, regenerateKey } = await request.json();
     if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
+    if (!canAccessPanel(user, businessId)) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+    // A new widget key breaks the embed on the store: the super admin only.
+    if (regenerateKey && !isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can make a new widget key' }, { status: 403 });
 
     const biz = await queryOne<{ id: string }>(`SELECT id FROM businesses WHERE id = $1`, [businessId]);
     if (!biz) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });

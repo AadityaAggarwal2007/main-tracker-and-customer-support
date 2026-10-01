@@ -9,6 +9,7 @@ import {
   Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall, CalendarDays, Truck, CalendarCheck,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
+import { can } from '@/lib/permissions';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
@@ -18,7 +19,7 @@ import {
 } from '@/lib/chat/attachment-rules';
 
 /* ═══════════ TYPES ═══════════ */
-interface AuthUser { username: string; displayName: string; role: 'admin' | 'manager' | 'viewer'; businessIds: string[] | null; }
+interface AuthUser { username: string; displayName: string; role: string; businessIds: string[] | null; permissions?: string[] }
 interface Business { id: string; name: string; }
 
 interface Conversation {
@@ -929,11 +930,16 @@ export default function ChatSupportPage() {
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
     fetch('/api/auth/session', { headers: { Authorization: `Bearer ${t}` } })
-      .then(res => {
-        if (res.status !== 401) return;
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('auth_user');
-        router.push('/login');
+      .then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('auth_user');
+          router.push('/login');
+          return;
+        }
+        // The login's current role, panels and permissions (they can change in Team).
+        const d = await res.json().catch(() => null);
+        if (d?.user) { setUser(d.user); localStorage.setItem('auth_user', JSON.stringify(d.user)); }
       })
       .catch(() => { /* offline: leave the page as it is */ });
   }, [router]);
@@ -1449,7 +1455,9 @@ export default function ChatSupportPage() {
     );
   }
 
-  const canReply = user.role !== 'viewer';
+  // What this login may do here (src/lib/permissions.ts; the API checks the same).
+  const canReply = can(user, 'chat.reply');
+  const canCases = can(user, 'chat.cases');
   // A grouped row (one customer's chats) carries the unread count of all of them.
   const rowUnread = (c: Conversation) => c.group_unread ?? c.unread_count ?? 0;
   // The unread count is the inbox's; a search shows other chats, so it keeps
@@ -2048,7 +2056,7 @@ export default function ChatSupportPage() {
                   {canReply && (
                     <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
                       {/* Refund / Ship again: verified customers only; internal, the customer is told nothing */}
-                      {!isVisitorChat(activeConv) && (activeConv.case_kind ? (
+                      {canCases && !isVisitorChat(activeConv) && (activeConv.case_kind ? (
                         <>
                           <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} big />
                           <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>

@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
+import { can, canAccessPanel } from '@/lib/permissions';
 import {
   ATTACHMENT_ID_PATTERN, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, AttachmentKind, attachmentUrl,
@@ -24,8 +25,8 @@ class ReplyError extends Error {
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (user.role === 'viewer') {
-    return NextResponse.json({ error: 'Viewers cannot reply' }, { status: 403 });
+  if (!can(user, 'chat.reply')) {
+    return NextResponse.json({ error: 'You cannot reply' }, { status: 403 });
   }
 
   try {

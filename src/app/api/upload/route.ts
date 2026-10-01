@@ -6,6 +6,7 @@ import { generateTrackingEmail } from '@/lib/email-templates';
 import { JOURNEY, expectedIndexForAge, AUTO_DELIVER_DAY } from '@/lib/journey';
 import Papa from 'papaparse';
 import crypto from 'crypto';
+import { can, canAccessPanel } from '@/lib/permissions';
 
 const BATCH_SIZE = 500;
 
@@ -24,8 +25,8 @@ const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://shiptrack.store';
 
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
-  if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user || !can(user, 'orders.upload')) {
+    return NextResponse.json({ error: 'You cannot upload orders' }, { status: 403 });
   }
 
   try {
@@ -36,6 +37,9 @@ export async function POST(request: NextRequest) {
     const isLastChunk = chunkIndex === totalChunks - 1;
     // ── PANEL LOCK: user must select which panel this CSV belongs to ──
     const forcedBusinessId = (formData.get('businessId') as string) || null;
+    if (forcedBusinessId && !canAccessPanel(user, forcedBusinessId)) {
+      return NextResponse.json({ error: 'You cannot upload into that panel' }, { status: 403 });
+    }
     if (!forcedBusinessId) {
       return NextResponse.json(
         { error: 'Please select a panel before uploading. Every CSV must be assigned to a specific panel.' },

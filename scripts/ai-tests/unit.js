@@ -3,8 +3,8 @@ const fs = require('fs'), os = require('os'), path = require('path'), assert = r
 const ts = require('typescript');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-unit-'));
 process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
-const load = (f) => {
-  const js = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat', f + '.ts'), 'utf8'), { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText;
+const load = (f, from = '../../src/lib/chat') => {
+  const js = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, from, f + '.ts'), 'utf8'), { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText;
   fs.writeFileSync(path.join(dir, f + '.js'), js);
   return require(path.join(dir, f + '.js'));
 };
@@ -313,5 +313,34 @@ t('self-check: OK keeps the reply; a fix is taken only if it brings nothing new'
   assert.strictEqual(p('x'.repeat(900) + ' https://shiptrack.store/track/abc').reason, 'too long');
   assert.ok(/^\(Note from the system, not the customer/.test(sc.CHECK_NOTE) && /answer exactly OK/.test(sc.CHECK_NOTE));
   assert.strictEqual(sc.latestOrderFacts(['nope', '{"found":true,"orders":[{"order_id":"#1"}]}', '{"found":false}']), '[{"order_id":"#1"}]');
+});
+t('permissions: roles, ticks, panels; the super admin can do everything', () => {
+  const pm = load('permissions', '../../src/lib');
+  const su = { role: 'admin', businessIds: null };
+  assert.ok(pm.isSuperAdmin(su) && pm.PERMISSIONS.every((p) => pm.can(su, p)));
+  const agent = { role: 'agent', permissions: null, businessIds: ['P1'] };
+  assert.ok(pm.can(agent, 'chat.reply') && pm.can(agent, 'chat.cases') && pm.can(agent, 'orders.view'));
+  assert.ok(!pm.can(agent, 'orders.update') && !pm.can(agent, 'settings.panel') && !pm.can(agent, 'chikki.edit') && !pm.isSuperAdmin(agent));
+  const viewer = { role: 'viewer', permissions: null };
+  assert.ok(pm.can(viewer, 'chat.view') && !pm.can(viewer, 'chat.reply'));
+  const custom = { role: 'viewer', permissions: ['chat.view', 'chat.reply', 'not.a.permission'] };
+  assert.ok(pm.can(custom, 'chat.reply') && !pm.can(custom, 'orders.view'));
+  assert.deepStrictEqual(pm.resolvePermissions('manager', null), pm.ROLE_INFO.manager.perms.filter((p) => pm.PERMISSIONS.includes(p)));
+  assert.ok(pm.canAccessPanel(agent, 'P1') && !pm.canAccessPanel(agent, 'P2') && !pm.canAccessPanel(agent, null));
+  assert.ok(pm.canAccessPanel({ role: 'manager', businessIds: null }, 'P2') && pm.canAccessPanel(su, 'anything'));
+  assert.ok(!pm.isRole('superadmin') && pm.isRole('panel_admin'));
+  assert.deepStrictEqual(pm.cleanPermissions(['chat.view', 'x', 'chat.view']), ['chat.view']);
+  assert.ok(!pm.can(null, 'orders.view'));
+});
+t('message rules follow the permissions', () => {
+  load('permissions', '../../src/lib');
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/message-rules.ts'), 'utf8').replace("from '../permissions'", "from './permissions'");
+  fs.writeFileSync(path.join(dir, 'message-rules.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
+  const mr = require(path.join(dir, 'message-rules.js'));
+  const ai = { sender: 'ai', metadata: null }, mine = { sender: 'agent', metadata: { agent: 'ravi' } }, other = { sender: 'agent', metadata: { agent: 'sita' } };
+  const agent = { username: 'ravi', role: 'agent' }, viewer = { username: 'v', role: 'viewer' }, admin = { username: 'boss', role: 'panel_admin' };
+  assert.ok(mr.canChangeMessage(agent, ai) && mr.canChangeMessage(agent, mine) && !mr.canChangeMessage(agent, other));
+  assert.ok(!mr.canChangeMessage(viewer, ai) && mr.canChangeMessage(admin, other));
+  assert.ok(mr.canChangeMessage({ username: 'x', role: 'admin' }, other));
 });
 console.log(`UNIT: ${n} groups passed`);
