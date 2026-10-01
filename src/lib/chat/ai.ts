@@ -311,10 +311,10 @@ export type Channel = 'chat' | 'email';
 /** A merchant-written answer. The agent reuses it verbatim. */
 export interface SavedAnswer { question: string; answer: string }
 
-// Hard cap so one panel cannot balloon the prompt. ~12k chars is roughly
-// 3k tokens, which V4 Flash's 1M window swallows easily, but it keeps the
-// per-message cost predictable.
-const FAQ_CHAR_BUDGET = 12000;
+// Hard cap so one panel cannot balloon the prompt. Raised from 12,000 to 25,000 by the owner
+// (2026-10-01): ~6k tokens, which V4 Flash's 1M window swallows easily, and it keeps the
+// per-message cost predictable. Past it the answers closest to the question go first.
+const FAQ_CHAR_BUDGET = 25000;
 
 // A template slot the owner never filled in, e.g. "[CURRENT LOCATION]" or
 // "[STATUS]". Sent word for word, the model fills it with made-up data.

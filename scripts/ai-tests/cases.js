@@ -219,7 +219,7 @@ module.exports = [
   // ── Saved answers past the size limit ───────────────────────────────────────────────
   { id: 'faqs-overflow-relevant-kept', title: 'Many saved answers: the one matching the question is kept even at the end of the list',
     faqs: [
-      ...Array.from({ length: 60 }, (_, i) => ({ question: `Filler question number ${i} about earrings designs`, answer: 'Filler answer about our catalogue. '.repeat(8) })),
+      ...Array.from({ length: 120 }, (_, i) => ({ question: `Filler question number ${i} about earrings designs`, answer: 'Filler answer about our catalogue. '.repeat(8) })),
       { question: 'Do you ship to Nepal or Bhutan?', answer: 'FAQMARK-NEPAL We currently ship only within India.' },
     ],
     history: [V('do you ship to nepal?')], mock: [{ content: 'We ship only within India.' }],
