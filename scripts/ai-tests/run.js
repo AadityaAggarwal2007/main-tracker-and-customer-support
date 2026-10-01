@@ -24,14 +24,15 @@ if (live) {
   state.codStates = psql(`SELECT cod_states FROM sites WHERE id='${SITE_ID}'`).trim() || null;
   state.liveFaqs = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('question',question,'answer',answer) ORDER BY sort_order, created_at),'[]') FROM site_faqs WHERE site_id='${SITE_ID}' AND is_enabled`).trim());
   // The notes in the Brain right now (this panel's and the common ones), so the live run tests them too.
-  state.liveBrain = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'title',title,'body',body,'topics',topics,'always',always,'sort_order',sort_order) ORDER BY sort_order, created_at),'[]') FROM brain_notes WHERE is_enabled AND (site_id='${SITE_ID}' OR site_id IS NULL)`).trim() || '[]');
+  state.liveBrain = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'title',title,'body',body,'topics',topics,'always',always,'sort_order',sort_order,'source',source) ORDER BY sort_order, created_at),'[]') FROM brain_notes WHERE is_enabled AND (site_id='${SITE_ID}' OR site_id IS NULL)`).trim() || '[]');
   state.liveExamples = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('id',id,'situation',situation,'customer_said',customer_said,'team_replied',team_replied) ORDER BY created_at DESC),'[]') FROM brain_examples WHERE site_id='${SITE_ID}' AND status='approved' AND is_enabled`).trim() || '[]');
   // --candidate: test a new panel prompt and extra notes from scripts/ai-tests/candidate/ BEFORE they go live.
   if (args.includes('--candidate')) {
     const dir = require('path').join(__dirname, 'candidate');
     sitePrompt = require('fs').readFileSync(require('path').join(dir, 'prompt.txt'), 'utf8');
     const extra = JSON.parse(require('fs').readFileSync(require('path').join(dir, 'notes.json'), 'utf8')).map((n, i) => ({ id: 'cand-' + i, ...n }));
-    state.liveBrain = [...extra, ...(state.liveBrain || [])];
+    // --candidate replaces the notes that came from the prompt with the candidate's own.
+    state.liveBrain = [...extra, ...(state.liveBrain || []).filter((n) => n.source !== 'prompt')];
   }
   if (args.includes('--nobrain')) { state.liveBrain = []; state.liveExamples = []; } // to compare with and without the Brain
   siteId = SITE_ID;
@@ -95,6 +96,7 @@ function evaluate(c, result, usage) {
       try { result = await getAIResponse('test-conv', sitePrompt, null, null, 'chat', siteId, usage); } catch (e) { err = e; }
       loud();
       const fails = err ? [`threw: ${err.message}`] : evaluate(c, result, usage);
+      if (process.env.DUMP) { const r = state.requests[0]; console.log('--- SYSTEM TAIL ---\n' + String(r?.messages?.[0]?.content || '').slice(-1500)); console.log('--- MESSAGES ---'); for (const m of (r?.messages || []).slice(1)) console.log(m.role + ': ' + String(m.content || JSON.stringify(m.tool_calls || '')).slice(0, 300)); console.log('requests', state.requests.length); }
       const tag = fails.length ? (c.watch ? 'WATCH' : 'FAIL') : 'PASS';
       if (!fails.length) pass++; else if (c.watch) watched++; else { fail++; failed.push(c.id); }
       console.log(`${tag}  ${c.id}${repeat > 1 ? ` #${n + 1}` : ''} - ${c.title}`);

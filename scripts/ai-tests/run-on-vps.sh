@@ -6,7 +6,7 @@
 #   bash scripts/ai-tests/run-on-vps.sh [--filter id] [--repeat 2] [--show]
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-REMOTE=/tmp/ai-tests-run
+REMOTE=/tmp/ai-tests-run-$$
 ssh shiptrack-vps "rm -rf $REMOTE && mkdir -p $REMOTE/scripts"
 COPYFILE_DISABLE=1 tar cz src/lib scripts/ai-tests | ssh shiptrack-vps "tar xz -C $REMOTE"
-ssh shiptrack-vps "cd $REMOTE && NODE_PATH=/var/www/tracker/node_modules node scripts/ai-tests/run.js --live $*; code=\$?; rm -rf $REMOTE; exit \$code"
+ssh shiptrack-vps "cd $REMOTE && DUMP=${DUMP:-} THINK=${THINK:-} FORCE_MODEL=${FORCE_MODEL:-} NODE_PATH=/var/www/tracker/node_modules node scripts/ai-tests/run.js --live $*; code=\$?; rm -rf $REMOTE; exit \$code"

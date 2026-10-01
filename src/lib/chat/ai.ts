@@ -39,6 +39,7 @@ import { detectSituations, examplesSection, pickExamples, type Example } from '.
 // asks for the number again and the customer repeats it. DeepSeek V3, the
 // incumbent, itself scores 4/5, so 4/5 is the working baseline, not a defect.
 export const AI_MODELS: Record<string, { name: string; free: boolean }> = {
+  'deepseek/deepseek-v4-pro': { name: 'DeepSeek V4 Pro', free: false },
   'deepseek/deepseek-v4-flash': { name: 'DeepSeek V4 Flash', free: false },
   'deepseek/deepseek-chat': { name: 'DeepSeek V3', free: false },
   'openai/gpt-4.1-mini': { name: 'GPT-4.1 mini', free: false },
@@ -54,12 +55,16 @@ export const AI_MODELS: Record<string, { name: string; free: boolean }> = {
 // 404s. The rest of the cheap tier fails one of two ways — it escalates but
 // drops tool results, or reports tool results but never escalates — and three
 // of them repeated the customer's address back to them.
+// 2026-10-01: deepseek-v4-flash stopped answering verified customers (it called lookup_order again
+// and again and then sent only the greeting; 10+ of 37 golden conversations failed, with the old
+// prompt too). On the same tests V4 Pro passed 36/37, V3 36/37. Owner chose V4 Pro.
 const FALLBACK_CHAIN = [
-  // V4 Flash measured 2026-09-21 on OpenRouter at $0.057/M in, $0.114/M out —
+  'deepseek/deepseek-v4-pro',
+  // (History) V4 Flash measured 2026-09-21 on OpenRouter at $0.057/M in, $0.114/M out —
   // roughly 6x cheaper in and 8x cheaper out than V3 (the previous default),
   // with a 1M context. That headroom is what pays for the longer prompt.
-  'deepseek/deepseek-v4-flash',
   'deepseek/deepseek-chat',
+  'deepseek/deepseek-v4-flash',
   'openai/gpt-4.1-mini',
   'openai/gpt-4o',
 ];

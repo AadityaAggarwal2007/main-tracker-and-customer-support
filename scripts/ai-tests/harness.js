@@ -71,7 +71,10 @@ const stubs = {
           if (state.mode === 'live') {
             const Real = realOpenAI();
             const Cls = Real.default || Real;
+            if (process.env.THINK) delete body.reasoning;
+            if (process.env.FORCE_MODEL) body.model = process.env.FORCE_MODEL;
             res = await new Cls({ baseURL: `${process.env.CODEX_URL}/v1`, apiKey: process.env.AI_API_KEY }).chat.completions.create(body, { timeout: 60000, maxRetries: 1 });
+            if (process.env.DUMP) console.log('  [model]', res.model, (res).provider || '', 'finish', res.choices?.[0]?.finish_reason, 'tools', (res.choices?.[0]?.message?.tool_calls || []).map((t) => t.function.name).join(','));
           } else {
             const next = state.script.length ? state.script.shift() : { content: 'Sure, happy to help.' };
             res = { model: body.model, choices: [{ message: { content: next.content ?? null, tool_calls: next.tool_calls || null }, finish_reason: 'stop' }], usage: {} };
