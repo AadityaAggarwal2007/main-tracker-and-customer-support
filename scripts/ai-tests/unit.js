@@ -249,4 +249,17 @@ t('courierFor', () => {
   assert.strictEqual(cr.courierFor(null, null), null);
   assert.strictEqual(cr.courierFor(null, '  '), null);
 });
+t('withoutUnaskedCourier / asksAboutCourier', () => {
+  const f = (r, c = 'Track my order') => rg.withoutUnaskedCourier(r, c, ['Valmo']).text;
+  assert.strictEqual(f('Your order #4715 has been shipped via Valmo and is on its way.'), 'Your order #4715 has been shipped and is on its way.');
+  assert.strictEqual(f('Handed to our courier partner, Valmo. Estimated delivery 10 October.'), 'Handed to our courier partner. Estimated delivery 10 October.');
+  assert.strictEqual(f('Tracking ID: ST1\nCourier: Valmo\nStatus: Shipped'), 'Tracking ID: ST1\nStatus: Shipped');
+  assert.strictEqual(f('Valmo will deliver your order.'), 'Our courier partner will deliver your order.');
+  assert.strictEqual(f('Aapka order Valmo se ship ho gaya hai.'), 'Aapka order hamare courier partner se ship ho gaya hai.');
+  assert.strictEqual(f('Your order is delivered through Valmo.', 'which courier is delivering?'), 'Your order is delivered through Valmo.');
+  assert.strictEqual(f('See https://valmo.in/track/x for details.'), 'See https://valmo.in/track/x for details.');
+  assert.ok(rg.asksAboutCourier('mera order kaunse courier se aa raha hai?'));
+  assert.ok(rg.asksAboutCourier('kaun deliver kar raha hai'));
+  assert.ok(!rg.asksAboutCourier('order kab aayega'));
+});
 console.log(`UNIT: ${n} groups passed`);

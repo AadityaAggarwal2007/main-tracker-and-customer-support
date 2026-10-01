@@ -21,7 +21,7 @@ import {
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
-import { dropAddressEcho, withCheckAround } from './reply-guards';
+import { dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
@@ -217,7 +217,7 @@ Always go by the status the lookup gave you and say it warmly and simply:
 Order Placed or Confirmed: confirmed, and our team is preparing it.
 Processing: being processed by our team; once it is packed and dispatched the tracking moves on.
 Packed: packed and ready to be handed to the courier.
-Shipped or Dispatched: dispatched and handed to our courier partner; name the courier if you have it.
+Shipped or Dispatched: dispatched and handed to our courier partner; name the courier only if the customer asks which courier delivers.
 Shipment Picked Up or In Transit: on its way through the courier network.
 Reached State: it has reached their state and is moving through the local courier network toward the local delivery facility. Do not name the state.
 Reached City: it has reached their city and will go through the local delivery facility before it is assigned for delivery. Do not name the city.
@@ -1196,13 +1196,21 @@ export async function getAIResponse(
     const echo = dropAddressEcho(out, visitorTexts.slice(-8));
     if (echo.changed) { out = echo.text; console.log(`[AI] Address echo removed for conv ${conversationId}`); }
     let delivered = false;
+    const couriers: string[] = [];
     for (const m of lastRunMessages) {
       if (m.role !== 'tool') continue;
       try {
         const r = JSON.parse(String(m.content || ''));
-        if (r?.found && Array.isArray(r.orders) && r.orders.some((o: { status?: string }) => String(o?.status || '').toLowerCase() === 'delivered')) delivered = true;
+        if (!r?.found || !Array.isArray(r.orders)) continue;
+        for (const o of r.orders as { status?: string; courier?: string | null }[]) {
+          if (String(o?.status || '').toLowerCase() === 'delivered') delivered = true;
+          if (o?.courier) couriers.push(String(o.courier));
+        }
       } catch { /* not a lookup result */ }
     }
+    // The courier is named only when the customer asks which courier delivers (owner).
+    const courier = withoutUnaskedCourier(out, visitorTexts.slice(-2).join('\n'), couriers);
+    if (courier.changed) { out = courier.text; console.log(`[AI] Unasked courier name removed for conv ${conversationId}`); }
     const around = withCheckAround(out, { customerLatest: visitorTexts.slice(-2).join('\n'), orderDelivered: delivered, earlierAgentReplies: agentTexts });
     if (around.changed) { out = around.text; console.log(`[AI] Check-around line added for conv ${conversationId}`); }
     return out;

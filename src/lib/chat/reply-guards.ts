@@ -152,3 +152,50 @@ export function withCheckAround(reply: string, ctx: {
   }
   return { text: `${reply.trimEnd()}\n\n${line}`, changed: true };
 }
+
+// 3. withoutUnaskedCourier (owner, 2026-10-01): the courier (Valmo for Vastora) is named only when
+//    the customer asks which courier / platform / company delivers. Every order now carries a
+//    courier (courier.ts), so without this the agent said "shipped via Valmo" to everyone. When
+//    they did not ask, the name becomes "our courier partner". Links are never touched.
+const ASKS_COURIER = /\b(?:courier|couriers|logistic\w*|platform|partner|company|carrier|valmo|volmo|delhivery|blue\s?dart|ekart|shadowfax|xpressbees|dtdc|india\s+post|speed\s?post)\b|कूरियर|कंपनी/i;
+const ASKS_WHO_DELIVERS = /\b(?:who|kaun|kon|kaunsa|konsa|kis|kisse|kiske)\b[^.?!\n]{0,30}\b(?:deliver\w*|bhej\w*|la\s+raha|aa\s+raha|ship\w*|de\s+raha)\b/i;
+
+export function asksAboutCourier(text: string): boolean {
+  return ASKS_COURIER.test(text || '') || ASKS_WHO_DELIVERS.test(text || '');
+}
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function withoutUnaskedCourier(reply: string, customerLatest: string, courierNames: string[]): { text: string; changed: boolean } {
+  if (!reply || asksAboutCourier(customerLatest)) return { text: reply, changed: false };
+  const names = Array.from(new Set(courierNames.map((n) => String(n || '').trim()).filter((n) => n.length >= 3)));
+  const alt = ['v[ao]lmo', ...names.map(esc)].join('|');
+  const NAME = `(?:${alt})`;
+  if (!new RegExp(`\\b${NAME}\\b`, 'i').test(reply)) return { text: reply, changed: false };
+  const hinglish = looksHinglish(reply);
+  const partner = hinglish ? 'hamare courier partner' : 'our courier partner';
+
+  // Never inside a link.
+  const parts = reply.split(/(https?:\/\/\S+)/g);
+  const fixed = parts.map((part, i) => {
+    if (i % 2 === 1) return part;
+    return part
+      // "Courier: Valmo" on its own line
+      .replace(new RegExp(`^[ \\t]*(?:courier(?:\\s+partner)?|delivery\\s+partner|logistics(?:\\s+partner)?)\\s*[:\\-–—]\\s*${NAME}[ \\t]*\\.?[ \\t]*(?:\\r?\\n|$)`, 'gim'), '')
+      // "our courier partner, Valmo," / "courier partner (Valmo)"
+      .replace(new RegExp(`\\b((?:courier|delivery|logistics|shipping)\\s+partner)\\s*[,:(—–-]?\\s*${NAME}\\s*\\)?`, 'gi'), '$1')
+      // "Valmo (our courier partner)"
+      .replace(new RegExp(`${NAME}\\s*\\(\\s*((?:our|hamare)\\s+(?:courier|delivery|logistics)\\s+partner)\\s*\\)`, 'gi'), '$1')
+      // "shipped via Valmo" -> "shipped"
+      .replace(new RegExp(`\\s+(?:via|through|with|by)\\s+${NAME}\\b`, 'gi'), '')
+      // anything left: the name becomes "our courier partner"
+      .replace(new RegExp(`\\b${NAME}(?:'s)?\\b`, 'gi'), (m) => (/'s$/i.test(m) ? `${partner}'s` : partner));
+  }).join('');
+  const text = fixed
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([,.!?])/g, '$1')
+    .replace(/(^|[.!?]\s+|\n)(our courier partner|hamare courier partner)/g, (m, pre: string, p: string) => pre + p.charAt(0).toUpperCase() + p.slice(1))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { text, changed: text !== reply };
+}
