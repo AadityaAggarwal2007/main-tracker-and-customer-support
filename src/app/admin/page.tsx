@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import BrainCard from '@/components/BrainCard';
+import TeamExamplesCard from '@/components/TeamExamplesCard';
 import { useRouter } from 'next/navigation';
 import { TRACKING_STAGES_WITH_SPECIAL, STAGE_ICONS, ROLE_PERMISSIONS, getStatusColorClass } from '@/lib/constants';
 import {
@@ -2049,6 +2050,7 @@ export default function AdminDashboard() {
 
                         {/* ── BRAIN (notes the agent reads when they fit) ── */}
                         <BrainCard token={token} businessId={activePanelId} onAlert={showAlert} />
+                        <TeamExamplesCard token={token} businessId={activePanelId} canEdit={user?.role === 'admin'} onAlert={showAlert} />
 
                         <div className="form-group">
                           <label className="form-label">Cash on Delivery</label>

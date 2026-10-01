@@ -58,12 +58,11 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
   return { kind, title, body, topics, why: String(obj.why || '').trim().slice(0, 200) };
 }
 
-export const LEARN_INSTRUCTION = `You review one support chat from an Indian online store: a customer, the store's AI assistant (Karry) and a human team member. The team member's reply shows how the store wants such a question handled.
-Decide whether the AI should learn ONE general thing from it: a store fact, a rule for how to act, or a mistake to avoid, written as an instruction to the AI. It must not already be covered by the existing notes listed.
-If "Corrections by the team" are given, a team member changed what the AI first wrote: the lesson is what was wrong with the AI's first wording.
+export const LEARN_INSTRUCTION = `You review one support chat from an Indian online store: a customer, the store's AI assistant (Karry) and the store's human team. Lines marked "Team action (panel)" are what the team did in the order panel. The store wants its AI to learn how the TEAM handles difficult customers: refunds and cancellations, wrong tracking, late orders, anger, fraud claims, payment problems.
+You return two things.
+1. "example": a team reply the AI should imitate. Only a reply marked [CALMED] may be used (the customer calmed down after it). Rewrite it as a reusable example: keep the team's own wording, tone and approach, but remove every name, phone number, order ID, tracking ID, link, amount and date, and anything only true for this one order. "customer" is what the customer said just before it, short, in their own words and language, with the same details removed. "situation" is one of the situations given. Return null if no [CALMED] reply is a good example (a greeting, thanks, a one-line answer, or a reply that promises a refund, a refund time, an exact delivery date or delivery today).
+2. "lesson": ONE general thing the AI should learn from this chat (a store fact, a rule, or a mistake the AI made that the team had to fix), as an instruction to the AI, not already covered by the existing notes. Return null when unsure, when it is only about this order, or when it touches how customers are verified, refund / cancellation / payment policy, or a delivery date.
+If "Corrections by the team" are given, a team member changed what the AI first wrote: that is the strongest lesson.
 Answer with JSON only, no other text:
-{"lesson": null}
-or
-{"lesson": {"kind": "rule" | "fact" | "lesson", "title": "at most 8 words", "body": "1 to 3 sentences, general, as an instruction to the AI", "topics": ["..."]}, "why": "one short line"}
-topics must come from the list given. Never include a name, phone number, order ID, address, amount or date from this chat.
-Return {"lesson": null} when: the team reply is a greeting, thanks or small talk; the answer is only about this one order; you are not sure; or it touches how customers are verified, how refunds, cancellations or payments are handled, or a delivery date. The AI must never say an order arrives today, tonight or tomorrow and must always give the order's estimated date, so never suggest otherwise. The team is sometimes wrong or hurried: copy a practice only if it is clearly good, not merely what they did.`;
+{"example": null | {"situation": "...", "customer": "...", "team": "..."}, "lesson": null | {"kind": "rule" | "fact" | "lesson", "title": "at most 8 words", "body": "1 to 3 sentences", "topics": ["..."]}, "why": "one short line"}
+The AI must never say an order arrives today, tonight or tomorrow, must always give the estimated date from the order, and must hand refunds, cancellations and payment problems to the team: never suggest otherwise. The team is sometimes hurried or wrong: copy only what is clearly good.`;

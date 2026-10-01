@@ -23,6 +23,7 @@ import { dropTodayPromise, promisesToday } from './today-promise';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, type BrainNote } from './brain';
+import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
 
 // ── The support AI ─────────────────────────────────────────────
 // Ported from the chat-support app's ai.js. The system prompt, the tool
@@ -801,6 +802,34 @@ export async function getAIResponse(
     } catch (err) {
       // Before chat-brain.sql / chat-brain-usage.sql is applied the table or a column is missing.
       console.error('[AI] brain read failed:', (err as Error)?.message);
+    }
+  }
+
+  // How our team handles this situation (brain-examples.ts): 1-2 approved replies from the
+  // store's own team to a customer in the same situation (refund, wrong tracking, anger...), as a
+  // guide to tone. Only this panel's. Never stops a reply.
+  if (siteId) {
+    try {
+      const said = recent.rows.filter((r) => r.sender === 'visitor').slice(-3).map((r) => r.content || '');
+      const situations = detectSituations(said);
+      if (situations.length) {
+        const ex = await query<Example>(
+          `SELECT id, situation, customer_said, team_replied FROM brain_examples
+            WHERE site_id = $1 AND status = 'approved' AND is_enabled = true AND situation = ANY($2::text[])
+            ORDER BY created_at DESC LIMIT 40`,
+          [siteId, situations]
+        );
+        const chosen = pickExamples(ex.rows, situations, 2);
+        systemPrompt += examplesSection(chosen);
+        if (usage) usage.brain.push(...chosen.filter((e) => e.id).map((e) => ({ id: e.id as string, title: `Team example: ${e.situation.replace(/_/g, ' ')}` })));
+        if (chosen.length) {
+          query(`UPDATE brain_examples SET shown_count = shown_count + 1, last_shown_at = now() WHERE id = ANY($1::uuid[])`, [chosen.map((e) => e.id)])
+            .catch((err) => console.error('[AI] example counters failed:', (err as Error)?.message));
+        }
+      }
+    } catch (err) {
+      // Before chat-brain-examples.sql is applied the table is missing.
+      console.error('[AI] team examples read failed:', (err as Error)?.message);
     }
   }
 

@@ -14,8 +14,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {
-    const result = await suggestLessons();
-    if (result.reviewed) console.log(`[brain-suggest] reviewed ${result.reviewed} chats, ${result.suggested} suggestions, ${result.skipped} skipped`);
+    // ?max= (up to 60 chats) and ?days= (up to 60) for a one-off catch-up run.
+    const num = (k: string) => { const v = parseInt(request.nextUrl.searchParams.get(k) || '', 10); return Number.isFinite(v) ? v : undefined; };
+    const result = await suggestLessons({ max: num('max'), days: num('days') });
+    if (result.reviewed) console.log(`[brain-suggest] reviewed ${result.reviewed} chats, ${result.suggested} lessons, ${result.examples} team examples, ${result.skipped} skipped`);
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     console.error('[cron] brain-suggest error:', err);

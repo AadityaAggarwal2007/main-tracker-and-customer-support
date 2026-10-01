@@ -8,7 +8,8 @@ const load = (f) => {
   return require(path.join(dir, f + '.js'));
 };
 load('today-promise');
-const brain = load('brain'), learn = load('brain-learn');
+load('health-rules');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -105,5 +106,55 @@ t('selectNotes: audience filter', () => {
   assert.deepStrictEqual(brain.selectNotes(notes, 'hi', undefined, undefined, true).map((x) => x.title).sort(), ['A', 'V']);
   assert.deepStrictEqual(brain.selectNotes(notes, 'hi', undefined, undefined, false).map((x) => x.title).sort(), ['A', 'X']);
   assert.strictEqual(brain.selectNotes(notes, 'hi').length, 3);
+});
+t('detectSituations', () => {
+  const d = (...m) => ex.detectSituations(m);
+  assert.deepStrictEqual(d('hi'), []);
+  assert.deepStrictEqual(d('ok thanks'), []);
+  assert.ok(d('mujhe refund chahiye').includes('refund_cancel'));
+  assert.ok(d('order cancel karo').includes('refund_cancel'));
+  assert.ok(d('tracking link galat hai').includes('wrong_tracking'));
+  assert.ok(d('this link shows someone else\'s order').includes('wrong_tracking'));
+  assert.ok(d('abhi tak nahi aaya, 15 din ho gaye').includes('delay'));
+  assert.ok(d('you are fraud, I will file a chargeback')[0] === 'fraud_claim');
+  assert.ok(d('WORST SERVICE EVER!!!').includes('angry'));
+  assert.ok(d('payment kat gaya par order nahi bana').includes('payment'));
+});
+t('customerCalmedAfter', () => {
+  assert.ok(ex.customerCalmedAfter(['ok thanks']));
+  assert.ok(ex.customerCalmedAfter(['Theek hai ji 🙏']));
+  assert.ok(ex.customerCalmedAfter(['mil gaya, thank you']));
+  assert.ok(!ex.customerCalmedAfter([]));
+  assert.ok(!ex.customerCalmedAfter(['ok', 'fraud ho tum log']));
+  assert.ok(!ex.customerCalmedAfter(['refund chahiye abhi']));
+  assert.ok(!ex.customerCalmedAfter(['WHERE IS MY ORDER']));
+  assert.ok(!ex.customerCalmedAfter(['kab aayega?']));
+});
+t('exampleProblem', () => {
+  const good = 'I completely understand your concern and I am really sorry for the delay. Our team is checking with the courier and you will get the update right here.';
+  assert.strictEqual(ex.exampleProblem(good), null);
+  assert.ok(ex.exampleProblem('ok'));
+  assert.ok(ex.exampleProblem(good + ' Call us at 9876543210.'));
+  assert.ok(ex.exampleProblem('Your refund of Rs 499 will be processed within 5-7 working days, sorry for the trouble.'));
+  assert.ok(ex.exampleProblem('Sorry for the delay, it will be delivered on 5 October without fail, please wait.'));
+  assert.ok(ex.exampleProblem('Sorry for the delay sir, it is out for delivery and will reach you today for sure.'));
+  assert.ok(ex.exampleProblem('Sorry ma\'am, please try the payment again and share the UPI screenshot here.'));
+});
+t('parseExample', () => {
+  const raw = (o) => JSON.stringify({ example: o, lesson: null });
+  const good = { situation: 'delay', customer: 'abhi tak nahi aaya', team: 'Main samajh sakta hoon, der ke liye maafi. Team courier se baat kar rahi hai, update yahin milega.' };
+  assert.ok(ex.parseExample(raw(good), ['delay']));
+  assert.strictEqual(ex.parseExample(raw(good), ['refund_cancel']), null);
+  assert.strictEqual(ex.parseExample(raw({ ...good, situation: 'bogus' }), ['bogus']), null);
+  assert.strictEqual(ex.parseExample(raw({ ...good, customer: 'order #4715 kab' }), ['delay']), null);
+  assert.strictEqual(ex.parseExample(raw(null), ['delay']), null);
+  assert.strictEqual(ex.parseExample('nonsense', ['delay']), null);
+});
+t('pickExamples', () => {
+  const all = [{ situation: 'delay', id: 1 }, { situation: 'delay', id: 2 }, { situation: 'angry', id: 3 }];
+  assert.deepStrictEqual(ex.pickExamples(all, ['angry', 'delay']).map((e) => e.id), [3, 1]);
+  assert.deepStrictEqual(ex.pickExamples(all, ['delay']).map((e) => e.id), [1, 2]);
+  assert.deepStrictEqual(ex.pickExamples(all, ['refund_cancel']), []);
+  assert.strictEqual(ex.examplesSection([]), '');
 });
 console.log(`UNIT: ${n} groups passed`);
