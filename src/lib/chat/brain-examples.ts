@@ -91,7 +91,7 @@ export function examplesSection(examples: Example[]): string {
   return `
 
 HOW OUR TEAM HANDLES THIS
-Real replies the store's own team sent to a customer in the same situation; the customer calmed down after them, and the owner approved them. Talk the way they do: the same calm, the same kind of explanation, the same respect, in the customer's language and in your own words. Copy the manner, never the facts: never copy a date, an amount, an order detail or a promise from them; facts come only from the lookup. The SHIPTRACK RULES above always win (refunds, cancellations and payment problems still go to the team).
+Real replies the store's own team sent to a customer in the same situation; the customer calmed down after them, and the owner approved them. Talk the way they do: the same calm, the same kind of explanation, the same respect, in the customer's language. Write your own sentences that fit this customer's message: never repeat an example word for word, and answer what this customer actually asked. Copy the manner, never the facts: never copy a date, an amount, an order detail or a promise from them; facts come only from the lookup. The SHIPTRACK RULES above always win (refunds, cancellations and payment problems still go to the team).
 ${blocks.join('\n\n')}`;
 }
 
