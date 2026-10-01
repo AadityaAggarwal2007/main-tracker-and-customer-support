@@ -1,3 +1,4 @@
+import { courierFor } from './courier';
 import { query, queryOne } from '@/lib/db';
 import { AUTO_DELIVER_DAY, JOURNEY, buildJourney, type JourneyOrder } from '@/lib/journey';
 
@@ -75,7 +76,7 @@ interface OrderRow {
   order_total: number; city: string | null; state: string | null; created_at: string;
   status_updated_at: string | null; delivered_at: string | null; origin_city: string | null;
   is_cancelled: boolean; payment_method: string | null;
-  business_name: string | null; business_tracking_domain: string | null;
+  business_name: string | null; business_tracking_domain: string | null; business_default_courier?: string | null;
   products: string[] | null;
 }
 
@@ -102,6 +103,7 @@ const ORDER_SELECT_SQL = `SELECT
          b.name AS business_name,
          b.origin_city,
          b.tracking_domain AS business_tracking_domain,
+         b.default_courier AS business_default_courier,
          COALESCE(
            array_agg(oi.product_name ORDER BY oi.created_at)
            FILTER (WHERE oi.product_name IS NOT NULL), '{}'
@@ -114,7 +116,7 @@ const ORDER_GROUP_SQL = `GROUP BY
          o.order_id, o.customer_name, o.customer_email, o.customer_mobile,
          o.tracking_status, o.tracking_id, o.tracking_token, o.courier_partner, o.estimated_delivery,
          o.order_total, o.city, o.state, o.created_at, o.status_updated_at, o.delivered_at, o.is_cancelled,
-         o.payment_method, b.name, b.tracking_domain, b.origin_city
+         o.payment_method, b.name, b.tracking_domain, b.origin_city, b.default_courier
        ORDER BY o.created_at DESC`;
 
 // The panel id arrives from sites.tracker_business_id, which is text on the
@@ -161,7 +163,8 @@ function toFoundOrder(row: OrderRow): FoundOrder {
     status: stage,
     tracking_id: row.tracking_id || null,
     tracking_link: trackingLink,
-    courier: row.courier_partner || null,
+    // The order's courier, else the panel's default one (owner: every Vastora order ships with Valmo).
+    courier: courierFor(row.courier_partner, row.business_default_courier),
     estimated_delivery: eta,
     total: row.order_total,
     products: row.products || [],

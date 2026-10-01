@@ -11,7 +11,7 @@ const load = (f) => {
 load('today-promise');
 load('health-rules');
 load('address-conflict'); load('escalation');
-const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -238,5 +238,15 @@ t('withCheckAround / saysNotReceived', () => {
   assert.ok(!rg.saysNotReceived('refund nahi mila abhi tak'));
   assert.ok(!rg.saysNotReceived("I didn't get the tracking link"));
   assert.ok(!rg.saysNotReceived('mil gaya thanks'));
+});
+t('courierFor', () => {
+  assert.strictEqual(cr.courierFor(null, 'Valmo'), 'Valmo');
+  assert.strictEqual(cr.courierFor('', 'Valmo'), 'Valmo');
+  assert.strictEqual(cr.courierFor('volmo ', null), 'Valmo');
+  assert.strictEqual(cr.courierFor('VALMO', null), 'Valmo');
+  assert.strictEqual(cr.courierFor('Delhivery', 'Valmo'), 'Delhivery');
+  assert.strictEqual(cr.courierFor('Courier Partner', 'Valmo'), 'Valmo');
+  assert.strictEqual(cr.courierFor(null, null), null);
+  assert.strictEqual(cr.courierFor(null, '  '), null);
 });
 console.log(`UNIT: ${n} groups passed`);

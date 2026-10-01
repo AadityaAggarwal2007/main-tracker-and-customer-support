@@ -79,8 +79,9 @@ module.exports = [
   { id: 'code-ladder-not-for-visitor', title: 'No delay note for a chat with no verified order',
     history: [V('kab aayega mera order')], mock: [{ content: 'Please share your order ID and phone.' }],
     expect: { systemNotHas: [/DELAY ANSWER/] }, offlineOnly: true },
-  { id: 'which-logistics', title: 'Which platform delivers the order? (saved answer: Valmo)',
-    ...verifiedCtx('Reached City', '2026-10-03'), history: [V('from which logistics this order is shipped??')],
+  // orders.ts names the panel's default courier (Valmo) for an order without one (courier.ts).
+  { id: 'which-logistics', title: 'Which platform delivers the order? (Valmo)',
+    ...verifiedCtx('Reached City', '2026-10-03', { courier: 'Valmo' }), history: [V('from which logistics this order is shipped??')],
     expect: { match: [/valmo/i] }, liveOnly: true },
   // The hand-over of a refund is done by code before the AI answers (escalation.ts), so this
   // only checks what the AI itself says: no promise, no money details asked.
