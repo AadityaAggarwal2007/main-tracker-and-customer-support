@@ -49,13 +49,22 @@ export function detectSituations(recentCustomerTexts: string[]): string[] {
 // after it (oldest first). Yes only when nothing they wrote afterwards is angry, accusing,
 // threatening, a complaint or a refund demand again, and at least one says thanks / ok /
 // solved. No reply at all is not proof (they may have given up), so it is a no.
-const COURTESY = /^(?:\s*(?:ok+|okay|okk+|k|thanks?|thank you|thanku|thnx|thx|ty|theek|thik|thik hai|theek hai|accha|achha|acha|ji|haan|ha|done|great|good|nice|alright|sure|got it|samajh gaya|noted|cool|👍|🙏|❤️|😊)\b[\s!.,🙏👍❤️😊]*)+$/i;
+const POLITE_WORDS = new Set('ok okk okkk okay okey k kk thanks thank thanku thankyou thnx thx ty you so much very theek thik hai h accha achha acha ji haan han ha done great good nice alright sure got it noted cool fine sir mam maam madam maim mem dear bhai bhaiya didi sahi samajh gaya gayi samjha shukriya dhanyavad dhanyawad welcome'.split(' '));
+// The team did what was asked: "address change ho gaya", "cancel ho gaya", "update ho gaya".
+const DONE = /\b(?:change|changed|update|updated|cancel|cancelled|done|correct|sahi|theek)\w*\s+(?:ho\s+)?(?:gaya|gayi|gya|hua|ho gya)\b/i;
+
+function isPolite(text: string): boolean {
+  const ws = text.toLowerCase().replace(/[^a-z\u0900-\u097f ]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (!ws.length) return /^[\s🙏👍❤️😊🙂✅]+$/u.test(text);
+  return ws.length <= 8 && ws.every((w) => POLITE_WORDS.has(w));
+}
+
 export function customerCalmedAfter(after: string[]): boolean {
   const msgs = after.map((t) => (t || '').trim()).filter(Boolean);
   if (!msgs.length) return false;
   const sig = scanSignals(msgs.map((content) => ({ sender: 'visitor', content })));
   if (sig.abuse || sig.rude || sig.accuse || sig.threat || sig.escalate || sig.caps || sig.burst || sig.refund) return false;
-  return msgs.some((m) => COURTESY.test(m) || saysResolved(m) || /\b(thanks?|thank you|shukriya|dhanyavad|theek hai|ok)\b/i.test(m));
+  return msgs.some((m) => isPolite(m) || saysResolved(m) || DONE.test(m) || /\b(thanks?|thank you|shukriya|dhanyavad)\b/i.test(m));
 }
 
 // Why a team reply cannot be an example, or null. On top of the note rules (noteProblem):

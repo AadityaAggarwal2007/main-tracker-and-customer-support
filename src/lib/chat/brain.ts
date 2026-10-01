@@ -103,6 +103,8 @@ export function noteProblem(title: string, body: string): string | null {
     [/\b(?:pay|payment)\b[^.]{0,20}\b(?:again|dobara|retry)\b/i, 'A note must not tell the agent to ask the customer to pay again.'],
     [/\b(?:promise|guarantee|assure|confirm)\b[^.]{0,40}\b(?:refund|replacement|cancell?ation)\b/i, 'A note must not tell the agent to promise a refund, a replacement or a cancellation.'],
     [/\b(?:skip|no need (?:for|to)|bina)\b[^.]{0,40}\b(?:verif\w*|order\s*id|phone)\b/i, 'A note must not tell the agent to skip the order ID and phone check.'],
+    // Who goes to the team is decided by the system (only verified customers, owner 2026-09-30).
+    [/\b(?:hand(?:s|ing)?\s*(?:it\s*)?(?:off|over)|escalat\w*|transfer\w*|connect\w*\s+(?:them\s+)?(?:to|with)\s+(?:the\s+)?team)\b[^.]{0,80}\b(?:verif\w*|cannot find|can'?t find|not found|attempts?|tries|failed|lookups?|identifiers?)\b|\b(?:verif\w*|cannot find|can'?t find|not found|attempts?|failed|lookups?)\b[^.]{0,80}\b(?:hand(?:s|ing)?\s*(?:it\s*)?(?:off|over)|escalat\w*|transfer\w*)\b/i, 'Who is handed to the team is decided by the system: only a verified customer, never after failed checks.'],
   ];
   for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
     for (const [re, message] of checks) {
@@ -113,4 +115,16 @@ export function noteProblem(title: string, body: string): string | null {
   // Hiding the estimated date.
   if (/\b(?:never|don'?t|do not|mat)\b[^.]{0,30}\b(?:give|share|tell|say|batao|bolo)\b[^.]{0,30}\b(?:estimated\s+)?date\b/i.test(text)) return 'A note must not tell the agent to hide the estimated delivery date.';
   return null;
+}
+
+// Word overlap between two notes (0..1), so the learner does not suggest the same thing twice in
+// other words. Short common words are ignored.
+const STOP = new Set('the a an to of and or is are be it in on for with when if not do does this that they them their customer customers agent ai should must any as at by from has have was were will can you your order orders'.split(' '));
+const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z\u0900-\u097f ]+/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
+export function similarity(a: string, b: string): number {
+  const A = words(a), B = words(b);
+  if (!A.size || !B.size) return 0;
+  let both = 0;
+  A.forEach((w) => { if (B.has(w)) both++; });
+  return both / Math.min(A.size, B.size);
 }

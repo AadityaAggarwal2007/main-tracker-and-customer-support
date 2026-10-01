@@ -24,17 +24,19 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
 
   for (const site of sites) {
     if (out.reviewed >= max) break;
-    const existing = (await query<{ title: string }>(
-      `SELECT title FROM brain_notes WHERE site_id = $1 OR site_id IS NULL
-       UNION SELECT title FROM brain_suggestions WHERE site_id = $1 AND status <> 'rejected'`,
+    const known = (await query<{ title: string; body: string }>(
+      `SELECT title, body FROM brain_notes WHERE site_id = $1 OR site_id IS NULL
+       UNION ALL SELECT title, body FROM brain_suggestions WHERE site_id = $1`,
       [site.id]
-    )).rows.map((r) => r.title);
+    )).rows;
+    const existing = known.map((r) => r.title);
+    const existingTexts = known.map((r) => `${r.title} ${r.body}`);
     const knownReplies = (await query<{ team_replied: string }>(
       `SELECT team_replied FROM brain_examples WHERE site_id = $1 AND status <> 'rejected'`, [site.id]
     ).catch(() => ({ rows: [] as { team_replied: string }[] }))).rows.map((r) => r.team_replied);
 
-    const candidates = await query<{ id: string; order_id: string | null }>(
-      `SELECT c.id, COALESCE(c.verified_order_id, c.phone_match_order_id) AS order_id
+    const candidates = await query<{ id: string; order_id: string | null; status: string; customer_key: string | null }>(
+      `SELECT c.id, COALESCE(c.verified_order_id, c.phone_match_order_id) AS order_id, c.status, c.customer_key
          FROM conversations c
         WHERE c.site_id = $1
           AND c.merged_into IS NULL
@@ -68,17 +70,35 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
         )).rows;
 
         // A team reply in a difficult situation after which the customer calmed down: [CALMED].
-        const calmedIds = new Set<string>();
-        const situationsSeen = new Set<string>();
-        msgs.forEach((m, i) => {
-          if (m.sender !== 'agent' || m.content.trim().length < 25) return;
+        // When there is none, a team reply after which the customer never complained again (the
+        // chat ended there, is closed or quiet for two days, and they wrote nowhere else since)
+        // is used instead, and the owner is told so.
+        const calmedIds = new Set<string>(), quietIds = new Set<string>();
+        const calmedSits = new Set<string>(), quietSits = new Set<string>();
+        const lastVisible = msgs[msgs.length - 1];
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          if (m.sender !== 'agent' || m.content.trim().length < 25) continue;
           const before = msgs.slice(0, i).filter((x) => x.sender === 'visitor').slice(-3).map((x) => x.content);
           const sits = detectSituations(before);
-          if (!sits.length) return;
+          if (!sits.length) continue;
           const nextTeam = msgs.findIndex((x, j) => j > i && x.sender === 'agent');
           const after = msgs.slice(i + 1, nextTeam === -1 ? undefined : nextTeam).filter((x) => x.sender === 'visitor').map((x) => x.content);
-          if (customerCalmedAfter(after)) { calmedIds.add(m.id); sits.forEach((s) => situationsSeen.add(s)); }
-        });
+          if (customerCalmedAfter(after)) { calmedIds.add(m.id); sits.forEach((s) => calmedSits.add(s)); continue; }
+          const endedHere = !after.length && !msgs.slice(i + 1).some((x) => x.sender === 'visitor')
+            && (c.status === 'resolved' || Date.now() - new Date(lastVisible.created_at).getTime() > 2 * 86_400_000);
+          if (endedHere) {
+            const elsewhere = c.customer_key ? await queryOne<{ yes: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM messages mm JOIN conversations cc ON cc.id = mm.conversation_id
+                 WHERE cc.site_id = $1 AND cc.customer_key = $2 AND cc.id <> $3 AND mm.sender = 'visitor' AND mm.created_at > $4) AS yes`,
+              [site.id, c.customer_key, c.id, m.created_at]
+            ) : null;
+            if (!elsewhere?.yes) { quietIds.add(m.id); sits.forEach((s) => quietSits.add(s)); }
+          }
+        }
+        const useQuiet = !calmedIds.size;
+        const markIds = useQuiet ? quietIds : calmedIds;
+        const situationsSeen = useQuiet ? quietSits : calmedSits;
 
         // What the team did in the order panel while this chat was going on.
         let actions: { status: string; changed_by: string; created_at: string }[] = [];
@@ -95,7 +115,7 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
 
         const lines: { at: number; text: string }[] = msgs.map((m) => ({
           at: new Date(m.created_at).getTime(),
-          text: `${m.sender === 'visitor' ? 'Customer' : m.sender === 'ai' ? 'AI' : `Team${calmedIds.has(m.id) ? ' [CALMED]' : ''}`}: ${maskPersonal(m.content).slice(0, 600)}`,
+          text: `${m.sender === 'visitor' ? 'Customer' : m.sender === 'ai' ? 'AI' : `Team${markIds.has(m.id) ? ' [CALMED]' : ''}`}: ${maskPersonal(m.content).slice(0, 600)}`,
         }));
         for (const a of actions) lines.push({ at: new Date(a.created_at).getTime(), text: `Team action (panel): set the order status to "${a.status}"` });
         lines.sort((a, b) => a.at - b.at);
@@ -129,7 +149,7 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
           };
           const res = await getClient().chat.completions.create(body as unknown as ChatCompletionCreateParamsNonStreaming, { timeout: 60000, maxRetries: 1 });
           const raw = res.choices?.[0]?.message?.content;
-          draft = parseDraft(raw, BRAIN_TOPIC_KEYS, existing);
+          draft = parseDraft(raw, BRAIN_TOPIC_KEYS, existing, existingTexts);
           example = allowed.length ? parseExample(raw, allowed) : null;
           if (example && knownReplies.some((r) => sameReply(r, example!.team_replied))) example = null;
         }
@@ -140,6 +160,7 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
             [crypto.randomUUID(), site.id, c.id, draft.kind, draft.title, draft.body, draft.topics, draft.why]
           );
           existing.push(draft.title);
+          existingTexts.push(`${draft.title} ${draft.body}`);
           out.suggested++;
         }
         if (example) {
@@ -147,7 +168,7 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
             `INSERT INTO brain_examples (id, site_id, situation, customer_said, team_replied, why, source, conversation_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [crypto.randomUUID(), site.id, example.situation, example.customer_said, example.team_replied,
-             'The customer calmed down after this reply.', corrections ? 'team_edit' : 'team_reply', c.id]
+             useQuiet ? 'The customer did not complain again after this reply (no further message). Check that it really helped.' : 'The customer replied calmly after this.', corrections ? 'team_edit' : 'team_reply', c.id]
           );
           knownReplies.push(example.team_replied);
           out.examples++;

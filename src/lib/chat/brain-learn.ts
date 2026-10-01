@@ -7,7 +7,7 @@
 // never writes to its own rules. The pure helpers below have no imports and are tested offline.
 
 import { promisesToday } from './today-promise';
-import { noteProblem } from './brain';
+import { noteProblem, similarity } from './brain';
 
 export const SUGGEST_MAX_PER_RUN = 15;
 
@@ -35,7 +35,7 @@ export interface Draft { kind: 'rule' | 'fact' | 'lesson'; title: string; body: 
 
 // What the model sent back, as a draft, or null when there is nothing to learn or the draft is
 // unusable (no JSON, too short or long, personal details, no valid topic, a title already taken).
-export function parseDraft(raw: string | null | undefined, validTopics: string[], existingTitles: string[]): Draft | null {
+export function parseDraft(raw: string | null | undefined, validTopics: string[], existingTitles: string[], existingTexts: string[] = []): Draft | null {
   if (!raw) return null;
   const json = raw.match(/\{[\s\S]*\}/);
   if (!json) return null;
@@ -52,6 +52,7 @@ export function parseDraft(raw: string | null | undefined, validTopics: string[]
   // Never a draft that teaches promising arrival today / tonight, or hiding the estimated date.
   if (promisesToday(title + '. ' + body) || /\b(never|don'?t|do not)\b[^.]{0,30}\b(give|share|tell|say)\b[^.]{0,30}\bdate\b/i.test(body)) return null;
   if (noteProblem(title, body)) return null;
+  if (existingTexts.some((t) => similarity(t, `${title} ${body}`) >= 0.6)) return null;
   const same = (a: string, b: string) => a.toLowerCase().replace(/\W+/g, ' ').trim() === b.toLowerCase().replace(/\W+/g, ' ').trim();
   if (existingTitles.some((t) => same(t, title))) return null;
   const kind = l.kind === 'rule' || l.kind === 'fact' ? l.kind : 'lesson';

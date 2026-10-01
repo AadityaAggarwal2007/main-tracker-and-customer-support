@@ -129,6 +129,9 @@ t('customerCalmedAfter', () => {
   assert.ok(!ex.customerCalmedAfter(['refund chahiye abhi']));
   assert.ok(!ex.customerCalmedAfter(['WHERE IS MY ORDER']));
   assert.ok(!ex.customerCalmedAfter(['kab aayega?']));
+  assert.ok(ex.customerCalmedAfter(['Okay mam']));
+  assert.ok(ex.customerCalmedAfter(['Address change ho gaya']));
+  assert.ok(!ex.customerCalmedAfter(['ok but when will it come']));
 });
 t('exampleProblem', () => {
   const good = 'I completely understand your concern and I am really sorry for the delay. Our team is checking with the courier and you will get the update right here.';
@@ -156,5 +159,12 @@ t('pickExamples', () => {
   assert.deepStrictEqual(ex.pickExamples(all, ['delay']).map((e) => e.id), [1, 2]);
   assert.deepStrictEqual(ex.pickExamples(all, ['refund_cancel']), []);
   assert.strictEqual(ex.examplesSection([]), '');
+});
+t('noteProblem blocks teaching hand-overs after failed checks; similarity finds rewordings', () => {
+  assert.ok(brain.noteProblem('Hand off after repeated verification failures', 'If the system still cannot find the order, hand off to the team instead of asking again.'));
+  assert.ok(brain.noteProblem('Escalate', 'If the customer cannot provide a valid order ID after three attempts, escalate to the team immediately.'));
+  assert.strictEqual(brain.noteProblem('LuxeVa is now Vastora', 'If a customer says their order was placed on LuxeVa, treat it as a Vastora order.'), null);
+  assert.ok(brain.similarity('Hand off after 3 failed lookups: If the AI cannot find an order after 3 attempts, hand the customer to the team', 'Escalate after repeated verification failures: If the customer cannot provide a valid order after three attempts, escalate to the team') >= 0.4);
+  assert.ok(brain.similarity('COD not available, pay online', 'LuxeVa is now Vastora') < 0.2);
 });
 console.log(`UNIT: ${n} groups passed`);
