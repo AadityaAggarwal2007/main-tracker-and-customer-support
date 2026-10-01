@@ -15,7 +15,7 @@ import { delayAsksIn, delayNote, delayStage, isDelayAsk } from './delay-ladder';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
   asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply, verifyAgainReply,
-  lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, typedByVisitor,
+  lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, reasksForPhone, typedByVisitor,
   type LookupOutcome,
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
@@ -26,6 +26,8 @@ import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
+import { EFFORT_PLAN, effortFor, effortScore, groupFor, newEffortUsage, type EffortUsage } from './effort';
+import { CHECK_NOTE, latestOrderFacts, parseCheck } from './self-check';
 
 // ── The support AI ─────────────────────────────────────────────
 // Ported from the chat-support app's ai.js. The system prompt, the tool
@@ -109,6 +111,22 @@ function withoutThinking<T extends object>(model: string, params: T): ChatComple
   const body = model.startsWith('deepseek/deepseek-v4') ? { ...params, reasoning: { enabled: false } } : params;
   return body as unknown as ChatCompletionCreateParamsNonStreaming;
 }
+
+// High and Max effort (effort.ts): the model thinks before it writes, with more room
+// (thinking counts against max_tokens). Normal is withoutThinking with MAX_REPLY_TOKENS, as
+// every reply was before 2026-10-01. Models without a thinking switch just get the room.
+function withThinking<T extends object>(model: string, params: T, maxTokens: number): ChatCompletionCreateParamsNonStreaming {
+  const body = model.startsWith('deepseek/deepseek-v4')
+    ? { ...params, max_tokens: maxTokens, reasoning: { enabled: true } }
+    : { ...params, max_tokens: maxTokens };
+  return body as unknown as ChatCompletionCreateParamsNonStreaming;
+}
+// A thinking call that takes longer than this is dropped and asked again without thinking,
+// so the customer still gets a reply well inside the widget's 60 s (nginx).
+const THINKING_TIMEOUT_MS = 30_000;
+// The Max self-check: one short call; a slower one is skipped and the draft goes as it was.
+const SELF_CHECK_TIMEOUT_MS = 15_000;
+const SELF_CHECK_MAX_TOKENS = 800;
 
 // A reply that promises arrival today, tonight or tomorrow loses that sentence (today-promise.ts).
 function withoutTodayPromise(text: string): string {
@@ -639,8 +657,9 @@ export async function getAIResponse(
   codAvailable?: boolean | null,
   channel: Channel = 'chat',
   siteId?: string | null,
-  // Filled with the Brain notes shown for this reply, so the caller can record them for staff.
-  usage?: { brain: { id: string; title: string }[] }
+  // Filled with the Brain notes shown for this reply, so the caller can record them for staff,
+  // and with the effort level and the tokens it used (effort.ts, chikki-runs.ts).
+  usage?: { brain: { id: string; title: string }[]; effort?: EffortUsage }
 ): Promise<AIResult> {
   // Newest first, then flipped back into reading order. A message the team
   // edited is read as it reads now; one they deleted is left out, so the model
@@ -775,6 +794,51 @@ export async function getAIResponse(
     console.error('[AI] verified order read failed:', (err as Error)?.message);
   }
 
+  // ── How hard to think (effort.ts, owner 2026-10-01) ───────────
+  // A visitor stays at Normal (as before). A verified customer (or an old phone match) gets the
+  // level this panel set for how upset they are: the stored frustration score or the quick
+  // count over this chat, whichever is higher. A read failure means Normal, never no reply.
+  let isCustomer = !!verifiedOrderId;
+  let storedScore: number | null = null;
+  try {
+    const c = await queryOne<{ phone_match_order_id: string | null; health_score: number | null }>(
+      `SELECT phone_match_order_id, health_score FROM conversations WHERE id = $1`,
+      [conversationId]
+    );
+    isCustomer = isCustomer || !!c?.phone_match_order_id;
+    storedScore = c?.health_score ?? null;
+  } catch (err) {
+    console.error('[AI] effort score read failed:', (err as Error)?.message);
+  }
+  let effortSettings: unknown = null;
+  if (siteId && isCustomer) {
+    try {
+      effortSettings = (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
+    } catch (err) {
+      // Before chikki-effort.sql is applied the column does not exist: the defaults stand.
+      console.error('[AI] effort settings read failed:', (err as Error)?.message);
+    }
+  }
+  const scoreNow = effortScore(storedScore, recent.rows.map((r) => ({ sender: r.sender, content: r.content || '' })));
+  const effortGroup = groupFor(isCustomer, scoreNow);
+  const effort = effortFor(effortGroup, effortSettings);
+  const plan = EFFORT_PLAN[effort];
+  const spent = newEffortUsage(effort, effortGroup, scoreNow);
+  if (usage) usage.effort = spent;
+  // Counts the tokens of every model call made for this reply.
+  const track = <R extends { model?: string; usage?: unknown }>(res: R): R => {
+    const u = (res?.usage || {}) as { prompt_tokens?: number; completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } };
+    spent.calls++;
+    spent.promptTokens += u.prompt_tokens || 0;
+    spent.completionTokens += u.completion_tokens || 0;
+    spent.reasoningTokens += u.completion_tokens_details?.reasoning_tokens || 0;
+    if (res?.model) spent.model = res.model;
+    return res;
+  };
+  // Turned off for the rest of this reply when a thinking call answers blank or too slowly.
+  let thinkingOn = plan.thinking;
+  if (effort !== 'normal') console.log(`[AI] Effort ${effort} (${effortGroup}, score ${scoreNow}) for conv ${conversationId}`);
+
   // The delay ladder (delay-ladder.ts): for a verified customer asking about timing, the
   // reason to give is chosen here from how late the order is and how often they have
   // asked, so it is never the same sentence again and never made up by the model. Not
@@ -842,7 +906,7 @@ export async function getAIResponse(
             ORDER BY created_at DESC LIMIT 40`,
           [siteId, situations]
         );
-        const chosen = pickExamples(ex.rows, situations, 2);
+        const chosen = pickExamples(ex.rows, situations, plan.examples);
         systemPrompt += examplesSection(chosen);
         if (usage) usage.brain.push(...chosen.filter((e) => e.id).map((e) => ({ id: e.id as string, title: `Team example: ${e.situation.replace(/_/g, ' ')}` })));
         if (chosen.length) {
@@ -1236,13 +1300,16 @@ export async function getAIResponse(
       // Only the first round is forced, so the model can still react to the
       // result (or escalate) in the rounds after it. No extra API call.
       const forced = !!pending && round === 0 && !extra.length;
-      const ask = (toolChoice: ChatCompletionToolChoiceOption) => getClient().chat.completions.create(withoutThinking(model, {
+      const params = {
         model,
         messages,
         tools: [ORDER_LOOKUP_TOOL, ESCALATE_TOOL, CATEGORIZE_TOOL],
-        tool_choice: toolChoice,
         max_tokens: MAX_REPLY_TOKENS,
-      }));
+      };
+      const ask = (toolChoice: ChatCompletionToolChoiceOption) => (thinkingOn
+        ? getClient().chat.completions.create(withThinking(model, { ...params, tool_choice: toolChoice }, plan.maxTokens), { timeout: THINKING_TIMEOUT_MS, maxRetries: 0 })
+        : getClient().chat.completions.create(withoutThinking(model, { ...params, tool_choice: toolChoice }))
+      ).then((res) => { if (thinkingOn) spent.thinking = true; return track(res); });
       let response;
       try {
         response = await ask(forced ? { type: 'function', function: { name: 'lookup_order' } } : 'auto');
@@ -1271,7 +1338,11 @@ export async function getAIResponse(
         return { content, toolCallMeta, escalated };
       }
 
-      messages.push(message as ChatCompletionMessageParam);
+      // Kept without the text the model wrote next to its tool calls: the customer never sees
+      // that text, and it is often cut where the tool call starts. Left in, the next round took
+      // it as already said and sent only a short "the team will update you", or carried on
+      // mid-word ("egi. Aapko jawab..."): live tests 2026-10-01, more often with thinking on.
+      messages.push({ ...(message as ChatCompletionMessageParam & object), content: null } as ChatCompletionMessageParam);
 
       for (const tc of toolCalls) {
         const { payload, persist, escalated: didEscalate } = await executeTool(tc);
@@ -1296,7 +1367,9 @@ export async function getAIResponse(
     }
 
     // Spent the tool budget — take the tools away and ask plainly for prose.
-    const closing = await getClient().chat.completions.create(withoutThinking(model, { model, messages, max_tokens: MAX_REPLY_TOKENS }));
+    const closing = track(await (thinkingOn
+      ? getClient().chat.completions.create(withThinking(model, { model, messages }, plan.maxTokens), { timeout: THINKING_TIMEOUT_MS, maxRetries: 0 })
+      : getClient().chat.completions.create(withoutThinking(model, { model, messages, max_tokens: MAX_REPLY_TOKENS }))));
     const content = stripMarkdown(closing.choices[0]?.message?.content || '');
     if (!content) throw new BlankReplyError(model, closing.choices[0]?.finish_reason);
     return { content, toolCallMeta, escalated };
@@ -1325,7 +1398,8 @@ export async function getAIResponse(
   const latestVisitor = [...recent.rows].reverse().find((r) => r.sender === 'visitor')?.content || '';
   const asksAgain = (reply: string) => {
     const ask = reasksForOrderDetails(reply, Array.from(knownOrderIds));
-    return (ask.orderId || ask.last4) && !mentionsAnotherOrder(latestVisitor, Array.from(knownOrderIds));
+    // ... or the phone number, which the verified chat already proved (seen live 2026-10-01).
+    return (ask.orderId || ask.last4 || reasksForPhone(reply)) && !mentionsAnotherOrder(latestVisitor, Array.from(knownOrderIds));
   };
   // H4 is for the verified order only. It stays off while the customer is
   // busy with some other order: a lookup this turn that did not find one (a
@@ -1339,16 +1413,64 @@ export async function getAIResponse(
     return verifiedInView || foundNow;
   };
 
+  // Max effort (self-check.ts): the finished reply is read once more against the locked rules
+  // and the order facts, and fixed before it goes. The fix runs through the same guards. A
+  // failed, slow or unusable check leaves the reply as it was.
+  const finish = async (r: AIResult, model: string): Promise<AIResult> => {
+    if (!plan.selfCheck || !(r.content || '').trim()) return r;
+    try {
+      const facts = latestOrderFacts(lastRunMessages.filter((m) => m.role === 'tool').map((m) => String(m.content || '')));
+      // The same conversation the reply was written from, the reply, then the check note.
+      const messages: ChatCompletionMessageParam[] = [...lastRunMessages, { role: 'assistant', content: r.content }, { role: 'user', content: CHECK_NOTE }];
+      spent.draft = r.content;
+      const res = track(await getClient().chat.completions.create(
+        withoutThinking(model, { model, messages, tools: [ORDER_LOOKUP_TOOL, ESCALATE_TOOL, CATEGORIZE_TOOL], tool_choice: 'none', max_tokens: SELF_CHECK_MAX_TOKENS }),
+        { timeout: SELF_CHECK_TIMEOUT_MS, maxRetries: 0 }
+      ));
+      spent.checked = true;
+      const out = parseCheck(res.choices?.[0]?.message?.content, r.content, `${facts}\n${customerTyped}`);
+      if (!out.changed) {
+        if (out.reason !== 'ok') console.log(`[AI] Self-check for conv ${conversationId}: kept the draft (${out.reason})`);
+        return r;
+      }
+      let fixed = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(stripMarkdown(out.text)))));
+      if (alreadyReplied) fixed = dropRepeatedIntroduction(fixed);
+      if (!fixed.trim()) return r;
+      spent.changed = true;
+      console.log(`[AI] Self-check fixed the reply for conv ${conversationId}`);
+      return { ...r, content: fixed };
+    } catch (err) {
+      console.error(`[AI] Self-check failed for conv ${conversationId}, the reply goes as it was:`, (err as Error)?.message);
+      return r;
+    }
+  };
+
   let lastErr: unknown = null;
   for (const model of attemptOrder()) {
     let result: AIResult;
     try {
       result = await runWithModel(model);
     } catch (err) {
-      lastErr = err;
-      console.error(`[AI] ${model} failed:`, (err as { status?: number })?.status || '', (err as Error)?.message);
-      if (!isRetryable(err)) break;
-      continue;
+      // A thinking call that answered blank (thinking used all the room) or too slowly:
+      // the same model once more without thinking, before any fallback.
+      if (thinkingOn && (err instanceof BlankReplyError || /timed? ?out/i.test(String((err as Error)?.message)))) {
+        console.log(`[AI] ${model} thinking failed (${(err as Error)?.message}), again without thinking`);
+        thinkingOn = false;
+        spent.thinking = false;
+        try {
+          result = await runWithModel(model);
+        } catch (err2) {
+          lastErr = err2;
+          console.error(`[AI] ${model} failed:`, (err2 as { status?: number })?.status || '', (err2 as Error)?.message);
+          if (!isRetryable(err2)) break;
+          continue;
+        }
+      } else {
+        lastErr = err;
+        console.error(`[AI] ${model} failed:`, (err as { status?: number })?.status || '', (err as Error)?.message);
+        if (!isRetryable(err)) break;
+        continue;
+      }
     }
     if (model !== activeModel) console.log(`[AI] Degraded to ${model}`);
     // stripMarkdown misses a ** left without its partner.
@@ -1404,7 +1526,7 @@ export async function getAIResponse(
         retry.content = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(retry.content))));
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
-        return retry;
+        return finish(retry, model);
       }
       const known = Array.from(knownOrderIds);
       const ask = reasksForOrderDetails(result.content, known);
@@ -1419,7 +1541,7 @@ export async function getAIResponse(
         if ((ask.orderId || ask.last4) && consecutiveAsks(guardRows, known) >= 2) return handOver('H6', result);
       }
     }
-    return result;
+    return finish(result, model);
   }
 
   // Every model is down. The customer must never see a stack trace, a provider

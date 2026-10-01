@@ -157,8 +157,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'A chat shows the name on the order, never a name the customer typed.' },
       { id: '8.4', how: 'auto', from: YOU_30, title: 'Frustration only on customers',
         text: 'The frustration %, Threat and Fraud tags show on customers only, not on visitors.' },
-      { id: '8.5', how: 'auto', from: M('24'), title: 'Quiet chats close by themselves',
-        text: 'Visitors after 4 quiet hours, customers after 4 quiet days, and nothing is sent to the customer. A waiting customer or a risky chat (Needs You, refund, cancel, payment, threat, fraud, card details) is never closed.' },
+      { id: '8.5', how: 'auto', from: `${M('24')} + ${YOU_01}`, title: 'Quiet chats close by themselves',
+        text: 'Every visitor chat closes after 2 quiet hours, whatever it was about; customers after 4 quiet days. Nothing is sent and nothing is deleted. A customer who is waiting, or a risky customer chat (Needs You, refund, cancel, payment, threat, fraud, card details), is never closed.' },
       { id: '8.6', how: 'auto', from: M('25'), title: 'Who closed it',
         text: 'A closed chat says "Closed by AI" or "Closed by support" (with the name).' },
       { id: '8.7', how: 'auto', from: M('24, 27'), title: 'Nothing is deleted',
@@ -225,6 +225,22 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Write what should change next to a rule. It is applied after testing; until then the rule stays as it is.' },
     ],
   },
+  {
+    key: 'effort', title: 'How hard Chikki thinks', rules: [
+      { id: '13.1', how: 'auto', from: YOU_01, title: 'Visitors stay as they are',
+        text: 'Visitors get Normal, as before. A visitor AI for sales is built later.' },
+      { id: '13.2', how: 'setting', from: YOU_01, title: 'More care for more upset customers',
+        text: 'A verified customer\'s level comes from the chat\'s frustration score, or a quick count in the current message (swearing, threats, refund demands, repeats), whichever is higher. {effort} Change it in Chikki > Logic.' },
+      { id: '13.3', how: 'code', from: YOU_01, title: 'Normal',
+        text: 'Answers straight away and reads 2 of your team\'s examples: what every reply did until 1 Oct.' },
+      { id: '13.4', how: 'code', from: YOU_01, title: 'High: thinks first',
+        text: 'Thinks before it writes and reads 3 of your team\'s examples. If the thinking gives no answer or takes longer than 30 seconds, it answers again without thinking.' },
+      { id: '13.5', how: 'code', from: YOU_01, title: 'Max: thinks, then checks itself',
+        text: 'Thinks, writes, then reads its reply again against these rules and the order facts and fixes it before it is sent. The fix may not add a link, number, date or promise; if the check fails or is slow, the reply goes as it was.' },
+      { id: '13.6', how: 'auto', from: YOU_01, title: 'Every reply is counted',
+        text: 'The level, tokens and time of every AI reply are saved for your team; Logic shows the last 7 days.' },
+    ],
+  },
 ];
 
 export const RULE_IDS: ReadonlySet<string> = new Set(RULEBOOK.flatMap((s) => s.rules.map((r) => r.id)));
@@ -233,6 +249,7 @@ export const RULE_IDS: ReadonlySet<string> = new Set(RULEBOOK.flatMap((s) => s.r
 export function fillRulebook(
   site: { codStates: string | null; codAvailable: boolean | null },
   defaultCourier: string | null,
+  effort?: Record<string, string> | null,
 ): RuleSection[] {
   const cod = site.codStates
     ? `COD only for addresses in: ${site.codStates}.`
@@ -242,8 +259,11 @@ export function fillRulebook(
   const courier = defaultCourier
     ? `Every order with no courier of its own is treated as ${defaultCourier} (this panel's default courier).`
     : 'This panel has no default courier: Chikki uses only the courier on the order.';
+  const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
+  const lv = { calm: 'normal', uneasy: 'normal', frustrated: 'high', critical: 'max', ...(effort || {}) };
+  const effortLine = `Now: Calm ${cap(lv.calm)}, Uneasy ${cap(lv.uneasy)}, Frustrated ${cap(lv.frustrated)}, Critical ${cap(lv.critical)}.`;
   return RULEBOOK.map((s) => ({
     ...s,
-    rules: s.rules.map((r) => ({ ...r, text: r.text.replace('{cod}', cod).replace('{courier}', courier) })),
+    rules: s.rules.map((r) => ({ ...r, text: r.text.replace('{cod}', cod).replace('{courier}', courier).replace('{effort}', effortLine) })),
   }));
 }

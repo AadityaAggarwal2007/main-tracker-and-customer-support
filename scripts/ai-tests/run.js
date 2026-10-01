@@ -53,6 +53,18 @@ function rowsFor(history) {
   return rows;
 }
 
+// Old cases run at Normal for every group (what they were written for). A case can set its own
+// `effort` settings; EFFORT=default uses the panel defaults (Frustrated High, Critical Max),
+// EFFORT=high|max puts every customer group on that level (to try a level on the whole suite).
+const ALL = (lv) => ({ calm: lv, uneasy: lv, frustrated: lv, critical: lv });
+function effortFor(c) {
+  if (c.effort !== undefined) return c.effort;
+  const env = process.env.EFFORT || '';
+  if (env === 'default') return null;
+  if (env === 'high' || env === 'max') return ALL(env);
+  return ALL('normal');
+}
+
 function evaluate(c, result, usage) {
   const fails = [];
   const reply = result.content || '';
@@ -72,7 +84,17 @@ function evaluate(c, result, usage) {
   for (const re of e.systemNotHas || []) if (re.test(system)) fails.push(`the system prompt must not contain ${re}`);
   for (const t of e.brainUsed || []) if (!(usage?.brain || []).some((b) => b.title === t)) fails.push(`the Brain note "${t}" should have been shown`);
   for (const t of e.brainNotUsed || []) if ((usage?.brain || []).some((b) => b.title === t)) fails.push(`the Brain note "${t}" must not have been shown`);
-  if (e.reasoningOff && state.requests[0]?.reasoning?.enabled !== false && String(state.requests[0]?.model).startsWith('deepseek/deepseek-v4')) fails.push('thinking should be off for deepseek-v4');
+  // (at High / Max thinking is on by design: this check is for Normal replies)
+  if (e.reasoningOff && (usage?.effort?.level || 'normal') === 'normal' && state.requests[0]?.reasoning?.enabled !== false && String(state.requests[0]?.model).startsWith('deepseek/deepseek-v4')) fails.push('thinking should be off for deepseek-v4');
+  // Effort (effort.ts): the level chosen, thinking on the first request, the Max self-check.
+  const isCheck = (r) => /^\(Note from the system, not the customer: before your reply above is sent/.test(String(r?.messages?.[r.messages.length - 1]?.content || ''));
+  if (e.level && usage?.effort?.level !== e.level) fails.push(`effort should be ${e.level}, was ${usage?.effort?.level}`);
+  if (e.thinking === true && !(state.requests[0]?.reasoning?.enabled === true && state.requests[0]?.max_tokens >= 6000)) fails.push('the first request should think, with room');
+  if (e.thinking === false && state.requests[0]?.reasoning?.enabled !== false) fails.push('the first request should not think');
+  if (e.selfChecked !== undefined && state.requests.some(isCheck) !== e.selfChecked) fails.push(`self-check should ${e.selfChecked ? '' : 'not '}run`);
+  if (e.requests !== undefined && state.requests.length !== e.requests) fails.push(`should make ${e.requests} model requests, made ${state.requests.length}`);
+  if (e.secondNoThinking && !(state.requests[1] && state.requests[1].reasoning?.enabled === false && state.requests[1].model === state.requests[0].model)) fails.push('the second request should be the same model without thinking');
+  if (e.checkLight) { const ck = state.requests.find(isCheck); if (!ck || ck.reasoning?.enabled !== false || ck.max_tokens > 800 || ck.tool_choice !== 'none') fails.push('the self-check should be one light call: no thinking, no tools, small'); }
   return fails;
 }
 
@@ -88,21 +110,28 @@ function evaluate(c, result, usage) {
     for (let n = 0; n < repeat; n++) {
       Object.assign(state, {
         history: rowsFor(c.history), verifiedOrderId: c.verified || null, fresh: c.fresh || null, verified: !!c.verified,
-        facts: c.facts || null, brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, faqs: c.faqs || (live ? state.liveFaqs || [] : []), examples: c.examples || (live ? state.liveExamples || [] : []), lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
+        facts: c.facts || null, health: c.health ?? (process.env.HEALTH ? Number(process.env.HEALTH) : null), effortSettings: effortFor(c),
+        brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, faqs: c.faqs || (live ? state.liveFaqs || [] : []), examples: c.examples || (live ? state.liveExamples || [] : []), lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
       });
       let result, err = null, usage;
       quiet();
       usage = { brain: [] };
+      const t0 = Date.now();
       try { result = await getAIResponse('test-conv', sitePrompt, null, null, 'chat', siteId, usage); } catch (e) { err = e; }
+      const secs = ((Date.now() - t0) / 1000).toFixed(1);
       loud();
       const fails = err ? [`threw: ${err.message}`] : evaluate(c, result, usage);
       if (process.env.DUMP) { const r = state.requests[0]; console.log('--- SYSTEM TAIL ---\n' + String(r?.messages?.[0]?.content || '').slice(-1500)); console.log('--- MESSAGES ---'); for (const m of (r?.messages || []).slice(1)) console.log(m.role + ': ' + String(m.content || JSON.stringify(m.tool_calls || '')).slice(0, 300)); console.log('requests', state.requests.length); }
       const tag = fails.length ? (c.watch ? 'WATCH' : 'FAIL') : 'PASS';
       if (!fails.length) pass++; else if (c.watch) watched++; else { fail++; failed.push(c.id); }
-      console.log(`${tag}  ${c.id}${repeat > 1 ? ` #${n + 1}` : ''} - ${c.title}`);
+      const eff = usage.effort;
+      const cost = live && eff ? `  [${eff.level}${eff.checked ? (eff.changed ? ', fixed' : ', checked') : ''}, ${secs}s, ${eff.promptTokens + eff.completionTokens} tok${eff.reasoningTokens ? `, ${eff.reasoningTokens} thinking` : ''}]` : '';
+      console.log(`${tag}  ${c.id}${repeat > 1 ? ` #${n + 1}` : ''} - ${c.title}${cost}`);
       if (fails.length || (live && args.includes('--show'))) {
         for (const f of fails) console.log(`      x ${f}`);
         if (result) console.log(`      reply: ${(result.content || '').replace(/\s+/g, ' ').slice(0, 300)}`);
+        if (usage?.effort?.changed && usage.effort.draft) console.log(`      draft before the self-check: ${usage.effort.draft.replace(/\s+/g, ' ').slice(0, 300)}`);
+        if (live && fails.length) for (const r of state.responses) { const c = r?.choices?.[0]?.message?.content; if (c) console.log(`      model said: ${String(c).replace(/\s+/g, ' ').slice(0, 400)}`); }
       }
     }
   }

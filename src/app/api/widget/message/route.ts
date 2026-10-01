@@ -1,4 +1,6 @@
 import { recordBrainUsage } from '@/lib/chat/brain-usage';
+import { recordChikkiRun } from '@/lib/chat/chikki-runs';
+import type { EffortUsage } from '@/lib/chat/effort';
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
 import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
@@ -157,8 +159,10 @@ export async function POST(request: NextRequest) {
           await handOver('threat');
           aiMessage = await saveAiMessage(aiReply(urgentAck(said)));
         } else {
-          const brainUsage: { brain: { id: string; title: string }[] } = { brain: [] };
+          const brainUsage: { brain: { id: string; title: string }[]; effort?: EffortUsage } = { brain: [] };
+          const aiStarted = Date.now();
           const aiResult = await getAIResponse(conversationId, site.system_prompt, site.tracker_business_id, site.cod_available, 'chat', site.id, brainUsage);
+          if (brainUsage.effort) brainUsage.effort.ms = Date.now() - aiStarted;
 
           // The customer may just have proved an order in this chat (order ID + full
           // phone). If they already have a chat for that order, this one is folded into
@@ -221,6 +225,7 @@ export async function POST(request: NextRequest) {
           // to the model).
           aiMessage = await saveAiMessage(aiReply(text));
           await recordBrainUsage(aiMessage?.id, brainUsage.brain);
+          await recordChikkiRun(aiMessage?.id, conversationId, site.id, brainUsage.effort);
         }
 
         await query(

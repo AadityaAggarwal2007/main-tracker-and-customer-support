@@ -11,7 +11,7 @@ const load = (f) => {
 load('today-promise');
 load('health-rules');
 load('address-conflict'); load('escalation');
-const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier'), rb = load('rulebook');
+const brain = load('brain'), learn = load('brain-learn'), ex = load('brain-examples'), om = load('order-mention'), rg = load('reply-guards'), cr = load('courier'), rb = load('rulebook'), ef = load('effort'), sc = load('self-check');
 let n = 0; const t = (name, fn) => { fn(); n++; };
 
 t('topicsIn: finds the topic in English, Hinglish and Hindi; nothing for small talk', () => {
@@ -274,9 +274,44 @@ t('rulebook: numbers unique and in order, every rule complete, panel values fill
   });
   assert.strictEqual(rb.RULE_IDS.size, seen.size);
   const filled = JSON.stringify(rb.fillRulebook({ codStates: 'Gujarat', codAvailable: null }, 'Valmo'));
-  assert.ok(!filled.includes('{cod}') && !filled.includes('{courier}'));
+  assert.ok(!filled.includes('{cod}') && !filled.includes('{courier}') && !filled.includes('{effort}'));
+  assert.ok(filled.includes('Now: Calm Normal, Uneasy Normal, Frustrated High, Critical Max.'));
+  assert.ok(JSON.stringify(rb.fillRulebook({ codStates: null, codAvailable: true }, null, { calm: 'normal', uneasy: 'high', frustrated: 'max', critical: 'max' })).includes('Uneasy High, Frustrated Max'));
   assert.ok(filled.includes('COD only for addresses in: Gujarat.') && filled.includes('treated as Valmo'));
   const none = JSON.stringify(rb.fillRulebook({ codStates: null, codAvailable: null }, null));
   assert.ok(none.includes('COD is not set') && none.includes('no default courier'));
+});
+t('effort: groups by score, visitors stay Normal, panel choice cleaned', () => {
+  assert.strictEqual(ef.groupFor(false, 99), 'visitor');
+  assert.strictEqual(ef.groupFor(true, 0), 'calm'); assert.strictEqual(ef.groupFor(true, 24), 'calm');
+  assert.strictEqual(ef.groupFor(true, 25), 'uneasy'); assert.strictEqual(ef.groupFor(true, 50), 'frustrated');
+  assert.strictEqual(ef.groupFor(true, 74), 'frustrated'); assert.strictEqual(ef.groupFor(true, 75), 'critical');
+  assert.strictEqual(ef.effortFor('visitor', { calm: 'max' }), 'normal');
+  assert.strictEqual(ef.effortFor('critical', null), 'max'); assert.strictEqual(ef.effortFor('frustrated', null), 'high');
+  assert.strictEqual(ef.effortFor('calm', null), 'normal'); assert.strictEqual(ef.effortFor('uneasy', undefined), 'normal');
+  assert.deepStrictEqual(ef.cleanEffortSettings({ calm: 'max', uneasy: 'bogus', critical: 'normal' }), { calm: 'max', uneasy: 'normal', frustrated: 'high', critical: 'normal' });
+  const v = (text) => ({ sender: 'visitor', content: text });
+  assert.strictEqual(ef.effortScore(30, [v('kab aayega')]), 30);
+  assert.ok(ef.effortScore(null, [v('chargeback kar dunga, police complaint bhi')]) >= 75);
+  assert.ok(ef.effortScore(90, [v('mil gaya, thank you')]) <= 30);
+  assert.strictEqual(ef.EFFORT_PLAN.normal.thinking, false); assert.strictEqual(ef.EFFORT_PLAN.max.selfCheck, true);
+});
+t('self-check: OK keeps the reply; a fix is taken only if it brings nothing new', () => {
+  const draft = 'Your order is Shipped. Track it here: https://shiptrack.store/track/abc';
+  const known = '[{"tracking_link":"https://shiptrack.store/track/abc","order_id":"#4715"}]';
+  const p = (raw) => sc.parseCheck(raw, draft, known);
+  assert.strictEqual(p('OK').changed, false); assert.strictEqual(p('ok.').changed, false); assert.strictEqual(p('OK, the draft is fine').changed, false);
+  assert.strictEqual(p('').changed, false);
+  const fixed = p('Sorry for the wait. Your order is Shipped. Track it here: https://shiptrack.store/track/abc');
+  assert.ok(fixed.changed && fixed.text.startsWith('Sorry for the wait'));
+  assert.strictEqual(p('"Sorry for the wait. Your order is Shipped. https://shiptrack.store/track/abc"').text.startsWith('Sorry'), true);
+  assert.strictEqual(p('Your order is Shipped. Track it: https://evil.example.com/x https://shiptrack.store/track/abc').reason, 'new link');
+  assert.strictEqual(p('Your order is Shipped, it will reach you soon.').reason, 'dropped the link');
+  assert.strictEqual(p('Your order #98765 is Shipped. https://shiptrack.store/track/abc').reason, 'new number');
+  assert.strictEqual(p('Your order #4715 is Shipped. https://shiptrack.store/track/abc').changed, true);
+  assert.strictEqual(p('DRAFT: Your order is Shipped https://shiptrack.store/track/abc').reason, 'echoed the check');
+  assert.strictEqual(p('x'.repeat(900) + ' https://shiptrack.store/track/abc').reason, 'too long');
+  assert.ok(/^\(Note from the system, not the customer/.test(sc.CHECK_NOTE) && /answer exactly OK/.test(sc.CHECK_NOTE));
+  assert.strictEqual(sc.latestOrderFacts(['nope', '{"found":true,"orders":[{"order_id":"#1"}]}', '{"found":false}']), '[{"order_id":"#1"}]');
 });
 console.log(`UNIT: ${n} groups passed`);

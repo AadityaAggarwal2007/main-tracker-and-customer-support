@@ -122,3 +122,8 @@ Still to do, in the order I suggest:
 4. §19 proactive delay message.
 5. The remaining review leftovers above (card split across two messages; carrying on a chat verified in the chat when the same customer uses the form on a new device).
 6. Optional: clean the old lines out of the database prompt (`sites.system_prompt`): "I'm Karry", last 4 digits, "Never promise a timeline", "suggest retrying" a payment. The owner-rules block overrides them today.
+
+## Owner change 2026-10-01 (afternoon): visitors close after 2 hours; Chikki's effort levels
+
+- Every VISITOR widget chat is Closed after 2 quiet hours (was 4), whatever it was about: the owner chose "Sab 2 ghante me band" knowing that a visitor's refund / chargeback / fraud / payment / card chat closes too (master rules 24 owner note added with his OK). Nothing is sent and nothing is deleted; the visitor's next message reopens the chat. Verified customers keep 4 days and every protection.
+- Effort levels (Chikki > Logic, `effort.ts`): visitors stay as they are (owner: "abhi jaisa hai waisa", a visitor / sales AI is built later); a verified customer gets Normal (Calm, Uneasy), High (Frustrated: thinks first) or Max (Critical: thinks, then checks its reply against the rules and the order facts and fixes it). Master rules touched: none weakened; 5.1 / 10 / 19 / 20 / 21 / 43 are checked once more at Max.

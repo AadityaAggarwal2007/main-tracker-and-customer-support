@@ -670,6 +670,9 @@ Do not auto-close unresolved or high-risk conversations, including:
 - unresolved verification problem
 - unresolved data mismatch
 
+
+> **Owner note (2026-10-01):** for **visitors only** (not verified: no order ID + phone proved), every chat is closed after **2 quiet hours**, whatever it was about, including refund, chargeback, fraud, payment or card details ("Sab 2 ghante me band"). Nothing is sent to the visitor and nothing is deleted; their next message reopens the chat. Verified customers keep every protection above.
+
 ---
 
 # 25. CLOSED CHAT AUDIT LABEL

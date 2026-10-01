@@ -6,6 +6,7 @@ import { ensureSiteForPanel } from '@/lib/chat/site';
 import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS, noteProblem } from '@/lib/chat/brain';
 import { getLockedRules } from '@/lib/chat/ai';
 import { fillRulebook } from '@/lib/chat/rulebook';
+import { DEFAULT_EFFORT, cleanEffortSettings } from '@/lib/chat/effort';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,6 +59,27 @@ export async function GET(request: NextRequest) {
       `SELECT cod_available, cod_states FROM sites WHERE id = $1`, [siteId]
     );
     const biz = await queryOne<{ default_courier: string | null }>(`SELECT default_courier FROM businesses WHERE id = $1`, [businessId]);
+    // Chikki's effort per group and what the replies of the last 7 days used
+    // (chikki-effort.sql; the defaults and an empty list until that file is applied).
+    let effortSettings: unknown = null;
+    let effortUsage: unknown[] = [];
+    try {
+      effortSettings = (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
+      effortUsage = (await query(
+        `SELECT grp, level, count(*)::int AS replies,
+                COALESCE(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens,
+                COALESCE(round(avg(prompt_tokens + completion_tokens)), 0)::int AS avg_tokens,
+                COALESCE(round(avg(ms)), 0)::int AS avg_ms,
+                count(*) FILTER (WHERE thinking)::int AS thinking,
+                count(*) FILTER (WHERE checked)::int AS checked,
+                count(*) FILTER (WHERE changed)::int AS changed,
+                min(created_at) AS since
+           FROM chikki_runs
+          WHERE site_id = $1 AND created_at > now() - interval '7 days'
+          GROUP BY grp, level`,
+        [siteId]
+      )).rows;
+    } catch { /* not applied yet */ }
     let ruleChanges: unknown[] = [];
     try {
       ruleChanges = (await query(
@@ -72,8 +94,10 @@ export async function GET(request: NextRequest) {
       rulebook: fillRulebook(
         { codStates: site?.cod_states ?? null, codAvailable: site?.cod_available ?? null },
         biz?.default_courier ?? null,
+        cleanEffortSettings(effortSettings),
       ),
       ruleChanges,
+      effort: { settings: cleanEffortSettings(effortSettings), defaults: DEFAULT_EFFORT, usage: effortUsage },
       canEdit: user.role === 'admin',
       canEditCommon: isGlobalAdmin(user),
     });

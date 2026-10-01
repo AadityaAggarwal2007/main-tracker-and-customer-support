@@ -9,7 +9,7 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 // that was angry on the 22nd is not a live risk on the 30th (and stays findable:
 // Closed tab, search, and its frustration score is kept).
 //
-// NEVER closed here:
+// NEVER closed here (customers; a visitor's widget chat closes after AUTO_CLOSE_VISITOR_HOURS whatever):
 //   - a chat whose customer is still waiting for an answer: the inbox's "Waiting"
 //     rule (waiting.ts, the list route) and a little more. Silence from OUR side is
 //     not "the customer went quiet", closing it would hide the very person about to
@@ -20,7 +20,8 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 //     than expected" apology, or "let me get that confirmed by our team" with no
 //     escalation), AI_NOT_AN_ANSWER_REGEX. Those stay open until someone answers.
 //   - a CUSTOMER's chat that is PROTECTED (master rules section 24; a visitor's chat is
-//     never protected, it only waits as a visitor, owner 2026-09-30): still in Needs you; about a
+//     never protected, owner 2026-09-30, and since 2026-10-01 a quiet visitor chat is closed
+//     even when the visitor's last message is unanswered): still in Needs you; about a
 //     refund, cancellation or payment (subject label, or a message the widget / email
 //     marked `routine`, or the health scorer counted a refund demand); a threat or a
 //     fraud claim (message marked `urgent`, or the health scorer's threat / accuse
@@ -43,15 +44,21 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from '@/lib/chat/waitin
 export const AUTO_CLOSE_DAYS = 4;
 
 // A VISITOR's chat (a widget chat nobody has verified yet, and not an old phone-match
-// customer) is closed after this many quiet HOURS instead of days (owner, 2026-09-30):
-// a visitor who asked a question and left is done, and the Visitors tab should show
-// the ones talking now. Email threads are slower and keep the days. The same
-// protections apply (a waiting customer, a protected chat: never closed).
-export const AUTO_CLOSE_VISITOR_HOURS = 4;
+// customer) is closed after this many quiet HOURS instead of days (owner, 2026-09-30:
+// 4 hours; 2026-10-01: 2 hours, and EVERY visitor chat, "sirf visitors ki"): a visitor
+// who asked a question and left is done, and the Visitors tab should show the ones
+// talking now. Since 2026-10-01 nothing keeps a quiet visitor chat open: not an
+// unanswered last message, not a refund / chargeback / fraud / payment / card topic
+// (a visitor's chat was never PROTECTED; the owner approved closing those too,
+// master rules 24 owner note). Nothing is sent and nothing is deleted; the visitor's
+// next message reopens it. Email threads are slower and keep the days.
+export const AUTO_CLOSE_VISITOR_HOURS = 2;
 
+// A visitor's widget chat: same test as the inbox's Visitors / Customers split.
+const IS_VISITOR_SQL = `(c.source = 'chat' AND c.verified_order_id IS NULL AND c.phone_match_order_id IS NULL)`;
 // The quiet window of ONE chat: hours for a visitor's widget chat, days otherwise.
-// $1 = days, $2 = visitor hours. Same test as the inbox's Visitors / Customers split.
-const WINDOW_SQL = `(CASE WHEN c.source = 'chat' AND c.verified_order_id IS NULL AND c.phone_match_order_id IS NULL
+// $1 = days, $2 = visitor hours.
+const WINDOW_SQL = `(CASE WHEN ${IS_VISITOR_SQL}
                          THEN make_interval(hours => $2::int) ELSE make_interval(days => $1::int) END)`;
 
 // Chats open right now (any status but Closed) and quiet for their window (WINDOW_SQL).
@@ -60,6 +67,7 @@ const WINDOW_SQL = `(CASE WHEN c.source = 'chat' AND c.verified_order_id IS NULL
 // as waiting is waiting here too (checked against the live list, see AGENTS.md).
 const CANDIDATES_SQL = `
   SELECT c.id,
+         ${IS_VISITOR_SQL} AS is_visitor,
          (w.last_visitor_at IS NOT NULL
           AND NOT (w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_visitor_at)
           AND (
@@ -104,8 +112,8 @@ export interface AutoCloseResult {
   days: number;
   visitorHours: number;
   quiet: number;        // open chats with nothing new for the window
-  waiting: number;      // of those, customers still waiting for an answer: left open
-  protected: number;    // of those, refund / cancellation / payment / threat / fraud / Needs you chats: left open
+  waiting: number;      // of those, customers still waiting for an answer: left open (visitors are not counted: they close)
+  protected: number;    // of those, a customer's refund / cancellation / payment / threat / fraud / Needs you chats: left open
   closed: number;       // closed now (0 on a dry run)
   dryRun: boolean;
 }
@@ -117,8 +125,8 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
 
   if (dryRun) {
     const r = await query<{ quiet: number; waiting: number; kept: number }>(
-      `SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting,
-              count(*) FILTER (WHERE NOT customer_waiting AND is_protected)::int AS kept
+      `SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting AND NOT is_visitor)::int AS waiting,
+              count(*) FILTER (WHERE NOT customer_waiting AND is_protected AND NOT is_visitor)::int AS kept
          FROM (${CANDIDATES_SQL}) x`,
       [days, visitorHours]
     );
@@ -132,13 +140,13 @@ export async function autoCloseIdleChats(opts: { dryRun?: boolean; days?: number
   // like a manual Close, and auto_closed_at is the mark (chat-auto-close.sql).
   const closed = await query<{ closed_n: number; quiet: number; waiting: number; kept: number }>(
     `WITH cand AS (${CANDIDATES_SQL}),
-          stats AS (SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting)::int AS waiting,
-                           count(*) FILTER (WHERE NOT customer_waiting AND is_protected)::int AS kept FROM cand),
+          stats AS (SELECT count(*)::int AS quiet, count(*) FILTER (WHERE customer_waiting AND NOT is_visitor)::int AS waiting,
+                           count(*) FILTER (WHERE NOT customer_waiting AND is_protected AND NOT is_visitor)::int AS kept FROM cand),
           done AS (
             UPDATE conversations c
                SET status = 'resolved', unread_count = 0, auto_closed_at = now(), updated_at = now()
               FROM cand
-             WHERE c.id = cand.id AND NOT cand.customer_waiting AND NOT cand.is_protected
+             WHERE c.id = cand.id AND (cand.is_visitor OR (NOT cand.customer_waiting AND NOT cand.is_protected))
                AND c.status <> 'resolved'
                AND COALESCE(c.last_message_at, c.created_at) < now() - ${WINDOW_SQL}
                AND c.updated_at < now() - ${WINDOW_SQL}

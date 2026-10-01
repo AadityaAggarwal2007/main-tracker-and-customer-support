@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, GraduationCap, Lightbulb, MessageCircle, NotebookPen, Settings2, ShieldCheck } from 'lucide-react';
+import { BrainCircuit, ChevronDown, GraduationCap, Lightbulb, MessageCircle, NotebookPen, Settings2, ShieldCheck } from 'lucide-react';
 import ChikkiBot from './ChikkiBot';
+import ChikkiLogic, { type EffortData, type EffortSettings } from './ChikkiLogic';
 import SavedAnswersCard from './SavedAnswersCard';
 import TeamExamplesCard from './TeamExamplesCard';
 
@@ -11,7 +12,8 @@ import TeamExamplesCard from './TeamExamplesCard';
 // who may change what are the same as before (/api/panel-faq, /api/panel-brain/*). New here: the
 // robot and the AI on / off switch at the top, compact one-line lists, and Rules = the whole
 // rulebook (src/lib/chat/rulebook.ts) where an admin writes what should change
-// (/api/panel-brain/rule-changes). Settings = Cash on Delivery and the custom instructions,
+// (/api/panel-brain/rule-changes). Logic = how Chikki thinks and how hard (effort levels,
+// ChikkiLogic.tsx). Settings = Cash on Delivery and the custom instructions,
 // drawn by the admin page as before. Staff only: customers still meet "Karry".
 
 interface Faq { id: string; question: string; answer: string; is_enabled: boolean }
@@ -27,7 +29,7 @@ interface Rule { id: string; title: string; text: string; how: RuleHow; from: st
 interface RuleSection { key: string; title: string; rules: Rule[] }
 interface RuleChange { id: string; rule_id: string; body: string; status: 'open' | 'done' | 'dropped'; created_by: string | null; created_at: string; closed_note: string | null }
 
-type Tab = 'answers' | 'notes' | 'lessons' | 'team' | 'rules' | 'settings';
+type Tab = 'answers' | 'notes' | 'lessons' | 'team' | 'rules' | 'logic' | 'settings';
 
 const KIND_LABEL: Record<string, string> = { rule: 'Rule', fact: 'Fact', lesson: 'Lesson' };
 const AUDIENCE_LABEL: Record<string, string> = { all: 'Everyone', verified: 'Verified customers only', visitor: 'Visitors only' };
@@ -61,6 +63,7 @@ export default function ChikkiCard({
   const [locked, setLocked] = useState<string[]>([]);
   const [rulebook, setRulebook] = useState<RuleSection[]>([]);
   const [changes, setChanges] = useState<RuleChange[]>([]);
+  const [effortData, setEffortData] = useState<EffortData | null>(null);
   const [canEdit, setCanEdit] = useState(false);
   const [canEditCommon, setCanEditCommon] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -86,7 +89,7 @@ export default function ChikkiCard({
   const [line, setLine] = useState(0);
 
   useEffect(() => {
-    try { const t = localStorage.getItem(TAB_KEY) as Tab | null; if (t && ['answers', 'notes', 'lessons', 'team', 'rules', 'settings'].includes(t)) setTabState(t); } catch { /* private window */ }
+    try { const t = localStorage.getItem(TAB_KEY) as Tab | null; if (t && ['answers', 'notes', 'lessons', 'team', 'rules', 'logic', 'settings'].includes(t)) setTabState(t); } catch { /* private window */ }
   }, []);
   const setTab = (t: Tab) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* ignore */ } };
   useEffect(() => {
@@ -110,7 +113,7 @@ export default function ChikkiCard({
       if (!r.ok) return;
       const d = await r.json();
       setNotes(d.notes || []); setTopics(d.topics || []); setLocked(d.locked || []);
-      setRulebook(d.rulebook || []); setChanges(d.ruleChanges || []);
+      setRulebook(d.rulebook || []); setChanges(d.ruleChanges || []); setEffortData(d.effort || null);
       setCanEdit(!!d.canEdit); setCanEditCommon(!!d.canEditCommon);
     } catch { /* keep what is on screen */ }
   }, [token, businessId]);
@@ -169,6 +172,22 @@ export default function ChikkiCard({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', d.error || 'Could not save'); return false; }
+      await load();
+      return true;
+    } catch { onAlert('error', 'Could not save'); return false; }
+    finally { setBusy(false); }
+  };
+
+  const saveEffort = async (settings: EffortSettings) => {
+    setBusy(true);
+    try {
+      const r = await fetch('/api/panel-brain/effort', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId, effort: settings }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', d.error || 'Could not save'); return false; }
+      onAlert('success', 'Saved: Chikki uses these levels from the next reply');
       await load();
       return true;
     } catch { onAlert('error', 'Could not save'); return false; }
@@ -373,6 +392,7 @@ export default function ChikkiCard({
     waitingTotal > 0 ? `Learning from your team: ${waitingTotal} waiting for your OK` : 'Learning from your team every 3 hours',
     `Following ${ruleCount || 'your'} rules, ${notes.length} notes and ${answersOn} saved answers`,
     notesUsed > 0 ? `Has used your notes ${notesUsed.toLocaleString()} times` : 'Reads only the notes that fit each message',
+    effortData?.settings?.critical === 'max' ? 'Thinks hardest for your most upset customers' : 'Thinks harder for upset customers',
   ];
   const stat = (n: number | string, label: string, hot = false) => (
     <span style={{ fontSize: '0.6875rem', padding: '0.125rem 0.5rem', borderRadius: 999, whiteSpace: 'nowrap',
@@ -449,6 +469,7 @@ export default function ChikkiCard({
         {tabBtn('lessons', <Lightbulb size={14} />, 'Lessons', suggestions.length, true)}
         {tabBtn('team', <GraduationCap size={14} />, 'Team examples', teamPending, true)}
         {tabBtn('rules', <ShieldCheck size={14} />, 'Rules', ruleCount)}
+        {tabBtn('logic', <BrainCircuit size={14} />, 'Logic')}
         {settings && tabBtn('settings', <Settings2 size={14} />, 'Settings')}
       </div>
 
@@ -606,6 +627,8 @@ export default function ChikkiCard({
             </div>
           </>
         )}
+
+        {tab === 'logic' && <ChikkiLogic data={effortData} canEdit={canEdit} busy={busy} onSave={saveEffort} />}
 
         {tab === 'settings' && settings}
       </div>

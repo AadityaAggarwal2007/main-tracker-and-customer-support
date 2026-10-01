@@ -4,9 +4,10 @@
 # scripts/ai-tests/ to a temp folder on the server, runs there, and deletes the folder.
 # Reads the live prompt and saved answers; writes nothing to the database.
 #   bash scripts/ai-tests/run-on-vps.sh [--filter id] [--repeat 2] [--show]
+#   EFFORT=default|high|max HEALTH=80  try the effort levels (effort.ts) on the suite
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REMOTE=/tmp/ai-tests-run-$$
 ssh shiptrack-vps "rm -rf $REMOTE && mkdir -p $REMOTE/scripts"
 COPYFILE_DISABLE=1 tar cz src/lib scripts/ai-tests | ssh shiptrack-vps "tar xz -C $REMOTE"
-ssh shiptrack-vps "cd $REMOTE && DUMP=${DUMP:-} THINK=${THINK:-} FORCE_MODEL=${FORCE_MODEL:-} NODE_PATH=/var/www/tracker/node_modules node scripts/ai-tests/run.js --live $*; code=\$?; rm -rf $REMOTE; exit \$code"
+ssh shiptrack-vps "cd $REMOTE && DUMP=${DUMP:-} THINK=${THINK:-} FORCE_MODEL=${FORCE_MODEL:-} EFFORT=${EFFORT:-} HEALTH=${HEALTH:-} NODE_PATH=/var/www/tracker/node_modules node scripts/ai-tests/run.js --live $*; code=\$?; rm -rf $REMOTE; exit \$code"

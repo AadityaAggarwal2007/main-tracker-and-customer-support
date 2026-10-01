@@ -4,6 +4,8 @@ import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
 import { recordBrainUsage } from './brain-usage';
+import { recordChikkiRun } from './chikki-runs';
+import type { EffortUsage } from './effort';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import { maskSensitive, sensitiveWarning } from './sensitive';
@@ -335,8 +337,10 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         // customer hears nothing rather than being told something unverified.
         if (account.ai_enabled && conversation.status === 'ai_handling') {
           try {
-            const brainUsage: { brain: { id: string; title: string }[] } = { brain: [] };
+            const brainUsage: { brain: { id: string; title: string }[]; effort?: EffortUsage } = { brain: [] };
+            const aiStarted = Date.now();
             const aiResult = await getAIResponse(conversation.id, account.system_prompt, account.tracker_business_id, account.cod_available, 'email', account.site_id, brainUsage);
+            if (brainUsage.effort) brainUsage.effort.ms = Date.now() - aiStarted;
 
             // The same hidden tool context the widget path stores. Without it the
             // next email in this thread rebuilds the history with no record of
@@ -417,6 +421,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
               ]
             );
             await recordBrainUsage(aiMsg?.id, brainUsage.brain);
+            await recordChikkiRun(aiMsg?.id, conversation.id, account.site_id, brainUsage.effort);
 
             await query(
               `UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`,

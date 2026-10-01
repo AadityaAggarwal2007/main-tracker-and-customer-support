@@ -9,7 +9,7 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tests-'));
 // The compiled copies are deleted when the run ends.
 process.on('exit', () => { try { fs.rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ } });
 
-const FILES = ['ai', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain', 'brain-learn', 'brain-examples', 'health-rules', 'order-mention', 'address-conflict', 'reply-guards'];
+const FILES = ['ai', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain', 'brain-learn', 'brain-examples', 'health-rules', 'order-mention', 'address-conflict', 'reply-guards', 'effort', 'self-check'];
 for (const f of FILES) {
   if (!fs.existsSync(path.join(SRC, 'lib/chat', f + '.ts'))) continue; // an older checkout may lack a newer file
   const src = fs.readFileSync(path.join(SRC, 'lib/chat', f + '.ts'), 'utf8');
@@ -21,6 +21,7 @@ for (const f of FILES) {
 const state = {
   mode: 'offline', history: [], verifiedOrderId: null, fresh: null, verified: false, facts: null,
   lookups: {}, faqs: [], brain: [], brainError: false, examples: [], codStates: null, script: [], requests: [], responses: [],
+  health: null, effortSettings: null,
 };
 
 const digits = (x) => String(x == null ? '' : x).replace(/\D/g, '');
@@ -49,6 +50,8 @@ const stubs = {
     queryOne: async (sql) => {
       if (/EXISTS/.test(sql)) return { yes: state.history.some((m) => m.sender === 'ai' && (m.content || '').trim()) };
       if (/verified_order_id FROM conversations/.test(sql)) return { verified_order_id: state.verifiedOrderId };
+      if (/health_score FROM conversations/.test(sql)) return { phone_match_order_id: null, health_score: state.health };
+      if (/chikki_effort FROM sites/.test(sql)) return { chikki_effort: state.effortSettings };
       if (/cod_states/.test(sql)) return { cod_states: state.codStates };
       return null;
     },

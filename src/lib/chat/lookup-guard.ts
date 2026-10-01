@@ -466,6 +466,16 @@ export function reasksForOrderDetails(reply: string | null | undefined, knownIds
   return { orderId, last4 };
 }
 
+// Asking for the phone number again (the full number since 2026-09-30, so "last 4" no longer
+// catches it): only the H4 check in ai.ts uses this, for a VERIFIED chat, where the phone is
+// already proved. "Keep your phone (number) reachable / switched on" is not an ask.
+const PHONE_NOT_AN_ASK = /reachable|switch(?:ed)?\s*on|\bon\s+rakh|available\s+rakh|band\s+na|chalu\s+rakh|keep\s+(?:your\s+)?(?:phone|mobile)/;
+export function reasksForPhone(reply: string | null | undefined): boolean {
+  const text = normaliseDigits(reply || '').toLowerCase().slice(0, 4000);
+  const sentences = text.match(/[^.?!।\n]+[.?!।]*/g) || [];
+  return sentences.some((s) => PHONE_WORDS.some((re) => re.test(s)) && ASK_VERB.test(s) && !PHONE_NOT_AN_ASK.test(s));
+}
+
 /**
  * Whether our last message the customer saw asked for order details in the
  * strict sense above: in a verified chat that ask was allowed (another
