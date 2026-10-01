@@ -1608,7 +1608,10 @@ export default function ChatSupportPage() {
   };
 
   return (
-    <div className="admin-layout">
+    // The inbox is a full-screen app: the page itself never scrolls, each column does. On a
+    // short screen the sidebar used to run past the bottom, which made the whole page scroll:
+    // the list's header went off the top and a blank strip showed at the bottom (owner, 2026-10-01).
+    <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
@@ -1641,8 +1644,9 @@ export default function ChatSupportPage() {
           </select>
         </div>
 
-        {/* Status filters */}
-        <nav style={{ padding: '0.5rem' }}>
+        {/* Status filters: they scroll inside the sidebar when the screen is short, so the
+            panel picker stays on top and Back to Orders / Sign out stay at the bottom. */}
+        <nav style={{ padding: '0.5rem', flex: 1, minHeight: 0, overflowY: 'auto' }}>
           {INBOX_TABS.map(s => (
             <button
               key={s.v}
@@ -1694,7 +1698,7 @@ export default function ChatSupportPage() {
           })}
         </nav>
 
-        <div style={{ marginTop: 'auto', padding: '0.75rem' }}>
+        <div style={{ marginTop: 'auto', padding: '0.75rem', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
           <button className="nav-btn" onClick={() => router.push('/admin')} style={{ width: '100%' }}>
             <ShoppingBag size={16} /> Back to Orders
           </button>
