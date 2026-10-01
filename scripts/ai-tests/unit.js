@@ -189,4 +189,11 @@ t('noteProblem: order ID + phone both, help in chat; defaultAudience', () => {
   assert.strictEqual(brain.defaultAudience('Hand off address changes to team', 'Inform the customer and hand it to the team.'), 'verified');
   assert.strictEqual(brain.defaultAudience('LuxeVa is now Vastora', 'Treat it as a Vastora order.'), 'all');
 });
+t('the starter notes pass the check', () => {
+  const seed = require('fs').readFileSync(require('path').resolve(__dirname, '../../chat-brain-seed.sql'), 'utf8');
+  const rows = [...seed.matchAll(/\('(?:rule|fact|lesson)',\s*'((?:[^']|'')+)',\s*'((?:[^']|'')+)'/g)];
+  assert.ok(rows.length >= 8);
+  for (const [, title, body] of rows) assert.strictEqual(brain.noteProblem(title.replace(/''/g, "'"), body.replace(/''/g, "'")), null, title);
+  assert.ok(brain.noteProblem('Out for delivery', 'Tell them it will arrive today.'));
+});
 console.log(`UNIT: ${n} groups passed`);

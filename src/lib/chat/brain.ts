@@ -93,7 +93,11 @@ ${lines.join('\n')}`;
 // Checked when a note is added, changed or approved; the locked rules still win at answer time.
 export function noteProblem(title: string, body: string): string | null {
   const text = `${title}. ${body}`;
-  if (promisesToday(text)) return 'A note must not tell the agent to say an order arrives today, tonight or tomorrow.';
+  // "Never say it arrives today" is the rule itself, not a promise: only a sentence without a
+  // never / do not in it counts.
+  if (text.split(/(?<=[.!?])\s+|\n+/).some((x) => promisesToday(x) && !/\b(?:never|not|no|don'?t|do not|mat|nahi|nhi|kabhi)\b/i.test(x))) {
+    return 'A note must not tell the agent to say an order arrives today, tonight or tomorrow.';
+  }
   // The rest are checked sentence by sentence, and a sentence that says "never" / "do not" before
   // the thing is a ban on it, which is what the locked rules want, so it passes.
   const NEGATED = /\b(?:never|not|no|don'?t|do not|mat|nahi|nhi|without asking)\b/i;
