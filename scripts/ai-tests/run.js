@@ -26,6 +26,13 @@ if (live) {
   // The notes in the Brain right now (this panel's and the common ones), so the live run tests them too.
   state.liveBrain = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'title',title,'body',body,'topics',topics,'always',always,'sort_order',sort_order) ORDER BY sort_order, created_at),'[]') FROM brain_notes WHERE is_enabled AND (site_id='${SITE_ID}' OR site_id IS NULL)`).trim() || '[]');
   state.liveExamples = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('id',id,'situation',situation,'customer_said',customer_said,'team_replied',team_replied) ORDER BY created_at DESC),'[]') FROM brain_examples WHERE site_id='${SITE_ID}' AND status='approved' AND is_enabled`).trim() || '[]');
+  // --candidate: test a new panel prompt and extra notes from scripts/ai-tests/candidate/ BEFORE they go live.
+  if (args.includes('--candidate')) {
+    const dir = require('path').join(__dirname, 'candidate');
+    sitePrompt = require('fs').readFileSync(require('path').join(dir, 'prompt.txt'), 'utf8');
+    const extra = JSON.parse(require('fs').readFileSync(require('path').join(dir, 'notes.json'), 'utf8')).map((n, i) => ({ id: 'cand-' + i, ...n }));
+    state.liveBrain = [...extra, ...(state.liveBrain || [])];
+  }
   if (args.includes('--nobrain')) { state.liveBrain = []; state.liveExamples = []; } // to compare with and without the Brain
   siteId = SITE_ID;
   state.mode = 'live';

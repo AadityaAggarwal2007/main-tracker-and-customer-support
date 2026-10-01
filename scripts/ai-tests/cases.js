@@ -23,7 +23,7 @@ const L = (id, orderId, phone, result, ago) => ({ who: 'lookup', id, orderId, ph
 const DAY = 864e5, HOUR = 36e5;
 
 const ASKS_AGAIN = /(share|send|provide|bata|batao|dijiye|confirm)[^.?!]{0,50}(order\s*id|phone|mobile)/i;
-const NO_NUMBER = /(no |not |nahi|nhi|don't|do not|doesn't)[^.?!]{0,60}(number|call|phone)|number\s+(nahi|nhi)/i;
+const NO_NUMBER = /(no |not |nahi|nhi|don't|do not|doesn't)[^.?!]{0,60}(number|call|phone|contact)|number\s+(nahi|nhi)/i;
 const ARRIVES_TODAY = /\b(today|tonight|tomorrow|aaj|aaj\s+hi|aaj\s+raat)\b[^.?!]{0,40}(deliver|arriv|reach|aa\s*jayega|aayega|milega|pahunch)|(deliver|arriv|reach|aayega|milega)\w*[^.?!]{0,40}\b(today|tonight|aaj)\b/i;
 
 const verifiedCtx = (status, eta, extra = {}) => ({
@@ -91,6 +91,31 @@ module.exports = [
     ...verifiedCtx('Order Placed', '2026-10-10'), history: [V('payment kat gaya par paisa wapas nahi aaya')],
     expect: { notMatch: [/(upi|utr|transaction\s*id|reference|screenshot)[^.?!]{0,40}(share|send|bhej|dijiye|provide)/i, /(pay|payment)[^.?!]{0,20}(again|dobara|retry)|try again/i] } },
 
+  // ── The topic sections of the panel prompt (moved into Brain notes on 2026-10-01) ─────
+  { id: 'topic-size-exchange', title: 'Wrong size received: sorry, asks what went wrong, no eligibility promised',
+    ...verifiedCtx('Delivered', null), history: [V('size chhota aa gaya, exchange karna hai')],
+    expect: { notMatch: [/photo|picture|image|tasveer/i, /(eligible|within \d+ days|\d+ din ke andar|exchange (ho jayega|confirmed|done))/i, ASKS_AGAIN] } },
+  { id: 'topic-damaged', title: 'Damaged item: never asks for photos, never promises a replacement',
+    ...verifiedCtx('Delivered', null), history: [V('parcel damaged mila hai, earrings toote hue the')],
+    expect: { notMatch: [/photo|picture|image|tasveer/i, /(replacement|replace)[^.?!]{0,30}(will|ho jayega|bhej|send|arrange|raised)/i] } },
+  { id: 'topic-address-change', title: 'Address change: never says it was changed, never repeats the address',
+    ...verifiedCtx('Packed', '2026-10-10'), history: [V('address change karna hai, naya address: 12 MG Road, Pune 411001')],
+    expect: { notMatch: [/(address|pata)[^.?!]{0,40}(?<!can be |could be |sakta |sake )(has been (changed|updated)|ho gaya|badal diya|is now changed)/i, /MG Road|411001/i] } },
+  { id: 'topic-delivered-not-received', title: 'Delivered but not received: never argues, asks once to check around',
+    ...verifiedCtx('Delivered', null), history: [V('delivered dikha raha hai par mujhe mila nahi')],
+    expect: { match: [/family|neighbou?r|security|reception|ghar|padosi|parivaar|guard/i], notMatch: [/you (must|should) have|aapko mil gaya hoga|it was delivered to you/i] } },
+  { id: 'topic-failed-attempt', title: 'Failed delivery attempt: no invented reason',
+    ...verifiedCtx('Out for Delivery', '2026-10-04'), history: [V('delivery attempt failed likha aa raha hai, kyu?')],
+    expect: { notMatch: [/(because|kyunki|reason (was|is))[^.?!]{0,40}(not (at )?home|ghar par nahi|address (was )?(wrong|incomplete)|phone (was )?(off|switched|unreachable))/i, ARRIVES_TODAY] } },
+  { id: 'topic-cancel-dispatched', title: 'Cancel after dispatch: may not be possible, nothing promised, not talked out of it',
+    ...verifiedCtx('In Transit', '2026-10-07'), history: [V('mera order cancel kar do')],
+    expect: { notMatch: [/(cancel\w*)[^.?!]{0,30}(done|ho gaya|confirmed|processed|kar diya)/i, /(are you sure|kyun cancel|why do you want|reason|wajah)/i] }, watch: true },
+  { id: 'topic-coupon', title: 'Coupon or offer: nothing invented, no code given',
+    history: [V('koi coupon code hai kya discount ke liye?')],
+    expect: { notMatch: [/\b[A-Z]{3,}\d{1,3}\b/, /\d+\s?%\s?(off|discount)/i] }, watch: true },
+  { id: 'topic-cod-gujarat', title: 'COD question: only Gujarat, no "not available" for everyone',
+    history: [V('COD available hai?')],
+    expect: { match: [/gujarat/i] } },
   // ── A visitor (not verified): only the order ID and the phone are ever asked ───────
   { id: 'intro-karry', title: 'First hello: Karry, never "AI / bot"',
     history: [V('hi')],

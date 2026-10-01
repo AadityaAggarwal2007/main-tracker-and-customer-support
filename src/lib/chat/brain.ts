@@ -26,7 +26,7 @@ export interface BrainNote {
 export const BRAIN_TOPICS: { key: string; label: string; words: RegExp }[] = [
   { key: 'refund', label: 'Refund', words: /\b(refund|money back|paisa?\s*wapas|paise\s*wapas|return\s*money|chargeback)\b|रिफंड|पैसे\s*वापस/i },
   { key: 'cancel', label: 'Cancel', words: /\b(cancel|cancell?ation|cancle)\b|कैंसिल|रद्द/i },
-  { key: 'payment', label: 'Payment', words: /\b(pay|paid|payment|upi|card|debit|credit|deducted|kat\s*gaya|paisa\s*kat|transaction|cash on delivery)\b|पेमेंट|भुगतान/i },
+  { key: 'payment', label: 'Payment', words: /\b(pay|paid|payment|upi|card|debit|credit|deducted|kat\s*gaya|paisa\s*kat|transaction|cash on delivery|kat gaye|kat gya|kate|kaat|deduct\w*|debited)\b|पेमेंट|भुगतान/i },
   { key: 'delivery', label: 'Delivery date / delay', words: /\b(when|kab|date|eta|estimated|expected|delay|late|der|deliver\w*|arriv\w*|aayega|milega|kitne\s*din|how many days|\d+\s*days?|\d+\s*din)\b|डिलीवरी|कब|कितने\s*दिन/i },
   { key: 'tracking', label: 'Tracking / status', words: /\b(track\w*|status|where|kaha|kahan|shipped|dispatch\w*|out for delivery|in transit|stuck|link)\b|ट्रैक|कहाँ|कहां/i },
   { key: 'address', label: 'Address', words: /\b(address|pincode|pin code|landmark)\b|पता|पिनकोड/i },
@@ -34,6 +34,7 @@ export const BRAIN_TOPICS: { key: string; label: string; words: RegExp }[] = [
   { key: 'contact', label: 'Contact / number', words: /\b(number|contact|call|phone|whatsapp|customer care|helpline|agent|delivery\s*(man|boy|agent)|speak|talk)\b|नंबर|कॉल/i },
   { key: 'exchange', label: 'Exchange / return', words: /\b(exchange|return|replace\w*|size)\b|एक्सचेंज/i },
   { key: 'damaged', label: 'Damaged / wrong item', words: /\b(damag\w*|broken|wrong (item|product)|defect\w*|torn|tuta|toota|khraab|kharab|missing)\b|टूटा|खराब/i },
+  { key: 'product', label: 'Product / offer', words: /\b(stock|in stock|out of stock|discount|coupon|offer|promo|code|price|product|design|colou?r|combo|bogo|buy 1|buy one|free|catalogue|catalog|wholesale|bulk|jhumk\w*|earring\w*|bangle\w*|necklace\w*)\b|ऑफर|कूपन|डिस्काउंट/i },
   { key: 'verify', label: 'Verify / order lookup', words: /\b(order\s*(id|number|no)|verify|verification|phone number|registered)\b|ऑर्डर\s*(आईडी|नंबर)/i },
 ];
 
@@ -44,8 +45,9 @@ export function topicsIn(text: string): string[] {
   return BRAIN_TOPICS.filter((t) => t.words.test(text)).map((t) => t.key);
 }
 
-export const BRAIN_CHAR_BUDGET = 3500;
-export const BRAIN_MAX_NOTES = 14;
+// Raised from 3,500 / 14 when the topic sections of the panel prompt moved into notes (2026-10-01).
+export const BRAIN_CHAR_BUDGET = 6500;
+export const BRAIN_MAX_NOTES = 16;
 
 // The notes to show for this customer message: `always` notes first, then topic matches (a
 // note that matches more of the message's topics first), within a character budget so the

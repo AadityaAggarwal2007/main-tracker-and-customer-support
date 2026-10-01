@@ -159,7 +159,7 @@ export default function BrainCard({ token, businessId, onAlert }: {
                   {chip(KIND_LABEL[n.kind] || n.kind, true)}
                   {n.always ? chip('Always') : n.topics.map((t) => chip(topicLabel(t)))}
                   {n.audience !== 'all' && chip(AUDIENCE_LABEL[n.audience])}
-                  {n.source !== 'owner' && chip(n.source === 'seed' ? 'Starter' : n.source)}
+                  {n.source !== 'owner' && chip(({ seed: 'Starter', prompt: 'From your prompt', learned: 'Learned' } as Record<string, string>)[n.source] || n.source)}
                   <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginLeft: 'auto' }} title={n.last_shown_at ? `Last shown ${new Date(n.last_shown_at).toLocaleString()}` : 'Not shown yet'}>
                     {n.shown_count > 0 ? `Shown ${n.shown_count}×` : 'Not shown yet'}
                   </span>
