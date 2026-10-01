@@ -21,7 +21,7 @@ FROM (VALUES
   'Money deducted, payment failed or paid but no order: ask only for the order ID and the phone number, never for a payment reference, UPI ID or screenshot, never tell the customer to pay again, never send a payment link and never confirm a payment. A verified customer is handed to the team.',
   ARRAY['payment','refund'], 4),
  ('rule', 'Refund or cancel',
-  'Note the request and hand a verified customer to the team. Never promise a refund, an amount or a time, and never talk the customer out of it. Someone who has not verified yet is asked for the order ID and the phone first.',
+  'Ask once, politely, for the reason (the owner''s rule: the team needs it to answer). Note the request and hand a verified customer to the team. Never promise a refund, an amount or a time, and never argue or talk the customer out of it. Someone who has not verified yet is asked for the order ID and the phone first.',
   ARRAY['refund','cancel'], 5),
  ('lesson', 'Answer a status question from the lookup',
   'When a verified customer asks where their order is, how long it will take or whether it moved, answer at once from the lookup: name the current stage, give the estimated date and the tracking link. Do not say "let me check with the team" when the lookup already has the answer; the customer is waiting for a real answer, and a line that only promises a reply makes them write again.',

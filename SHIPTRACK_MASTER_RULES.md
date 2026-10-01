@@ -501,6 +501,8 @@ If a refund is actually completed, the conversation must state:
 
 > **Owner note (2026-09-30):** `Needs You` applies only to a **verified** customer (order ID + phone proved). An unverified visitor stays in Visitors: nothing moves the chat, no "team will reply" promise is made, and the AI asks them to verify first.
 
+> **Owner note (2026-10-01):** For every cancellation or refund request, **always ask the customer the reason** (politely, once). Without the reason the team cannot answer, and refunds would be given out without any check. Asking the reason is not talking the customer out of it: never argue, never push, and the request still goes to the team.
+
 ---
 
 # 18. REFUND SECURITY
