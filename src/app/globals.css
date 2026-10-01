@@ -1111,6 +1111,13 @@ a {
   height: 100dvh;
 }
 
+/* The inbox's own menu is long (statuses, Refund / Ship again, problem types): tighter rows. */
+.chat-side .nav-btn {
+  padding: 0.4375rem 0.75rem;
+  font-size: 0.8125rem;
+  gap: 0.625rem;
+}
+
 .chat-shell {
   flex: 1;
   min-height: 0;

@@ -7,6 +7,7 @@ import {
   MessageCircle, User, Phone, Bot, Inbox, Paperclip, X, FileText,
   Download, ExternalLink, RotateCw, MoreHorizontal, Pencil, Trash2, Copy, Info,
   Menu, ChevronLeft, Users, UserCheck, Search, Flame, Undo2, Link2, Clock, MapPin, PackageX, RefreshCw, ShieldAlert, PhoneCall, CalendarDays, Truck, CalendarCheck,
+  BadgeCheck, ChevronDown,
 } from 'lucide-react';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, senderLabel } from '@/lib/chat/message-rules';
 import { can } from '@/lib/permissions';
@@ -841,6 +842,11 @@ export default function ChatSupportPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activePanelId, setActivePanelId] = useState('');
   const [tab, setTab] = useState<InboxTab>('all');
+  // The Problem type list in the sidebar: folded or open, remembered per browser.
+  const [topicsOpen, setTopicsOpenState] = useState(true);
+  useEffect(() => { try { if (localStorage.getItem('chat.topicsOpen') === '0') setTopicsOpenState(false); } catch { /* private window */ } }, []);
+  const setTopicsOpen = (v: boolean) => { setTopicsOpenState(v); try { localStorage.setItem('chat.topicsOpen', v ? '1' : '0'); } catch { /* ignore */ } };
+  const topicsShown = topicsOpen || tab.startsWith('topic:');
   const topicKey = tab.startsWith('topic:') ? tab.slice(6) : '';
   const topicDef = INBOX_TOPICS.find(t => t.key === topicKey) || null;
   // A problem tab has no status or segment of its own: it lists the open chats about it.
@@ -1458,6 +1464,8 @@ export default function ChatSupportPage() {
   // What this login may do here (src/lib/permissions.ts; the API checks the same).
   const canReply = can(user, 'chat.reply');
   const canCases = can(user, 'chat.cases');
+  // The panel's name on each row only when this login has more than one panel.
+  const showPanelName = businesses.length > 1;
   // A grouped row (one customer's chats) carries the unread count of all of them.
   const rowUnread = (c: Conversation) => c.group_unread ?? c.unread_count ?? 0;
   // The unread count is the inbox's; a search shows other chats, so it keeps
@@ -1600,9 +1608,14 @@ export default function ChatSupportPage() {
           </span>
         )}
         {!deleted && msg.sender === 'ai' && Array.isArray(msg.brain) && msg.brain.length > 0 && (
-          <span title="Chikki's notes used for this reply" style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
-            🤖 Chikki: {msg.brain.map((n) => n.title).join(' · ')}
-          </span>
+          // Which of Chikki's notes the reply used: one small chip, the list opens on a click
+          // (it was a long line under every AI reply; owner, 2026-10-01).
+          <details style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
+            <summary title="Chikki's notes used for this reply" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 8px', borderRadius: 999, background: 'var(--muted)' }}>
+              🤖 Chikki · {msg.brain.length} note{msg.brain.length === 1 ? '' : 's'}
+            </summary>
+            <div style={{ marginTop: 4, lineHeight: 1.5 }}>{msg.brain.map((n) => n.title).join(' · ')}</div>
+          </details>
         )}
         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
           {new Date(msg.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -1622,7 +1635,7 @@ export default function ChatSupportPage() {
     <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside className={`sidebar chat-side ${sidebarOpen ? 'open' : ''}`}>
         <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
             <MessageCircle size={15} /> Chat Support
@@ -1676,11 +1689,18 @@ export default function ChatSupportPage() {
             </button>
           ))}
 
-          {/* What the customers are upset about: open chats only, so each queue stays short */}
-          <div style={{ padding: '0.875rem 0.75rem 0.25rem', fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
-            Problem type
-          </div>
-          {INBOX_TOPICS.map(t => {
+          {/* What the customers are upset about: open chats only, so each queue stays short. The
+              list folds away (remembered) so the menu stays short; At risk shows even folded. */}
+          <button type="button" onClick={() => setTopicsOpen(!topicsShown)} aria-expanded={topicsShown}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '0.75rem 0.75rem 0.25rem', border: 'none', background: 'none', cursor: 'pointer',
+              fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
+            <span style={{ flex: 1, textAlign: 'left' }}>Problem type</span>
+            {!topicsShown && (topicCounts.risk ?? 0) > 0 && (
+              <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, background: '#fee2e2', color: '#b91c1c', letterSpacing: 0, textTransform: 'none' }}>{topicCounts.risk} at risk</span>
+            )}
+            <ChevronDown size={13} style={{ transition: 'transform .15s', transform: topicsShown ? 'rotate(180deg)' : 'none' }} />
+          </button>
+          {topicsShown && INBOX_TOPICS.map(t => {
             const Icon = TOPIC_ICONS[t.key] || Inbox;
             const n = topicCounts[t.key] ?? 0;
             const id = `topic:${t.key}` as InboxTab;
@@ -1897,91 +1917,79 @@ export default function ChatSupportPage() {
                     borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
                       : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
                       : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? '3px solid #f59e0b' : '3px solid transparent',
-                    background: isActiveRow(c) ? 'var(--primary-light)'
-                      : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? healthLevel(c.health_score).bg
-                      : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? '#fffbeb' : 'transparent',
+                    background: isActiveRow(c) ? 'var(--primary-light)' : 'transparent',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
-                    {c.source === 'email' ? <Mail size={12} style={{ color: 'var(--fg-muted)' }} /> : <MessageCircle size={12} style={{ color: 'var(--fg-muted)' }} />}
-                    <span title={nameNote(c)} style={{ fontWeight: 600, fontSize: '0.8125rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: nameFromOrder(c) ? 'italic' : undefined }}>
-                      {convName(c)}
-                    </span>
-                    {!isVisitorChat(c) && <HealthBadge score={c.health_score} reason={c.health_reason} />}
-                    {(c.thread_count ?? 0) > 1 && (
-                      <span title={`${c.thread_count} chats from this customer, shown as one thread`} style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
-                        background: 'var(--bg-subtle, rgba(0,0,0,0.05))', color: 'var(--fg-muted)',
-                      }}>
-                        {c.thread_count} chats
-                      </span>
-                    )}
-                    {c.verified_order_id ? <VerifiedBadge via={c.verified_via} />
-                      : c.phone_match_order_id ? <PhoneMatchBadge orderId={c.phone_match_order_id} compact /> : null}
-                    {rowUnread(c) > 0 && (
-                      <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700 }}>
-                        {rowUnread(c)}
-                      </span>
-                    )}
-                    <span style={{
-                      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
-                      background: STATUS_STYLE[c.status]?.bg, color: STATUS_STYLE[c.status]?.fg,
-                    }}>
-                      {closedInfo(c)?.short ?? STATUS_LABELS[c.status]}
-                    </span>
-                    {c.group_needs_human && c.status !== 'human_needed' && (
-                      <span title="An older chat of this customer is waiting for a person" style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
-                        background: STATUS_STYLE.human_needed.bg, color: STATUS_STYLE.human_needed.fg,
-                      }}>
-                        {STATUS_LABELS.human_needed}
-                      </span>
-                    )}
-                  </div>
-
-                  <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.25rem', display: 'flex', gap: '0.375rem', alignItems: 'center', minWidth: 0 }}>
-                    <span style={{ flexShrink: 0 }}>{c.panel_name || c.site_name}</span>
-                    {c.subject_label ? (
-                      <><span>·</span><span title={c.subject_summary || c.subject_label} style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
-                        background: subjectStyle(c.subject_label).bg, color: subjectStyle(c.subject_label).fg,
-                      }}>{displaySubjectLabel(c.subject_label)}</span></>
-                    ) : CATEGORY_LABELS[c.category] && (
-                      <><span>·</span><span>{CATEGORY_LABELS[c.category]}</span></>
-                    )}
-                    {c.status !== 'resolved' && !isVisitorChat(c) && c.health_threat && (
-                      <span title="This customer has threatened a chargeback, police, court or bad reviews" style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
-                        background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',
-                      }}>Threat</span>
-                    )}
-                    {c.status !== 'resolved' && !isVisitorChat(c) && c.health_accuse && (
-                      <span title="This customer has called the store a fraud, scam or fake" style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
-                        background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap',
-                      }}>Fraud claim</span>
-                    )}
-                  </div>
-
-                  {searchActive && c.match_snippet ? (
-                    <div style={{
-                      fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', wordBreak: 'break-word',
-                      display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-                    }}>
-                      {highlightText(c.match_snippet.replace(/\s+/g, ' '), searchTerm, `r${c.id}`)}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {c.last_message || '—'}
-                    </div>
-                  )}
-                  <div style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                    {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
-                    {c.waiting_since && !isVisitorChat(c) && <span style={{ marginLeft: '0.5rem' }}><WaitingChip since={c.waiting_since} /></span>}
-                    {c.returned && <span style={{ marginLeft: '0.5rem' }}><CameBackChip closedAt={c.auto_closed_at} /></span>}
-                    {c.case_kind && <span style={{ marginLeft: '0.5rem' }}><CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} /></span>}
-                  </div>
+                  {(() => {
+                    // One row, fewer badges (owner, 2026-10-01): who and when; what it is about and ONE
+                    // status; the last message; and only when something needs attention, a short line
+                    // of chips. Verified / phone match is a small icon (the Customers tab says it too).
+                    const customer = !isVisitorChat(c);
+                    const open = c.status !== 'resolved';
+                    const upset = customer && open && c.health_score != null && c.health_score >= 50;
+                    const elsewhere = !!c.group_needs_human && c.status !== 'human_needed';
+                    const pill = elsewhere
+                      ? { text: STATUS_LABELS.human_needed, bg: STATUS_STYLE.human_needed.bg, fg: STATUS_STYLE.human_needed.fg, title: 'An older chat of this customer is waiting for a person' }
+                      : { text: closedInfo(c)?.short ?? STATUS_LABELS[c.status], bg: STATUS_STYLE[c.status]?.bg, fg: STATUS_STYLE[c.status]?.fg, title: undefined };
+                    const about = c.subject_label ? displaySubjectLabel(c.subject_label) : (CATEGORY_LABELS[c.category] || '');
+                    const aboutColor = c.subject_label ? subjectStyle(c.subject_label).fg : 'var(--fg-muted)';
+                    const threat = customer && open && c.health_threat;
+                    const accuse = customer && open && !c.health_threat && c.health_accuse;
+                    const attention = !!c.case_kind || threat || accuse || upset || (customer && !!c.waiting_since) || !!c.returned;
+                    return (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: 2 }}>
+                          {c.source === 'email' ? <Mail size={12} style={{ color: 'var(--fg-muted)', flexShrink: 0 }} /> : <MessageCircle size={12} style={{ color: 'var(--fg-muted)', flexShrink: 0 }} />}
+                          <span title={nameNote(c)} style={{ fontWeight: rowUnread(c) > 0 ? 700 : 600, fontSize: '0.8125rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: nameFromOrder(c) ? 'italic' : undefined }}>
+                            {convName(c)}
+                          </span>
+                          {c.verified_order_id
+                            ? <span title={`Verified${c.verified_via === 'legacy' ? ' (old check)' : ''}${c.verified_order_id ? ` · order ${c.verified_order_id}` : ''}`} style={{ display: 'inline-flex', flexShrink: 0 }}><BadgeCheck size={13} style={{ color: c.verified_via === 'legacy' ? '#d97706' : 'var(--success)' }} /></span>
+                            : c.phone_match_order_id ? <span title={`Phone match · order ${c.phone_match_order_id} (not proof)`} style={{ display: 'inline-flex', flexShrink: 0 }}><Phone size={11} style={{ color: '#2563eb' }} /></span> : null}
+                          <span style={{ marginLeft: 'auto', fontSize: '0.625rem', color: 'var(--fg-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                            {timeAgo(c.last_message_at)}{searchActive ? matchedText(c) : ''}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: 2, minWidth: 0 }}>
+                          <span title={c.subject_summary || about} style={{ flex: 1, minWidth: 0, fontSize: '0.6875rem', fontWeight: 600, color: aboutColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {showPanelName ? `${c.panel_name || c.site_name} · ` : ''}{about}{(c.thread_count ?? 0) > 1 ? ` · ${c.thread_count} chats` : ''}
+                          </span>
+                          <span title={pill.title} style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, background: pill.bg, color: pill.fg }}>{pill.text}</span>
+                          {rowUnread(c) > 0 && (
+                            <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700, flexShrink: 0 }}>
+                              {rowUnread(c)}
+                            </span>
+                          )}
+                        </div>
+                        {searchActive && c.match_snippet ? (
+                          <div style={{
+                            fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', wordBreak: 'break-word',
+                            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                          }}>
+                            {highlightText(c.match_snippet.replace(/\s+/g, ' '), searchTerm, `r${c.id}`)}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {c.last_message || '—'}
+                          </div>
+                        )}
+                        {attention && (
+                          <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '0.3125rem' }}>
+                            {c.case_kind && <CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} />}
+                            {threat && (
+                              <span title="This customer has threatened a chargeback, police, court or bad reviews" style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap' }}>Threat</span>
+                            )}
+                            {accuse && (
+                              <span title="This customer has called the store a fraud, scam or fake" style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap' }}>Fraud claim</span>
+                            )}
+                            {upset && !threat && !accuse && <HealthBadge score={c.health_score} reason={c.health_reason} />}
+                            {customer && c.waiting_since && <WaitingChip since={c.waiting_since} />}
+                            {c.returned && <CameBackChip closedAt={c.auto_closed_at} />}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </button>
               ))}
             </div>

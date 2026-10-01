@@ -1482,8 +1482,142 @@ export default function AdminDashboard() {
                 </div>
               )}
 
+              {/* Jump to a section (owner, 2026-10-01: a cleaner Settings page) */}
+              {activeBusiness && (
+                <div style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0.5rem 0.625rem',
+                  borderRadius: 12, background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(8px)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--fg-muted)', marginRight: 4 }}>{activeBusiness.name}</span>
+                  {[
+                    { id: 'set-chikki', label: 'Chikki AI', show: !!chatSite && !!user && (can(user, 'settings.panel') || can(user, 'chikki.edit')) },
+                    { id: 'set-branding', label: 'Branding', show: !!user && can(user, 'settings.panel') },
+                    { id: 'set-widget', label: 'Chat widget', show: !!user && can(user, 'settings.panel') },
+                    { id: 'set-schedule', label: 'Tracking schedule', show: true },
+                    { id: 'set-connections', label: 'Connections', show: isSuperAdmin(user) },
+                    { id: 'set-danger', label: 'Danger zone', show: isSuperAdmin(user) },
+                  ].filter((x) => x.show).map((x) => (
+                    <button key={x.id} type="button" className="btn btn-sm"
+                      onClick={() => document.getElementById(x.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                      style={{ border: '1px solid var(--border)', background: 'var(--card-bg)', color: x.id === 'set-danger' ? 'var(--danger)' : 'var(--fg-secondary)', borderRadius: 999 }}>
+                      {x.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {activeBusiness && (
                 <>
+                  <div id="set-chikki" style={{ scrollMarginTop: 76 }} />
+                  {/* ── CHIKKI: the panel's AI in one card (saved answers, notes, lessons, team examples, rules, settings) ── */}
+                  {chatSite && (
+                    <ChikkiCard
+                      token={token} businessId={activePanelId} panelName={activeBusiness?.name} onAlert={showAlert}
+                      faqs={faqs} faqBusy={faqBusy} faqRequest={faqRequest} faqDraft={faqDraft} setFaqDraft={setFaqDraft} onAddFaq={addFaq}
+                      aiEnabled={chatSite.aiEnabled} aiBusy={savingChat} onToggleAi={() => saveChatSettings({ aiEnabled: !chatSite.aiEnabled })}
+                      canSettings={!!user && can(user, 'settings.panel')}
+                      settings={(
+                        <>
+                          <div className="form-group">
+                            <label className="form-label">Cash on Delivery</label>
+                            <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
+                              Customers ask this constantly and the answer differs per store. Until you pick one,
+                              the agent will not answer COD questions at all — it offers to have the team confirm instead.
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              {([
+                                { v: true,  label: 'COD available' },
+                                { v: false, label: 'No COD' },
+                                { v: null,  label: "Don't answer" },
+                              ] as { v: boolean | null; label: string }[]).map((opt) => {
+                                const on = !chatSite.codStates && chatSite.codAvailable === opt.v;
+                                return (
+                                  <button
+                                    key={String(opt.v)}
+                                    className="btn btn-sm"
+                                    disabled={savingChat}
+                                    // Picking one of these three replaces "only in some states".
+                                    onClick={() => { setCodStatesOpen(false); saveChatSettings({ codAvailable: opt.v, codStates: null }); }}
+                                    style={{
+                                      background: on ? 'var(--accent)' : 'transparent',
+                                      color: on ? '#fff' : 'var(--fg-muted)',
+                                      border: '1px solid var(--border)',
+                                    }}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                );
+                              })}
+                              <button
+                                className="btn btn-sm"
+                                disabled={savingChat}
+                                onClick={() => setCodStatesOpen(true)}
+                                style={{
+                                  background: chatSite.codStates ? 'var(--accent)' : 'transparent',
+                                  color: chatSite.codStates ? '#fff' : 'var(--fg-muted)',
+                                  border: '1px solid var(--border)',
+                                }}
+                              >
+                                Only in some states
+                              </button>
+                            </div>
+                            {(codStatesOpen || chatSite.codStates) && (
+                              <div style={{ marginTop: '0.5rem' }}>
+                                <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>
+                                  COD works only for addresses in these states. The agent brings it up only when a customer asks,
+                                  says so once in one short line, and never tells a customer in these states that COD is unavailable.
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                  <input
+                                    className="form-input"
+                                    style={{ flex: 1 }}
+                                    placeholder="State names, e.g. Gujarat"
+                                    maxLength={100}
+                                    value={codStatesDraft}
+                                    onChange={(e) => setCodStatesDraft(e.target.value)}
+                                  />
+                                  <button
+                                    className="btn btn-primary btn-sm"
+                                    disabled={savingChat || !codStatesDraft.trim()}
+                                    onClick={() => saveChatSettings({ codStates: codStatesDraft })}
+                                  >
+                                    Save states
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="form-group">
+                            <label className="form-label">Custom instructions (optional)</label>
+                            <textarea
+                              className="form-input"
+                              rows={3}
+                              placeholder="Leave blank to use the standard support prompt, which already refuses to invent policy, shipping times or stock."
+                              value={promptDraft}
+                              onChange={(e) => setPromptDraft(e.target.value)}
+                              style={{ height: 'auto', resize: 'vertical' }}
+                            />
+                            <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
+                              This replaces the standard prompt entirely — anything you leave out, the AI no longer knows to avoid.
+                            </p>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <button
+                              className="btn btn-primary"
+                              disabled={savingChat || promptDraft === (chatSite.systemPrompt || '')}
+                              onClick={() => saveChatSettings({ systemPrompt: promptDraft })}
+                            >
+                              {savingChat
+                                ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</>
+                                : <><Check size={14} /> Save instructions</>}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    />
+                  )}
+
+                  <div id="set-branding" style={{ scrollMarginTop: 76 }} />
                   {/* Brand settings card */}
                   {user && can(user, 'settings.panel') && (
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
@@ -1590,6 +1724,95 @@ export default function AdminDashboard() {
                   </div>
                   )}
 
+                  <div id="set-widget" style={{ scrollMarginTop: 76 }} />
+                  {/* ── Chat widget ── */}
+                  {user && can(user, 'settings.panel') && (
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <MessageCircle size={16} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontWeight: 700 }}>Chat Widget</span>
+                      {chatSite && chatSite.conversations > 0 && (
+                        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)' }}>
+                          {chatSite.conversations.toLocaleString()} conversations so far
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+                      Paste this into the store&rsquo;s theme and customers get a chat bubble answered by
+                      the same AI that answers email. Conversations land in <strong>Chat Support</strong>.
+                    </p>
+
+                    {!chatSite && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', margin: 0 }}>
+                          Chat is not set up for this panel yet.
+                        </p>
+                        <button className="btn btn-primary btn-sm" disabled={savingChat}
+                          onClick={() => saveChatSettings({ aiEnabled: true })}>
+                          {savingChat
+                            ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Setting up…</>
+                            : <><Plus size={14} /> Set up chat</>}
+                        </button>
+                      </div>
+                    )}
+
+                    {chatSite && (
+                      <>
+                        <div className="form-group">
+                          <label className="form-label">Embed code — paste before &lt;/body&gt; in the Shopify theme</label>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                            <textarea
+                              className="form-input"
+                              readOnly
+                              rows={2}
+                              value={embedSnippet}
+                              onFocus={(e) => e.target.select()}
+                              style={{ flex: 1, height: 'auto', fontFamily: 'monospace', fontSize: '0.6875rem', resize: 'vertical' }}
+                            />
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => {
+                                navigator.clipboard.writeText(embedSnippet).then(
+                                  () => { setCopiedSnippet(true); setTimeout(() => setCopiedSnippet(false), 2000); },
+                                  () => showAlert('error', 'Could not copy — select the text instead')
+                                );
+                              }}
+                            >
+                              {copiedSnippet ? <><Check size={14} /> Copied</> : 'Copy'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {isSuperAdmin(user) && (
+                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                          <button
+                            className="btn btn-outline"
+                            disabled={savingChat}
+                            onClick={() => {
+                              if (!confirm('Generate a new key? The widget stops working on every store using the old embed code until they paste the new one.')) return;
+                              saveChatSettings({ regenerateKey: true });
+                            }}
+                          >
+                            Regenerate key
+                          </button>
+                        </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  )}
+
+                  <div id="set-schedule" style={{ scrollMarginTop: 76 }} />
+                  {/* ── Auto-Progression: the real schedule (src/lib/journey.ts), read only ── */}
+                  <AutoProgressionCard />
+
+                  <div id="set-connections" style={{ scrollMarginTop: 76 }} />
+                  {isSuperAdmin(user) && (
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '0.75rem 0 -0.25rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>Connections</span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Shopify and mailboxes, only you see these</span>
+                    </div>
+                  )}
                   {/* Shopify, the API connection and the mailboxes: the super admin only (team logins
                       do not see them; the routes check it too). Their own content is unchanged. */}
                   {isSuperAdmin(user) && (<>
@@ -1884,193 +2107,6 @@ export default function AdminDashboard() {
                   </div>
                   </>)}
 
-                  {/* ── Chat widget ── */}
-                  {user && can(user, 'settings.panel') && (
-                  <div className="tf-card" style={{ padding: '1.5rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                      <MessageCircle size={16} style={{ color: 'var(--primary)' }} />
-                      <span style={{ fontWeight: 700 }}>Chat Widget</span>
-                      {chatSite && chatSite.conversations > 0 && (
-                        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)' }}>
-                          {chatSite.conversations.toLocaleString()} conversations so far
-                        </span>
-                      )}
-                    </div>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
-                      Paste this into the store&rsquo;s theme and customers get a chat bubble answered by
-                      the same AI that answers email. Conversations land in <strong>Chat Support</strong>.
-                    </p>
-
-                    {!chatSite && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', margin: 0 }}>
-                          Chat is not set up for this panel yet.
-                        </p>
-                        <button className="btn btn-primary btn-sm" disabled={savingChat}
-                          onClick={() => saveChatSettings({ aiEnabled: true })}>
-                          {savingChat
-                            ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Setting up…</>
-                            : <><Plus size={14} /> Set up chat</>}
-                        </button>
-                      </div>
-                    )}
-
-                    {chatSite && (
-                      <>
-                        <div className="form-group">
-                          <label className="form-label">Embed code — paste before &lt;/body&gt; in the Shopify theme</label>
-                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                            <textarea
-                              className="form-input"
-                              readOnly
-                              rows={2}
-                              value={embedSnippet}
-                              onFocus={(e) => e.target.select()}
-                              style={{ flex: 1, height: 'auto', fontFamily: 'monospace', fontSize: '0.6875rem', resize: 'vertical' }}
-                            />
-                            <button
-                              className="btn btn-outline btn-sm"
-                              onClick={() => {
-                                navigator.clipboard.writeText(embedSnippet).then(
-                                  () => { setCopiedSnippet(true); setTimeout(() => setCopiedSnippet(false), 2000); },
-                                  () => showAlert('error', 'Could not copy — select the text instead')
-                                );
-                              }}
-                            >
-                              {copiedSnippet ? <><Check size={14} /> Copied</> : 'Copy'}
-                            </button>
-                          </div>
-                        </div>
-
-                        {isSuperAdmin(user) && (
-                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                          <button
-                            className="btn btn-outline"
-                            disabled={savingChat}
-                            onClick={() => {
-                              if (!confirm('Generate a new key? The widget stops working on every store using the old embed code until they paste the new one.')) return;
-                              saveChatSettings({ regenerateKey: true });
-                            }}
-                          >
-                            Regenerate key
-                          </button>
-                        </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                  )}
-
-                  {/* ── CHIKKI: the panel's AI in one card (saved answers, notes, lessons, team examples, rules, settings) ── */}
-                  {chatSite && (
-                    <ChikkiCard
-                      token={token} businessId={activePanelId} panelName={activeBusiness?.name} onAlert={showAlert}
-                      faqs={faqs} faqBusy={faqBusy} faqRequest={faqRequest} faqDraft={faqDraft} setFaqDraft={setFaqDraft} onAddFaq={addFaq}
-                      aiEnabled={chatSite.aiEnabled} aiBusy={savingChat} onToggleAi={() => saveChatSettings({ aiEnabled: !chatSite.aiEnabled })}
-                      canSettings={!!user && can(user, 'settings.panel')}
-                      settings={(
-                        <>
-                          <div className="form-group">
-                            <label className="form-label">Cash on Delivery</label>
-                            <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>
-                              Customers ask this constantly and the answer differs per store. Until you pick one,
-                              the agent will not answer COD questions at all — it offers to have the team confirm instead.
-                            </div>
-                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                              {([
-                                { v: true,  label: 'COD available' },
-                                { v: false, label: 'No COD' },
-                                { v: null,  label: "Don't answer" },
-                              ] as { v: boolean | null; label: string }[]).map((opt) => {
-                                const on = !chatSite.codStates && chatSite.codAvailable === opt.v;
-                                return (
-                                  <button
-                                    key={String(opt.v)}
-                                    className="btn btn-sm"
-                                    disabled={savingChat}
-                                    // Picking one of these three replaces "only in some states".
-                                    onClick={() => { setCodStatesOpen(false); saveChatSettings({ codAvailable: opt.v, codStates: null }); }}
-                                    style={{
-                                      background: on ? 'var(--accent)' : 'transparent',
-                                      color: on ? '#fff' : 'var(--fg-muted)',
-                                      border: '1px solid var(--border)',
-                                    }}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                );
-                              })}
-                              <button
-                                className="btn btn-sm"
-                                disabled={savingChat}
-                                onClick={() => setCodStatesOpen(true)}
-                                style={{
-                                  background: chatSite.codStates ? 'var(--accent)' : 'transparent',
-                                  color: chatSite.codStates ? '#fff' : 'var(--fg-muted)',
-                                  border: '1px solid var(--border)',
-                                }}
-                              >
-                                Only in some states
-                              </button>
-                            </div>
-                            {(codStatesOpen || chatSite.codStates) && (
-                              <div style={{ marginTop: '0.5rem' }}>
-                                <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginBottom: '0.375rem' }}>
-                                  COD works only for addresses in these states. The agent brings it up only when a customer asks,
-                                  says so once in one short line, and never tells a customer in these states that COD is unavailable.
-                                </div>
-                                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                  <input
-                                    className="form-input"
-                                    style={{ flex: 1 }}
-                                    placeholder="State names, e.g. Gujarat"
-                                    maxLength={100}
-                                    value={codStatesDraft}
-                                    onChange={(e) => setCodStatesDraft(e.target.value)}
-                                  />
-                                  <button
-                                    className="btn btn-primary btn-sm"
-                                    disabled={savingChat || !codStatesDraft.trim()}
-                                    onClick={() => saveChatSettings({ codStates: codStatesDraft })}
-                                  >
-                                    Save states
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="form-group">
-                            <label className="form-label">Custom instructions (optional)</label>
-                            <textarea
-                              className="form-input"
-                              rows={3}
-                              placeholder="Leave blank to use the standard support prompt, which already refuses to invent policy, shipping times or stock."
-                              value={promptDraft}
-                              onChange={(e) => setPromptDraft(e.target.value)}
-                              style={{ height: 'auto', resize: 'vertical' }}
-                            />
-                            <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                              This replaces the standard prompt entirely — anything you leave out, the AI no longer knows to avoid.
-                            </p>
-                          </div>
-
-                          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <button
-                              className="btn btn-primary"
-                              disabled={savingChat || promptDraft === (chatSite.systemPrompt || '')}
-                              onClick={() => saveChatSettings({ systemPrompt: promptDraft })}
-                            >
-                              {savingChat
-                                ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</>
-                                : <><Check size={14} /> Save instructions</>}
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    />
-                  )}
-
                 </>
               )}
 
@@ -2082,10 +2118,8 @@ export default function AdminDashboard() {
               )}
 
 
-              {/* ── Auto-Progression: the real schedule (src/lib/journey.ts), read only ── */}
-              <AutoProgressionCard />
-
               {/* Danger Zone */}
+              <div id="set-danger" style={{ scrollMarginTop: 76 }} />
               {user?.role === 'admin' && (
                 <div className="tf-card" style={{ padding: '1.5rem', border: '1.5px solid var(--danger)', marginTop: '0.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
