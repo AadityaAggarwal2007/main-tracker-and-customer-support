@@ -180,4 +180,13 @@ t('noteProblem blocks teaching hand-overs after failed checks; similarity finds 
   assert.ok(brain.similarity('Hand off after 3 failed lookups: If the AI cannot find an order after 3 attempts, hand the customer to the team', 'Escalate after repeated verification failures: If the customer cannot provide a valid order after three attempts, escalate to the team') >= 0.4);
   assert.ok(brain.similarity('COD not available, pay online', 'LuxeVa is now Vastora') < 0.2);
 });
+t('noteProblem: order ID + phone both, help in chat; defaultAudience', () => {
+  assert.ok(brain.noteProblem('Ask for order ID first', 'When a customer asks to track an order, always ask for the order ID first. Do not ask for phone or email unless the order ID is not available.'));
+  assert.ok(brain.noteProblem('Address change', 'When a customer requests an address change, ask for the address directly. Do not ask for phone number or other verification first.'));
+  assert.ok(brain.noteProblem('No phone number given', 'The AI must never provide a phone number. Instead, direct the customer to email the support team.'));
+  assert.strictEqual(brain.noteProblem('Already given', 'If the customer already shared the phone, do not ask for the phone again.'), null);
+  assert.strictEqual(brain.noteProblem('No care number', 'There is no customer-care or WhatsApp number; do not send the customer to email or WhatsApp, help here.'), null);
+  assert.strictEqual(brain.defaultAudience('Hand off address changes to team', 'Inform the customer and hand it to the team.'), 'verified');
+  assert.strictEqual(brain.defaultAudience('LuxeVa is now Vastora', 'Treat it as a Vastora order.'), 'all');
+});
 console.log(`UNIT: ${n} groups passed`);

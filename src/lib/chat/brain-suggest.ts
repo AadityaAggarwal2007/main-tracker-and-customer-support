@@ -16,8 +16,22 @@ interface Row { id: string; sender: string; content: string; created_at: string 
 const REVIEW_VERSION = 2;
 const CRITICAL_LABELS = ['Refund / Cancellation', 'Refund', 'Cancellation', 'Wrong tracking link', 'Delivery delay', 'Not received', 'Complaint', 'Payment issue', 'Damaged item', 'Wrong item', 'Missing item'];
 
+// One run at a time: a second call while one runs (a slow run past the cron's timeout) would read
+// the same chats and draft the same examples twice.
+const g = globalThis as unknown as { __brainSuggestRunning?: boolean };
+
 export async function suggestLessons(opts: { siteId?: string; max?: number; days?: number } = {}) {
-  const max = Math.max(1, Math.min(opts.max ?? SUGGEST_MAX_PER_RUN, 60));
+  if (g.__brainSuggestRunning) return { reviewed: 0, suggested: 0, examples: 0, skipped: 0, busy: true };
+  g.__brainSuggestRunning = true;
+  try {
+    return await runSuggest(opts);
+  } finally {
+    g.__brainSuggestRunning = false;
+  }
+}
+
+async function runSuggest(opts: { siteId?: string; max?: number; days?: number }) {
+  const max = Math.max(1, Math.min(opts.max ?? SUGGEST_MAX_PER_RUN, 25));
   const days = Math.max(1, Math.min(opts.days ?? 14, 60));
   const sites = opts.siteId ? [{ id: opts.siteId }] : (await query<{ id: string }>(`SELECT id FROM sites`)).rows;
   const out = { reviewed: 0, suggested: 0, examples: 0, skipped: 0 };

@@ -106,6 +106,16 @@ export function noteProblem(title: string, body: string): string | null {
     // Who goes to the team is decided by the system (only verified customers, owner 2026-09-30).
     [/\b(?:hand(?:s|ing)?\s*(?:it\s*)?(?:off|over)|escalat\w*|transfer\w*|connect\w*\s+(?:them\s+)?(?:to|with)\s+(?:the\s+)?team)\b[^.]{0,80}\b(?:verif\w*|cannot find|can'?t find|not found|attempts?|tries|failed|lookups?|identifiers?)\b|\b(?:verif\w*|cannot find|can'?t find|not found|attempts?|failed|lookups?)\b[^.]{0,80}\b(?:hand(?:s|ing)?\s*(?:it\s*)?(?:off|over)|escalat\w*|transfer\w*)\b/i, 'Who is handed to the team is decided by the system: only a verified customer, never after failed checks.'],
   ];
+  // Finding an order takes the order ID AND the phone (master rules 8.1), and the customer is
+  // helped here in the chat, never sent to e-mail, WhatsApp or a call.
+  if (/\border\s*(?:id|number|no)\b[^.]{0,40}\b(?:first|only)\b[^.]{0,80}\b(?:not|instead of|without|unless)\b[^.]{0,30}\b(?:phone|mobile)\b/i.test(text)
+    || /\b(?:do not|don'?t|never|mat)\s+(?:ask|maango|poochho)\b[^.]{0,20}\b(?:for\s+)?(?:the\s+|their\s+)?(?:phone|mobile|verification|order\s*id)\b(?![^.]{0,40}\b(?:again|twice|already|dobara|phir se)\b)/i.test(text)) {
+    return 'Finding an order needs both the order ID and the phone number: a note cannot drop one.';
+  }
+  if (/\b(?:direct|redirect|send|refer|ask)\b[^.]{0,30}\b(?:to\s+)?(?:e-?mail|whatsapp|call|instagram|facebook)\b(?:\s+(?:support|us|the team|team))?/i.test(text)
+    && !/\b(?:no|not|never|don'?t|do not)\b[^.]{0,30}\b(?:e-?mail|whatsapp|call)\b/i.test(text)) {
+    return 'The customer is helped here in the chat: a note cannot send them to e-mail, WhatsApp or a call.';
+  }
   for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
     for (const [re, message] of checks) {
       const m = re.exec(sentence);
@@ -127,4 +137,10 @@ export function similarity(a: string, b: string): number {
   let both = 0;
   A.forEach((w) => { if (B.has(w)) both++; });
   return both / Math.min(A.size, B.size);
+}
+
+// A note that talks about handing the chat to the team only makes sense for a verified customer:
+// a visitor is never handed over (owner, 2026-09-30). Used as the default audience on approval.
+export function defaultAudience(title: string, body: string): BrainAudience {
+  return /\b(?:hand(?:s|ing)?\s*(?:it\s*)?(?:off|over)|escalat\w*|forward\w*\s+(?:it\s+|the request\s+)?to\s+(?:the\s+)?team|pass\w*\s+(?:it\s+)?to\s+(?:the\s+)?team)\b/i.test(`${title} ${body}`) ? 'verified' : 'all';
 }

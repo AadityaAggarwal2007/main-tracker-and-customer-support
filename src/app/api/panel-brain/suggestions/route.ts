@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { getAuthFromRequest, type AuthUser } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
-import { BRAIN_TOPIC_KEYS, noteProblem } from '@/lib/chat/brain';
+import { BRAIN_TOPIC_KEYS, defaultAudience, noteProblem } from '@/lib/chat/brain';
 import { hasPersonalDetail } from '@/lib/chat/brain-learn';
 
 export const dynamic = 'force-dynamic';
@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
         `INSERT INTO brain_notes (id, site_id, kind, title, body, topics, always, audience, source, sort_order, created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'learned', $9, $10)
          RETURNING id, site_id, kind, title, body, topics, always, audience, is_enabled, source, sort_order`,
-        [crypto.randomUUID(), siteId, kind, title, body, topics, always, ['all', 'verified', 'visitor'].includes(String(raw.audience)) ? String(raw.audience) : 'all', next.rows[0].n, user.username]
+        [crypto.randomUUID(), siteId, kind, title, body, topics, always, ['all', 'verified', 'visitor'].includes(String(raw.audience)) ? String(raw.audience) : defaultAudience(title, body), next.rows[0].n, user.username]
       );
       await client.query(`UPDATE brain_suggestions SET status = 'approved', decided_by = $1, decided_at = now() WHERE id = $2`, [user.username, id]);
       return ins.rows[0];
