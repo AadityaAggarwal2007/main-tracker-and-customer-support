@@ -44,6 +44,17 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
       [site.id]
     )).rows;
     const existing = known.map((r) => r.title);
+    // The owner's own settings win over what one team member once wrote (2026-10-01: the team said
+    // "no COD at all" while the setting, confirmed by the owner, is COD only in Gujarat).
+    const cod = await queryOne<{ cod_available: boolean | null; cod_states: string | null }>(
+      `SELECT cod_available, cod_states FROM sites WHERE id = $1`, [site.id]
+    ).catch(() => null);
+    const codStates = cod?.cod_states?.trim() || '';
+    const settings = codStates
+      ? `Cash on Delivery works ONLY for delivery addresses in: ${codStates}. Never suggest that COD is not available at all, or available everywhere.`
+      : cod?.cod_available === true ? 'Cash on Delivery is available.' : cod?.cod_available === false ? 'Cash on Delivery is not available.' : '';
+    const againstCod = (t: string) => !!codStates && /\b(?:cod|cash on delivery)\b/i.test(t)
+      && !new RegExp(codStates.split(/\s*,\s*/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i').test(t);
     let pendingLessons = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM brain_suggestions WHERE site_id = $1 AND status = 'pending'`, [site.id]))?.n ?? 0;
     const existingTexts = known.map((r) => `${r.title} ${r.body}`);
     const knownReplies = (await query<{ team_replied: string }>(
@@ -156,7 +167,7 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
             model: getActiveModel(),
             messages: [
               { role: 'system', content: LEARN_INSTRUCTION },
-              { role: 'user', content: `Situations: ${allowed.length ? allowed.join(', ') : '(none: return "example": null)'}\nAll situations: ${SITUATIONS.map((s) => s.key).join(', ')}\nTopics for a lesson: ${BRAIN_TOPICS.map((t) => t.key).join(', ')}\nExisting notes: ${existing.join(' | ') || '(none)'}\n\nChat:\n${transcript}${corrections ? `\n\nCorrections by the team (the strongest lesson):\n${corrections}` : ''}` },
+              { role: 'user', content: `Situations: ${allowed.length ? allowed.join(', ') : '(none: return "example": null)'}\nAll situations: ${SITUATIONS.map((s) => s.key).join(', ')}\nTopics for a lesson: ${BRAIN_TOPICS.map((t) => t.key).join(', ')}\n${settings ? `Store settings set by the owner (they always win): ${settings}\n` : ''}Existing notes: ${existing.join(' | ') || '(none)'}\n\nChat:\n${transcript}${corrections ? `\n\nCorrections by the team (the strongest lesson):\n${corrections}` : ''}` },
             ],
             max_tokens: 900,
             temperature: 0,
@@ -170,6 +181,8 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
           if (example && knownReplies.some((r) => sameReply(r, example!.team_replied) || similarity(r, example!.team_replied) >= 0.5)) example = null;
           // The owner reviews these by hand: past 25 waiting lessons, no new ones until some are decided.
           if (draft && pendingLessons >= 25) draft = null;
+          if (draft && againstCod(`${draft.title} ${draft.body}`)) draft = null;
+          if (example && againstCod(example.team_replied)) example = null;
         }
         if (draft) {
           await query(

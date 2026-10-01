@@ -22,7 +22,7 @@ if (live) {
   const psql = (sql) => execSync(`sudo -u postgres psql -d tracking_crm -At -c "${sql.replace(/"/g, '\\"')}"`, { encoding: 'utf8', maxBuffer: 1 << 26 });
   sitePrompt = JSON.parse(psql(`SELECT to_json(system_prompt) FROM sites WHERE id='${SITE_ID}'`).trim());
   state.codStates = psql(`SELECT cod_states FROM sites WHERE id='${SITE_ID}'`).trim() || null;
-  state.faqs = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('question',question,'answer',answer) ORDER BY sort_order, created_at),'[]') FROM site_faqs WHERE site_id='${SITE_ID}' AND is_enabled`).trim());
+  state.liveFaqs = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('question',question,'answer',answer) ORDER BY sort_order, created_at),'[]') FROM site_faqs WHERE site_id='${SITE_ID}' AND is_enabled`).trim());
   // The notes in the Brain right now (this panel's and the common ones), so the live run tests them too.
   state.liveBrain = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'title',title,'body',body,'topics',topics,'always',always,'sort_order',sort_order) ORDER BY sort_order, created_at),'[]') FROM brain_notes WHERE is_enabled AND (site_id='${SITE_ID}' OR site_id IS NULL)`).trim() || '[]');
   state.liveExamples = JSON.parse(psql(`SELECT COALESCE(json_agg(json_build_object('id',id,'situation',situation,'customer_said',customer_said,'team_replied',team_replied) ORDER BY created_at DESC),'[]') FROM brain_examples WHERE site_id='${SITE_ID}' AND status='approved' AND is_enabled`).trim() || '[]');
@@ -80,7 +80,7 @@ function evaluate(c, result, usage) {
     for (let n = 0; n < repeat; n++) {
       Object.assign(state, {
         history: rowsFor(c.history), verifiedOrderId: c.verified || null, fresh: c.fresh || null, verified: !!c.verified,
-        facts: c.facts || null, brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, examples: c.examples || (live ? state.liveExamples || [] : []), lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
+        facts: c.facts || null, brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, faqs: c.faqs || (live ? state.liveFaqs || [] : []), examples: c.examples || (live ? state.liveExamples || [] : []), lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
       });
       let result, err = null, usage;
       quiet();

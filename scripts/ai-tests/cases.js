@@ -216,6 +216,18 @@ module.exports = [
     examples: [{ id: 'x1', situation: 'refund_cancel', customer_said: 'mujhe refund chahiye, bahut late hai', team_replied: 'Ji, main aapki baat bilkul samajh raha hoon aur der ke liye dil se maafi chahta hoon. Aapki request maine note kar li hai, hamari team isse dekh kar aapko yahin jawab degi.' }],
     history: [V('mujhe refund chahiye abhi ke abhi, bahut late ho gaya')],
     expect: { notMatch: [/(refund|paise)[^.?!]{0,40}(processed|initiated|credited|ho jayega|mil jayega|aa jayega|within|din me)/i, ARRIVES_TODAY], brainUsed: ['Team example: refund cancel'] }, liveOnly: true },
+  // ── Saved answers past the size limit ───────────────────────────────────────────────
+  { id: 'faqs-overflow-relevant-kept', title: 'Many saved answers: the one matching the question is kept even at the end of the list',
+    faqs: [
+      ...Array.from({ length: 60 }, (_, i) => ({ question: `Filler question number ${i} about earrings designs`, answer: 'Filler answer about our catalogue. '.repeat(8) })),
+      { question: 'Do you ship to Nepal or Bhutan?', answer: 'FAQMARK-NEPAL We currently ship only within India.' },
+    ],
+    history: [V('do you ship to nepal?')], mock: [{ content: 'We ship only within India.' }],
+    expect: { systemHas: [/FAQMARK-NEPAL/, /SAVED ANSWERS/] }, offlineOnly: true },
+  { id: 'faqs-fit-all-in-order', title: 'Saved answers that fit are all sent, in the owner\'s order',
+    faqs: [{ question: 'Q one', answer: 'FAQMARK-ONE answer' }, { question: 'Q two', answer: 'FAQMARK-TWO answer' }],
+    history: [V('hi')], mock: [{ content: 'Hi!' }],
+    expect: { systemHas: [/FAQMARK-ONE[\s\S]*FAQMARK-TWO/] }, offlineOnly: true },
   { id: 'brain-lower-than-rules', title: 'The Brain section says the locked rules win',
     brain: [{ kind: 'rule', title: 'X', body: 'BRAINMARK-X', topics: [], always: true, sort_order: 0 }],
     history: [V('hi')], mock: [{ content: 'Hi!' }], expect: { systemHas: [/SHIPTRACK RULES above always win over a note/] }, offlineOnly: true },

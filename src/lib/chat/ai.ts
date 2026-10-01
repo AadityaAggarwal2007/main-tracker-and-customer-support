@@ -22,7 +22,7 @@ import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
-import { brainSection, selectNotes, type BrainNote } from './brain';
+import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
 
 // ── The support AI ─────────────────────────────────────────────
@@ -320,18 +320,28 @@ const FAQ_CHAR_BUDGET = 12000;
 // "[STATUS]". Sent word for word, the model fills it with made-up data.
 const UNFILLED_SLOT = /\[[A-Z][A-Z0-9 /_.-]*\]/;
 
-function savedAnswersSection(faqs: SavedAnswer[]): string {
+function savedAnswersSection(faqs: SavedAnswer[], asked = ''): string {
   if (!faqs.length) return '';
+  const blocks = faqs
+    .map((f) => ({ q: (f.question || '').trim(), a: (f.answer || '').trim() }))
+    .filter((f) => f.q && f.a && !UNFILLED_SLOT.test(f.a))
+    .map((f) => ({ ...f, text: `Q: ${f.q}\nA: ${f.a}` }));
+  // All of them fit: every saved answer, in the owner's order (the common case).
+  // More than fit (the owner keeps adding): the ones closest to what the customer just asked go
+  // first, so a new answer is never silently dropped just because it is at the end of the list.
+  const total = blocks.reduce((n, b) => n + b.text.length, 0);
+  const ordered = total <= FAQ_CHAR_BUDGET || !asked.trim()
+    ? blocks
+    : blocks
+      .map((b, i) => ({ b, i, score: similarity(b.q, asked) * 2 + similarity(b.a, asked) }))
+      .sort((x, y) => y.score - x.score || x.i - y.i)
+      .map((x) => x.b);
   const lines: string[] = [];
   let used = 0;
-  for (const f of faqs) {
-    const q = (f.question || '').trim();
-    const a = (f.answer || '').trim();
-    if (!q || !a || UNFILLED_SLOT.test(a)) continue;
-    const block = `Q: ${q}\nA: ${a}`;
-    if (used + block.length > FAQ_CHAR_BUDGET) break;
-    used += block.length;
-    lines.push(block);
+  for (const b of ordered) {
+    if (used + b.text.length > FAQ_CHAR_BUDGET) continue;
+    used += b.text.length;
+    lines.push(b.text);
   }
   if (!lines.length) return '';
   return `
@@ -402,12 +412,15 @@ export function getLockedRules(): string[] {
 }
 
 
+export const SAVED_ANSWERS_BUDGET = FAQ_CHAR_BUDGET;
+
 export function buildSystemPrompt(
   basePrompt: string | null,
   codAvailable: boolean | null | undefined,
   channel: Channel = 'chat',
   faqs: SavedAnswer[] = [],
   codStates: string | null = null,
+  asked = '',
 ): string {
   const base = basePrompt ? basePrompt + '\n\n' + PANEL_LOOKUP_RULES : DEFAULT_SYSTEM_PROMPT;
   let cod: string;
@@ -442,7 +455,7 @@ Never mention chat, this window, or replying instantly. Do not ask them to "hold
 You are in a chat box, so keep it to one or two short sentences per message, the way a person texts.
 No greetings block, no sign-off, no email formatting.`;
 
-  return base + '\n\n' + MASTER_RULES_PROMPT + '\n\nSTORE FACTS\nToday is ' + today + ' (India time).\n' + cod + savedAnswersSection(faqs) + '\n\n' + tone;
+  return base + '\n\n' + MASTER_RULES_PROMPT + '\n\nSTORE FACTS\nToday is ' + today + ' (India time).\n' + cod + savedAnswersSection(faqs, asked) + '\n\n' + tone;
 }
 
 const ORDER_LOOKUP_TOOL: ChatCompletionTool = {
@@ -687,7 +700,9 @@ export async function getAIResponse(
   const codAlreadyTold = !!codStates
     && recent.rows.some((r) => (r.sender === 'ai' || r.sender === 'agent') && /\b(cod|cash on delivery)\b/i.test(r.content || ''));
 
-  let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates)
+  // The customer's latest messages: when the saved answers are more than fit, the closest go first.
+  const askedNow = recent.rows.filter((r) => r.sender === 'visitor').slice(-3).map((r) => r.content || '').join('\n');
+  let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates, askedNow)
     + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
     + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
 
