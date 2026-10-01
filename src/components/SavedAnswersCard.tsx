@@ -10,7 +10,6 @@ interface Faq { id: string; question: string; answer: string; is_enabled: boolea
 
 // Keep in step with FAQ_CHAR_BUDGET in src/lib/chat/ai.ts.
 const BUDGET = 25000;
-const FOLD = 12;
 
 export default function SavedAnswersCard({ faqs, busy, businessId, request, draft, setDraft, onAdd }: {
   faqs: Faq[];
@@ -22,9 +21,8 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
   onAdd: () => Promise<void>;
 }) {
   const [q, setQ] = useState('');
-  const [showAll, setShowAll] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [showOff, setShowOff] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
 
   const on = faqs.filter((f) => f.is_enabled);
   const off = faqs.filter((f) => !f.is_enabled);
@@ -32,44 +30,58 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
   const pct = Math.min(100, Math.round((used / BUDGET) * 100));
   const needle = q.trim().toLowerCase();
   const match = (f: Faq) => !needle || f.question.toLowerCase().includes(needle) || f.answer.toLowerCase().includes(needle);
-  const list = useMemo(() => on.filter(match), [on, needle]); // eslint-disable-line react-hooks/exhaustive-deps
-  const visible = needle || showAll ? list : list.slice(0, FOLD);
+  const list = useMemo(() => [...on.filter(match), ...off.filter(match)], [faqs, needle]); // eslint-disable-line react-hooks/exhaustive-deps
   const muted = { border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' };
 
-  const item = (f: Faq, n: number) => (
-    <div key={f.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem 0.75rem', opacity: f.is_enabled ? 1 : 0.55 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-        <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', minWidth: 18, paddingTop: 10 }}>{n}</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <input
-            className="form-input"
-            style={{ fontWeight: 600, marginBottom: '0.375rem' }}
-            defaultValue={f.question}
-            aria-label="Question"
-            onBlur={(e) => { if (e.target.value.trim() !== f.question) request('PATCH', { businessId, id: f.id, question: e.target.value }); }}
-          />
-          <textarea
-            className="form-input"
-            rows={Math.min(6, Math.max(2, Math.ceil(f.answer.length / 90)))}
-            defaultValue={f.answer}
-            aria-label="Answer"
-            onBlur={(e) => { if (e.target.value.trim() !== f.answer) request('PATCH', { businessId, id: f.id, answer: e.target.value }); }}
-          />
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.375rem', alignItems: 'center' }}>
-            <button className="btn btn-sm" disabled={busy} style={muted}
-              onClick={() => request('PATCH', { businessId, id: f.id, isEnabled: !f.is_enabled })}>
-              {f.is_enabled ? 'Turn off' : 'Turn on'}
-            </button>
-            <button className="btn btn-sm" disabled={busy} style={{ ...muted, color: 'var(--danger, #ef4444)' }}
-              onClick={() => { if (confirm('Delete this saved answer?')) request('DELETE', undefined, `?businessId=${businessId}&id=${f.id}`); }}>
-              Delete
-            </button>
-            <span style={{ marginLeft: 'auto', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>Changes save when you click outside the box</span>
+  // One line per answer; click it to open the editor (only one open at a time).
+  const item = (f: Faq) => {
+    const n = f.is_enabled ? on.indexOf(f) + 1 : null;
+    const isOpen = open === f.id;
+    return (
+      <div key={f.id} style={{ borderBottom: '1px solid var(--border)', opacity: f.is_enabled ? 1 : 0.55, background: isOpen ? 'var(--primary-light)' : 'transparent' }}>
+        <button type="button" onClick={() => setOpen(isOpen ? null : f.id)} aria-expanded={isOpen}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '0.5rem 0.75rem', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left', color: 'var(--fg)' }}>
+          <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', minWidth: 22 }}>{n ?? 'off'}</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'block', fontWeight: 600, fontSize: '0.8125rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.question}</span>
+            {!isOpen && <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.answer}</span>}
+          </span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{isOpen ? '▴' : '▾'}</span>
+        </button>
+        {isOpen && (
+          <div style={{ padding: '0 0.75rem 0.75rem 2.6rem' }}>
+            <input
+              className="form-input"
+              style={{ fontWeight: 600, marginBottom: '0.375rem' }}
+              defaultValue={f.question}
+              aria-label="Question"
+              onBlur={(e) => { if (e.target.value.trim() !== f.question) request('PATCH', { businessId, id: f.id, question: e.target.value }); }}
+            />
+            <textarea
+              className="form-input"
+              rows={Math.min(8, Math.max(3, Math.ceil(f.answer.length / 80)))}
+              defaultValue={f.answer}
+              aria-label="Answer"
+              autoFocus
+              onBlur={(e) => { if (e.target.value.trim() !== f.answer) request('PATCH', { businessId, id: f.id, answer: e.target.value }); }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.375rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-sm" disabled={busy} style={muted}
+                onClick={() => request('PATCH', { businessId, id: f.id, isEnabled: !f.is_enabled })}>
+                {f.is_enabled ? 'Turn off' : 'Turn on'}
+              </button>
+              <button className="btn btn-sm" disabled={busy} style={{ ...muted, color: 'var(--danger, #ef4444)' }}
+                onClick={() => { if (confirm('Delete this saved answer?')) { request('DELETE', undefined, `?businessId=${businessId}&id=${f.id}`); setOpen(null); } }}>
+                Delete
+              </button>
+              <button className="btn btn-sm" style={muted} onClick={() => setOpen(null)}>Close</button>
+              <span style={{ marginLeft: 'auto', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>Saves when you click outside the box</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="form-group">
@@ -113,25 +125,15 @@ export default function SavedAnswersCard({ faqs, busy, businessId, request, draf
         </div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {visible.map((f) => item(f, on.indexOf(f) + 1))}
-        {needle && !list.length && <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answer matches “{q}”.</div>}
-        {!needle && !faqs.length && <div style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answers yet.</div>}
+      {/* The list scrolls inside its own box, so the page below (Brain, COD...) stays close. */}
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, maxHeight: 460, overflowY: 'auto' }}>
+        {list.map(item)}
+        {needle && !list.length && <div style={{ padding: '0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answer matches “{q}”.</div>}
+        {!needle && !faqs.length && <div style={{ padding: '0.75rem', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>No saved answers yet.</div>}
       </div>
-      {!needle && list.length > FOLD && (
-        <button type="button" onClick={() => setShowAll(!showAll)} style={{ ...muted, border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.75rem', marginTop: '0.5rem', padding: 0 }}>
-          {showAll ? 'Show fewer' : `Show all ${list.length}`}
-        </button>
-      )}
-
-      {off.filter(match).length > 0 && (
-        <div style={{ marginTop: '0.75rem' }}>
-          <button type="button" onClick={() => setShowOff(!showOff)} style={{ border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}>
-            {showOff ? '▾' : '▸'} Turned off ({off.filter(match).length}): the agent does not use these
-          </button>
-          {showOff && <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>{off.filter(match).map((f, i) => item(f, i + 1))}</div>}
-        </div>
-      )}
+      <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: 4 }}>
+        {needle ? `${list.length} found` : `${faqs.length} answers`} · click one to see or edit it
+      </div>
     </div>
   );
 }
