@@ -28,7 +28,7 @@ export const NO_REPLY_NEEDED_REGEX =
 // team", which promises a follow-up the AI never turned into an escalation. A chat
 // ending in one of these has been answered by nobody. The auto-close (auto-close.ts)
 // treats it as still waiting, so it is never closed over the customer's head. The
-// inbox's own Waiting timer does not use it yet. No apostrophes: it goes into SQL.
+// inbox's Waiting timer and its Unread filter use it too (conversations route, 2026-10-01). No apostrophes: it goes into SQL.
 export const AI_NOT_AN_ANSWER_REGEX =
   '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)';
 

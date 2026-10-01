@@ -4,7 +4,7 @@ import { query } from '@/lib/db';
 import { parseInboxSearch } from '@/lib/chat/inbox-search';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
-import { NO_REPLY_NEEDED_REGEX, WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
+import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX, WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can } from '@/lib/permissions';
 
@@ -81,6 +81,40 @@ const URGENT_OVERDUE_HOURS = 1;
 
 const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)';
 
+// What a chat's messages say about waiting (alias w): the last customer message, the last staff
+// reply, the last urgent customer message, who wrote last and what the customer last wrote.
+// Closed chats skip the work (all NULL).
+const WAITING_LATERAL = `LEFT JOIN LATERAL (
+           SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
+                  max(m.created_at) FILTER (WHERE m.sender = 'agent') AS last_agent_at,
+                  max(m.created_at) FILTER (WHERE m.sender = 'visitor' AND m.metadata->>'urgent' IS NOT NULL) AS last_urgent_at,
+                  (array_agg(m.sender ORDER BY m.created_at DESC, m.id DESC))[1] AS last_sender,
+                  (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'visitor'))[1] AS last_visitor_text,
+                  (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'ai'))[1] AS last_ai_text
+             FROM messages m
+            WHERE m.conversation_id = c.id AND c.status <> 'resolved'
+              AND m.sender <> 'tool_result'
+              AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
+              AND COALESCE(m.metadata->>'withheld', '') = ''
+              AND m.content IS NOT NULL AND btrim(m.content) <> ''
+              AND m.deleted_at IS NULL
+         ) w ON true`;
+
+// Since when the customer has waited for an answer (src/lib/chat/waiting.ts), NULL when nobody owes
+// one: closed, answered by a team member since, a plain "ok / thanks" after an answer, or an AI chat
+// whose AI really answered. Still waiting: a chat in Needs you no person has answered yet (even if
+// the customer's last word was "ok"), the customer wrote last, or the AI's last word was no answer
+// ("sorry, that took longer", "let me confirm with the team": AI_NOT_AN_ANSWER_REGEX, the same rule
+// as auto-close.ts). Also what "Unread" lists (owner, 2026-10-01: "jawab baaki wali"; it used to be
+// any message no one had opened, AI answers included).
+const WAITING_SINCE_SQL = `CASE WHEN c.status = 'resolved' OR w.last_visitor_at IS NULL THEN NULL
+                   WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_visitor_at THEN NULL
+                   WHEN c.status = 'human_needed' AND w.last_agent_at IS NULL THEN w.last_visitor_at
+                   WHEN w.last_visitor_text ~* '${NO_REPLY_NEEDED_REGEX}' THEN NULL
+                   WHEN c.status = 'human_needed' OR w.last_sender = 'visitor'
+                        OR (w.last_sender = 'ai' AND w.last_ai_text ~* '${AI_NOT_AN_ANSWER_REGEX}') THEN w.last_visitor_at
+              END`;
+
 // The SQL that puts an open chat under a problem tab (a = the table alias).
 function topicCondition(key: string, labels: string[], a: string): string {
   if (key === 'risk') return `COALESCE(${a}.health_score, 0) >= ${HEALTH_PIN_MIN}`;
@@ -103,14 +137,15 @@ export async function GET(request: NextRequest) {
   // chats verified by the widget form or a found lookup. Left out, as the
   // status tabs do, it lists everyone.
   const segment = searchParams.get('segment') || '';
-  // ?unread=1 lists only chats with messages nobody has read yet (the inbox's "Unread" filter).
+  // ?unread=1 lists only chats waiting for an answer (WAITING_SINCE_SQL; the inbox's "Unread" filter).
   const unreadOnly = searchParams.get('unread') === '1';
   const topic = topicByKey(searchParams.get('topic'));
   // ?case=refund|reship: the Refund / Ship again section (chat-cases.sql). A marked chat shows ONLY
   // there (and in a search); every other list leaves it out.
   const caseParam = searchParams.get('case') || '';
   const caseKind = caseParam === 'refund' || caseParam === 'reship' ? caseParam : '';
-  const limit = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
+  // The page asks for 200 and "Show more" asks for more (the answer's total says how many there are).
+  const limit = Math.max(1, Math.min(parseInt(searchParams.get('limit') || '200', 10) || 200, 1000));
 
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -149,8 +184,10 @@ export async function GET(request: NextRequest) {
       conditions.push('c.case_kind IS NULL');
     }
     if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
+    // All / Customers / Visitors list OPEN chats; a Closed chat moves to Closed (owner, 2026-10-01:
+    // a closed chat used to stay in its place there, only its label changed).
+    if (!status && !caseKind && !topic) conditions.push("c.status <> 'resolved'");
     if (category) { conditions.push(`c.category = $${pi++}`); params.push(category); }
-    if (unreadOnly) conditions.push('c.unread_count > 0');
     if (segment === 'visitors' && !caseKind) conditions.push(`NOT ${KNOWN_CUSTOMER}`);
     else if (segment === 'customers' && !caseKind) conditions.push(KNOWN_CUSTOMER);
     if (topic && !caseKind) {
@@ -199,6 +236,25 @@ export async function GET(request: NextRequest) {
     return { rows: [] as Record<string, number>[] };
   });
 
+  // How many open chats (one per customer) wait for an answer in this login's panels, whatever tab
+  // is open: the number beside "Chat Support" (it used to add up unread messages, AI replies too).
+  // Asked alongside the list.
+  const unansweredPromise = query<{ n: number }>(
+    `SELECT count(DISTINCT x.gk)::int AS n
+       FROM (SELECT CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
+                         THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END AS gk,
+                    ${WAITING_SINCE_SQL} AS waiting_since
+               FROM conversations c
+               JOIN sites s ON s.id = c.site_id
+               ${WAITING_LATERAL}
+              WHERE ${[...scopeConditions, "c.status <> 'resolved'", 'c.case_kind IS NULL'].join(' AND ')}) x
+      WHERE x.waiting_since IS NOT NULL`,
+    scopeParams
+  ).then((u) => u.rows[0]?.n ?? 0).catch((err) => {
+    console.error('[inbox] unanswered count failed:', (err as Error)?.message);
+    return null;
+  });
+
   const result = await query(
     `WITH ${search.cte ? search.cte + ',' : ''}
      base AS (
@@ -213,11 +269,7 @@ export async function GET(request: NextRequest) {
               b.name AS panel_name,
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
                    THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key,
-              CASE WHEN c.status = 'resolved' OR w.last_visitor_at IS NULL THEN NULL
-                   WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_visitor_at THEN NULL
-                   WHEN w.last_visitor_text ~* '${NO_REPLY_NEEDED_REGEX}' THEN NULL
-                   WHEN c.status = 'human_needed' OR w.last_sender = 'visitor' THEN w.last_visitor_at
-              END AS waiting_since,
+              ${WAITING_SINCE_SQL} AS waiting_since,
               CASE WHEN c.status = 'resolved' OR w.last_urgent_at IS NULL THEN NULL
                    WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_urgent_at THEN NULL
                    ELSE w.last_urgent_at
@@ -229,20 +281,7 @@ export async function GET(request: NextRequest) {
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
          LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text
-         LEFT JOIN LATERAL (
-           SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
-                  max(m.created_at) FILTER (WHERE m.sender = 'agent') AS last_agent_at,
-                  max(m.created_at) FILTER (WHERE m.sender = 'visitor' AND m.metadata->>'urgent' IS NOT NULL) AS last_urgent_at,
-                  (array_agg(m.sender ORDER BY m.created_at DESC, m.id DESC))[1] AS last_sender,
-                  (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'visitor'))[1] AS last_visitor_text
-             FROM messages m
-            WHERE m.conversation_id = c.id AND c.status <> 'resolved'
-              AND m.sender <> 'tool_result'
-              AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
-              AND COALESCE(m.metadata->>'withheld', '') = ''
-              AND m.content IS NOT NULL AND btrim(m.content) <> ''
-              AND m.deleted_at IS NULL
-         ) w ON true
+         ${WAITING_LATERAL}
          ${orderNameJoinSql('c', 's')}
          ${search.join}
          ${where}
@@ -254,14 +293,16 @@ export async function GET(request: NextRequest) {
               (b.status <> 'resolved' AND b.auto_closed_at IS NOT NULL
                AND (b.verified_order_id IS NOT NULL OR b.phone_match_order_id IS NOT NULL)) AS returned
          FROM base b
-       ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text' : ''}
+       ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text'
+         : unreadOnly ? 'WHERE b.waiting_since IS NOT NULL' : ''}
      ), grouped AS (
        SELECT f.*,
               row_number() OVER w AS group_rank,
               count(*) OVER (PARTITION BY f.site_id, f.group_key)::int AS thread_count,
               sum(f.unread_count) OVER (PARTITION BY f.site_id, f.group_key)::int AS group_unread,
               bool_or(f.status = 'human_needed') OVER (PARTITION BY f.site_id, f.group_key) AS group_needs_human,
-              min(f.urgent_since) OVER (PARTITION BY f.site_id, f.group_key) AS group_urgent_since
+              min(f.urgent_since) OVER (PARTITION BY f.site_id, f.group_key) AS group_urgent_since,
+              min(f.waiting_since) OVER (PARTITION BY f.site_id, f.group_key) AS group_waiting_since
          FROM filtered f
        WINDOW w AS (PARTITION BY f.site_id, f.group_key
                     ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)
@@ -279,7 +320,9 @@ export async function GET(request: NextRequest) {
             g.returned, g.auto_closed_at, g.closed_by_name, g.closed_at,
             g.case_kind, g.case_marked_by, g.case_marked_at, g.case_order_id,
             g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
+            (g.group_waiting_since IS NOT NULL) AS group_waiting,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
+            count(*) OVER ()::int AS total_rows,
             ${search.snippet} AS match_snippet,
             (SELECT m.content
                FROM messages m
@@ -298,15 +341,22 @@ export async function GET(request: NextRequest) {
   );
 
   const counts = (await countsPromise).rows[0] || {};
+  // How many rows there are in all (the page shows 200 at a time, "Show more" for the rest).
+  const total = (result.rows[0] as { total_rows?: number } | undefined)?.total_rows ?? 0;
+  for (const r of result.rows as Record<string, unknown>[]) delete r.total_rows;
 
-  // How many chats each section holds (and unread), for the sidebar; for the section that is open,
+  const unansweredTotal = await unansweredPromise;
+
+  // How many chats each section holds (and how many wait for an answer), for the sidebar; for the section that is open,
   // who marked how many per day (India time) over the last 14 days, for the owner's experts.
   const caseCounts: Record<string, { total: number; unread: number }> = { refund: { total: 0, unread: 0 }, reship: { total: 0, unread: 0 } };
   let caseSummary: { marked_by: string; day: string; n: number }[] = [];
   try {
     const cc = await query<{ case_kind: string; total: number; unread: number }>(
-      `SELECT c.case_kind, count(*)::int AS total, COALESCE(sum(c.unread_count), 0)::int AS unread
+      `SELECT c.case_kind, count(*)::int AS total,
+              count(*) FILTER (WHERE (${WAITING_SINCE_SQL}) IS NOT NULL)::int AS unread
          FROM conversations c JOIN sites s ON s.id = c.site_id
+         ${WAITING_LATERAL}
         WHERE ${[...scopeConditions, 'c.case_kind IS NOT NULL'].join(' AND ')}
         GROUP BY c.case_kind`,
       scopeParams
@@ -330,5 +380,8 @@ export async function GET(request: NextRequest) {
     console.error('[inbox] case counts failed:', (err as Error)?.message);
   }
 
-  return NextResponse.json({ conversations: result.rows, topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary });
+  return NextResponse.json({
+    conversations: result.rows, total, unanswered_total: unansweredTotal,
+    topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary,
+  });
 }

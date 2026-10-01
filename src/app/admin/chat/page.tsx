@@ -105,6 +105,8 @@ interface Conversation {
   waiting_overdue?: boolean;
   // Threatened a chargeback / police / court or called the store a fraud, and no person has answered yet.
   urgent_waiting?: boolean;
+  // Any of the row's chats (one customer's group) waits for an answer.
+  group_waiting?: boolean;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.
@@ -962,21 +964,31 @@ export default function ChatSupportPage() {
   // not asked for on every key. A search looks at ALL chats of the chosen
   // panel (Closed ones and visitors too), whatever tab is open.
   const [searchInput, setSearchInput] = useState('');
-  // The "Unread" filter under the search box: only chats with messages nobody has read.
+  // The "Unread" filter under the search box: only chats whose customer still waits for an answer
+  // (owner, 2026-10-01: "jawab baaki wali"; chats the AI already answered are not unread).
   const [unreadOnly, setUnreadOnly] = useState(false);
+  // The list comes 200 at a time; "Show more" asks for 200 more. listTotal = how many there are in all,
+  // unansweredTotal = open chats waiting for an answer in all tabs (the number beside Chat Support).
+  const [listLimit, setListLimit] = useState(200);
+  const [listTotal, setListTotal] = useState<number | null>(null);
+  const [unansweredTotal, setUnansweredTotal] = useState<number | null>(null);
   const [searchQ, setSearchQ] = useState('');
   useEffect(() => {
     const t = setTimeout(() => setSearchQ(searchInput.trim()), 300);
     return () => clearTimeout(t);
   }, [searchInput]);
   const searchActive = searchQ.length >= 2;
+  // Another tab, filter, panel or search starts again at the first 200. Done while rendering, so the
+  // first request for the new list already asks for 200 (an effect would ask twice).
+  const listKey = `${tab}|${unreadOnly}|${activePanelId}|${searchQ}`;
+  const [limitKey, setLimitKey] = useState(listKey);
+  if (limitKey !== listKey) { setLimitKey(listKey); setListLimit(200); }
   const searchActiveRef = useRef(false);
   searchActiveRef.current = searchActive;
   // "#1234" highlights the 1234 in "#1234" and in "1234" alike.
   const searchTerm = searchActive ? (searchQ.replace(/^[#\s]+/, '') || searchQ) : '';
   const listSeqRef = useRef(0);
   const scrolledToHitRef = useRef('');
-  const unreadRef = useRef(0);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -1078,6 +1090,7 @@ export default function ChatSupportPage() {
     try {
       const params = new URLSearchParams();
       if (activePanelId) params.set('businessId', activePanelId);
+      params.set('limit', String(listLimit));
       if (searchActive) {
         params.set('q', searchQ);
       } else {
@@ -1085,7 +1098,8 @@ export default function ChatSupportPage() {
         if (segment) params.set('segment', segment);
         if (topicKey) params.set('topic', topicKey);
         if (caseKey) params.set('case', caseKey);
-        if (unreadOnly) params.set('unread', '1');
+        // Closed chats never wait for an answer: Unread does not apply there.
+        if (unreadOnly && statusFilter !== 'resolved') params.set('unread', '1');
       }
       const res = await fetch(`/api/chat/conversations?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1093,13 +1107,15 @@ export default function ChatSupportPage() {
       const data = await res.json();
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
+        setListTotal(typeof data.total === 'number' ? data.total : null);
+        if (typeof data.unanswered_total === 'number') setUnansweredTotal(data.unanswered_total);
         if (data.topic_counts) setTopicCounts(data.topic_counts);
         if (data.case_counts) setCaseCounts(data.case_counts);
         setCaseSummary(Array.isArray(data.case_summary) ? data.case_summary : []);
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, unreadOnly, searchActive, searchQ]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, unreadOnly, searchActive, searchQ, listLimit]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1132,15 +1148,18 @@ export default function ChatSupportPage() {
   // seconds instead, and stops entirely while the tab is in the background.
   useEffect(() => {
     if (!token) return;
+    let n = 0;
     const tick = () => {
       if (document.hidden) return;
-      // A search is not re-run every few seconds; the open chat still is.
-      if (!searchActiveRef.current) fetchConversations(true);
+      n++;
+      // A search is not re-run every few seconds; the open chat still is. After "Show more" (up to
+      // 1000 rows) the list is asked for every 15 s instead of every 3 s, so the poll stays light.
+      if (!searchActiveRef.current && (listLimit <= 200 || n % 5 === 0)) fetchConversations(true);
       if (activeIdRef.current) fetchThread(activeIdRef.current, true);
     };
     const id = setInterval(tick, POLL_MS);
     return () => clearInterval(id);
-  }, [token, fetchConversations, fetchThread]);
+  }, [token, fetchConversations, fetchThread, listLimit]);
 
   const pinUntilRef = useRef(0);
   const earlierCount = earlier.reduce((n, e) => n + (e.messages?.length || 0), 0);
@@ -1577,11 +1596,11 @@ export default function ChatSupportPage() {
   const showPanelName = businesses.length > 1;
   // A grouped row (one customer's chats) carries the unread count of all of them.
   const rowUnread = (c: Conversation) => c.group_unread ?? c.unread_count ?? 0;
-  // The unread count is the inbox's; a search shows other chats, so it keeps
-  // the last count from before it.
-  const unreadNow = conversations.reduce((n, c) => n + (rowUnread(c) || 0), 0);
-  if (!searchActive) unreadRef.current = unreadNow;
-  const unreadTotal = searchActive ? unreadRef.current : unreadNow;
+  // Open chats waiting for an answer, in all tabs (the server counts them; it used to be the unread
+  // messages of the 200 rows on screen, AI replies included).
+  const unreadTotal = unansweredTotal ?? 0;
+  // A row whose customer still waits for an answer gets a red count; one the AI already answered a grey one.
+  const rowWaiting = (c: Conversation) => !!(c.group_waiting ?? c.waiting_since);
   // The open chat's row: its own, or its customer's grouped row, which moves
   // to the customer's newest chat when they write in a new one.
   const isActiveRow = (c: Conversation) => activeId === c.id || (
@@ -1770,7 +1789,7 @@ export default function ChatSupportPage() {
             <MessageCircle size={15} /> Chat Support
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-            {unreadTotal > 0 ? `${unreadTotal} unread` : 'Chat and email in one place'}
+            {unreadTotal > 0 ? `${unreadTotal} waiting for an answer` : 'Chat and email in one place'}
           </div>
         </div>
 
@@ -1809,10 +1828,10 @@ export default function ChatSupportPage() {
               {s.v.startsWith('case:') && (caseCounts[s.v.slice(5)]?.total ?? 0) > 0 && (() => {
                 const c = caseCounts[s.v.slice(5)];
                 return (
-                  <span title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} unread` : ''}`} style={{
+                  <span title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}`} style={{
                     fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
                     background: c.unread ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))', color: c.unread ? '#b91c1c' : 'var(--fg-muted)',
-                  }}>{c.unread ? `${c.unread} new` : c.total}</span>
+                  }}>{c.unread ? `${c.unread} waiting` : c.total}</span>
                 );
               })()}
             </button>
@@ -1881,7 +1900,7 @@ export default function ChatSupportPage() {
           </button>
           <span className="mobile-header-title">Chat Support</span>
           {unreadTotal > 0 && (
-            <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{unreadTotal} unread</span>
+            <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{unreadTotal} waiting</span>
           )}
         </div>
 
@@ -1892,7 +1911,7 @@ export default function ChatSupportPage() {
               <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>
                 {searchActive ? 'Search results' : topicDef ? topicDef.label : 'Conversations'}
                 <span style={{ color: 'var(--fg-muted)', fontWeight: 400, marginLeft: '0.375rem', fontSize: '0.75rem' }}>
-                  {conversations.length}{searchActive && conversations.length >= 200 ? '+' : ''}
+                  {listTotal ?? conversations.length}
                 </span>
                 {urgentCount > 0 && (
                   <span title={`Frustrated customers (${HEALTH_PIN_MIN}%+) and customers waiting ${WAITING_OVERDUE_HOURS} hours or more for an answer, kept at the top until they are answered or Closed`} style={{
@@ -1931,7 +1950,7 @@ export default function ChatSupportPage() {
                   </button>
                 )}
               </div>
-              {!searchActive && (
+              {!searchActive && tab !== 'resolved' && (
                 <div style={{ display: 'flex', gap: 6, marginTop: '0.5rem' }} role="group" aria-label="Show chats">
                   {([false, true] as const).map((only) => (
                     <button
@@ -1939,6 +1958,7 @@ export default function ChatSupportPage() {
                       type="button"
                       aria-pressed={unreadOnly === only}
                       onClick={() => setUnreadOnly(only)}
+                      title={only ? 'Chats whose customer still waits for an answer. Chats the AI already answered are not here.' : undefined}
                       style={{
                         padding: '0.25rem 0.75rem', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
                         border: `1px solid ${unreadOnly === only ? 'var(--primary)' : 'var(--border)'}`,
@@ -1946,7 +1966,7 @@ export default function ChatSupportPage() {
                         color: unreadOnly === only ? 'var(--primary)' : 'var(--fg-muted)',
                       }}
                     >
-                      {only ? `Unread${unreadOnly ? ` (${conversations.length})` : ''}` : 'All'}
+                      {only ? `Unread${unreadOnly ? ` (${listTotal ?? conversations.length})` : ''}` : 'All'}
                     </button>
                   ))}
                 </div>
@@ -1996,13 +2016,13 @@ export default function ChatSupportPage() {
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
                   {caseKey && !searchActive ? (
                     <>
-                      <p>No chats marked for {CASE_LABELS[caseKey]}{unreadOnly ? ' with unread messages' : ''}.</p>
+                      <p>No chats marked for {CASE_LABELS[caseKey]}{unreadOnly ? ' waiting for an answer' : ''}.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
                         Open a verified customer&apos;s chat and press {CASE_LABELS[caseKey]} at the top. It moves here and leaves every other list.
                       </p>
                     </>
-                  ) : unreadOnly && !searchActive ? (
-                    <p>No unread chats here. Everything is read.</p>
+                  ) : unreadOnly && statusFilter !== 'resolved' && !searchActive ? (
+                    <p>Nobody here is waiting for an answer.</p>
                   ) : topicDef && !searchActive ? (
                     <>
                       <p>No open chats under “{topicDef.label}”.</p>
@@ -2085,7 +2105,8 @@ export default function ChatSupportPage() {
                           </span>
                           <span title={pill.title} style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, background: pill.bg, color: pill.fg }}>{pill.text}</span>
                           {rowUnread(c) > 0 && (
-                            <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700, flexShrink: 0 }}>
+                            <span title={rowWaiting(c) ? `${rowUnread(c)} new message${rowUnread(c) === 1 ? '' : 's'}; the customer is waiting for an answer` : `${rowUnread(c)} new message${rowUnread(c) === 1 ? '' : 's'}, already answered`}
+                              style={{ background: rowWaiting(c) ? 'var(--danger)' : 'var(--muted, #e5e7eb)', color: rowWaiting(c) ? '#fff' : 'var(--fg-muted)', borderRadius: 9999, fontSize: '0.625rem', padding: '1px 6px', fontWeight: 700, flexShrink: 0 }}>
                               {rowUnread(c)}
                             </span>
                           )}
@@ -2121,6 +2142,19 @@ export default function ChatSupportPage() {
                   })()}
                 </button>
               ))}
+              {listTotal !== null && conversations.length > 0 && conversations.length < listTotal && (
+                <div style={{ padding: '0.75rem 1rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--fg-muted)' }}>
+                  Showing {conversations.length} of {listTotal}
+                  {listLimit < 1000 ? (
+                    <button type="button" className="btn btn-outline btn-sm" style={{ marginLeft: '0.5rem' }} disabled={loadingList}
+                      onClick={() => setListLimit((l) => Math.min(l + 200, 1000))}>
+                      Show {Math.min(200, listTotal - conversations.length)} more
+                    </button>
+                  ) : (
+                    <span> · the newest 1000 are shown; search by name, phone or order for older ones</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
