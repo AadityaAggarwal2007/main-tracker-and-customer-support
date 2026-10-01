@@ -24,7 +24,7 @@ export const SITUATIONS: { key: string; label: string }[] = [
 export const SITUATION_KEYS = SITUATIONS.map((s) => s.key);
 
 const WRONG_TRACKING = /\b(wrong|galat|incorrect|invalid|not working|kaam nahi|nahi chal|does ?n'?t work|different|another|someone else'?s|kisi aur ka|dusre ka|doosre ka)\b[^.?!\n]{0,40}\b(tracking|track|link|awb|order|name)\b|\b(tracking|track|link|awb)\b[^.?!\n]{0,40}\b(wrong|galat|incorrect|invalid|not working|kaam nahi|nahi chal|not (opening|updating)|update nahi|show(ing)? (another|someone)|kisi aur)\b/i;
-const DELAY = /\b(late|delay\w*|der|abhi tak|still not|not (yet )?(received|delivered|arrived|come)|nahi (aaya|mila|aayi|mili)|nhi (aaya|mila)|kab (aayega|milega|tak)|kitne din|how (many|much) (days|longer|time)|when will|kab aa)\b/i;
+const DELAY = /\b(late|delay\w*|der se|abhi tak|ab tak|still not|not (yet )?(received|delivered|arrived|come)|nahi (aaya|mila|aayi|mili)|nhi (aaya|mila|aayi)|kab (aayega|aayegi|milega|milegi|tak aayega)|kitne din|\d+\s*(din|days) ho gaye|when will (it|my order|i get|i receive|the order)|where is my (order|parcel))\b/i;
 
 // The situations a customer's latest messages (oldest first) bring up. Order matters: the most
 // serious first, because the agent is shown examples for the first one or two.
@@ -39,7 +39,8 @@ export function detectSituations(recentCustomerTexts: string[]): string[] {
   if (WRONG_TRACKING.test(text)) out.push('wrong_tracking');
   if (topics.has('damaged')) out.push('damaged');
   if (DELAY.test(text)) out.push('delay');
-  if (sig.abuse || sig.rude || sig.caps || sig.burst || sig.escalate || sig.repeats) out.push('angry');
+  // Typing in capitals or asking the same thing twice is not anger on its own.
+  if (sig.abuse || sig.rude || sig.escalate || (sig.caps && sig.burst) || sig.repeats >= 3) out.push('angry');
   if (topics.has('address')) out.push('address');
   if (topics.has('exchange')) out.push('exchange');
   return Array.from(new Set(out));
@@ -113,6 +114,20 @@ export function pickExamples(all: Example[], situations: string[], max = 2): Exa
   return out;
 }
 
+// Chat replies are short: an email-style greeting and signature are not part of how the team
+// talks in chat, so they are taken off an example.
+export function cleanTeamReply(text: string): string {
+  return String(text || '')
+    .replace(/^\s*(?:dear|hi|hello|hey)\b[^\n,]{0,40}[,!]?\s*\n+/i, '')
+    .replace(/\n+\s*(?:regards|thanks|thank you|warm regards|best regards)?[,\s]*\n*\s*(?:team\s+)?(?:vastora|vestora|luxeva)?\s*(?:customer\s+)?(?:support|care)(?:\s+team)?\s*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Situations that are critical enough to learn from a chat that simply ended after the team's
+// reply (no calm word from the customer).
+export const QUIET_OK = ['refund_cancel', 'fraud_claim', 'angry', 'wrong_tracking', 'delay', 'payment', 'damaged'];
+
 export interface ExampleDraft { situation: string; customer_said: string; team_replied: string }
 
 // The example part of the learner's JSON, or null when missing or unusable.
@@ -127,7 +142,9 @@ export function parseExample(raw: string | null | undefined, allowedSituations: 
   const situation = String(e.situation || '').trim();
   if (!SITUATION_KEYS.includes(situation) || !allowedSituations.includes(situation)) return null;
   const customer = String(e.customer || '').trim().slice(0, 300);
-  const team = String(e.team || '').trim();
+  const team = cleanTeamReply(String(e.team || ''));
+  // What the customer said must itself be about this situation (not a coupon question filed as anger).
+  if (!detectSituations([customer]).includes(situation)) return null;
   if (customer.length < 3 || hasPersonalDetail(customer)) return null;
   if (exampleProblem(team)) return null;
   return { situation, customer_said: customer, team_replied: team };

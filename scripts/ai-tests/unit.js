@@ -118,6 +118,11 @@ t('detectSituations', () => {
   assert.ok(d('abhi tak nahi aaya, 15 din ho gaye').includes('delay'));
   assert.ok(d('you are fraud, I will file a chargeback')[0] === 'fraud_claim');
   assert.ok(d('WORST SERVICE EVER!!!').includes('angry'));
+  assert.ok(!d('Coupon code').length);
+  assert.ok(!d('OK CAN YOU TELL ME THE ITEMS').includes('angry'));
+  assert.ok(!d('When will they contact me').includes('delay'));
+  assert.ok(!d('Track my order', 'Track my order').includes('angry'));
+  assert.ok(d('15 din ho gaye abhi tak order nahi aaya').includes('delay'));
   assert.ok(d('payment kat gaya par order nahi bana').includes('payment'));
 });
 t('customerCalmedAfter', () => {
@@ -152,6 +157,14 @@ t('parseExample', () => {
   assert.strictEqual(ex.parseExample(raw({ ...good, customer: 'order #4715 kab' }), ['delay']), null);
   assert.strictEqual(ex.parseExample(raw(null), ['delay']), null);
   assert.strictEqual(ex.parseExample('nonsense', ['delay']), null);
+});
+t('cleanTeamReply drops email greeting and signature', () => {
+  assert.strictEqual(ex.cleanTeamReply('Dear Customer,\n\nWe are sorry for the delay.\n\nVestora Customer Support'), 'We are sorry for the delay.');
+  assert.strictEqual(ex.cleanTeamReply('Sorry for the delay, checking now.'), 'Sorry for the delay, checking now.');
+});
+t('parseExample needs the customer line to be about the situation', () => {
+  const raw = JSON.stringify({ example: { situation: 'angry', customer: 'Coupon code', team: 'Yes, we offer ten percent off on your first order at checkout, enjoy shopping with us.' } });
+  assert.strictEqual(ex.parseExample(raw, ['angry']), null);
 });
 t('pickExamples', () => {
   const all = [{ situation: 'delay', id: 1 }, { situation: 'delay', id: 2 }, { situation: 'angry', id: 3 }];

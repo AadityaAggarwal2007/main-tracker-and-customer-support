@@ -4,7 +4,7 @@ import { query, queryOne } from '@/lib/db';
 import { getActiveModel, getClient } from './ai';
 import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS } from './brain';
 import { LEARN_INSTRUCTION, SUGGEST_MAX_PER_RUN, maskPersonal, parseDraft } from './brain-learn';
-import { SITUATIONS, customerCalmedAfter, detectSituations, parseExample, sameReply } from './brain-examples';
+import { QUIET_OK, SITUATIONS, customerCalmedAfter, detectSituations, parseExample, sameReply } from './brain-examples';
 
 // The learning job (brain-learn.ts, brain-examples.ts). For chats where the team answered (or
 // edited an AI reply), it reads the masked chat plus what the team did in the order panel, and
@@ -93,7 +93,8 @@ export async function suggestLessons(opts: { siteId?: string; max?: number; days
                  WHERE cc.site_id = $1 AND cc.customer_key = $2 AND cc.id <> $3 AND mm.sender = 'visitor' AND mm.created_at > $4) AS yes`,
               [site.id, c.customer_key, c.id, m.created_at]
             ) : null;
-            if (!elsewhere?.yes) { quietIds.add(m.id); sits.forEach((s) => quietSits.add(s)); }
+            const critical = sits.filter((x) => QUIET_OK.includes(x));
+            if (!elsewhere?.yes && critical.length) { quietIds.add(m.id); critical.forEach((x) => quietSits.add(x)); }
           }
         }
         const useQuiet = !calmedIds.size;
