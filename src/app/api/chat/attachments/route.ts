@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
-import { can, canAccessPanel } from '@/lib/permissions';
+import { can } from '@/lib/permissions';
 import {
   MAX_ATTACHMENT_BYTES, TOO_LARGE_MESSAGE, UNSUPPORTED_TYPE_MESSAGE, EMPTY_FILE_MESSAGE,
   cleanFileName, sniffAttachmentType,

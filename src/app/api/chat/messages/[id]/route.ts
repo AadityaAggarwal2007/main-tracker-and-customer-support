@@ -5,7 +5,7 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, isOurMessage } from '@/lib/chat/message-rules';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
-import { can, canAccessPanel } from '@/lib/permissions';
+import { can } from '@/lib/permissions';
 import { hasFormLink, maskRefundLinks } from '@/lib/refund/link-mask';
 
 export const dynamic = 'force-dynamic';

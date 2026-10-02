@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { query, queryOne } from '@/lib/db';
+import { queryOne } from '@/lib/db';
 import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
 import { cleanCodStates } from '@/lib/chat/cod';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';

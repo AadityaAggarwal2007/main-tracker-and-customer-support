@@ -145,15 +145,3 @@ export async function mergeVisitorChatInto(targetId: string, siteId: string, vis
     console.error('[chat] merge visitor chat failed:', (err as Error).message);
   }
 }
-
-// The id a conversation id stands for now (follows merged_into, a few hops at most).
-export async function canonicalConversationId(id: string): Promise<string> {
-  let cur = id;
-  for (let i = 0; i < 5; i++) {
-    const r = await queryOne<{ merged_into: string | null }>(`SELECT merged_into FROM conversations WHERE id = $1`, [cur]);
-    if (!r?.merged_into) return cur;
-    cur = r.merged_into;
-  }
-  return cur;
-}
-

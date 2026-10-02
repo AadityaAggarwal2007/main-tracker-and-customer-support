@@ -6,7 +6,7 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
-import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { can, isSuperAdmin } from '@/lib/permissions';
 import { maskRefundLinks } from '@/lib/refund/link-mask';
 import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
 import { isOfficeHours } from '@/lib/office-hours';

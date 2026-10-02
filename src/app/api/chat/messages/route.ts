@@ -4,7 +4,7 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import { hasFormLink } from '@/lib/refund/link-mask';
-import { can, canAccessPanel } from '@/lib/permissions';
+import { can } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
 import {
   STARTING_MESSAGE, actionError, actionsReady, heldMessage, holderOf, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,

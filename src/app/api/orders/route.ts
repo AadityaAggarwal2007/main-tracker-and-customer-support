@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { query, queryOne, queryCount } from '@/lib/db';
+import { query, queryCount } from '@/lib/db';
 import { can, isSuperAdmin } from '@/lib/permissions';
 import { orderNumbersInScope } from '@/lib/scope';
 

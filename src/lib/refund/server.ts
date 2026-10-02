@@ -870,7 +870,6 @@ export async function postAckWithRetry(requestId: string): Promise<boolean> {
 
 // ── Super Admin side (spec 3.5) ────────────────────────────────
 export const VIEWS = ['new', 'approved', 'rejected', 'refunded', 'cancelled', 'all', 'sent'] as const;
-const DAYS_90 = 90 * 24 * H;
 
 // The list's flags, from stored columns only.
 function listFlags(r: Row, now: number): string[] {

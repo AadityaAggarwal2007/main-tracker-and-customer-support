@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ATTACHMENT_ID_PATTERN } from '@/lib/chat/attachment-rules';
-import { can, canAccessPanel } from '@/lib/permissions';
+import { can } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
