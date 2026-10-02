@@ -68,7 +68,7 @@ const compile = (from, to) => {
 };
 for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
-for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'display-name', 'health-rules']) compile(`lib/chat/${f}.ts`, f);
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
 
@@ -439,7 +439,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
     ok(/\.\.\.\(urgent \? \{ urgent \} : \{\}\)/.test(read('app/api/widget/message/route.ts')), 'the widget route saves the marker');
     // The model's own number is kept beside the counts (health.ts), and the thread route reads it, never the counts.
     ok(read('lib/chat/health.ts').includes('JSON.stringify({ ...signals, llm: llm ? llm.score : null })'), 'health.ts keeps the model\'s number');
-    const thread = read('app/api/chat/conversations/[id]/route.ts');
+    const thread = ['app/api/chat/conversations/[id]/route.ts', 'lib/chat/thread-read.ts', 'lib/chat/thread-staff.ts', 'lib/chat/thread-transfer.ts'].map(read).join('\n');
     ok(norm(thread).includes(URGENT_OPEN_SQL), 'the thread read selects the unanswered urgent marker');
     ok(!/sig\?\.(threat|accuse)|health_signals->>'(threat|accuse)'/.test(thread), 'the lock never reads the word counts');
   });

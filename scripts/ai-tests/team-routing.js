@@ -93,7 +93,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn']) compile(`lib/chat/${f}.ts`, f);
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
@@ -2776,7 +2776,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(/ AS case_mark_role,/.test(db.list.sql) && db.list.sql.includes('g.case_mark_role'));
     marked({ id: 'r47b' }, 'Chikki (auto)', 'backfill');
     status(await thread('owner', 'r47b'), 200);
-    ok(/ AS case_mark_role,/.test(fs.readFileSync(path.join(SRC, 'app/api/chat/conversations/[id]/route.ts'), 'utf8')));
+    ok(/ AS case_mark_role,/.test(['app/api/chat/conversations/[id]/route.ts', 'lib/chat/thread-read.ts', 'lib/chat/thread-staff.ts', 'lib/chat/thread-transfer.ts'].map((f) => fs.readFileSync(path.join(SRC, f), 'utf8')).join('\n')));
     const page = fs.readFileSync(path.join(SRC, 'app/admin/chat/page.tsx'), 'utf8');
     ok(page.includes("role === 'backfill'") && page.includes('the move sent the customer no message'));
   });
