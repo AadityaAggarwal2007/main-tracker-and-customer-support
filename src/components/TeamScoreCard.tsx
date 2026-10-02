@@ -2,14 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ExternalLink, Loader2, RefreshCw, Settings, Trophy, X } from 'lucide-react';
+import { Loader2, Trophy, X } from 'lucide-react';
 import type {
-  ItemKind, ItemRow, ItemsResponse, Metric, PersonRow, PointKind, TeamScoreResponse, Weights,
+  ItemsResponse, Metric, PersonRow, PointKind, TeamScoreResponse, Weights,
 } from '@/lib/team-score/types';
 import { DEFAULT_WEIGHTS, POINT_LABELS, WEIGHT_KEYS, rulesHinglish } from '@/lib/team-score/rules';
 import { addDays, dayLabel } from '@/lib/team-score/clock';
-import type { ScoreCounts } from '@/lib/team-score/engine';
 import type { WeightsPlan, WeightsRow } from '@/lib/team-score/report';
+import {
+  CHIPS, Count, FIRST_DAY, PERIOD_KEY, RANK_COL, RANK_W, REFRESH_MS, fmtNum, fmtWhen,
+  hoverOff, hoverOn, isDay, istDayOf, linkBtn, muted, num, pill, plural, rangeOf, signed, small, stick, td, todayIst,
+  type C, type Chip, type Drawer, type Period, type Pop, type Who,
+} from './TeamScoreShared';
+import TeamScoreControls from './TeamScoreControls';
+import TeamScoreTable from './TeamScoreTable';
+import TeamScoreFooter from './TeamScoreFooter';
+import TeamScoreDrawer from './TeamScoreDrawer';
+import TeamScoreRulesDialog from './TeamScoreRulesDialog';
 
 // ── Team score (owner, 2026-10-01, part 4): the per-member daily report and incentive points. ──
 // STAFF ONLY. The Super Admin sees the whole board ("Team score"); a member who can reply sees only
@@ -19,129 +28,6 @@ import type { WeightsPlan, WeightsRow } from '@/lib/team-score/report';
 // here reaches a customer, the widget or the AI. Customers always see "Vastora Support". Points only,
 // no money. The numbers are computed on the server (src/lib/team-score/engine.ts); this screen only
 // shows them and opens the items behind each one.
-
-const FIRST_DAY = '2026-10-01';            // the routes refuse earlier days
-const REFRESH_MS = 120_000;                // Today: every 2 minutes while the tab is visible
-const PERIOD_KEY = 'teamScore.period';
-const MINUS = '−';
-
-type Chip = 'today' | 'yesterday' | '7d' | 'month';
-type Period = { chip: Chip } | { day: string };
-const CHIPS: { v: Chip; label: string }[] = [
-  { v: 'today', label: 'Today' }, { v: 'yesterday', label: 'Yesterday' },
-  { v: '7d', label: 'Last 7 days' }, { v: 'month', label: 'This month' },
-];
-
-const METRIC_LABEL: Record<Metric, string> = {
-  chats: 'Chats replied', customers: 'Chats replied', thanks: 'Thank you', convinced: 'Convinced',
-  frustrated: 'Still frustrated', unanswered_2h: 'Left 2 h, no reply', sent: 'Sent to / received / taken',
-  picked: 'Picked up', taken_no_reply: 'Taken, no reply', angry: 'Angry', fast_reply: '10-min reply',
-  solved: 'Solved', points: 'Points',
-};
-const KIND_LABEL: Record<ItemKind, string> = {
-  chat: 'Chat', thanks: 'Thank you', convinced: 'Convinced', frustrated: 'Still frustrated',
-  unanswered_2h: 'Left 2 h, no reply', taken_no_reply: 'Taken, no reply', picked: 'Picked up', sent: 'Sent',
-  received: 'Received', taken_from: 'Taken from', released: 'Released', fast_reply: '10-min reply',
-  solved: 'Solved', closed_waiting: 'Closed while waiting', angry: 'Angry',
-};
-const STATUS_CHIP: Record<string, { label: string; fg: string; bg: string }> = {
-  human_needed: { label: 'Needs you', fg: 'var(--danger)', bg: 'var(--danger-light)' },
-  agent_handling: { label: 'With team', fg: 'var(--primary)', bg: 'var(--primary-light)' },
-  ai_handling: { label: 'AI', fg: 'var(--fg-muted)', bg: 'var(--bg-subtle)' },
-  resolved: { label: 'Closed', fg: 'var(--fg-muted)', bg: 'var(--bg-subtle)' },
-};
-// The laptop table: the owner's order. Each label has a small Hinglish hint under it.
-const HEAD: { label: string; hint: string }[] = [
-  { label: 'Points', hint: '' },
-  { label: 'Chats replied', hint: 'kitni chats ka reply' },
-  { label: 'Customers', hint: 'unique customers' },
-  { label: 'Convinced', hint: 'convince hue' },
-  { label: 'Thank you', hint: 'thank you bola' },
-  { label: 'Still frustrated', hint: 'abhi bhi frustrated' },
-  { label: 'Left 2 h, no reply', hint: '2 ghante bina reply' },
-  { label: 'Sent to', hint: 'kisko bheji' },
-  { label: 'Picked up', hint: 'kitni baar chat uthai' },
-  { label: 'Taken, no reply', hint: 'lekar reply nahi kiya' },
-  { label: 'Angry', hint: 'gussa raha' },
-  { label: '10-min reply', hint: '10 min me reply' },
-  { label: 'Solved', hint: 'band + 24 ghante shanti' },
-];
-
-type C = Partial<ScoreCounts>;
-interface Who { key: string; name: string }
-interface Drawer { who: Who; metric: Metric; from: string; to: string; label: string }
-interface Pop { who: Who; row: PersonRow; top: number; left: number }
-
-// India day of now, as the screen asks for it (the server checks the same range).
-const todayIst = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
-const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-
-function rangeOf(p: Period, today: string): { from: string; to: string; label: string } {
-  let from = today, to = today, label = 'Today';
-  if ('day' in p) { from = to = p.day; label = dayLabel(p.day); }
-  else if (p.chip === 'yesterday') { from = to = addDays(today, -1); label = 'Yesterday'; }
-  else if (p.chip === '7d') { from = addDays(today, -6); label = 'Last 7 days'; }
-  else if (p.chip === 'month') { from = `${today.slice(0, 8)}01`; label = 'This month'; }
-  if (from < FIRST_DAY) from = FIRST_DAY;
-  return { from, to, label };
-}
-
-const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1)).replace('-', MINUS);
-const signed = (n: number) => (n > 0 ? `+${fmtNum(n)}` : fmtNum(n));
-const num = (c: C, k: keyof ScoreCounts): number | null => {
-  const v = c[k];
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
-};
-const plural = (n: number, one: string, many: string) => `${fmtNum(n)} ${n === 1 ? one : many}`;
-
-// '5 Oct, 1:00 AM' India time, from an ISO instant.
-function fmtWhen(iso: string | null | undefined): string {
-  const ms = iso ? Date.parse(iso) : NaN;
-  if (!Number.isFinite(ms)) return '';
-  const d = new Date(ms + 330 * 60000);
-  const h = d.getUTCHours(), m = d.getUTCMinutes();
-  return `${dayLabel(d.toISOString().slice(0, 10))}, ${h % 12 === 0 ? 12 : h % 12}:${m < 10 ? '0' : ''}${m} ${h < 12 ? 'AM' : 'PM'}`;
-}
-const istDayOf = (iso: string | null | undefined) => {
-  const ms = iso ? Date.parse(iso) : NaN;
-  return Number.isFinite(ms) ? new Date(ms + 330 * 60000).toISOString().slice(0, 10) : '';
-};
-function agoText(ms: number): string {
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
-  return `${Math.round(m / 60)} h ago`;
-}
-
-const muted: CSSProperties = { border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)' };
-const chosen: CSSProperties = { border: '1px solid var(--primary)', color: 'var(--primary)', background: 'var(--primary-light)' };
-const small: CSSProperties = { fontSize: '0.6875rem', color: 'var(--fg-muted)', lineHeight: 1.4 };
-const linkBtn: CSSProperties = {
-  border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: 'inherit', font: 'inherit',
-  textAlign: 'inherit', textUnderlineOffset: 2,
-};
-const pill = (fg: string, bg: string): CSSProperties => ({
-  fontSize: '0.625rem', fontWeight: 700, padding: '0.0625rem 0.4rem', borderRadius: 999, color: fg, background: bg,
-  whiteSpace: 'nowrap', display: 'inline-block', lineHeight: 1.5,
-});
-const hoverOn = (e: { currentTarget: HTMLElement }) => { e.currentTarget.style.textDecoration = 'underline'; };
-const hoverOff = (e: { currentTarget: HTMLElement }) => { e.currentTarget.style.textDecoration = 'none'; };
-
-// A count: "—" with the reason when it is not counted yet (null), a button that opens the items
-// when it is above zero, plain text at zero.
-function Count({ n, tip, open, active, children }: {
-  n: number | null; tip: string; open?: () => void; active?: boolean; children?: ReactNode;
-}) {
-  if (n === null) return <span title={tip} style={{ color: 'var(--fg-muted)', cursor: 'help' }}>—</span>;
-  const clickable = !!open && (active ?? n > 0);
-  if (!clickable) return <span>{children ?? fmtNum(n)}</span>;
-  return (
-    <button type="button" style={linkBtn} onClick={open} onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
-      {children ?? fmtNum(n)}
-    </button>
-  );
-}
 
 export default function TeamScoreCard({ token, onAlert, mine = false }: {
   token: string; onAlert: (type: string, message: string) => void;
@@ -511,15 +397,6 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
     setPop({ who: whoOf(p), row: p, top, left });
   };
 
-  // ── Laptop: one table row per person ──
-  const td: CSSProperties = { padding: '0.625rem 0.75rem', borderBottom: '1px solid var(--border)', verticalAlign: 'top', whiteSpace: 'nowrap', textAlign: 'right' };
-  // The # column has a fixed width so the sticky Person column sits right after it.
-  const RANK_W = 52;
-  const RANK_COL: CSSProperties = { width: RANK_W, minWidth: RANK_W, maxWidth: RANK_W, padding: '0.625rem 0.5rem' };
-  const stick = (left: number, bg: string, edge = false): CSSProperties => ({
-    position: 'sticky', left, zIndex: 1, background: bg, textAlign: 'left',
-    ...(edge ? { boxShadow: 'inset -1px 0 0 var(--border)' } : {}),
-  });
 
   const row = (p: PersonRow, owner = false) => {
     const c: C = p.counts || {};
@@ -685,56 +562,6 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
     );
   };
 
-  // ── Drawer rows ──
-  // multi: the drawer covers more than one day, so each row says which day (review 2026-10-02).
-  const itemRow = (it: ItemRow, i: number, metric: Metric, multi: boolean) => {
-    const dim = !it.counted || it.pending;
-    const st = it.chat ? STATUS_CHIP[it.chat.status] : undefined;
-    const pc = it.pending ? { t: 'pending', fg: 'var(--fg-muted)', bg: 'var(--bg-subtle)' }
-      : it.points > 0 ? { t: signed(it.points), fg: 'var(--success)', bg: 'var(--success-light)' }
-      : it.points < 0 ? { t: signed(it.points), fg: 'var(--danger)', bg: 'var(--danger-light)' }
-      : { t: '0', fg: 'var(--fg-muted)', bg: 'var(--bg-subtle)' };
-    const showKind = metric === 'sent' || metric === 'solved' || metric === 'points';
-    const messages = Array.isArray(it.messages) ? it.messages : [];
-    return (
-      <div key={`${it.kind}-${it.conv}-${it.at}-${i}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid var(--border)', opacity: dim ? 0.62 : 1 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: '0.8125rem' }}>
-          <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{multi && /^\d{1,2}:\d{2}$/.test(it.at_ist || '') ? `${dayLabel(it.day)} ${it.at_ist}` : it.at_ist}</span>
-          <span style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{it.chat?.name || 'Chat'}</span>
-          {it.chat?.source === 'email' && <span style={small}>email</span>}
-          {st && <span style={pill(st.fg, st.bg)}>{st.label}</span>}
-          {showKind && <span style={pill('var(--fg)', 'var(--bg-subtle)')}>{KIND_LABEL[it.kind] || it.kind}</span>}
-          <span style={pill(pc.fg, pc.bg)}>{pc.t}</span>
-          {(it.kind === 'thanks' || it.kind === 'convinced') && it.by && (
-            <span style={pill('var(--primary)', 'var(--primary-light)')}>{it.by === 'ai' ? 'AI' : 'Keyword'}</span>
-          )}
-          <a href={`/admin/chat?open=${encodeURIComponent(it.conv)}`} target="_blank" rel="noopener"
-            style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.75rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
-            Open chat <ExternalLink size={12} />
-          </a>
-        </div>
-        <div style={{ fontSize: '0.8125rem', marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{it.why}</div>
-        {it.kind === 'chat' && typeof it.n === 'number' && (
-          <div style={{ ...small, marginTop: 2 }}>{plural(it.n, 'message', 'messages')}{it.after ? ` · ${fmtNum(it.after)} after 19:30` : ''}</div>
-        )}
-        {messages.length > 0 && (
-          <div style={{ marginTop: 6, padding: '0.375rem 0.625rem', borderRadius: 8, background: 'var(--bg-subtle)', fontSize: '0.75rem', lineHeight: 1.55 }}>
-            {messages.map((m) => (
-              <div key={m.id} style={{ overflowWrap: 'anywhere' }}>
-                <span style={{ fontWeight: 600, color: m.role === 'customer' ? 'var(--fg)' : 'var(--primary)' }}>
-                  {m.role === 'customer' ? 'Customer' : m.role === 'ai' ? 'AI' : (m.by || 'Staff')}
-                </span>
-                <span style={{ color: 'var(--fg-muted)' }}> {m.at_ist}{m.text ? ': ' : ''}</span>{m.text}
-              </div>
-            ))}
-          </div>
-        )}
-        {it.kind === 'sent' && it.note && (
-          <div style={{ ...small, marginTop: 4, fontSize: '0.75rem', overflowWrap: 'anywhere' }}>Note: {it.note}</div>
-        )}
-      </div>
-    );
-  };
 
   const w = { ...DEFAULT_WEIGHTS, ...(data?.weights?.values || {}) } as Weights;
   // Points rules: a planned change in words ("Thank you +5 (today +3)"), and the planned rows a save
@@ -767,33 +594,7 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
       </div>
 
       {/* 2. Controls */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          {CHIPS.map((c) => (
-            <button key={c.v} type="button" className="btn btn-sm" aria-pressed={!!period && 'chip' in period && period.chip === c.v}
-              style={{ ...muted, ...(period && 'chip' in period && period.chip === c.v ? chosen : {}) }} onClick={() => pickChip(c.v)}>
-              {c.label}
-            </button>
-          ))}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: 'var(--fg-muted)' }}>
-            Pick a day
-            <input type="date" className="form-input" min={FIRST_DAY} max={today} aria-label="Pick a day"
-              value={period && 'day' in period ? period.day : ''} onChange={(e) => pickDay(e.target.value)}
-              style={{ ...dateInput, ...(period && 'day' in period ? { borderColor: 'var(--primary)' } : {}) }} />
-          </label>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {fetchedAt && <span style={small}>Updated {agoText(fetchedAt)}</span>}
-          <button type="button" className="btn btn-sm" style={muted} disabled={loading || beforeStart} onClick={() => load(true)}>
-            <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} /> Refresh
-          </button>
-          {!self && (
-            <button type="button" className="btn btn-sm" style={muted} disabled={!data} onClick={openRules}>
-              <Settings size={13} /> Points rules
-            </button>
-          )}
-        </div>
-      </div>
+      <TeamScoreControls period={period} pickChip={pickChip} today={today} pickDay={pickDay} dateInput={dateInput} fetchedAt={fetchedAt} loading={loading} beforeStart={beforeStart} load={load} self={self} data={data} openRules={openRules} />
 
       {/* Errors that replace the board */}
       {blocked && (
@@ -851,39 +652,7 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
             </div>
           )}
           {data && !self && !isPhone && (
-            <div className="tf-card" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', minWidth: 1240, fontSize: '0.8125rem' }}>
-                  <thead>
-                    <tr>
-                      {[{ label: '#', hint: '' }, { label: 'Person', hint: '' }, ...HEAD].map((h, i) => (
-                        <th key={h.label} scope="col" style={{
-                          padding: '0.625rem 0.75rem', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)',
-                          verticalAlign: 'bottom', whiteSpace: 'nowrap', fontWeight: 600, color: 'var(--fg)', textAlign: i < 2 || h.label === 'Sent to' ? 'left' : 'right',
-                          ...(i === 0 ? { position: 'sticky', left: 0, zIndex: 2, ...RANK_COL } : {}),
-                          ...(i === 1 ? { position: 'sticky', left: RANK_W, zIndex: 2, boxShadow: 'inset -1px 0 0 var(--border)' } : {}),
-                        }}>
-                          {h.label}
-                          {h.hint && <div style={{ ...small, fontWeight: 400, fontStyle: 'italic' }}>{h.hint}</div>}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {board.map((p) => row(p))}
-                    {!board.length && (
-                      <tr><td colSpan={HEAD.length + 2} style={{ ...td, textAlign: 'left', color: 'var(--fg-muted)' }}>No team member has a number in this period yet.</td></tr>
-                    )}
-                    {owner && (
-                      <>
-                        <tr aria-hidden="true"><td colSpan={HEAD.length + 2} style={{ padding: 0, height: 6, background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }} /></tr>
-                        {row(owner, true)}
-                      </>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <TeamScoreTable board={board} owner={owner} row={row} />
           )}
           {data && !self && isPhone && (
             <div>
@@ -902,28 +671,7 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
 
           {/* 8. Team footer (the Super Admin only) */}
           {data && !self && team && (
-            <div style={{ ...small, fontSize: '0.75rem', marginTop: '0.75rem', display: 'grid', gap: 2 }}>
-              <div>
-                Thank-yous after AI answers:{' '}
-                {team.thanks_after_ai > 0
-                  ? <button type="button" style={{ ...linkBtn, color: 'var(--primary)', fontWeight: 600 }} onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-                      onClick={() => openDrawer({ key: 'ai', name: 'AI' }, 'thanks')}>{fmtNum(team.thanks_after_ai)}</button>
-                  : fmtNum(team.thanks_after_ai || 0)}
-              </div>
-              <div>
-                Customers who waited 2 office hours with nobody holding the chat:{' '}
-                {team.pool_waited_2h === null ? <span title={tips.ev}>—</span> : fmtNum(team.pool_waited_2h)}
-              </div>
-              <div>
-                Waiting on someone not in that day:{' '}
-                {team.absent_waits === null ? <span title={tips.ev}>—</span> : fmtNum(team.absent_waits)}
-              </div>
-              {Array.isArray(team.unattributed) && team.unattributed.length > 0 && (
-                <div style={{ overflowWrap: 'anywhere' }}>
-                  Replies by old logins that are not a current member: {team.unattributed.map((u) => `${u.login} ${u.replies}`).join(', ')}
-                </div>
-              )}
-            </div>
+            <TeamScoreFooter team={team} tips={tips} openDrawer={openDrawer} />
           )}
         </div>
       )}
@@ -954,142 +702,12 @@ export default function TeamScoreCard({ token, onAlert, mine = false }: {
 
       {/* 7. Drawer: the items behind one number */}
       {drawer && createPortal(
-        <div className="modal-overlay" onClick={closeDrawer} style={{ padding: 0, justifyContent: 'flex-end', alignItems: 'stretch' }}>
-          <div role="dialog" aria-modal="true" aria-label={`${drawer.who.name} · ${METRIC_LABEL[drawer.metric]}`} onClick={(e) => e.stopPropagation()}
-            style={{ width: isPhone ? '100%' : 480, maxWidth: '100%', height: '100%', background: 'var(--card-bg)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', animation: 'slideInRight 0.2s ease' }}>
-            <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid var(--border)' }}>
-              {isPhone && (
-                <button type="button" className="btn btn-sm" style={{ ...muted, marginBottom: 8 }} onClick={closeDrawer}><ChevronLeft size={14} /> Back</button>
-              )}
-              <div className="modal-header" style={{ marginBottom: 0, alignItems: 'flex-start', gap: 8 }}>
-                <div style={{ minWidth: 0 }}>
-                  <h3 className="modal-title" style={{ overflowWrap: 'anywhere' }}>{drawer.who.name} · {METRIC_LABEL[drawer.metric]} · {drawer.label}</h3>
-                  <p className="modal-subtitle">
-                    {items ? `${fmtNum(items.counted)} counted · ${fmtNum(Math.max(0, items.total - items.counted))} not counted` : itemsLoading ? 'Loading…' : ''}
-                  </p>
-                </div>
-                {!isPhone && <button type="button" className="btn-icon" onClick={closeDrawer} aria-label="Close"><X size={16} /></button>}
-              </div>
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '0 1rem 1rem' }}>
-              {itemsLoading && !items && (
-                <div style={{ padding: '1.5rem 0', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
-                  <Loader2 size={16} style={{ animation: 'spin 1s linear infinite', verticalAlign: 'middle' }} /> Loading…
-                </div>
-              )}
-              {itemsErr && (
-                <div style={{ padding: '1rem 0', color: 'var(--danger)', fontSize: '0.8125rem', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {itemsErr}
-                  <button type="button" className="btn btn-sm" style={muted} onClick={() => loadItems(drawer)}>Retry</button>
-                </div>
-              )}
-              {items && (() => {
-                const list = items.items;
-                const good = list.filter((x) => x.counted && !x.pending);
-                const rest = list.filter((x) => !x.counted || x.pending);
-                return (
-                  <>
-                    {!list.length && <div style={{ padding: '1.5rem 0', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>Nothing here for this period.</div>}
-                    {good.map((it, i) => itemRow(it, i, drawer.metric, drawer.from !== drawer.to))}
-                    {rest.length > 0 && (
-                      <>
-                        <div style={{ marginTop: '1rem', fontSize: '0.6875rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>Not counted</div>
-                        {rest.map((it, i) => itemRow(it, i, drawer.metric, drawer.from !== drawer.to))}
-                      </>
-                    )}
-                    {items.total > list.length && (
-                      <div style={{ ...small, marginTop: '0.75rem' }}>Showing the newest {fmtNum(list.length)} of {fmtNum(items.total)}.</div>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>, document.body,
+        <TeamScoreDrawer drawer={drawer} closeDrawer={closeDrawer} isPhone={isPhone} items={items} itemsLoading={itemsLoading} itemsErr={itemsErr} loadItems={loadItems} />, document.body,
       )}
 
       {/* 9. Points rules */}
       {rulesOpen && wDraft && !self && createPortal(
-        <div className="modal-overlay" onClick={() => !saving && !recomputing && setRulesOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '34rem' }}>
-            <div className="modal-header">
-              <div>
-                <h3 className="modal-title">Points rules</h3>
-                <p className="modal-subtitle">A change applies from the day you pick. Past days keep their points.</p>
-              </div>
-              <button type="button" className="btn-icon" onClick={() => setRulesOpen(false)} aria-label="Close" disabled={saving || recomputing}><X size={16} /></button>
-            </div>
-            {rulesPlan && rulesPlan.scheduled.length > 0 && (
-              <div style={{ padding: '0.5rem 0.75rem', marginBottom: '0.75rem', borderRadius: 8, borderLeft: '3px solid var(--primary)', background: 'var(--primary-light)', fontSize: '0.75rem', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
-                {rulesPlan.scheduled.map((r, i) => (
-                  <div key={r.id}>
-                    <b>Planned from {dayLabel(r.effective_from)}:</b>{' '}
-                    {weightChanges(i === 0 ? rulesPlan.today?.values : rulesPlan.scheduled[i - 1].values, r.values, i === 0 ? 'today' : 'before')}
-                  </div>
-                ))}
-                <div style={{ color: 'var(--fg-muted)' }}>The boxes below show the newest saved numbers (from {dayLabel(rulesPlan.base.effective_from)}).</div>
-              </div>
-            )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: '1rem' }}>
-              {WEIGHT_KEYS.map((k) => {
-                const err = weightError(wDraft[k]);
-                return (
-                  <label key={k} style={{ fontSize: '0.75rem', fontWeight: 600 }}>{POINT_LABELS[k]}
-                    <input type="number" className="form-input" step={0.5} min={-10} max={10} value={wDraft[k]}
-                      onChange={(e) => setWDraft({ ...wDraft, [k]: e.target.value })}
-                      style={{ marginTop: 4, ...field, ...(err ? { borderColor: 'var(--danger)' } : {}) }} />
-                    {err && <span style={{ display: 'block', fontWeight: 400, color: 'var(--danger)', marginTop: 2 }}>Use {err}</span>}
-                  </label>
-                );
-              })}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Applies from
-                <input type="date" className="form-input" min={today} max={addDays(today, 60)} value={effFrom}
-                  onChange={(e) => setEffFrom(e.target.value)} style={{ marginTop: 4, ...field }} />
-              </label>
-              <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Points start on
-                <input type="date" className="form-input" min={FIRST_DAY} value={ptsFrom}
-                  onChange={(e) => setPtsFrom(e.target.value)} style={{ marginTop: 4, ...field }} />
-              </label>
-            </div>
-            {replaced.length > 0 && (
-              <div role="note" style={{ padding: '0.5rem 0.75rem', marginBottom: '0.75rem', borderRadius: 8, borderLeft: '3px solid var(--warning)', background: 'var(--warning-light)', fontSize: '0.75rem', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
-                Saving from {dayLabel(effFrom)} replaces the change planned for {replaced.map((r) => dayLabel(r.effective_from)).join(', ')}: these numbers apply from {dayLabel(effFrom)} on.
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: '1.25rem' }}>
-              <button type="button" className="btn" style={muted} onClick={() => setRulesOpen(false)} disabled={saving}>Cancel</button>
-              <button type="button" className="btn btn-primary" disabled={saving || WEIGHT_KEYS.some((k) => weightError(wDraft[k])) || !isDay(effFrom)} onClick={saveRules}>
-                {saving ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : null} Save
-              </button>
-            </div>
-
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
-              <div style={{ fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4 }}>Recompute a final day</div>
-              <p style={{ ...small, fontSize: '0.75rem', marginBottom: 8 }}>
-                {"Final days never change on their own. Recompute saves that day again with today's rules and data; your reason is kept with it."}
-              </p>
-              {canRecompute ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, alignItems: 'end' }}>
-                  <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Day
-                    <input type="date" className="form-input" min={FIRST_DAY} max={lastFinal} value={reDay}
-                      onChange={(e) => setReDay(e.target.value)} style={{ marginTop: 4, ...field }} />
-                  </label>
-                  <label style={{ fontSize: '0.75rem', fontWeight: 600 }}>Why
-                    <input type="text" className="form-input" maxLength={200} placeholder="e.g. points start date moved" value={reReason}
-                      onChange={(e) => setReReason(e.target.value)} style={{ marginTop: 4, ...field }} />
-                  </label>
-                  <button type="button" className="btn btn-primary" disabled={recomputing || !isDay(reDay) || reReason.trim().length < 3} onClick={recompute}>
-                    {recomputing ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : null} Recompute
-                  </button>
-                </div>
-              ) : (
-                <div style={{ ...small, fontSize: '0.75rem' }}>No day is final yet: a day becomes final two days after it ends, at 1 AM.</div>
-              )}
-            </div>
-          </div>
-        </div>, document.body,
+        <TeamScoreRulesDialog saving={saving} recomputing={recomputing} setRulesOpen={setRulesOpen} rulesPlan={rulesPlan} weightChanges={weightChanges} wDraft={wDraft} setWDraft={setWDraft} weightError={weightError} field={field} today={today} effFrom={effFrom} setEffFrom={setEffFrom} ptsFrom={ptsFrom} setPtsFrom={setPtsFrom} replaced={replaced} saveRules={saveRules} canRecompute={canRecompute} lastFinal={lastFinal} reDay={reDay} setReDay={setReDay} reReason={reReason} setReReason={setReReason} recompute={recompute} />, document.body,
       )}
     </div>
   );

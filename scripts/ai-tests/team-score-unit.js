@@ -503,6 +503,8 @@ function walk(rel, out) {
 const MENTION = /team_score_|chat_holder_log|chat_health_log|staff_presence_days|team-score|TeamScore|@\/lib\/team-score/;
 const ALLOWED = [
   /^src\/lib\/team-score\//, /^src\/app\/api\/team\/score\//, /^src\/app\/api\/cron\/team-score\//, /^src\/components\/TeamScoreCard\.tsx$/,
+  // The card's parts, split out on 2026-10-02 (pure move): the exact file names only.
+  /^src\/components\/TeamScore(Shared|Controls|Table|Footer|Drawer|RulesDialog)\.tsx$/,
   /^scripts\/ai-tests\/team-score-[\w-]+\.js$/, /^team-score\.sql$/, /^AGENTS\.md$/, /^MASTER_RULES_STATUS\.md$/,
 ];
 t('W8 nothing outside the team-score files mentions the new tables or modules', () => {
