@@ -18,6 +18,7 @@ import {
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
   Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight, Trophy, Undo2
 } from 'lucide-react';
+import type { ParseConfig } from 'papaparse';
 
 /* ═══════════ TYPES ═══════════ */
 interface OrderItem { id: string; brand: string; product_name: string; quantity: number; price: number; }
@@ -109,7 +110,7 @@ export default function AdminDashboard() {
   const [sendingUploadEmails, setSendingUploadEmails] = useState(false);
 
   // Draft queue
-  const [queueStats, setQueueStats] = useState<{ pending: number; processing: number; done: number; failed: number; total: number } | null>(null);
+  const [queueStats, setQueueStats] = useState<{ pending: number; sent?: number; processing: number; done: number; failed: number; total: number } | null>(null);
   const [loadingQueue, setLoadingQueue] = useState(false);
 
   // Bulk status modal
@@ -437,7 +438,7 @@ export default function AdminDashboard() {
         skipEmptyLines: 'greedy',
         relaxQuotes: true,
         relaxColumnCount: true,
-      });
+      } as ParseConfig<Record<string, string>>);
 
       if (!parsed.data || parsed.data.length === 0) {
         showAlert('error', 'CSV is empty or could not be parsed'); return;
