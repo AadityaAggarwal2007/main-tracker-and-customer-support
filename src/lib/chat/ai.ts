@@ -18,7 +18,7 @@ import {
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
-import { asksAboutCourier, COURIER_NAME_FROM_ASK, dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
+import { asksAboutCourier, COURIER_NAME_FROM_ASK, dropAddressEcho, withCheckAround, withExactTrackingLinks, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { FORM_VERIFY_ASK, dropFormMentions } from '@/lib/refund/link-mask';
 import { dropDisputeAdvice } from './dispute-advice';
@@ -778,6 +778,21 @@ export async function getAIResponse(
     if (courier.changed) { out = courier.text; console.log(`[AI] Unasked courier name removed for conv ${conversationId}`); }
     const around = withCheckAround(out, { customerLatest: visitorTexts.slice(-2).join('\n'), orderDelivered: delivered, earlierAgentReplies: agentTexts });
     if (around.changed) { out = around.text; console.log(`[AI] Check-around line added for conv ${conversationId}`); }
+    // The model retypes the tracking link and sometimes changes a character (6 dead links in the
+    // 1-3 Oct chats; owner 2026-10-03): every tracking link in the reply becomes the exact link from
+    // the lookup results of this chat and the verified order (reply-guards.ts withExactTrackingLinks).
+    const knownLinks: string[] = [];
+    const addLinks = (r: unknown) => {
+      const j = r as { found?: boolean; orders?: { tracking_link?: unknown }[] } | null;
+      if (j?.found && Array.isArray(j.orders)) for (const o of j.orders) if (typeof o?.tracking_link === 'string' && o.tracking_link) knownLinks.push(o.tracking_link);
+    };
+    for (const m of lastRunMessages) {
+      if (m.role !== 'tool') continue;
+      try { addLinks(JSON.parse(String(m.content || ''))); } catch { /* not a lookup result */ }
+    }
+    if (verifiedResult) addLinks(verifiedResult);
+    const links = withExactTrackingLinks(out, knownLinks);
+    if (links.changed) { out = links.text; console.log(`[AI] Tracking link corrected (${links.fixed}) for conv ${conversationId}`); }
     return out;
   };
 

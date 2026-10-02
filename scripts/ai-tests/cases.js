@@ -293,6 +293,12 @@ module.exports = [
     history: [V('I paid 807 by GPay but got no order confirmation')],
     mock: [{ content: 'Apne bank mein jakar ₹807 ki transaction ke liye dispute raise karein. cybercrime.gov.in par complaint file kar sakte hain.' }],
     expect: { notMatch: [/chargeback|dispute|cyber|police|consumer|complaint|bank/i], match: [ASKS_AGAIN], escalated: false }, offlineOnly: true },
+  // ── Exact tracking links (2026-10-03, chat report): the model retyped the link with one wrong character
+  // in 6 chats; reply-guards.ts withExactTrackingLinks puts the lookup's exact link back. ──
+  { id: 'code-tracking-link-exact', title: 'A retyped tracking link in the reply becomes the exact link from the lookup',
+    ...verifiedCtx('In Transit', '2026-10-10'), history: [V('tracking link bhejo')],
+    mock: [{ content: 'Aapka order #4715 In Transit hai. Track kijiye: https://shiptrack.store/track/tset-token - phone reachable rakhiye.' }],
+    expect: { match: [/https:\/\/shiptrack\.store\/track\/test-token\b/], notMatch: [/tset-token/] }, offlineOnly: true },
 
   // ── Code-level behaviour of getAIResponse (offline, scripted model) ────────────────
   { id: 'code-today-cut', title: 'A sentence promising arrival today is cut out of the reply',

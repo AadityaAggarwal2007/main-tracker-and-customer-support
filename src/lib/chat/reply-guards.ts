@@ -318,3 +318,54 @@ export function withoutUnaskedCourier(
   }
   return { text, changed: text !== reply };
 }
+
+// ── Exact tracking links (owner 2026-10-03, from the chat report) ──
+// The model retypes the tracking link from the lookup result and sometimes changes a character
+// (6 dead links in the 1-3 Oct chats: "35ec8bcb" for "35ecb8cb", "82202749" for "82302749"). Every
+// tracking-page link in a reply (scheme optional, any host, "/track/<token>") is compared with the
+// links the lookup results gave: written exactly, it stays byte for byte; a token a few edits away
+// from a known one becomes that exact link; a link on a known host whose token matches nothing while
+// the chat knows exactly one link becomes that link; anything else (another site's /track/ page, two
+// orders and no close token) is left as it is. Text without such a link is returned unchanged.
+const TRACK_LINK_RE = /(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?\/track\/(?:[A-Za-z0-9_~-]|\.(?=[A-Za-z0-9]))+/gi;
+const linkParts = (link: string): { host: string; token: string } | null => {
+  const m = link.match(/^(?:https?:\/\/)?([^/]+)\/track\/(.+)$/i);
+  return m ? { host: m[1].toLowerCase(), token: m[2] } : null;
+};
+function editDistance(a: string, b: string): number {
+  const prev = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+export function withExactTrackingLinks(reply: string, knownLinks: string[]): { text: string; changed: boolean; fixed: number } {
+  const input = reply || '';
+  const known = Array.from(new Set(knownLinks.filter((l) => typeof l === 'string' && linkParts(l)))).map((l) => ({ link: l, ...linkParts(l)! }));
+  if (!known.length || !/\/track\//i.test(input)) return { text: input, changed: false, fixed: 0 };
+  let fixed = 0;
+  const text = input.replace(TRACK_LINK_RE, (written) => {
+    const w = linkParts(written);
+    if (!w) return written;
+    if (known.some((k) => k.host === w.host && k.token === w.token)) return written;
+    let best: { link: string; d: number } | null = null;
+    for (const k of known) {
+      const d = editDistance(w.token.toLowerCase(), k.token.toLowerCase());
+      if (!best || d < best.d) best = { link: k.link, d };
+    }
+    const limit = Math.max(2, Math.floor(Math.max(w.token.length, 1) * 0.2));
+    let exact: string | null = best && best.d <= limit ? best.link : null;
+    if (!exact && known.length === 1 && known[0].host === w.host) exact = known[0].link;
+    if (!exact || exact === written) return written;
+    fixed++;
+    return exact;
+  });
+  return { text, changed: fixed > 0, fixed };
+}

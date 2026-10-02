@@ -941,4 +941,34 @@ t('rulebook: 5.9 (owner 3 Oct, chat report) is a code rule that names the hand-o
   assert.ok(rb.RULE_IDS.has('5.9') && rule('5.9').how === 'code');
   assert.ok(/chargeback/.test(rule('5.9').text) && /cyber-crime or police/.test(rule('5.9').text) && /\(5\.6\)/.test(rule('5.9').text));
 });
+// ── Exact tracking links (reply-guards.ts withExactTrackingLinks, owner 2026-10-03) ──
+t('tracking links: a retyped token becomes the exact link, an exact one stays byte for byte', () => {
+  const K = ['https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd'];
+  const fix = (s) => rg.withExactTrackingLinks(s, K);
+  assert.deepStrictEqual(fix('Track here: https://shiptrack.store/track/35ec8bcb-c000-4b1e-9f3a-82302749ffcd.'),
+    { text: 'Track here: https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd.', changed: true, fixed: 1 });
+  assert.deepStrictEqual(fix('https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82202749ffcd (open it)'),
+    { text: 'https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd (open it)', changed: true, fixed: 1 });
+  // Without a scheme, in upper case, twice.
+  const twice = fix('Link: shiptrack.store/track/35ECB8CB-C000-4B1E-9F3A-82302749FFC\nFir se: shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-8230274ffcd');
+  assert.deepStrictEqual(twice, { text: 'Link: https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd\nFir se: https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd', changed: true, fixed: 2 });
+  const same = 'Your link: https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd. Keep your phone reachable.';
+  assert.deepStrictEqual(fix(same), { text: same, changed: false, fixed: 0 });
+  const none = 'Your order is on its way, no link here.';
+  assert.deepStrictEqual(fix(none), { text: none, changed: false, fixed: 0 });
+  assert.deepStrictEqual(rg.withExactTrackingLinks('https://shiptrack.store/track/abc', []), { text: 'https://shiptrack.store/track/abc', changed: false, fixed: 0 });
+});
+t('tracking links: two orders pick the closest token; a far token on our host with one known link takes it; another site is left alone', () => {
+  const A = 'https://shiptrack.store/track/efbec856-2a98-3ba3-514d-9455bcba632', B = 'https://track.vastora.in/track/d76c44dd-31dd-308e-4aac-82302749ffcd';
+  const r = rg.withExactTrackingLinks(`First: https://shiptrack.store/track/efbec856-2a98-3b3a-514d-95415bcba632 and second: https://track.vastora.in/track/d76c44dd-31dd-308e-4aac-82202749ffcd`, [A, B]);
+  assert.deepStrictEqual(r, { text: `First: ${A} and second: ${B}`, changed: true, fixed: 2 });
+  // Two orders and a token close to neither: left as written (never guessed).
+  const far = 'See https://shiptrack.store/track/00000000-0000-0000-0000-000000000000 please.';
+  assert.deepStrictEqual(rg.withExactTrackingLinks(far, [A, B]), { text: far, changed: false, fixed: 0 });
+  // One known link and a made-up token on our host: the known link.
+  assert.deepStrictEqual(rg.withExactTrackingLinks(far, [A]), { text: `See ${A} please.`, changed: true, fixed: 1 });
+  // Another site's /track/ page (the courier's) is not ours to rewrite.
+  const other = 'Check https://valmo.in/track/STN98AFI7GRW on their site.';
+  assert.deepStrictEqual(rg.withExactTrackingLinks(other, [A]), { text: other, changed: false, fixed: 0 });
+});
 console.log(`UNIT: ${n} groups passed`);
