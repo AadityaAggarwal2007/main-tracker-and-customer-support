@@ -277,7 +277,7 @@ const compile = (from, to) => {
 };
 for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
 for (const f of ['waiting', 'display-name', 'escalation', 'health-rules']) compile(`lib/chat/${f}.ts`, f);
-for (const f of ['types', 'clock', 'words', 'rules', 'engine', 'load', 'report', 'judge']) compile(`lib/team-score/${f}.ts`, f);
+for (const f of ['types', 'clock', 'words', 'rules', 'ctx', 'merge', 'engine', 'load', 'report', 'judge']) compile(`lib/team-score/${f}.ts`, f);
 compile('app/api/team/score/route.ts', 'score-route');
 compile('app/api/team/score/items/route.ts', 'items-route');
 compile('app/api/cron/team-score/route.ts', 'cron-route');

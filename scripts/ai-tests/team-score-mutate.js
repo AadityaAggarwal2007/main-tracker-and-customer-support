@@ -16,7 +16,7 @@ const SRC = {
   'office-hours': 'src/lib/office-hours.ts', 'health-rules': 'src/lib/chat/health-rules.ts',
   escalation: 'src/lib/chat/escalation.ts', waiting: 'src/lib/chat/waiting.ts', 'waiting-sql': 'src/lib/chat/waiting-sql.ts',
   types: 'src/lib/team-score/types.ts', clock: 'src/lib/team-score/clock.ts', words: 'src/lib/team-score/words.ts',
-  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts',
+  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts', ctx: 'src/lib/team-score/ctx.ts', merge: 'src/lib/team-score/merge.ts',
 };
 const SUITES = ['team-score-unit.js', 'team-score-engine.js'];
 
@@ -30,7 +30,7 @@ const MUTATIONS = [
   { id: 'M5', file: 'clock', what: 'officeMs ignores the 19:30 close', find: 'Math.min(b, close)', to: 'b', by: ['C1', 'E5'] },
   { id: 'M6', file: 'rules', what: 'SOLVED_QUIET_MS 24 h -> 23 h', find: 'SOLVED_QUIET_MS = 24 * 3_600_000', to: 'SOLVED_QUIET_MS = 23 * 3_600_000', by: ['E20', 'E21'] },
   { id: 'M7', file: 'engine', what: 'angry: no "did not get better" check', find: 'hEnd >= hStart', to: 'true', by: ['E25b'] },
-  { id: 'M8', file: 'engine', what: 'eligible() always true', find: 'eligible(k: string | null): boolean {', to: 'eligible(k: string | null): boolean { return true;', by: ['E11'] },
+  { id: 'M8', file: 'ctx', what: 'eligible() always true', find: 'eligible(k: string | null): boolean {', to: 'eligible(k: string | null): boolean { return true;', by: ['E11'] },
   { id: 'M9', file: 'rules', what: 'no human_needed / no-agent waiting branch', find: "  if (status === 'human_needed' && s.laAt === null) return s.lvAt;\n", to: '', by: ['W7'] },
   { id: 'M10', file: 'rules', what: 'settingsForDay returns the latest row',
     find: 'if (r.effectiveFrom <= day && (!best || r.id > best.id)) best = r;', to: 'if (!best || r.id > best.id) best = r;', by: ['E29'] },
@@ -49,7 +49,7 @@ const MUTATIONS = [
   { id: 'M20', file: 'engine', what: 'no 24-hour thanks window', find: 'if (M.at - R.at > THANKS_WINDOW_MS) continue;', to: '', by: ['E15'] },
   { id: 'M21', file: 'engine', what: 'thanks after an AI answer goes to nobody', find: "if (R.sender === 'ai') {", to: 'if (false) {', by: ['E14'] },
   { id: 'M22', file: 'engine', what: 'angry for visitors too', find: 'if (!cd.c.known || !cd.health.length) continue;', to: 'if (!cd.health.length) continue;', by: ['E25e'] },
-  { id: 'M23', file: 'engine', what: 'the owner is ranked', find: "(key !== 'owner' || OWNER_RANKED)", to: 'true', by: ['E30', 'X2'] },
+  { id: 'M23', file: 'merge', what: 'the owner is ranked', find: "(key !== 'owner' || OWNER_RANKED)", to: 'true', by: ['E30', 'X2'] },
   { id: 'M24', file: 'engine', what: 'angry without the customer writing that day', find: 'if (countLT(ats, ts) - countLT(ats, dStart) <= 0) continue;', to: '', by: ['E25d'] },
   { id: 'M25', file: 'engine', what: 'Refund / Ship again does not pause the clock', find: '|| ctx.caseOn(cd, a)) continue;', to: ') continue;', by: ['E10'] },
   { id: 'M26', file: 'engine', what: 'the AI status does not pause the clock', find: 'if (!isHumanStatus(ctx.statusAt(cd, a, true))', to: 'if (false', by: ['E9'] },
@@ -64,7 +64,7 @@ const MUTATIONS = [
   { id: 'M33', file: 'clock', what: 'officeMs ignores the 10:00 open', find: 'Math.min(b, close) - Math.max(a, open)', to: 'Math.min(b, close) - a', by: ['C1'] },
   { id: 'M34', file: 'engine', what: 'a thank-you after a close counts as "came back"',
     find: 'if (cameBack(ctx.textOf(zcd, z.ci), !!z.noReply)) { Z = z; break; }', to: '{ Z = z; break; }', by: ['E21'] },
-  { id: 'M35', file: 'engine', what: 'presence ignored (everyone in from 10:00)', find: 'if (day < this.installDay) v = openMs(day);', to: 'if (true) v = openMs(day);', by: ['E12', 'E5'] },
+  { id: 'M35', file: 'ctx', what: 'presence ignored (everyone in from 10:00)', find: 'if (day < this.installDay) v = openMs(day);', to: 'if (true) v = openMs(day);', by: ['E12', 'E5'] },
   { id: 'M36', file: 'engine', what: 'angry without 60 angry minutes', find: 'if (am < H) continue;', to: '', by: ['E25c'] },
   // ── Owner answers 2026-10-02 ──
   { id: 'M37', file: 'engine', what: 'A3: the verified check removed (a visitor\'s thank-you counts)', find: 'const verified = !!cd.c.known;', to: 'const verified = true;', by: ['X19', 'X6'] },
@@ -74,8 +74,8 @@ const MUTATIONS = [
   { id: 'M40', file: 'engine', what: 'A2: closed while the customer waited costs nothing', find: "points: ctx.pts('closed_waiting', D),   // A2", to: 'points: 0,', by: ['E22'] },
   { id: 'M41', file: 'rules', what: 'A2: convinced back to 0 by default', find: 'closed_waiting: -2, convinced: 2, customer_answered: 0 };', to: 'closed_waiting: -2, convinced: 0, customer_answered: 0 };', by: ['W10', 'E19'] },
   { id: 'M42', file: 'rules', what: 'A2: closed_waiting not a weight', find: "'angry', 'closed_waiting', 'convinced', 'customer_answered'];", to: "'angry', 'convinced', 'customer_answered'];", by: ['W10', 'E22', 'X21'] },
-  { id: 'M43', file: 'engine', what: 'A4: on the install day everyone counts as in (minus for a member who was not in)', find: 'if (day < this.installDay) v = openMs(day);', to: 'if (day <= this.installDay) v = openMs(day);', by: ['X20'] },
-  { id: 'M44', file: 'engine', what: 'A2: a settings row without the new key gives 0 instead of the default', find: 'hit = { id: row.id, w: { ...DEFAULT_WEIGHTS, ...(row.weights || {}) } };', to: 'hit = { id: row.id, w: { ...(row.weights || {}) } as Weights };', by: ['X21'] },
+  { id: 'M43', file: 'ctx', what: 'A4: on the install day everyone counts as in (minus for a member who was not in)', find: 'if (day < this.installDay) v = openMs(day);', to: 'if (day <= this.installDay) v = openMs(day);', by: ['X20'] },
+  { id: 'M44', file: 'ctx', what: 'A2: a settings row without the new key gives 0 instead of the default', find: 'hit = { id: row.id, w: { ...DEFAULT_WEIGHTS, ...(row.weights || {}) } };', to: 'hit = { id: row.id, w: { ...(row.weights || {}) } as Weights };', by: ['X21'] },
   // ── Review fixes 2026-10-02 ──
   { id: 'M45', file: 'engine', what: 'closing a waiting chat with no team reply is free again',
     find: 'if (li < 0 && (!cd.c.known || !isHumanStatus(ctx.statusAt(cd, T, false)))) return;', to: 'if (li < 0) return;', by: ['E22b'] },
@@ -90,7 +90,7 @@ const MUTATIONS = [
     find: "(istDay(m.at) !== D || cd.msgs[pa].au !== X)\n        && usesUp(cd.msgs[pa], tj)) break;", to: 'false) break;', by: ['E19b'] },
   { id: 'M51', file: 'words', what: 'isPoliteAck knows only isCourtesyOnly\'s spellings', find: 'ws.every((w) => POLITE_WORDS.has(w) || ACK_THANKS.test(w))', to: 'false', by: ['E17b', 'W11'] },
   { id: 'M52', file: 'words', what: 'no "ek minute" holding line', find: '  /\\b(ek|1)\\s*min(ute)?\\b/i,\n', to: '', by: ['E17b', 'W11'] },
-  { id: 'M53', file: 'engine', what: 'range parts keep the last day\'s weight as "each"', find: 'if (q.each !== p.each) q.each = null;', to: 'q.each = p.each;', by: ['E30c'] },
+  { id: 'M53', file: 'merge', what: 'range parts keep the last day\'s weight as "each"', find: 'if (q.each !== p.each) q.each = null;', to: 'q.each = p.each;', by: ['E30c'] },
   // ── Review fixes 2026-10-02, second pass ──
   { id: 'M54', file: 'engine', what: 'convinced: "ok thank u" to a holding line pays +2 again', find: "    if (ack === 'pure') {\n      items.push(", to: "    if (false) {\n      items.push(", by: ['E19d'] },
   { id: 'M55', file: 'engine', what: 'convinced: an "ok" to a holding line uses the complaint up',

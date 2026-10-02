@@ -24,7 +24,7 @@ const SRC = {
   'office-hours': 'src/lib/office-hours.ts', 'health-rules': 'src/lib/chat/health-rules.ts',
   escalation: 'src/lib/chat/escalation.ts', waiting: 'src/lib/chat/waiting.ts', 'waiting-sql': 'src/lib/chat/waiting-sql.ts',
   types: 'src/lib/team-score/types.ts', clock: 'src/lib/team-score/clock.ts', words: 'src/lib/team-score/words.ts',
-  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts',
+  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts', ctx: 'src/lib/team-score/ctx.ts', merge: 'src/lib/team-score/merge.ts',
 };
 let dir = process.env.TEAM_SCORE_JS_DIR;
 if (!dir) {
@@ -544,8 +544,8 @@ t('W8 the AI, learner, search and widget never see it; only judge.ts imports the
   assert.ok(!/JUDGE_MODELS|deepseek\/deepseek-/.test(judge), 'judge.ts hard-codes a model');
 });
 t('W8 the pure modules import only each other and the three import-free rule files', () => {
-  const ok = new Set(['./types', './clock', './words', './rules', './engine', '@/lib/office-hours', '@/lib/chat/health-rules', '@/lib/chat/escalation']);
-  for (const f of ['types', 'clock', 'words', 'rules', 'engine']) {
+  const ok = new Set(['./types', './clock', './words', './rules', './engine', './ctx', './merge', '@/lib/office-hours', '@/lib/chat/health-rules', '@/lib/chat/escalation']);
+  for (const f of ['types', 'clock', 'words', 'rules', 'engine', 'ctx', 'merge']) {
     const s = read(`src/lib/team-score/${f}.ts`);
     const specs = [...s.matchAll(/^\s*(?:import|export)\s[^;]*?\sfrom\s+'([^']+)'/gm), ...s.matchAll(/\bimport\s*\(\s*'([^']+)'/g)].map((m) => m[1]);
     if (f !== 'types') assert.ok(specs.length >= 1, `${f}.ts: no imports found`);

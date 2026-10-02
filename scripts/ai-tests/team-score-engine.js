@@ -34,7 +34,7 @@ const SRC = {
   'office-hours': 'src/lib/office-hours.ts', 'health-rules': 'src/lib/chat/health-rules.ts',
   escalation: 'src/lib/chat/escalation.ts', waiting: 'src/lib/chat/waiting.ts',
   types: 'src/lib/team-score/types.ts', clock: 'src/lib/team-score/clock.ts', words: 'src/lib/team-score/words.ts',
-  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts',
+  rules: 'src/lib/team-score/rules.ts', engine: 'src/lib/team-score/engine.ts', ctx: 'src/lib/team-score/ctx.ts', merge: 'src/lib/team-score/merge.ts',
 };
 let dir = process.env.TEAM_SCORE_JS_DIR;
 if (!dir) {
