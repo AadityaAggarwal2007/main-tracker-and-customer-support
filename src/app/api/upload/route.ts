@@ -5,6 +5,7 @@ import { query, queryOne } from '@/lib/db';
 import { generateTrackingEmail } from '@/lib/email-templates';
 import { JOURNEY, expectedIndexForAge, AUTO_DELIVER_DAY } from '@/lib/journey';
 import Papa from 'papaparse';
+import type { ParseConfig } from 'papaparse';
 import crypto from 'crypto';
 import { can, canAccessPanel } from '@/lib/permissions';
 
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest) {
       header: true,
       skipEmptyLines: 'greedy',
       relaxColumnCount: true,
-    });
+    } as ParseConfig<Record<string, string>>);
 
     if (!parsed.data || (parsed.data as Record<string, string>[]).length === 0) {
       return NextResponse.json(

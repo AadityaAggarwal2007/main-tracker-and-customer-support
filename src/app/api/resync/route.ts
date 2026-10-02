@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { cleanCSVData } from '@/lib/csv-cleaner';
 import { query } from '@/lib/db';
 import Papa from 'papaparse';
+import type { ParseConfig } from 'papaparse';
 
 // ═══════════════════════════════════════════════════════════
 // RESYNC: Upload CSV → fixes phone/name/address for ALL orders
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest) {
       skipEmptyLines: 'greedy',
       relaxQuotes: true,
       relaxColumnCount: true,
-    });
+    } as ParseConfig<Record<string, string>>);
 
     if (!parsed.data || (parsed.data as Record<string, string>[]).length === 0) {
       return NextResponse.json({ error: 'No valid rows found' }, { status: 400 });

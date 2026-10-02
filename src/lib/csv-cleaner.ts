@@ -63,7 +63,7 @@ function cleanProductName(val: unknown): string {
 
 export function cleanCSVData(rawRows: Record<string, string>[]): {
   orders: CleanedOrder[];
-  stats: { total: number; unique: number; multiItem: number; cancelled: number };
+  stats: { total: number; unique: number; multiItem: number; cancelled: number; skipped: number };
 } {
   const orderMap = new Map<string, CleanedOrder>();
 
