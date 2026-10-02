@@ -29,6 +29,8 @@ import BulkStatusModal from './_components/BulkStatusModal';
 import OrderDetailModal from './_components/OrderDetailModal';
 import SelectRangeModal from './_components/SelectRangeModal';
 import DeletePanelModal from './_components/DeletePanelModal';
+import SettingsPanelList from './_components/SettingsPanelList';
+import SettingsJumpBar from './_components/SettingsJumpBar';
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -939,64 +941,12 @@ export default function AdminDashboard() {
 
               {/* Panel list */}
               {businesses.length > 0 && (
-                <div className="tf-card" style={{ padding: '1rem' }}>
-                  <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--fg-muted)' }}>All Panels</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                    {businesses.map(biz => (
-                      <div key={biz.id} style={{
-                        display: 'flex', alignItems: 'center',
-                        borderRadius: '9999px', border: activePanelId === biz.id ? '2px solid var(--primary)' : '1px solid var(--border)',
-                        background: activePanelId === biz.id ? 'var(--primary-light)' : 'var(--card-bg)',
-                        overflow: 'hidden',
-                      }}>
-                        <button onClick={() => switchPanel(biz.id)} style={{
-                          display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.375rem 0.75rem',
-                          border: 'none', background: 'transparent',
-                          fontSize: '0.75rem', fontWeight: 500, cursor: 'pointer',
-                          color: activePanelId === biz.id ? 'var(--primary)' : 'var(--fg)',
-                        }}>
-                          {biz.is_shopify_connected && <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>}
-                          {biz.name}
-                          {activePanelId === biz.id && <Check size={10} />}
-                        </button>
-                        {user?.role === 'admin' && (
-                          <button
-                            onClick={() => openDeletePanel(biz)}
-                            title={`Delete panel "${biz.name}"`}
-                            style={{
-                              display: 'flex', alignItems: 'center', padding: '0.375rem 0.5rem 0.375rem 0.25rem',
-                              border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)',
-                            }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <SettingsPanelList activePanelId={activePanelId} businesses={businesses} openDeletePanel={openDeletePanel} switchPanel={switchPanel} user={user} />
               )}
 
               {/* Jump to a section (owner, 2026-10-01: a cleaner Settings page) */}
               {activeBusiness && (
-                <div style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0.5rem 0.625rem',
-                  borderRadius: 12, background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(8px)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--fg-muted)', marginRight: 4 }}>{activeBusiness.name}</span>
-                  {[
-                    { id: 'set-chikki', label: 'Chikki AI', show: !!chatSite && !!user && (can(user, 'settings.panel') || can(user, 'chikki.edit')) },
-                    { id: 'set-branding', label: 'Branding', show: !!user && can(user, 'settings.panel') },
-                    { id: 'set-widget', label: 'Chat widget', show: !!user && can(user, 'settings.panel') },
-                    { id: 'set-schedule', label: 'Tracking schedule', show: true },
-                    { id: 'set-connections', label: 'Connections', show: isSuperAdmin(user) },
-                    { id: 'set-danger', label: 'Danger zone', show: isSuperAdmin(user) },
-                  ].filter((x) => x.show).map((x) => (
-                    <button key={x.id} type="button" className="btn btn-sm"
-                      onClick={() => document.getElementById(x.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                      style={{ border: '1px solid var(--border)', background: 'var(--card-bg)', color: x.id === 'set-danger' ? 'var(--danger)' : 'var(--fg-secondary)', borderRadius: 999 }}>
-                      {x.label}
-                    </button>
-                  ))}
-                </div>
+                <SettingsJumpBar activeBusiness={activeBusiness} chatSite={chatSite} user={user} />
               )}
 
               {activeBusiness && (
