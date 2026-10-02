@@ -92,6 +92,10 @@ const URGENT_OVERDUE_HOURS = 1;
 
 const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)';
 
+// A marked chat shows only in its section, except a red Ship again chat (owner 2026-10-02, answer 8):
+// it is also in Needs you and the other lists until a person replies, takes it over or closes it.
+const OUTSIDE_SECTION = "(c.case_kind IS NULL OR (c.case_kind = 'reship' AND c.status = 'human_needed'))";
+
 // The SQL that puts an open chat under a problem tab (a = the table alias).
 function topicCondition(key: string, labels: string[], a: string): string {
   if (key === 'risk') return `COALESCE(${a}.health_score, 0) >= ${HEALTH_PIN_MIN}`;
@@ -118,7 +122,8 @@ export async function GET(request: NextRequest) {
   const unreadOnly = searchParams.get('unread') === '1';
   const topic = topicByKey(searchParams.get('topic'));
   // ?case=refund|reship: the Refund / Ship again section (chat-cases.sql). A marked chat shows ONLY
-  // there (and in a search); every other list leaves it out.
+  // there (and in a search); every other list leaves it out, except a red Ship again chat
+  // (OUTSIDE_SECTION above).
   const caseParam = searchParams.get('case') || '';
   const caseKind = caseParam === 'refund' || caseParam === 'reship' ? caseParam : '';
   // The page asks for 200 and "Show more" asks for more (the answer's total says how many there are).
@@ -162,7 +167,7 @@ export async function GET(request: NextRequest) {
       conditions.push(`c.case_kind = $${pi++}`);
       params.push(caseKind);
     } else {
-      conditions.push('c.case_kind IS NULL');
+      conditions.push(OUTSIDE_SECTION);
     }
     if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (mine) {
@@ -218,7 +223,7 @@ export async function GET(request: NextRequest) {
                          THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END AS gk
                FROM conversations c
                JOIN sites s ON s.id = c.site_id
-              WHERE ${[...scopeConditions, "c.status <> 'resolved'", KNOWN_CUSTOMER, 'c.case_kind IS NULL'].join(' AND ')}) x`;
+              WHERE ${[...scopeConditions, "c.status <> 'resolved'", KNOWN_CUSTOMER, OUTSIDE_SECTION].join(' AND ')}) x`;
   const countsPromise = query<Record<string, number>>(countsSql, scopeParams).catch((err) => {
     // Before chat-health.sql / chat-subject.sql are applied the columns are missing.
     console.error('[inbox] topic counts failed:', (err as Error)?.message);
@@ -243,7 +248,7 @@ export async function GET(request: NextRequest) {
                FROM conversations c
                JOIN sites s ON s.id = c.site_id
                ${WAITING_LATERAL}
-              WHERE ${[...scopeConditions, "c.status <> 'resolved'", 'c.case_kind IS NULL'].join(' AND ')}) x`,
+              WHERE ${[...scopeConditions, "c.status <> 'resolved'", OUTSIDE_SECTION].join(' AND ')}) x`,
     [...scopeParams, me ?? '']
   ).then((u) => u.rows[0] ?? { n: 0, mine_open: 0, mine_waiting: 0 }).catch((err) => {
     console.error('[inbox] unanswered count failed:', (err as Error)?.message);
@@ -262,6 +267,9 @@ export async function GET(request: NextRequest) {
       ).then((r) => r.rows[0]?.n ?? 0).catch(() => 0)
     : Promise.resolve(0);
 
+  // case_mark_role: who made a marked chat's latest mark (chat_case_events.actor_role): 'system' = Chikki's
+  // live Ship again mark (the customer was promised a new tracking link), 'backfill' = the one-time move of
+  // 2 Oct (no message was sent). The inbox words the chip and the Remove question by it.
   const result = await query(
     `WITH ${search.cte ? search.cte + ',' : ''}
      base AS (
@@ -272,6 +280,10 @@ export async function GET(request: NextRequest) {
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
               c.auto_closed_at, c.closed_by_name, c.closed_at,
               c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id,
+              CASE WHEN c.case_kind IS NOT NULL THEN
+                (SELECT e.actor_role FROM chat_case_events e
+                  WHERE e.conversation_id = c.id AND e.kind = c.case_kind AND e.action = 'mark'
+                  ORDER BY e.created_at DESC LIMIT 1) END AS case_mark_role,
               c.assigned_to, c.assigned_at,
               s.id AS site_id, s.name AS site_name, s.tracker_business_id,
               b.name AS panel_name,
@@ -326,7 +338,7 @@ export async function GET(request: NextRequest) {
             COALESCE((g.health_signals->>'accuse')::int, 0) > 0 AS health_accuse,
             g.is_pinned AS health_pinned,
             g.returned, g.auto_closed_at, g.closed_by_name, g.closed_at,
-            g.case_kind, g.case_marked_by, g.case_marked_at, g.case_order_id,
+            g.case_kind, g.case_marked_by, g.case_marked_at, g.case_order_id, g.case_mark_role,
             g.assigned_to, g.assigned_at,
             g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
             (g.group_waiting_since IS NOT NULL) AS group_waiting,

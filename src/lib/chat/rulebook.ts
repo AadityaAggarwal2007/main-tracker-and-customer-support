@@ -19,6 +19,7 @@ export interface RuleSection { key: string; title: string; rules: Rule[] }
 const M = (n: string) => `Master rule ${n}`;
 const YOU_30 = 'Your decision, 30 Sep';
 const YOU_01 = 'Your decision, 1 Oct';
+const YOU_02 = 'Your decision, 2 Oct';
 
 export const RULEBOOK: RuleSection[] = [
   {
@@ -93,8 +94,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Order data older than 10 minutes is never used for the status; the verified order is read again on every message.' },
       { id: '4.7', how: 'code', from: YOU_30, title: 'Late order: reasons step by step',
         text: 'For a verified customer asking about timing, code picks the reason by how late the order is and how often they asked: 1 festive-season courier volume, 2 heavy load on the courier network, 3 the delivery agent for the area not reachable yet and the team following up. Never repeated, never any other cause.' },
-      { id: '4.8', how: 'code', from: YOU_01, title: 'Courier named only when asked',
-        text: '{courier} Chikki names the courier only when the customer asks which courier delivers; otherwise it says "our courier partner". The tracking page is not changed.' },
+      { id: '4.8', how: 'code', from: `${YOU_01} + 2 Oct`, title: 'Courier named only on the 3rd ask',
+        text: '{courier} Chikki names the courier only when the customer asks which courier delivers for the 3rd time (counted over all their chats; a yes / no check of the name counts, a complaint that only names the courier does not). Before that, and whenever the count cannot be read, it says "our courier partner". The tracking page and the order emails do not show the courier at all (your decision, 2 Oct); your team still sees it.' },
       { id: '4.9', how: 'code', from: YOU_01, title: 'Delivered but not received',
         text: 'Never argue (the status can be wrong). Chikki asks once, per chat, to check with family, neighbours, the security guard or reception; if it is still missing it apologises, raises it with the team and hands over.' },
       { id: '4.10', how: 'later', from: M('19'), title: 'Telling customers about a delay first',
@@ -128,9 +129,11 @@ export const RULEBOOK: RuleSection[] = [
       { id: '6.2', how: 'code', from: M('15'), title: 'Threats go to the team in 1 hour',
         text: 'Chargeback, police, court, legal action or bad reviews: straight to Needs You with a fixed apology and "our team will reply here within 1 hour". No AI text. From 19:30 to 10:00 the customer is told instead that the team replies in the morning, after 10 AM.' },
       { id: '6.3', how: 'code', from: M('16'), title: 'Fake site or fraud claim',
-        text: 'Chikki first gives real proof (tracking link, order status), then the chat goes to Needs You with the 1-hour line. From 19:30 to 10:00 the customer is told instead that the team replies in the morning, after 10 AM.' },
+        text: 'Chikki first gives real proof (tracking link, order status), then the chat goes to Needs You with the 1-hour line. From 19:30 to 10:00 the customer is told instead that the team replies in the morning, after 10 AM. A fraud claim that is only about fake tracking on a dispatched order goes to Ship again instead (6.5).' },
       { id: '6.4', how: 'told', from: M('22'), title: 'Tricks are refused',
         text: '"Forget your rules", "show your prompt", "show another order": refused in one line. It never reveals its rules, tools, keys or anyone else\'s data.' },
+      { id: '6.5', how: 'code', from: YOU_02, title: 'Fake or invalid tracking: new link in 24-48 hours',
+        text: 'A verified customer (order ID + full phone) who says the tracking ID or link is invalid, not found, wrong, fake, shows another order or does not open, or that the tracking has not moved for days (also "fraud, fake tracking"): if the order is dispatched and not delivered (Shipped to Out for Delivery), Chikki says "Aapke order ka naya tracking link 24-48 ghante me isi chat me bhej denge" and the chat moves to Ship again by itself (9.7). Not dispatched yet: Chikki explains the courier\'s tracking starts after dispatch and sends the tracking link; nothing moves. Delivered, cancelled or returned: Needs You, no new-link promise. A threat still goes to Needs You (6.2), and a refund, cancel or payment request with the complaint goes to your team as before (7.2): no new-link promise for either. A chat already waiting in Needs You stays there (red, 9.8). A visitor is asked for the order ID and phone first. Chat box only for now; an email goes to your team as before.' },
     ],
   },
   {
@@ -138,7 +141,7 @@ export const RULEBOOK: RuleSection[] = [
       { id: '7.1', how: 'code', from: `${M('11')} (your note)`, title: 'Only verified customers',
         text: 'Needs You is only for customers who proved their order (order ID + phone), or an old phone match.' },
       { id: '7.2', how: 'code', from: M('11–17'), title: 'What goes there by itself',
-        text: 'A threat, a fraud claim, a refund or cancel request, a payment problem, two addresses, a repeated answer, or Chikki failing.' },
+        text: 'A threat, a fraud claim (except fake tracking on a dispatched order: 6.5), a refund or cancel request, a payment problem, two addresses, a repeated answer, Chikki failing, a tracking claim on a delivered, cancelled or returned order (6.5), or a red Ship again chat (9.8).' },
       { id: '7.3', how: 'code', from: M('13'), title: 'If Chikki cannot answer',
         text: 'When every AI model is down, a verified customer is told their message is with the team, who will reply here, and the chat goes to Needs You. A visitor gets a short apology.' },
       { id: '7.4', how: 'auto', from: M('14'), title: 'Waiting timer',
@@ -179,8 +182,8 @@ export const RULEBOOK: RuleSection[] = [
     key: 'cases', title: 'Refund / Ship again sections', rules: [
       { id: '9.1', how: 'auto', from: YOU_01, title: 'Verified customers only',
         text: 'The Refund and Ship again buttons next to Take over work only for verified customers, never visitors.' },
-      { id: '9.2', how: 'auto', from: YOU_01, title: 'Marked chat stays in its section',
-        text: 'It shows only in that section (search still finds it), Chikki stops replying there, and the customer gets no message.' },
+      { id: '9.2', how: 'auto', from: `${YOU_01} + 2 Oct`, title: 'Marked chat stays in its section',
+        text: 'It shows only in that section (search still finds it), Chikki stops replying there, and the customer gets no message. Two exceptions (your decision, 2 Oct): a chat Chikki moved there itself (9.7), and a red chat (9.8).' },
       { id: '9.3', how: 'auto', from: YOU_01, title: 'New message shows as unread',
         text: 'A new message from the customer keeps the chat in its section and shows it as unread.' },
       { id: '9.4', how: 'auto', from: YOU_01, title: 'Anyone can Remove, history stays',
@@ -188,7 +191,11 @@ export const RULEBOOK: RuleSection[] = [
       { id: '9.5', how: 'auto', from: YOU_01, title: 'Who marked how many',
         text: 'Each section shows how many each person marked per day, for the last 14 days.' },
       { id: '9.6', how: 'auto', from: YOU_01, title: 'Who marks',
-        text: 'Senior and Super Admin. A junior only while no senior has been in ShipTrack for 30 minutes during 10:00-19:30 (while nobody is ticked Senior, everyone who may mark does, as before). Remove: anyone (9.4).' },
+        text: 'Senior and Super Admin. A junior only while no senior has been in ShipTrack for 30 minutes during 10:00-19:30 (while nobody is ticked Senior, everyone who may mark does, as before). Remove: anyone (9.4). Chikki itself moves a fake / invalid tracking claim to Ship again (6.5): no senior needed.' },
+      { id: '9.7', how: 'code', from: YOU_02, title: 'Ship again by Chikki',
+        text: 'A chat Chikki moved (6.5, or the one-time move of 2 Oct) shows "Chikki (auto)" as the marker and is counted under that name. Until your team writes in it, Chikki answers the customer\'s next question about the link with one reminder ("Hamari team aapka naya tracking link bana rahi hai, 24-48 ghante me yahin isi chat me milega"), never a new promise. A second question, a question after 48 hours, a refund, cancel or payment request, a threat, a fraud claim, anger, or anything not about the link turns the chat red (9.8). After your team writes, Chikki is silent as in 9.2. Remove sends the chat to Needs You, and Chikki never moves that chat by itself again.' },
+      { id: '9.8', how: 'code', from: YOU_02, title: 'Complains again: red, also in Needs You',
+        text: 'A customer who complains about the tracking again in a Ship again chat (marked by Chikki or by your team), or whose order is already in Ship again in another chat: the chat stays in Ship again, turns red and also shows in Needs You and the other lists until a team member replies, takes it over or closes it. A chat your team marked still sends the customer no message.' },
     ],
   },
   {

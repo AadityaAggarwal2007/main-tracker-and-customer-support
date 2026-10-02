@@ -14,6 +14,8 @@ import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
 import { addressConflict, addressConflictReply } from '@/lib/chat/address-conflict';
 import { recentVisitorMessages } from '@/lib/chat/chat-history';
+import { earlierVisitorMessages, reshipFollowUp, trackingClaimTurn, type ClaimTurn } from '@/lib/chat/case-auto';
+import { mentionsTracking, trackingClaimKind } from '@/lib/chat/tracking-claim';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,7 +92,7 @@ export async function POST(request: NextRequest) {
     // handling", so there it goes to Needs you instead. Only widget chats, and
     // only 'resolved': a chat waiting on a person ('human_needed') or taken
     // over by one ('agent_handling') keeps its status.
-    const updated = await queryOne<{ status: string }>(
+    const updated = await queryOne<{ status: string; case_kind: string | null }>(
       `UPDATE conversations
           SET unread_count = unread_count + 1, last_message_at = now(), updated_at = now(),
               status = CASE WHEN status = 'resolved' AND source = 'chat'
@@ -99,7 +101,7 @@ export async function POST(request: NextRequest) {
                                       WHEN $2::boolean THEN 'ai_handling' ELSE 'human_needed' END
                             ELSE status END
         WHERE id = $1
-        RETURNING status`,
+        RETURNING status, case_kind`,
       [conversationId, !!site.ai_enabled]
     );
     const status = updated?.status ?? conversation.status;
@@ -110,39 +112,62 @@ export async function POST(request: NextRequest) {
     // the customer's message came in, so one reply never mixes day and night lines.
     const after = afterHours(Date.now());
 
-    // AI response if in ai_handling mode
+    // Needs you. Only from AI handling: a chat a team member already took
+    // keeps its owner. Tried twice: the customer is about to be told a person
+    // has the chat, so a failed update must not go unnoticed.
+    const handOver = async (why: string) => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await query(
+            `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
+            [conversationId]
+          );
+          console.log(`[widget] conv ${conversationId} handed to a person: ${why}`);
+          return;
+        } catch (err) {
+          console.error(`[widget] hand-over (${why}) failed, attempt ${attempt}:`, (err as Error).message);
+        }
+      }
+    };
+    const saveAiMessage = (text: string) => queryOne<StoredMessage>(
+      `INSERT INTO messages (id, conversation_id, sender, content, created_at)
+       VALUES (gen_random_uuid()::text, $1, 'ai', $2, now())
+       RETURNING id, conversation_id, sender, content, metadata, created_at`,
+      [conversationId, text]
+    );
     let aiMessage: StoredMessage | null = null;
+
+    // Owner 2026-10-02 (answers 4 and 8): a Ship again chat. The AI stays off; code may remind
+    // the customer once or flag the chat red (case-auto.ts reshipFollowUp). The red flag is
+    // saved before any text.
+    if (status === 'agent_handling' && updated?.case_kind === 'reship') {
+      try {
+        const f = await reshipFollowUp({
+          convId: conversationId, said: String(masked.text), urgent, routine, after,
+          aiOn: !!site.ai_enabled, earlierAi: () => recentAiReplies(conversationId),
+        });
+        if (f?.text) {
+          aiMessage = await saveAiMessage(aiReply(f.text));
+          await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
+        }
+      } catch (err) {
+        // The customer's message is saved and the chat is unread in its section, as today.
+        console.error('[widget] Ship again follow-up failed:', (err as Error).message);
+      }
+    }
+
+    // AI response if in ai_handling mode
     if (status === 'ai_handling' && site.ai_enabled) {
       const said = String(masked.text);
-      // Needs you. Only from AI handling: a chat a team member already took
-      // keeps its owner. Tried twice: the customer is about to be told a person
-      // has the chat, so a failed update must not go unnoticed.
-      const handOver = async (why: string) => {
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            await query(
-              `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND status = 'ai_handling'`,
-              [conversationId]
-            );
-            console.log(`[widget] conv ${conversationId} handed to a person: ${why}`);
-            return;
-          } catch (err) {
-            console.error(`[widget] hand-over (${why}) failed, attempt ${attempt}:`, (err as Error).message);
-          }
-        }
-      };
-      const saveAiMessage = (text: string) => queryOne<StoredMessage>(
-        `INSERT INTO messages (id, conversation_id, sender, content, created_at)
-         VALUES (gen_random_uuid()::text, $1, 'ai', $2, now())
-         RETURNING id, conversation_id, sender, content, metadata, created_at`,
-        [conversationId, text]
-      );
 
       // Only a VERIFIED customer goes to Needs you (owner, 2026-09-30). A visitor stays
       // a visitor: the AI answers (and asks them to verify), nobody moves the chat,
       // and no "our team will reply" line is sent. Read again after the AI turn: the
       // customer may have verified in this very message.
       let verified = await chatIsVerified(conversationId);
+      // What this first read found, kept for the tracking claim below (the read after the AI turn
+      // overwrites `verified`): a chat verified only in this turn also has its earlier messages read.
+      const verifiedAtStart = verified;
 
       // Two different addresses from one customer (master rules section 10): the AI must
       // not pick one. A verified customer's chat goes to a person; nobody else is moved.
@@ -194,8 +219,47 @@ export async function POST(request: NextRequest) {
             );
           }
 
-          let text = aiResult.content;
-          if (aiResult.allFailed) {
+          let text: string | null = aiResult.content;
+          // Owner 2026-10-02: a fake / invalid / stuck tracking claim from a verified customer gets a
+          // fixed reply by code, and a dispatched order goes to Ship again by itself (case-auto.ts,
+          // tracking-claim.ts). No SQL unless the words match. Never throws: null = not this path.
+          let claim: ClaimTurn | null = null;
+          let earlierSaid: string[] = [];
+          if (!aiResult.allFailed && verified) {
+            claim = await trackingClaimTurn({
+              convId: conversationId, trackerBusinessId: site.tracker_business_id, said, urgent, after,
+              // Only this conversation's own recent messages: after a merge, never the older chat's history.
+              lookBack: async () => (earlierSaid = verifiedAtStart ? [] : await earlierVisitorMessages(conversationId, beforeMerge)),
+              toolResult: aiResult.toolCallMeta?.tool_result ?? null,
+              aiText: text, aiEscalated: !!aiResult.escalated, merged,
+              earlierAi: () => recentAiReplies(conversationId),
+            });
+            // Wordings the detector missed: the AI handed a tracking question over. Logged with the
+            // chat id only, for the lead's weekly check (never the customer's words).
+            if (!claim && aiResult.escalated && mentionsTracking(said) && !trackingClaimKind(said)) {
+              console.log(`[widget] tracking words, no claim: conv ${conversationId}`);
+            }
+          }
+          // Owner answer 4: the turn ended in a Ship again chat (merged into one, or Chikki marked it
+          // while the model answered) and is no tracking claim (row 4 above has those). The AI is off
+          // there: the model's text is dropped and the message gets what it gets in that chat
+          // (case-auto.ts reshipFollowUp: red with the line for the case, or the one reminder; the red
+          // flag is saved first). null = not a Ship again chat. A failed read keeps today's path.
+          let shipAgain: { text: string | null } | null = null;
+          if (verified && !claim && ![said, ...earlierSaid].some((t) => trackingClaimKind(t))) {
+            try {
+              shipAgain = await reshipFollowUp({
+                convId: conversationId, said, urgent, routine, after, aiOn: true,
+                earlierAi: () => recentAiReplies(conversationId),
+              });
+              if (shipAgain) console.log(`[widget] conv ${conversationId} turn ended in a Ship again chat: ${shipAgain.text ? 'its line' : 'no message'}`);
+            } catch (err) {
+              console.error(`[widget] Ship again check after the AI turn failed on conv ${conversationId}:`, (err as Error).message);
+            }
+          }
+          if (shipAgain) {
+            text = shipAgain.text;
+          } else if (aiResult.allFailed) {
             if (verified) {
               // Every model is down (master rules section 13): a person takes it,
               // and the customer is told so instead of "please send that again".
@@ -209,6 +273,12 @@ export async function POST(request: NextRequest) {
             // A visitor: whatever the message was about (a refund, a threat, a fraud
             // claim, the same answer again), the AI's own reply stands. Nothing moves
             // the chat out of Visitors until the customer has verified.
+          } else if (claim) {
+            // The fixed text replaces the model's; the Ship again mark or red flag is already saved
+            // (case-auto.ts). text null: the order could not be loaded and the AI handed over, so
+            // its own text stands, with the night line as today.
+            if (claim.handOver) await handOver(claim.handOver);
+            text = claim.text ?? withHandOverLine(text, said, 'escalated', after);
           } else if (!aiResult.escalated && !merged && !isCourtesyOnly(said) && isRepeatedReply(text, await recentAiReplies(conversationId))) {
             // The same answer again (section 12): stop, and let a person take it.
             text = handoffReply(said);
@@ -234,10 +304,12 @@ export async function POST(request: NextRequest) {
 
           // Save the visible reply. When the customer sent payment details, the
           // "please do not share these" line goes first (added here, not left
-          // to the model).
-          aiMessage = await saveAiMessage(aiReply(text));
-          await recordBrainUsage(aiMessage?.id, brainUsage.brain);
-          await recordChikkiRun(aiMessage?.id, conversationId, site.id, brainUsage.effort);
+          // to the model). null: a Ship again chat that sends nothing for this message.
+          if (text !== null) {
+            aiMessage = await saveAiMessage(aiReply(text));
+            await recordBrainUsage(aiMessage?.id, brainUsage.brain);
+            await recordChikkiRun(aiMessage?.id, conversationId, site.id, brainUsage.effort);
+          }
         }
 
         await query(

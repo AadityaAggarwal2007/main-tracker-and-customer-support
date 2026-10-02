@@ -33,6 +33,8 @@ interface ConversationRow {
   auto_closed_at: string | null;
   closed_by_name: string | null; closed_at: string | null;
   case_kind: string | null; case_marked_by: string | null; case_marked_at: string | null; case_order_id: string | null; case_prev_status: string | null;
+  // The latest mark's chat_case_events.actor_role: 'system' (Chikki's live mark) or 'backfill' (the one-time move).
+  case_mark_role?: string | null;
   // Who holds the chat (chat-team.sql): team_users.id, 'owner' (Super Admin) or null (nobody).
   assigned_to: string | null; assigned_at: string | null;
   merged_into: string | null;
@@ -47,6 +49,10 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.subject_label, c.subject_summary, c.subject_updated_at,
             c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at, c.closed_by_name, c.closed_at,
             c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id, c.case_prev_status,
+            CASE WHEN c.case_kind IS NOT NULL THEN
+              (SELECT e.actor_role FROM chat_case_events e
+                WHERE e.conversation_id = c.id AND e.kind = c.case_kind AND e.action = 'mark'
+                ORDER BY e.created_at DESC LIMIT 1) END AS case_mark_role,
             c.assigned_to, c.assigned_at, c.merged_into,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name

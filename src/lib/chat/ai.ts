@@ -21,7 +21,7 @@ import {
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
-import { dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
+import { asksAboutCourier, COURIER_NAME_FROM_ASK, courierAskCount, dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
@@ -221,7 +221,7 @@ they should wait for it. It is live now and the page shows them where the order 
 Never hand out the tracking ID instead of the link. The link is what they need; the ID on
 its own is useless to them. Mention the ID only if they specifically ask for it.
 Then give status, estimated delivery, payment method, products, total.
-If they ask for their tracking details, give them on short separate lines, only the ones you have: Tracking ID, Courier, Status, Estimated delivery, and then the link on its own line.
+If they ask for their tracking details, give them on short separate lines, only the ones you have: Tracking ID, Status, Estimated delivery, and then the link on its own line.
 Never put a full stop, comma or any punctuation immediately after a link, it gets pulled
 into the link and breaks it. End the line at the URL.
 Never mention address, city, state or pincode.
@@ -235,7 +235,7 @@ Always go by the status the lookup gave you and say it warmly and simply:
 Order Placed or Confirmed: confirmed, and our team is preparing it.
 Processing: being processed by our team; once it is packed and dispatched the tracking moves on.
 Packed: packed and ready to be handed to the courier.
-Shipped or Dispatched: dispatched and handed to our courier partner; name the courier only if the customer asks which courier delivers.
+Shipped or Dispatched: dispatched and handed to our courier partner. Call the courier "our courier partner" and do not name it, unless a COURIER NAME note below says you may.
 Shipment Picked Up or In Transit: on its way through the courier network.
 Reached State: it has reached their state and is moving through the local courier network toward the local delivery facility. Do not name the state.
 Reached City: it has reached their city and will go through the local delivery facility before it is assigned for delivery. Do not name the city.
@@ -618,6 +618,51 @@ const EMPTY_REPLY = "I'm here to help! How can I assist you?";
 // Appended for the one H4 retry only, never stored or sent every message.
 const VERIFIED_NOTE = "(Note from the system, not the customer: this customer's order is already verified - it is in the lookup above. Do not ask for the order ID or phone digits again. Answer their last message using that order. If their message is short or unclear about the order (like \"date\", \"status\", \"kab\", \"order\", \"?\"), answer with the order's current stage, its estimated delivery date and the tracking link; never reply with only a greeting.)";
 
+// Courier name only on the customer's 3rd ask about which courier delivers (owner, 2026-10-02
+// 10:55; reply-guards.ts counts the asks and removes a name given too early). Added to the prompt
+// only on a turn whose latest messages ask; a panel's own prompt (sites.system_prompt) may still
+// say "name the courier if you have it", so the note says it overrides that.
+const COURIER_NAME_NOT_YET_NOTE = '\n\nCOURIER NAME (from the system, for this reply only; it overrides any line above about the courier): do not name the courier in this reply. If the courier comes up, for example the customer asks which courier delivers, say in one whole sentence that their order is with our courier partner (in Hinglish: "Aapka order hamare courier partner ke paas hai."). Do not say that you cannot or will not share the name.';
+const COURIER_NAME_OK_NOTE = '\n\nCOURIER NAME (from the system, for this reply only): the customer has now asked three times or more which courier delivers their order, so when they ask, name the courier exactly as the order lookup gives it, in one short line. Never guess a courier you were not given.';
+
+// The couriers in the lookup results stored in this chat (for a yes / no ask of a name).
+function couriersInLookups(rows: StoredMessage[]): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (r.sender !== 'tool_result') continue;
+    try {
+      const j = JSON.parse(r.content || '');
+      if (j?.found && Array.isArray(j.orders)) for (const o of j.orders) if (o?.courier) out.push(String(o.courier));
+    } catch { /* not a lookup result */ }
+  }
+  return out;
+}
+
+// How many times this customer has asked which courier delivers: this chat's messages (the
+// history window, the latest included) plus every message of their other chats on this site
+// (same customer_key, chat-customer-key.sql; NULL for visitors and email, so only this chat
+// counts there). Only the count leaves this function, never the text. null = could not be read,
+// which never allows the name.
+async function courierAsksSoFar(conversationId: string, thisChat: string[], names: string[]): Promise<number | null> {
+  try {
+    const other = await query<{ content: string | null }>(
+      `SELECT left(m.content, 600) AS content
+         FROM conversations me
+         JOIN conversations c ON c.site_id = me.site_id AND c.customer_key = me.customer_key AND c.id <> me.id
+         JOIN messages m ON m.conversation_id = c.id
+        WHERE me.id = $1 AND me.customer_key IS NOT NULL
+          AND m.sender = 'visitor' AND m.deleted_at IS NULL
+        ORDER BY m.created_at DESC
+        LIMIT 300`,
+      [conversationId]
+    );
+    return courierAskCount(thisChat, names) + courierAskCount(other.rows.map((r) => r.content || ''), names);
+  } catch (err) {
+    console.error('[AI] courier ask count failed:', (err as Error)?.message);
+    return null;
+  }
+}
+
 function stripMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '$1')   // bold
@@ -729,6 +774,16 @@ export async function getAIResponse(
 
   // The customer's latest messages: when the saved answers are more than fit, the closest go first.
   const askedNow = recent.rows.filter((r) => r.sender === 'visitor').slice(-3).map((r) => r.content || '').join('\n');
+  // Courier name only on the customer's 3rd ask (owner, 2026-10-02): counted only when the
+  // latest messages ask (no query otherwise); below 3, or unknown, the name stays hidden.
+  const visitorAll = recent.rows.filter((r) => r.sender === 'visitor').map((r) => r.content || '');
+  const knownCouriers = couriersInLookups(recent.rows);
+  const courierAskedNow = asksAboutCourier(visitorAll.slice(-2).join('\n'), knownCouriers);
+  const courierAsks: number | null = courierAskedNow ? await courierAsksSoFar(conversationId, visitorAll, knownCouriers) : 0;
+  if (courierAskedNow) console.log(`[AI] Courier asked for conv ${conversationId}: ask ${courierAsks ?? 'unknown'}`);
+  const courierNote = !courierAskedNow ? ''
+    : courierAsks !== null && courierAsks >= COURIER_NAME_FROM_ASK ? COURIER_NAME_OK_NOTE : COURIER_NAME_NOT_YET_NOTE;
+
   let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates, askedNow)
     + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
     + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
@@ -919,6 +974,9 @@ export async function getAIResponse(
       console.error('[AI] team examples read failed:', (err as Error)?.message);
     }
   }
+
+  // Last, so no Brain note or team example after it can name the courier too early.
+  systemPrompt += courierNote;
 
   // A found lookup_order result in the window that was not proof (see
   // isProvenLookup) is swapped for UNPROVEN_LOOKUP before the model sees it,
@@ -1272,8 +1330,10 @@ export async function getAIResponse(
         }
       } catch { /* not a lookup result */ }
     }
-    // The courier is named only when the customer asks which courier delivers (owner).
-    const courier = withoutUnaskedCourier(out, visitorTexts.slice(-2).join('\n'), couriers);
+    // The courier is named only on the customer's 3rd ask about which courier delivers (owner,
+    // 2026-10-02; courierAsks above). Before that, or when the count could not be read, the name
+    // becomes "our courier partner" and a "Courier: X" line is dropped.
+    const courier = withoutUnaskedCourier(out, visitorTexts.slice(-2).join('\n'), [...couriers, ...knownCouriers], courierAsks);
     if (courier.changed) { out = courier.text; console.log(`[AI] Unasked courier name removed for conv ${conversationId}`); }
     const around = withCheckAround(out, { customerLatest: visitorTexts.slice(-2).join('\n'), orderDelivered: delivered, earlierAgentReplies: agentTexts });
     if (around.changed) { out = around.text; console.log(`[AI] Check-around line added for conv ${conversationId}`); }

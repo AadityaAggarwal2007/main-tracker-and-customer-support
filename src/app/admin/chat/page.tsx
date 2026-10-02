@@ -19,6 +19,7 @@ import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
 import { INDIAN_STATES, addressText, type OrderAddress } from '@/lib/chat/order-address';
+import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import {
   ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, StoredAttachment, checkBrowserFile, formatFileSize,
@@ -49,6 +50,9 @@ interface Conversation {
   case_marked_by?: string | null;
   case_marked_at?: string | null;
   case_order_id?: string | null;
+  // Who made the latest mark (chat_case_events.actor_role): 'system' = Chikki's live Ship again mark (the
+  // customer was promised a new tracking link), 'backfill' = the one-time move of 2 Oct (no message sent).
+  case_mark_role?: string | null;
   // Who holds the chat (chat-team.sql): a team member's key, 'owner' (the Super Admin) or null
   // (nobody). The list's `team` gives the names; on a grouped row it is the latest chat's holder.
   assigned_to?: string | null;
@@ -681,16 +685,31 @@ function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big
 
 // Refund / Ship again (chat-cases.sql): which section, who marked it, when.
 const CASE_LABELS: Record<string, string> = { refund: 'Refund', reship: 'Ship again' };
-function CaseChip({ kind, by, at, big = false }: { kind: string; by?: string | null; at?: string | null; big?: boolean }) {
+function CaseChip({ kind, by, at, status, role, big = false }: { kind: string; by?: string | null; at?: string | null; status?: string | null; role?: string | null; big?: boolean }) {
   const when = at ? new Date(at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '';
   const refund = kind === 'refund';
+  // Chikki's own Ship again mark (owner 2026-10-02): a live mark came with the new-link promise; a chat
+  // moved in the one-time move of 2 Oct (actor_role 'backfill') got no message, its customer hears of
+  // the new link at their next question about it (the one reminder).
+  const auto = by === AUTO_MARK_NAME;
+  const moved = auto && role === 'backfill';
+  // Red (owner 2026-10-02, answer 8): a Ship again chat waiting for a person (the customer wrote again,
+  // or it was already in Needs you). It stays in Ship again and also shows in Needs you until a person
+  // replies, takes it over, closes it or removes the mark.
+  const red = kind === 'reship' && status === 'human_needed';
+  const who = `${CASE_LABELS[kind] || kind}${by ? ` · marked by ${by}` : ''}${when ? ` · ${when}` : ''}.`;
+  const movedNote = 'Moved here in the one-time move of 2 Oct: the move sent the customer no message.';
+  const title = red
+    // A staff mark sends the customer nothing, so only Chikki's live mark carries a promise.
+    ? `${who} ${moved ? movedNote : auto ? 'The customer was promised a new tracking link.' : 'Customer wrote again.'} A person must reply now.`
+    : `${who} ${moved ? `${movedNote} Their next question about the link gets the 24-48 hour line.` : auto ? 'The customer was told: new tracking link here within 24-48 hours.' : 'Internal only: the customer is not told.'}`;
   return (
-    <span title={`${CASE_LABELS[kind] || kind}${by ? ` · marked by ${by}` : ''}${when ? ` · ${when}` : ''}. Internal only: the customer is not told.`} style={{
+    <span title={title} style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
       fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4, fontWeight: 700,
-      background: refund ? '#fef3c7' : '#e0e7ff', color: refund ? '#92400e' : '#3730a3',
+      background: red ? '#fee2e2' : refund ? '#fef3c7' : '#e0e7ff', color: red ? '#b91c1c' : refund ? '#92400e' : '#3730a3',
     }}>
-      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {CASE_LABELS[kind] || kind}
+      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {red ? `${CASE_LABELS.reship} · needs you` : CASE_LABELS[kind] || kind}
       {big && by ? <span style={{ fontWeight: 500 }}>· {by}{when ? `, ${when}` : ''}</span> : null}
     </span>
   );
@@ -1554,7 +1573,13 @@ export default function ChatSupportPage() {
     const label = kind ? CASE_LABELS[kind] : CASE_LABELS[activeConv.case_kind || 'refund'];
     const ok = kind
       ? confirm(`Mark this chat for ${label}?\n\nIt moves to the ${label} list (and out of every other list), the AI stops replying here, and the customer is NOT told anything.`)
-      : confirm(`Take this chat out of ${label}?\n\nIt goes back to where it was. The history keeps who marked and who removed it.`);
+      : activeConv.case_kind === 'reship' && activeConv.case_marked_by === AUTO_MARK_NAME
+        // Chikki's own mark (owner 2026-10-02): Remove sends it to Needs you (a chat a team member had
+        // taken goes back to them), and Chikki never marks it again. The one-time move sent no message.
+        ? confirm(`Take this chat out of ${label}?\n\n${activeConv.case_mark_role === 'backfill'
+          ? 'Chikki moved it here in the one-time move of 2 Oct; the move sent the customer no message.'
+          : 'The customer was promised a new tracking link.'} The chat goes to Needs you (or back to the team member who had taken it), and Chikki will not move it here again by itself.`)
+        : confirm(`Take this chat out of ${label}?\n\nIt goes back to where it was. The history keeps who marked and who removed it.`);
     if (!ok) return;
     try {
       const res = await fetch(`/api/chat/conversations/${activeId}`, {
@@ -1576,6 +1601,7 @@ export default function ChatSupportPage() {
         case_marked_by: (d.case_marked_by as string | null | undefined) ?? null,
         case_marked_at: (d.case_marked_at as string | null | undefined) ?? null,
         case_order_id: (d.case_order_id as string | null | undefined) ?? null,
+        case_mark_role: null,   // a person's mark now, or none
         status: ((d.status as Conversation['status'] | undefined) || c.status),
       } : c));
       showAlert('success', kind ? `Moved to ${label}` : `Taken out of ${label}`);
@@ -2385,7 +2411,10 @@ export default function ChatSupportPage() {
                       </div>
                     ))}
                     <div style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: '0.6875rem' }}>
-                      Internal only: customers are never told. These chats show only here; the AI does not reply in them.
+                      {caseKey === 'reship'
+                        // Owner 2026-10-02: Chikki marks Ship again by itself for a fake / invalid tracking claim.
+                        ? `Marked by your team: internal only, the customer is not told, the AI does not reply. Marked by ${AUTO_MARK_NAME}: the customer was promised a new tracking link within 24-48 hours, and Chikki only reminds them once (a chat moved in the one-time move of 2 Oct got no message: its customer's next question about the link gets that line). A red one also shows in Needs you.`
+                        : 'Internal only: customers are never told. These chats show only here; the AI does not reply in them.'}
                     </div>
                   </div>
                 );
@@ -2546,7 +2575,7 @@ export default function ChatSupportPage() {
                         )}
                         {attention && (
                           <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '0.3125rem' }}>
-                            {c.case_kind && <CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} />}
+                            {c.case_kind && <CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} status={c.status} role={c.case_mark_role} />}
                             {threat && (
                               <span title="This customer has threatened a chargeback, police, court or bad reviews" style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, background: '#fee2e2', color: '#b91c1c', whiteSpace: 'nowrap' }}>Threat</span>
                             )}
@@ -2667,7 +2696,7 @@ export default function ChatSupportPage() {
                       {/* Refund / Ship again: verified customers only; internal, the customer is told nothing */}
                       {canCases && !isVisitorChat(activeConv) && (activeConv.case_kind ? (
                         <>
-                          <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} big />
+                          <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
                           <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>
                         </>
                       ) : (

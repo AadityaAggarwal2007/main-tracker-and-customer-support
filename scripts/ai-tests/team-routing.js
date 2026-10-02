@@ -18,7 +18,7 @@
 //     of the Super Admin's that the customer reopens goes to the open pool.
 // Every other statement must match one the routes are known to send, or the test fails.
 // The SQL itself (triggers, grants) is checked on the server in a rolled-back transaction.
-const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert');
+const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert'), crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const ts = require('typescript');
 const SRC = path.resolve(__dirname, '../../src');
@@ -34,7 +34,8 @@ process.env.ADMIN_PASSWORD = 'env-pass-123';
 // ── Fake modules ───────────────────────────────────────────────
 fs.writeFileSync(path.join(dir, 'next-server.js'), `
 class NextResponse {
-  constructor(body, init = {}) { this.status = init.status || 200; this.body = body; this.headers = init.headers || {}; }
+  // headers: the init's own (read as a plain object), plus set() as the pending route uses it.
+  constructor(body, init = {}) { this.status = init.status || 200; this.body = body; this.headers = Object.assign(Object.create({ set(k, v) { this[k] = v; } }), init.headers || {}); }
   static json(body, init = {}) { return new NextResponse(body, init); }
 }
 class NextRequest {}
@@ -54,14 +55,27 @@ stub('subject', 'module.exports = { updateConversationSubject: async () => {} };
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');
 stub('chikki-runs', 'module.exports = { recordChikkiRun: async () => {} };');
-stub('chat-history', 'module.exports = { recentVisitorMessages: async () => [] };');
-// The model, scripted: the widget route's night line is what is tested, not the AI.
+// The customer's own earlier messages, newest first (index 0 = the message just stored): set by a test.
+stub('chat-history', 'module.exports = { recentVisitorMessages: async () => global.__recentSaid || [] };');
+// The verified order as orders.ts loads it (case-auto.ts): global.__orders[order id], else not found.
+stub('orders', `module.exports = {
+  lookupVerifiedOrder: async (id) => {
+    global.__orderLookups.push(id);
+    const o = global.__orders[id];
+    return o ? { found: true, count: 1, orders: [JSON.parse(JSON.stringify(o))] } : { found: false, message: 'The verified order could not be loaded.' };
+  },
+};`);
+// The model, scripted: the widget route's night line is what is tested, not the AI. next.onCall
+// plays what the model's tools do to the chat during the turn (verify, escalate).
 stub('ai', `module.exports = {
   AI_BUSY_REPLY: 'Sorry, that took longer than expected on my end. Could you send that again?',
-  getAIResponse: async (...a) => { global.__ai.calls.push(a); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: false, toolCallMeta: null }; },
+  getAIResponse: async (...a) => { global.__ai.calls.push(a); if (global.__ai.next.onCall) global.__ai.next.onCall(); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: false, toolCallMeta: global.__ai.next.toolCallMeta || null }; },
 };`);
 global.__emails = [];
 global.__ai = { calls: [], next: { content: '' } };
+global.__orders = {};
+global.__orderLookups = [];
+global.__recentSaid = [];
 
 // ── Compile the real code next to the fakes ────────────────────
 const compile = (from, to) => {
@@ -71,17 +85,21 @@ const compile = (from, to) => {
     .replace(/from 'next\/server'/g, "from './next-server'");
   fs.writeFileSync(path.join(dir, to + '.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText);
 };
-for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
+for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib/${f}.ts`, f);
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
-  'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified']) compile(`lib/chat/${f}.ts`, f);
+  'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
+  'reply-guards', 'tracking-claim', 'case-auto']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
+compile('app/api/chat/pending/route.ts', 'r-pending');
 compile('app/api/chat/team/release/route.ts', 'r-release');
 compile('app/api/widget/messages/[conversationId]/route.ts', 'r-widget-messages');
 compile('app/api/widget/message/route.ts', 'r-widget-message');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
+const waitingMod = require(path.join(dir, 'waiting.js'));
 const esc = require(path.join(dir, 'escalation.js'));
+const tc = require(path.join(dir, 'tracking-claim.js'));
 
 // ── The fake database ──────────────────────────────────────────
 const RAHUL = '11111111-1111-4111-8111-111111111111';   // senior (chat.senior)
@@ -216,6 +234,54 @@ const OLD_CASE_SQL = {
   eventMark: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)",
   eventRemove: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)",
 };
+// Chikki's own Ship again mark, the red flag and their reads (case-auto.ts, owner 2026-10-02): exact.
+const AUTO_SQL = {
+  state: norm(`SELECT c.site_id, c.customer_key, c.status, c.verified_order_id, c.verified_via, c.case_kind, c.case_marked_by,
+       c.case_marked_at, c.merged_into,
+       EXISTS (SELECT 1 FROM chat_case_events e
+                WHERE e.conversation_id = c.id AND e.kind = 'reship' AND e.action = 'remove') AS reship_removed,
+       r.id AS other_reship_id, r.status AS other_reship_status
+  FROM conversations c
+  LEFT JOIN LATERAL (
+    SELECT o.id, o.status FROM conversations o
+     WHERE o.site_id = c.site_id AND o.id <> c.id AND o.merged_into IS NULL
+       AND o.case_kind = 'reship' AND o.case_order_id = c.verified_order_id
+     ORDER BY o.case_marked_at DESC LIMIT 1) r ON true
+ WHERE c.id = $1`),
+  mark: norm(`UPDATE conversations
+          SET case_prev_status = CASE WHEN status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,
+              case_kind = 'reship', case_marked_by = $2, case_marked_at = now(), case_order_id = $3,
+              status = CASE WHEN $4::boolean AND status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND case_kind IS NULL
+        RETURNING status`),
+  // "Complained first, verified next": this conversation's own last messages (since the chat before
+  // the merge was opened, last 24 hours), never an older merged chat's history.
+  earlier: norm(`SELECT m.content FROM messages m
+      WHERE m.conversation_id = $1 AND m.sender = 'visitor' AND m.deleted_at IS NULL
+        AND COALESCE(m.metadata->>'hidden', 'false') <> 'true' AND btrim(m.content) <> ''
+        AND m.created_at >= (SELECT s.created_at FROM conversations s WHERE s.id = $2)
+        AND m.created_at > now() - interval '24 hours'
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 4`),
+  age: 'SELECT case_marked_by, (extract(epoch FROM now() - case_marked_at) * 1000)::float8 AS age_ms FROM conversations WHERE id = $1',
+  red: "UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1 AND case_kind = 'reship' AND status = 'agent_handling'",
+  // reminded (review fix, 2026-10-02): the one reminder, whatever language it went out in.
+  reship: norm(`SELECT c.status, c.case_marked_at,
+       (SELECT e.actor_role FROM chat_case_events e
+         WHERE e.conversation_id = c.id AND e.kind = 'reship' AND e.action = 'mark'
+         ORDER BY e.created_at DESC LIMIT 1) AS mark_role,
+       EXISTS (SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.sender = 'agent' AND m.deleted_at IS NULL
+                  AND m.created_at > c.case_marked_at) AS team_wrote,
+       EXISTS (SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.sender = 'ai' AND m.deleted_at IS NULL
+                  AND m.created_at >= c.case_marked_at AND m.content ILIKE ANY ($2::text[])) AS reminded
+  FROM conversations c WHERE c.id = $1 AND c.case_kind = 'reship'`),
+};
+// A red Ship again chat is also in Needs you and the lists (conversations/route.ts OUTSIDE_SECTION).
+const OUTSIDE_SECTION = "(c.case_kind IS NULL OR (c.case_kind = 'reship' AND c.status = 'human_needed'))";
 
 async function handle(q, p, tx) {
   let m;
@@ -405,6 +471,80 @@ async function handle(q, p, tx) {
     return rows([]);
   }
 
+  // ── Chikki's own Ship again and the red flag (case-auto.ts, owner 2026-10-02) ──
+  if (q === AUTO_SQL.state) {
+    const c = conv(p[0]);
+    if (!c) return rows([]);
+    const other = db.convs
+      .filter((o) => o.site_id === c.site_id && o.id !== c.id && !o.merged_into && o.case_kind === 'reship' && c.verified_order_id != null && o.case_order_id === c.verified_order_id)
+      .sort((a, b) => Date.parse(b.case_marked_at || 0) - Date.parse(a.case_marked_at || 0))[0];
+    return rows([{
+      ...pick(c, ['site_id', 'customer_key', 'status', 'verified_order_id', 'verified_via', 'case_kind', 'case_marked_by', 'case_marked_at', 'merged_into']),
+      reship_removed: db.caseEvents.some((e) => e.conversation_id === c.id && e.kind === 'reship' && e.action === 'remove'),
+      other_reship_id: other ? other.id : null, other_reship_status: other ? other.status : null,
+    }]);
+  }
+  if (q === AUTO_SQL.mark) {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    if (!c || c.case_kind != null) return rows([]);
+    if (typeof p[3] !== 'boolean') throw new Error('fake db: the Ship again mark needs $4 (keep Needs you) as a boolean');
+    setRow(tx, c, {
+      case_prev_status: c.status === 'agent_handling' ? 'agent_handling' : 'human_needed', case_kind: 'reship', case_marked_by: p[1],
+      case_marked_at: nowIso(), case_order_id: p[2], status: p[3] && c.status === 'human_needed' ? 'human_needed' : 'agent_handling', auto_closed_at: null,
+    });
+    return rows([{ status: c.status }]);
+  }
+  if (q === AUTO_SQL.earlier) {
+    const from = conv(p[1]);
+    if (!from) return rows([]);
+    const since = Date.parse(from.created_at), floor = clock - 24 * 3600_000;
+    const hits = db.messages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.conversation_id === p[0] && m.sender === 'visitor' && !m.deleted_at && !(m.metadata && m.metadata.hidden)
+        && String(m.content || '').trim() !== '' && Date.parse(m.created_at) >= since && Date.parse(m.created_at) > floor)
+      .sort((a, b) => Date.parse(b.m.created_at) - Date.parse(a.m.created_at) || b.i - a.i);
+    return rows(hits.slice(0, 4).map(({ m }) => ({ content: m.content })));
+  }
+  if (q === AUTO_SQL.age) {
+    need(tx, q);
+    const c = conv(p[0]);
+    return rows(c ? [{ case_marked_by: c.case_marked_by, age_ms: c.case_marked_at ? clock - Date.parse(c.case_marked_at) : null }] : []);
+  }
+  if (q === AUTO_SQL.red) {
+    need(tx, q);
+    if (tx.lockTimeoutMs == null) throw new Error('fake db: the red flag locks before SET LOCAL lock_timeout');
+    const c = await rowFor(tx, p[0]);
+    if (!c || c.case_kind !== 'reship' || c.status !== 'agent_handling') return rows([]);
+    setRow(tx, c, { status: 'human_needed' });
+    return { rows: [], rowCount: 1 };
+  }
+  if (q === AUTO_SQL.reship) {
+    const c = conv(p[0]);
+    if (!c || c.case_kind !== 'reship') return rows([]);
+    const marks = db.caseEvents.filter((e) => e.conversation_id === c.id && e.kind === 'reship' && e.action === 'mark');
+    const markedAt = Date.parse(c.case_marked_at);
+    // ILIKE '%text%' only (the reminder's first words): anything else is a test failure.
+    if (!Array.isArray(p[1]) || !p[1].length || !p[1].every((x) => /^%[^%_]+%$/.test(x))) throw new Error('fake db: reminded wants [\'%text%\', ...]');
+    const ilike = (s) => p[1].some((x) => String(s || '').toLowerCase().includes(x.slice(1, -1).toLowerCase()));
+    return rows([{
+      status: c.status, case_marked_at: c.case_marked_at, mark_role: marks.length ? marks[marks.length - 1].actor_role : null,
+      team_wrote: db.messages.some((m) => m.conversation_id === c.id && m.sender === 'agent' && !m.deleted_at && Date.parse(m.created_at) > markedAt),
+      reminded: db.messages.some((m) => m.conversation_id === c.id && m.sender === 'ai' && !m.deleted_at && Date.parse(m.created_at) >= markedAt && ilike(m.content)),
+    }]);
+  }
+  // The sidebar's Needs you badge (/api/chat/pending): counted by the case condition the route sends.
+  if (/^SELECT count\(DISTINCT CASE WHEN c\.customer_key IS NOT NULL AND c\.source = 'chat' THEN 'k:' \|\| c\.site_id \|\| ':' \|\| c\.customer_key ELSE 'c:' \|\| c\.id END\) AS human_needed, /.test(q)) {
+    let caseOk;
+    if (q.includes("c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship')")) caseOk = (c) => c.case_kind == null || c.case_kind === 'reship';
+    else if (q.includes("c.status = 'human_needed' AND c.case_kind IS NULL")) caseOk = (c) => c.case_kind == null;
+    else throw new Error('fake db: the pending count without its case condition');
+    const hits = db.convs.filter((c) => c.status === 'human_needed' && !c.merged_into && caseOk(c));
+    db.pending = { sql: q, params: p, ids: hits.map((c) => c.id) };
+    const keys = new Set(hits.map((c) => (c.customer_key && c.source === 'chat' ? `k:${c.site_id}:${c.customer_key}` : 'c:' + c.id)));
+    return rows([{ human_needed: String(keys.size), email_waiting: String(hits.filter((c) => c.source === 'email').length) }]);
+  }
+
   // ── The Super Admin's release (/api/chat/team/release) ──
   if (q === "SELECT id, site_id, status FROM conversations WHERE assigned_to = $1 AND status <> 'resolved' AND merged_into IS NULL ORDER BY id FOR NO KEY UPDATE") {
     need(tx, q);
@@ -475,7 +615,7 @@ async function handle(q, p, tx) {
     const c = conv(p[0]);
     if (c.status === 'resolved' && c.source === 'chat') setRow(null, c, { status: c.case_kind ? 'agent_handling' : p[1] ? 'ai_handling' : 'human_needed' });
     c.unread_count = (c.unread_count || 0) + 1;
-    return rows([{ status: c.status }]);
+    return rows([{ status: c.status, case_kind: c.case_kind }]);
   }
   if (q === 'SELECT (verified_order_id IS NOT NULL OR phone_match_order_id IS NOT NULL) AS v FROM conversations WHERE id = $1') {
     const c = conv(p[0]); return rows(c ? [{ v: !!(c.verified_order_id || c.phone_match_order_id) }] : []);
@@ -499,6 +639,12 @@ async function handle(q, p, tx) {
 
   // ── Merging two chats of one customer (merge-chats.ts) ──
   if (q === 'SELECT to_regclass($1) IS NOT NULL AS ok') return rows([{ ok: true }]);
+  if (q === "SELECT id FROM conversations WHERE site_id = $1 AND source = 'chat' AND customer_key = $2 AND verified_order_id = $3 AND verified_via IN ('form', 'chat_phone') AND merged_into IS NULL AND id <> $4 ORDER BY last_message_at DESC NULLS LAST, created_at DESC LIMIT 1") {
+    const c = db.convs
+      .filter((x) => x.site_id === p[0] && x.source === 'chat' && x.customer_key === p[1] && x.verified_order_id === p[2] && ['form', 'chat_phone'].includes(x.verified_via) && !x.merged_into && x.id !== p[3])
+      .sort((a, b) => Date.parse(b.last_message_at) - Date.parse(a.last_message_at))[0];
+    return rows(c ? [{ id: c.id }] : []);
+  }
   if (q === 'SELECT c.id, c.site_id, c.status, c.unread_count, c.visitor_id, c.visitor_name, c.verified_order_id, c.verified_via, c.customer_key, c.source, c.merged_into, s.ai_enabled, c.assigned_to FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = ANY($1::text[]) ORDER BY c.id FOR UPDATE OF c') {
     need(tx, q);
     const ids = db.convs.filter((c) => p[0].includes(c.id)).map((c) => c.id).sort();
@@ -572,6 +718,7 @@ function fresh() {
   mod = {
     auth: r('auth'), routing: r('team-routing'), rules: r('team-rules'), messages: r('r-messages'), thread: r('r-thread'), list: r('r-list'),
     release: r('r-release'), widgetMessages: r('r-widget-messages'), widgetMessage: r('r-widget-message'), merge: r('merge-chats'),
+    pending: r('r-pending'),
   };
   return mod;
 }
@@ -1379,13 +1526,13 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const mineCond = L.sql.match(/c\.assigned_to = \$(\d+) AND c\.status IN \('human_needed', 'agent_handling'\)/);
     ok(mineCond, 'My chats condition');
     eq(L.params[Number(mineCond[1]) - 1], ANURAG);
-    ok(L.sql.includes('c.case_kind IS NULL') && L.sql.includes('c.merged_into IS NULL'));
+    ok(L.sql.includes(OUTSIDE_SECTION) && L.sql.includes('c.merged_into IS NULL'));
     ok(/ORDER BY g\.last_message_at DESC NULLS LAST, g\.created_at DESC LIMIT \$\d+$/.test(L.sql), 'newest activity first, as before');
     ok(L.sql.includes('WINDOW w AS (PARTITION BY f.site_id, f.group_key ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)'));
     ok(L.sql.includes('g.assigned_to, g.assigned_at'));
     eq((L.unansweredSql.match(/count\(DISTINCT x\.gk\) FILTER \(WHERE/g) || []).length, 3);
     ok(!/\) x WHERE/.test(L.unansweredSql), 'no outer WHERE: n is the number it always was');
-    ok(L.unansweredSql.includes("c.status <> 'resolved' AND c.case_kind IS NULL"));
+    ok(L.unansweredSql.includes(`c.status <> 'resolved' AND ${OUTSIDE_SECTION}`));
     eq(L.unansweredParams[L.unansweredParams.length - 1], ANURAG);
     deq([r.body.me, r.body.unanswered_total, r.body.mine, r.body.office_open], [ANURAG, 4, { open: 2, waiting: 1, held: 0 }, true]);
     ok(!db.stmts.some((x) => x.q.startsWith('SELECT count(*)::int AS n FROM conversations WHERE assigned_to')), 'held is asked for the Super Admin only');
@@ -1875,6 +2022,890 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       ok(/CREATE OR REPLACE TRIGGER trg_team_holder_log\s+AFTER UPDATE ON conversations\s+FOR EACH ROW WHEN \(OLD\.assigned_to IS DISTINCT FROM NEW\.assigned_to\)/.test(score));
       ok(/WHERE e\.kind IN \('claim', 'take', 'transfer', 'inherit', 'merge'\)/.test(score));
     }
+  });
+
+  // ── R24-R41: fake / invalid tracking claims (owner 2026-10-02; case-auto.ts, tracking-claim.ts) ─
+  // The REAL widget route with the real detector and texts; the model is scripted, so every reply
+  // below is the code's fixed text (the model's own words must never show). Texts exactly as the
+  // spec (2.3); the courier is never named in them.
+  const PROMISE = {
+    en: 'Sorry for the trouble. We will send a new tracking link for your order here in this chat within 24-48 hours.',
+    hinglish: 'Pareshani ke liye sorry. Aapke order ka naya tracking link 24-48 ghante me isi chat me bhej denge.',
+  };
+  const REMINDER = {
+    en: 'Our team is preparing your new tracking link, and you will get it right here in this chat within 24-48 hours.',
+    hinglish: 'Hamari team aapka naya tracking link bana rahi hai, 24-48 ghante me yahin isi chat me milega.',
+  };
+  const HANDOFF = {
+    en: "Sorry to keep you waiting. I've passed your message to our team, and they will reply to you here in this chat.",
+    hinglish: 'Sorry ki aapko wait karna pad raha hai. Maine aapki baat hamari team ko de di hai, team isi chat mein aapko jawab degi.',
+  };
+  const TEAM_LINE_EN = "I've passed this to our team, and they will reply to you here in this chat.";
+  const AI_SAYS = 'I have raised this with our team and they will get back to you.';
+  const CLAIM = 'Valmo website shows trecking id invalid';
+  const order = (id, stage, extra = {}) => {
+    global.__orders[id] = {
+      order_id: id, customer_name: 'Test Customer', status: stage, tracking_id: 'STAB12CD34EF',
+      tracking_link: `https://shiptrack.store/track/tok-${id.slice(1)}`, courier: 'Valmo', estimated_delivery: null,
+      total: 999, products: [], placed_on: '2026-09-25T10:00:00.000Z', store: 'Vastora', cancelled: false, payment: 'Prepaid', ...extra,
+    };
+  };
+  const say = async (id, text, ai = { content: AI_SAYS }) => {
+    global.__ai.next = ai;
+    const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: text }));
+    status(r, 201, id);
+    return r;
+  };
+  const textOf = (r) => (r.body.aiResponse ? r.body.aiResponse.content : null);
+  const ce = (id) => db.caseEvents.filter((e) => e.conversation_id === id).map((e) => [e.site_id, e.kind, e.action, e.order_id, e.actor, e.actor_role]);
+  const caseWrites = (n) => since(n).filter((x) => x.q === AUTO_SQL.mark || x.q === AUTO_SQL.red || x.q.startsWith('INSERT INTO chat_case_events') || /FOR NO KEY UPDATE$/.test(x.q) || x.q.startsWith('SELECT set_config'));
+  const lastAi = (id) => db.messages.filter((m) => m.conversation_id === id && m.sender === 'ai').pop();
+  // A chat already in Ship again: by Chikki (actor_role 'system') or by a person.
+  const marked = (o, by = 'Chikki (auto)', role = 'system') => {
+    const c = known({ status: 'agent_handling', case_kind: 'reship', case_marked_by: by, case_marked_at: nowIso(), case_prev_status: 'human_needed', ...o });
+    c.case_order_id = c.verified_order_id;
+    db.caseEvents.push({ id: crypto.randomUUID(), conversation_id: c.id, site_id: c.site_id, kind: 'reship', action: 'mark', order_id: c.verified_order_id, actor: by, actor_role: role });
+    return c;
+  };
+  const STATE_HOOK = /^SELECT c\.site_id, c\.customer_key, c\.status, c\.verified_order_id, c\.verified_via, /;
+  const URGENT_HI = 'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team isi chat mein 1 ghante ke andar aapko jawab degi.';
+  // A message the customer wrote earlier in this chat (minutes ago), stored as the widget route stores it.
+  const visitorSaid = (id, content, minsAgo) => db.messages.push({
+    id: 'msg-' + (++seq), conversation_id: id, sender: 'visitor', content, metadata: null,
+    created_at: new Date(clock - minsAgo * 60_000).toISOString(), deleted_at: null,
+  });
+  // Spec 3.6: WAITING_SINCE_SQL (waiting-sql.ts) played over the stored messages with its own regexes
+  // (team-score rules.ts waitingSince is the same port): is the customer still owed an answer?
+  ok(wsql.WAITING_SINCE_SQL.includes(waitingMod.AI_NOT_AN_ANSWER_REGEX) && wsql.WAITING_SINCE_SQL.includes(waitingMod.NO_REPLY_NEEDED_REGEX));
+  const NO_REPLY = new RegExp(waitingMod.NO_REPLY_NEEDED_REGEX.replace(/\[:space:\]/g, '\\s'), 'i');   // POSIX class -> JS
+  const NOT_ANSWER = new RegExp(waitingMod.AI_NOT_AN_ANSWER_REGEX, 'i');
+  const waitingNow = (id) => {
+    const c = C(id);
+    const ms = db.messages.filter((m) => m.conversation_id === id && m.sender !== 'tool_result' && !(m.metadata && (m.metadata.hidden || m.metadata.withheld))
+      && String(m.content || '').trim() !== '' && !m.deleted_at);
+    const of = (who) => ms.filter((m) => m.sender === who).pop();
+    const v = of('visitor'), a = of('agent'), ai = of('ai'), last = ms[ms.length - 1];
+    if (c.status === 'resolved' || !v) return false;
+    if (a && Date.parse(a.created_at) > Date.parse(v.created_at)) return false;
+    if (c.status === 'human_needed' && !a) return true;
+    if (NO_REPLY.test(v.content)) return false;
+    return c.status === 'human_needed' || last.sender === 'visitor' || (last.sender === 'ai' && !!ai && NOT_ANSWER.test(ai.content));
+  };
+  assert.ok(NO_REPLY.test('ok thanks') && !NO_REPLY.test('link kab milega?'));
+
+  await t('R24 verified (form), In Transit, "Valmo website shows trecking id invalid": the fixed promise and Chikki\'s own Ship again mark, one transaction', async () => {
+    at(ist(14, 0, 6));
+    known({ id: 'r24' });
+    order('#r24', 'In Transit');
+    global.__recentSaid = [];
+    const s0 = db.stmts.length, calls = global.__ai.calls.length;
+    const r = await say('r24', CLAIM);
+    eq(textOf(r), PROMISE.en);
+    ok(!textOf(r).includes(AI_SAYS), 'the model text is replaced');
+    eq(global.__ai.calls.length, calls + 1);
+    eq(r.body.message.metadata, null);
+    deq(pick(C('r24'), ['status', 'case_kind', 'case_marked_by', 'case_order_id', 'case_prev_status', 'assigned_to']),
+      { status: 'agent_handling', case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_order_id: '#r24', case_prev_status: 'human_needed', assigned_to: null });
+    deq(ce('r24'), [['S1', 'reship', 'mark', '#r24', 'Chikki (auto)', 'system']]);
+    ok(UUID.test(db.caseEvents.find((e) => e.conversation_id === 'r24').id));
+    const cm = evs('r24', 'case_mark');
+    eq(cm.length, 1);
+    deq(pick(cm[0], ['actor', 'actor_name', 'from_status', 'to_status', 'reason', 'meta']),
+      { actor: 'system', actor_name: 'System', from_status: 'ai_handling', to_status: 'agent_handling', reason: 'case_auto', meta: { case: 'reship', auto: true, trigger: 'invalid' } });
+    deq(evs('r24', 'status').map((e) => pick(e, ['actor', 'actor_name', 'reason', 'from_status', 'to_status'])),
+      [{ actor: 'system', actor_name: 'Chikki (auto)', reason: 'case_auto', from_status: 'ai_handling', to_status: 'agent_handling' }]);
+    // Every write in ONE transaction: lock_timeout, the lock, the actor, the mark, its event, the log.
+    const txs = txStmts(s0);
+    eq(txs.length, 1, 'one transaction');
+    const [tx] = txs;
+    eq(tx[0], 'BEGIN'); eq(tx[1], "SET LOCAL lock_timeout = '5s'"); ok(/FOR NO KEY UPDATE$/.test(tx[2]));
+    const iSet = tx.findIndex((q) => q.startsWith('SELECT set_config')), iUpd = tx.indexOf(AUTO_SQL.mark), iEv = tx.indexOf(OLD_CASE_SQL.eventMark);
+    ok(iSet > 2 && iSet < iUpd && iUpd < iEv, 'actor, then the mark, then its event');
+    eq(tx[tx.length - 1], 'COMMIT');
+    // The mark is saved before the customer is told.
+    const all = since(s0).map((x) => x.q);
+    ok(all.indexOf('COMMIT') < all.findIndex((q) => q.startsWith("INSERT INTO messages (id, conversation_id, sender, content, created_at) VALUES (gen_random_uuid()::text, $1, 'ai'")));
+    eq(lastAi('r24').content, PROMISE.en);
+    // Spec 3.6: after the promise the customer still waits for the team (the Ship again badge and the
+    // auto-close count them): the promise is not an answer.
+    ok(waitingNow('r24'), 'still waiting after the promise');
+    // 22:00: the same promise (24-48 hours is the new link, not the team's reply time).
+    at(ist(22, 0, 6));
+    known({ id: 'r24n' });
+    order('#r24n', 'Out for Delivery');
+    eq(textOf(await say('r24n', CLAIM)), PROMISE.en);
+    deq([C('r24n').case_kind, C('r24n').status], ['reship', 'agent_handling']);
+  });
+
+  await t('R25 the model escalated in the same turn: still the promise and Ship again (prev Needs you)', async () => {
+    at(ist(14, 10, 6));
+    known({ id: 'r25' });
+    order('#r25', 'Shipped');
+    const r = await say('r25', 'tracking link is not working', {
+      content: 'I have passed this to our team, they will reply within 1 hour.', escalated: true,
+      onCall: () => setRow(null, C('r25'), { status: 'human_needed' }),
+    });
+    eq(textOf(r), PROMISE.en);
+    deq(pick(C('r25'), ['status', 'case_kind', 'case_prev_status']), { status: 'agent_handling', case_kind: 'reship', case_prev_status: 'human_needed' });
+    deq(pick(evs('r25', 'case_mark')[0], ['from_status', 'meta']), { from_status: 'human_needed', meta: { case: 'reship', auto: true, trigger: 'fake' } });
+  });
+
+  await t('R26 a visitor: the AI\'s own reply, nothing read, nothing moved', async () => {
+    at(ist(14, 20, 6));
+    newConv({ id: 'r26' });
+    order('#r26', 'In Transit');
+    const s0 = db.stmts.length, l0 = global.__orderLookups.length;
+    const r = await say('r26', CLAIM, { content: 'Please share your order ID and the phone number on the order.' });
+    eq(textOf(r), 'Please share your order ID and the phone number on the order.');
+    deq([C('r26').status, C('r26').case_kind], ['ai_handling', null]);
+    ok(!since(s0).some((x) => Object.values(AUTO_SQL).includes(x.q) || x.q.includes('chat_case_events')), 'no case SQL at all');
+    eq(caseWrites(s0).length, 0);
+    eq(global.__orderLookups.length, l0);
+  });
+
+  await t('R27 an old proof (last 4), a phone match only, or another order named: today\'s path, no mark', async () => {
+    at(ist(14, 30, 6));
+    known({ id: 'r27', verified_via: 'chat' });
+    newConv({ id: 'r27p', phone_match_order_id: '#r27p' });
+    known({ id: 'r27o', verified_order_id: '#4715' });
+    order('#r27', 'In Transit'); order('#r27p', 'In Transit'); order('#4715', 'In Transit');
+    for (const [id, said] of [['r27', CLAIM], ['r27p', CLAIM], ['r27o', '#4716 ka tracking fake hai']]) {
+      const s0 = db.stmts.length, l0 = global.__orderLookups.length;
+      const r = await say(id, said);
+      eq(textOf(r), AI_SAYS, id);
+      deq([C(id).status, C(id).case_kind, ce(id).length], ['ai_handling', null, 0], id);
+      eq(caseWrites(s0).length, 0, id);
+      eq(since(s0).filter((x) => x.q === AUTO_SQL.state).length, 1, id);    // one read, to know the proof
+      eq(global.__orderLookups.length, l0, id);
+    }
+  });
+
+  await t('R28 not dispatched yet (Packed): the fixed explanation with the tracking link, nothing moves; asked again: Needs you', async () => {
+    at(ist(15, 0, 6));
+    known({ id: 'r28' });
+    order('#r28', 'Packed');
+    const explain = "Your order has not been dispatched yet, so the courier's website will not show it for now. Courier tracking starts once the order is dispatched. You can follow your order here:\nhttps://shiptrack.store/track/tok-r28";
+    let r = await say('r28', CLAIM);
+    eq(textOf(r), explain);
+    deq([C('r28').status, C('r28').case_kind, ce('r28').length], ['ai_handling', null, 0]);
+    at(ist(15, 5, 6));
+    r = await say('r28', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r28').status, C('r28').case_kind, ce('r28').length], ['human_needed', null, 0]);
+  });
+
+  await t('R29 Delivered + "fake, not received": the delivered line + the check-around line, Needs you, no mark; with "fraud": the 1-hour line', async () => {
+    at(ist(15, 30, 6));
+    const AROUND = 'Kabhi-kabhi delivered parcel ghar ke kisi member, padosi, security guard ya reception ke paas aa jata hai. Please ek baar unse check kar lijiye.';
+    known({ id: 'r29' });
+    order('#r29', 'Delivered');
+    let r = await say('r29', 'tracking pe delivered dikha raha hai par mila nahi, fake hai');
+    eq(textOf(r), `Iske liye hamein sach mein afsos hai. Maine ise abhi hamari team ko de diya hai, team isi chat mein aapko jawab degi.\n\n${AROUND}`);
+    deq([C('r29').status, C('r29').case_kind, ce('r29').length], ['human_needed', null, 0]);
+    known({ id: 'r29f' });
+    order('#r29f', 'Delivered');
+    r = await say('r29f', 'tracking pe delivered dikha raha hai par mila nahi, fake hai, fraud ho tum log');
+    eq(textOf(r), `Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team isi chat mein 1 ghante ke andar aapko jawab degi.\n\n${AROUND}`);
+    eq(r.body.message.metadata.urgent, 'accusation');
+    deq([C('r29f').status, C('r29f').case_kind, ce('r29f').length], ['human_needed', null, 0]);
+  });
+
+  await t('R30 Return to Origin, cancelled, or the order not loadable: the team line (no hours), Needs you, no mark', async () => {
+    at(ist(15, 40, 6));
+    known({ id: 'r30' }); order('#r30', 'Return to Origin');
+    known({ id: 'r30c' }); order('#r30c', 'In Transit', { cancelled: true });
+    known({ id: 'r30x' });                                  // no such order
+    for (const id of ['r30', 'r30c', 'r30x']) {
+      const r = await say(id, CLAIM);
+      eq(textOf(r), TEAM_LINE_EN, id);
+      deq([C(id).status, C(id).case_kind, ce(id).length], ['human_needed', null, 0], id);
+    }
+    // Not loadable and the AI escalated: its own hand-over text stands (the night line as today).
+    known({ id: 'r30e' });
+    const r = await say('r30e', CLAIM, { content: AI_SAYS, escalated: true, onCall: () => setRow(null, C('r30e'), { status: 'human_needed' }) });
+    eq(textOf(r), AI_SAYS);
+    deq([C('r30e').status, C('r30e').case_kind], ['human_needed', null]);
+  });
+
+  await t('R31 "fraud hai, fake tracking diya" on a dispatched order: the promise and Ship again; the message keeps its urgent marker', async () => {
+    at(ist(16, 0, 6));
+    known({ id: 'r31' });
+    order('#r31', 'Reached City');
+    const r = await say('r31', 'fraud hai, fake tracking diya');
+    eq(textOf(r), PROMISE.hinglish);
+    ok(!/1 ghante|1 hour|10 AM|10 baje/.test(textOf(r)));
+    eq(r.body.message.metadata.urgent, 'accusation');
+    deq([C('r31').status, C('r31').case_kind], ['agent_handling', 'reship']);
+    deq(evs('r31', 'case_mark')[0].meta, { case: 'reship', auto: true, trigger: 'fake', fraud: true });
+  });
+
+  await t('R32 a threat with the claim: the threat wins (fixed reply, Needs you, no AI call, no mark)', async () => {
+    at(ist(16, 10, 6));
+    known({ id: 'r32' });
+    order('#r32', 'In Transit');
+    const calls = global.__ai.calls.length, s0 = db.stmts.length;
+    const r = await say('r32', 'chargeback karunga, tracking fake hai');
+    eq(textOf(r), 'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team isi chat mein 1 ghante ke andar aapko jawab degi.');
+    eq(global.__ai.calls.length, calls);
+    deq([C('r32').status, C('r32').case_kind, ce('r32').length], ['human_needed', null, 0]);
+    ok(!since(s0).some((x) => x.q === AUTO_SQL.state));
+  });
+
+  await t('R33 a visitor complains, then proves the order in the chat: the promise and the mark on the verifying turn', async () => {
+    at(ist(16, 20, 6));
+    newConv({ id: 'r33' });
+    order('#4733', 'In Transit');
+    visitorSaid('r33', CLAIM, 2);
+    const s0 = db.stmts.length;
+    let r = await say('r33', 'order 4733, phone 9000000033', {
+      content: 'Thanks, I found your order. It is In Transit.',
+      onCall: () => Object.assign(C('r33'), { verified_order_id: '#4733', verified_via: 'chat_phone', customer_key: '9000000033' }),
+    });
+    eq(textOf(r), PROMISE.en);
+    deq(pick(C('r33'), ['status', 'case_kind', 'case_order_id']), { status: 'agent_handling', case_kind: 'reship', case_order_id: '#4733' });
+    deq(evs('r33', 'case_mark')[0].meta, { case: 'reship', auto: true, trigger: 'invalid' });
+    // The look-back reads this conversation only (the id before any merge), its last 24 hours.
+    deq(since(s0).filter((x) => x.q === AUTO_SQL.earlier).length, 1);
+    // The earlier message was a threat: the threat wins (owner Q2): the 1-hour line, Needs you, no promise, no mark.
+    newConv({ id: 'r33t' });
+    order('#4734', 'In Transit');
+    visitorSaid('r33t', 'chargeback karunga, tracking fake hai', 2);
+    r = await say('r33t', 'order 4734, phone 9000000034', {
+      content: 'Thanks, I found your order. It is In Transit.',
+      onCall: () => Object.assign(C('r33t'), { verified_order_id: '#4734', verified_via: 'chat_phone', customer_key: '9000000034' }),
+    });
+    eq(textOf(r), URGENT_HI);
+    deq([C('r33t').status, C('r33t').case_kind, ce('r33t').length], ['human_needed', null, 0]);
+  });
+
+  await t('R34 after Chikki\'s mark: one reminder (no AI call), then red: in Ship again AND in Needs you, the lists and the badge', async () => {
+    at(ist(17, 0, 6));
+    const calls = global.__ai.calls.length;
+    global.__recentSaid = ['link kab milega?', CLAIM];
+    let r = await say('r24', 'link kab milega?');
+    eq(textOf(r), REMINDER.hinglish);
+    eq(global.__ai.calls.length, calls, 'the AI stays off');
+    deq([C('r24').status, C('r24').case_kind], ['agent_handling', 'reship']);
+    ok(waitingNow('r24'), 'still waiting after the reminder (spec 3.6)');
+    at(ist(17, 5, 6));
+    global.__recentSaid = ['??', 'link kab milega?', CLAIM];
+    const s0 = db.stmts.length;
+    r = await say('r24', '??');
+    global.__recentSaid = [];
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r24').status, C('r24').case_kind, C('r24').case_marked_by], ['human_needed', 'reship', 'Chikki (auto)']);
+    deq(pick(evs('r24', 'status').pop(), ['actor', 'actor_name', 'reason', 'from_status', 'to_status']),
+      { actor: 'system', actor_name: 'Chikki (auto)', reason: 'case_alert', from_status: 'agent_handling', to_status: 'human_needed' });
+    // Red first (its own short transaction), then the text.
+    const all = since(s0).map((x) => x.q);
+    ok(all.indexOf(AUTO_SQL.red) >= 0 && all.indexOf(AUTO_SQL.red) < all.findIndex((q) => q.startsWith("INSERT INTO messages (id, conversation_id, sender, content, created_at)")));
+    const [tx] = txStmts(s0);
+    deq(tx.slice(0, 3), ['BEGIN', "SET LOCAL lock_timeout = '5s'", "SELECT set_config('shiptrack.actor', $1, true), set_config('shiptrack.actor_name', $2, true), set_config('shiptrack.reason', $3, true)"]);
+    eq(global.__ai.calls.length, calls);
+    // It stays in its section and shows in Needs you, the lists' counts and the sidebar badge.
+    await list('owner', '?status=human_needed');
+    ok(db.list.sql.includes(OUTSIDE_SECTION) && db.list.sql.includes('c.status = $'));
+    ok(db.list.unansweredSql.includes(OUTSIDE_SECTION));
+    await list('owner', '?case=reship');
+    ok(db.list.sql.includes('c.case_kind = $') && !db.list.sql.includes(OUTSIDE_SECTION));
+    const pr = await mod.pending.GET(req('owner', undefined, { method: 'GET', url: 'http://x/api/chat/pending' }));
+    status(pr, 200);
+    ok(db.pending.sql.includes("c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship')"));
+    ok(db.pending.ids.includes('r24') && !db.pending.ids.includes('r24n'));
+    eq(pr.headers['Cache-Control'], 'no-store');
+    // Red: a person is on it, nothing more is sent.
+    r = await say('r24', 'hello??');
+    eq(textOf(r), null);
+    eq(C('r24').status, 'human_needed');
+    // A person replies: the red clears (With team), the chat stays in Ship again.
+    status(await reply('rahul', 'r24', 'Here is your new tracking link: https://example.test/new'), 200);
+    deq([C('r24').status, C('r24').case_kind], ['agent_handling', 'reship']);
+  });
+
+  await t('R35 in a Chikki-marked chat: a new claim, a refund, a threat, another subject, 48 hours: red with the line for each; "ok": nothing', async () => {
+    at(ist(11, 0, 7));
+    const cases = [
+      ['r35a', 'tracking link abhi bhi fake hai', REMINDER.hinglish],
+      ['r35b', 'mujhe refund chahiye', 'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team 24 ghante ke andar isi chat mein aapko jawab degi.'],
+      ['r35c', 'I will file a police complaint', "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat within 1 hour."],
+      ['r35d', 'address change karna hai', HANDOFF.hinglish],
+      ['r35g', 'tracking link fake hai, fraud', `${REMINDER.hinglish}\n\nHamari team isi chat mein 1 ghante ke andar aapko jawab degi.`],
+    ];
+    for (const [id, said, want] of cases) {
+      marked({ id });
+      at(clock + 60_000);
+      global.__recentSaid = [said];
+      const r = await say(id, said);
+      eq(textOf(r), want, id);
+      deq([C(id).status, C(id).case_kind], ['human_needed', 'reship'], id);
+    }
+    marked({ id: 'r35e' });
+    global.__recentSaid = ['ok'];
+    let r = await say('r35e', 'ok');
+    eq(textOf(r), null);
+    eq(C('r35e').status, 'agent_handling');
+    marked({ id: 'r35f' });
+    at(clock + 49 * 3600_000);
+    global.__recentSaid = ['link?'];
+    r = await say('r35f', 'link?');
+    global.__recentSaid = [];
+    eq(textOf(r), HANDOFF.en);
+    eq(C('r35f').status, 'human_needed');
+  });
+
+  await t('R36 a chat the team marked Ship again: a new tracking claim turns it red with NO message; anything else: nothing', async () => {
+    at(ist(12, 0, 8));
+    marked({ id: 'r36' }, 'Rahul', 'manager');
+    let r = await say('r36', 'tracking abhi bhi fake hai');
+    eq(textOf(r), null);
+    deq([C('r36').status, C('r36').case_kind], ['human_needed', 'reship']);
+    marked({ id: 'r36b' }, 'Rahul', 'manager');
+    for (const said of ['link?', 'mujhe refund chahiye', 'I will file a police complaint']) {
+      r = await say('r36b', said);
+      eq(textOf(r), null, said);
+      eq(C('r36b').status, 'agent_handling', said);
+    }
+    eq(db.messages.filter((m) => ['r36', 'r36b'].includes(m.conversation_id) && m.sender === 'ai').length, 0);
+  });
+
+  await t('R37 a team member wrote after Chikki\'s mark: "link?" gets nothing; a claim turns it red, no message', async () => {
+    at(ist(12, 30, 8));
+    marked({ id: 'r37' });
+    at(clock + 60_000);
+    db.messages.push({ id: 'r37-a', conversation_id: 'r37', sender: 'agent', content: 'Here is your new tracking link: https://example.test/x', metadata: { agent: 'rahul' }, created_at: nowIso(), deleted_at: null });
+    at(clock + 60_000);
+    let r = await say('r37', 'link?');
+    eq(textOf(r), null);
+    eq(C('r37').status, 'agent_handling');
+    r = await say('r37', 'tracking link not working');
+    eq(textOf(r), null);
+    eq(C('r37').status, 'human_needed');
+  });
+
+  await t('R38 Remove on a Chikki mark sends it to Needs you; handed to the AI, the same claim is never marked again by itself', async () => {
+    at(ist(13, 0, 8));
+    known({ id: 'r38' });
+    order('#r38', 'In Transit');
+    eq(textOf(await say('r38', CLAIM)), PROMISE.en);
+    let p = await patch('rahul', 'r38', { caseKind: null });
+    status(p, 200);
+    deq([C('r38').status, C('r38').case_kind], ['human_needed', null]);
+    status(await patch('rahul', 'r38', { status: 'ai_handling' }), 200);
+    eq(C('r38').status, 'ai_handling');
+    at(clock + 60_000);
+    const s0 = db.stmts.length;
+    const r = await say('r38', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r38').status, C('r38').case_kind], ['human_needed', null]);
+    ok(!since(s0).some((x) => x.q === AUTO_SQL.mark));
+    deq(ce('r38').map((e) => [e[1], e[2], e[4]]), [['reship', 'mark', 'Chikki (auto)'], ['reship', 'remove', 'Rahul']]);
+  });
+
+  await t('R39 a new chat proves the order in the chat and is merged into a Chikki-marked chat: red + the hand-off there', async () => {
+    at(ist(13, 30, 8));
+    marked({ id: 'r39t', customer_key: '9000000039' });
+    order('#r39t', 'In Transit');
+    newConv({ id: 'r39n' });
+    at(clock + 60_000);
+    const r = await say('r39n', CLAIM, {
+      content: AI_SAYS,
+      onCall: () => Object.assign(C('r39n'), { verified_order_id: '#r39t', verified_via: 'chat_phone', customer_key: '9000000039' }),
+    });
+    eq(r.body.conversationId, 'r39t');
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r39t').status, C('r39t').case_kind, C('r39n').merged_into], ['human_needed', 'reship', 'r39t']);
+    eq(lastAi('r39t').content, HANDOFF.en);
+    eq(ce('r39t').length, 1, 'no second mark');
+  });
+
+  await t('R40 races: the chat locked elsewhere (55P03): hand-off + Needs you, no promise, no case row; a mark found on the locked row', async () => {
+    at(ist(14, 0, 8));
+    known({ id: 'r40' });
+    order('#r40', 'In Transit');
+    const free = holdLock('r40');
+    let r;
+    try { r = await say('r40', CLAIM); } finally { free(); }
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r40').status, C('r40').case_kind, ce('r40').length, evs('r40', 'case_mark').length], ['human_needed', null, 0, 0]);
+    // A Refund mark found on the locked row: stays in Refund (unread there), the hand-off.
+    known({ id: 'r40r' });
+    order('#r40r', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => Object.assign(C('r40r'), { case_kind: 'refund', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r40r', status: 'agent_handling' }) });
+    r = await say('r40r', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r40r').status, C('r40r').case_kind, ce('r40r').length], ['agent_handling', 'refund', 0]);
+    // Chikki marked it a minute ago (the same claim from another tab): the reminder, nothing else.
+    known({ id: 'r40t' });
+    order('#r40t', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => Object.assign(C('r40t'), { case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_marked_at: new Date(clock - 60_000).toISOString(), case_order_id: '#r40t', status: 'agent_handling' }) });
+    r = await say('r40t', CLAIM);
+    eq(textOf(r), REMINDER.en);
+    eq(C('r40t').status, 'agent_handling');
+    // A person's Ship again mark (or Chikki's older than 10 minutes): red + the hand-off.
+    known({ id: 'r40s' });
+    order('#r40s', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => Object.assign(C('r40s'), { case_kind: 'reship', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r40s', status: 'agent_handling' }) });
+    r = await say('r40s', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r40s').status, C('r40s').case_kind], ['human_needed', 'reship']);
+    known({ id: 'r40o' });
+    order('#r40o', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => Object.assign(C('r40o'), { case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_marked_at: new Date(clock - 11 * 60_000).toISOString(), case_order_id: '#r40o', status: 'agent_handling' }) });
+    r = await say('r40o', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r40o').status, C('r40o').case_kind], ['human_needed', 'reship']);
+    // Closed meanwhile: refused, the hand-off, never the promise.
+    known({ id: 'r40c' });
+    order('#r40c', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => setRow(null, C('r40c'), { status: 'resolved' }) });
+    r = await say('r40c', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r40c').status, C('r40c').case_kind, ce('r40c').length], ['resolved', null, 0]);
+  });
+
+  await t('R41 the same order already in Ship again in another chat: this chat to Needs you with the hand-off, the other chat red', async () => {
+    at(ist(14, 30, 8));
+    known({ id: 'r41a', verified_order_id: '#r41' });
+    marked({ id: 'r41b', verified_order_id: '#r41' }, 'Rahul', 'manager');
+    order('#r41', 'In Transit');
+    const r = await say('r41a', CLAIM);
+    eq(textOf(r), HANDOFF.en);
+    deq([C('r41a').status, C('r41a').case_kind, ce('r41a').length], ['human_needed', null, 0]);
+    deq([C('r41b').status, C('r41b').case_kind], ['human_needed', 'reship']);
+  });
+
+  // ── R42-R47: review fixes (2026-10-02, second run) ──────────────────────────────────────
+  const FOUND = 'Thanks, I found your order. It is In Transit.';
+  const verifiesAs = (id, orderId, key) => () => Object.assign(C(id), { verified_order_id: orderId, verified_via: 'chat_phone', customer_key: key });
+
+  await t('R42 a refund, cancel or payment request with the claim reaches the team: the AI text + its line, Needs you, no promise, no mark', async () => {
+    at(ist(15, 0, 9));
+    makeTokens();   // fresh logins for the later days (R45, R47 use the staff routes)
+    const REFUND_HI = 'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team 24 ghante ke andar isi chat mein aapko jawab degi.';
+    const PAY_HI = 'Maine ise hamari team ko de diya hai, team isi chat mein aapko jawab degi.';
+    for (const [id, said, line] of [
+      ['r42a', 'tracking id invalid hai, mujhe refund chahiye', REFUND_HI],
+      ['r42b', 'tracking link fake hai, order cancel kar do', REFUND_HI],
+      ['r42c', 'payment kat gaya aur tracking link kaam nahi kar raha', PAY_HI],
+    ]) {
+      known({ id }); order('#' + id, 'In Transit');
+      ok(tc.trackingClaimKind(said) && esc.routineHandOverKind(said), said);
+      const s0 = db.stmts.length;
+      const r = await say(id, said);
+      eq(textOf(r), `${AI_SAYS}\n\n${line}`, id);
+      deq([C(id).status, C(id).case_kind, ce(id).length], ['human_needed', null, 0], id);
+      eq(caseWrites(s0).length, 0, id);
+      eq(r.body.message.metadata.routine, esc.routineHandOverKind(said), id);
+    }
+    // At night: the refund line says the morning (today's night line, unchanged).
+    at(ist(21, 0, 9));
+    known({ id: 'r42n' }); order('#r42n', 'In Transit');
+    eq(textOf(await say('r42n', 'tracking id invalid hai, mujhe refund chahiye')),
+      `${AI_SAYS}\n\nAapki refund ya cancellation ki request maine note kar li hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.`);
+    // The refund request was in the earlier message that carried the claim (complained, then verified):
+    // today's path would not see it, so its line is sent here and the chat goes to Needs you.
+    at(ist(15, 30, 9));
+    newConv({ id: 'r42v' }); order('#4742', 'In Transit');
+    visitorSaid('r42v', 'tracking link fake hai, mujhe refund chahiye', 3);
+    const r = await say('r42v', 'order 4742, phone 9000000042', { content: FOUND, onCall: verifiesAs('r42v', '#4742', '9000000042') });
+    eq(textOf(r), REFUND_HI);
+    deq([C('r42v').status, C('r42v').case_kind, ce('r42v').length], ['human_needed', null, 0]);
+  });
+
+  await t('R43 a threat in the verifying message, the claim earlier or in the same message: the threat wins (1-hour line, Needs you, no mark)', async () => {
+    at(ist(16, 0, 9));
+    newConv({ id: 'r43' }); order('#4743', 'In Transit');
+    visitorSaid('r43', CLAIM, 3);
+    const verifying = 'order 4743, phone 9000000043, link nahi diya to chargeback karunga';
+    eq(tc.trackingClaimKind(verifying), null, 'the claim is only in the earlier message');
+    let r = await say('r43', verifying, { content: FOUND, onCall: verifiesAs('r43', '#4743', '9000000043') });
+    eq(textOf(r), URGENT_HI);
+    eq(r.body.message.metadata.urgent, 'threat');
+    deq([C('r43').status, C('r43').case_kind, ce('r43').length], ['human_needed', null, 0]);
+    newConv({ id: 'r43b' }); order('#4744', 'In Transit');
+    r = await say('r43b', 'order 4744 phone 9000000044, tracking fake hai, chargeback karunga', { content: FOUND, onCall: verifiesAs('r43b', '#4744', '9000000044') });
+    eq(textOf(r), URGENT_HI);
+    deq([C('r43b').status, C('r43b').case_kind, ce('r43b').length], ['human_needed', null, 0]);
+    // Night: the morning line, still no mark.
+    at(ist(22, 30, 9));
+    newConv({ id: 'r43n' }); order('#4745', 'In Transit');
+    visitorSaid('r43n', CLAIM, 3);
+    r = await say('r43n', 'order 4745, phone 9000000045, warna chargeback karunga', { content: FOUND, onCall: verifiesAs('r43n', '#4745', '9000000045') });
+    eq(textOf(r), 'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.');
+    deq([C('r43n').status, C('r43n').case_kind], ['human_needed', null]);
+  });
+
+  await t('R44 the look-back reads only this conversation\'s last 24 hours: an old complaint in the older merged chat fires nothing', async () => {
+    at(ist(11, 0, 10));
+    // The customer's older chat (form-verified) holds a tracking complaint from 3 days ago.
+    known({ id: 'r44t', customer_key: '9000000146', created_at: new Date(clock - 5 * 86400_000).toISOString(), last_message_at: new Date(clock - 3 * 86400_000).toISOString() });
+    order('#r44t', 'In Transit');
+    visitorSaid('r44t', CLAIM, 3 * 24 * 60);
+    // A new chat, opened 5 minutes ago; the customer proves the order in it and complains about nothing.
+    newConv({ id: 'r44n', created_at: new Date(clock - 5 * 60_000).toISOString() });
+    let s0 = db.stmts.length;
+    let r = await say('r44n', 'order r44t, phone 9000000146', { content: FOUND, onCall: verifiesAs('r44n', '#r44t', '9000000146') });
+    eq(r.body.conversationId, 'r44t');
+    eq(textOf(r), FOUND);
+    deq([C('r44t').status, C('r44t').case_kind, ce('r44t').length], ['ai_handling', null, 0]);
+    const look = since(s0).filter((x) => x.q === AUTO_SQL.earlier);
+    eq(look.length, 1, 'the look-back ran once');
+    ok(!since(s0).some((x) => x.q === AUTO_SQL.state), 'no claim, so nothing else was read');
+    // The complaint written in the new chat before verifying: the promise and the mark, in the merged chat.
+    at(clock + 3600_000);
+    known({ id: 'r44u', customer_key: '9000000147', created_at: new Date(clock - 5 * 86400_000).toISOString() });
+    order('#r44u', 'In Transit');
+    visitorSaid('r44u', 'tracking link fake hai', 4 * 24 * 60);      // old, already answered
+    newConv({ id: 'r44m', created_at: new Date(clock - 5 * 60_000).toISOString() });
+    visitorSaid('r44m', CLAIM, 2);
+    r = await say('r44m', 'order r44u, phone 9000000147', { content: FOUND, onCall: verifiesAs('r44m', '#r44u', '9000000147') });
+    eq(r.body.conversationId, 'r44u');
+    eq(textOf(r), PROMISE.en, 'the new chat\'s English complaint, not the old Hinglish one');
+    deq([C('r44u').case_kind, C('r44u').status], ['reship', 'agent_handling']);
+    deq(evs('r44u', 'case_mark')[0].meta, { case: 'reship', auto: true, trigger: 'invalid' });
+    // No merge, but the complaint is older than 24 hours: nothing.
+    newConv({ id: 'r44o', created_at: new Date(clock - 3 * 86400_000).toISOString() });
+    order('#4746', 'In Transit');
+    visitorSaid('r44o', CLAIM, 30 * 60);
+    r = await say('r44o', 'order 4746, phone 9000000046', { content: FOUND, onCall: verifiesAs('r44o', '#4746', '9000000046') });
+    eq(textOf(r), FOUND);
+    deq([C('r44o').status, C('r44o').case_kind], ['ai_handling', null]);
+  });
+
+  await t('R45 a chat already in Needs you (a merge target waiting on a person): the promise and Ship again, but it stays in Needs you, red', async () => {
+    at(ist(12, 0, 10));
+    known({ id: 'r45t', status: 'human_needed', customer_key: '9000000148', created_at: new Date(clock - 2 * 86400_000).toISOString() });
+    order('#r45t', 'In Transit');
+    newConv({ id: 'r45n', created_at: new Date(clock - 5 * 60_000).toISOString() });
+    const r = await say('r45n', CLAIM, { content: AI_SAYS, onCall: verifiesAs('r45n', '#r45t', '9000000148') });
+    eq(r.body.conversationId, 'r45t');
+    eq(textOf(r), PROMISE.en);
+    deq(pick(C('r45t'), ['status', 'case_kind', 'case_marked_by', 'case_prev_status']),
+      { status: 'human_needed', case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_prev_status: 'human_needed' });
+    deq(pick(evs('r45t', 'case_mark')[0], ['from_status', 'to_status']), { from_status: 'human_needed', to_status: 'human_needed' });
+    eq(evs('r45t', 'status').filter((e) => e.reason === 'case_auto').length, 0, 'no status change');
+    ok(waitingNow('r45t'));
+    const pr = await mod.pending.GET(req('owner', undefined, { method: 'GET', url: 'http://x/api/chat/pending' }));
+    status(pr, 200);
+    ok(db.pending.ids.includes('r45t'), 'still counted in Needs you');
+    // Its next message: red already, a person is on it: nothing more is sent.
+    at(clock + 60_000);
+    eq(textOf(await say('r45t', 'link kab milega?')), null);
+    eq(C('r45t').status, 'human_needed');
+  });
+
+  await t('R46 the red flag cannot be saved: never "the team will reply"; today\'s path instead (rows 4 and 13b); already red: the hand-off', async () => {
+    at(ist(13, 0, 10));
+    const RED_RE = /^UPDATE conversations SET status = 'human_needed', updated_at = now\(\) WHERE id = \$1 AND case_kind = 'reship'/;
+    const failRedTwice = () => db.fail.push({ re: RED_RE, code: '55P03', once: true }, { re: RED_RE, code: '55P03', once: true });
+    // Row 4: merged into a Chikki-marked chat.
+    marked({ id: 'r46t', customer_key: '9000000149' });
+    order('#r46t', 'In Transit');
+    newConv({ id: 'r46n' });
+    at(clock + 60_000);
+    failRedTwice();
+    let r = await say('r46n', CLAIM, { content: AI_SAYS, onCall: verifiesAs('r46n', '#r46t', '9000000149') });
+    eq(db.fail.length, 0, 'both tries failed');
+    eq(r.body.conversationId, 'r46t');
+    eq(textOf(r), AI_SAYS);
+    deq([C('r46t').status, C('r46t').case_kind], ['agent_handling', 'reship']);
+    // 13b: a person's Ship again mark found on the locked row.
+    known({ id: 'r46s' }); order('#r46s', 'In Transit');
+    db.after.push({ re: STATE_HOOK, fn: () => Object.assign(C('r46s'), { case_kind: 'reship', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r46s', status: 'agent_handling' }) });
+    failRedTwice();
+    r = await say('r46s', CLAIM);
+    eq(db.fail.length, 0);
+    eq(textOf(r), AI_SAYS);
+    deq([C('r46s').status, C('r46s').case_kind], ['agent_handling', 'reship']);
+    // Row 4, the Ship again chat is red already (in Needs you): the hand-off is true; no second flag.
+    marked({ id: 'r46r', customer_key: '9000000150', status: 'human_needed' });
+    order('#r46r', 'In Transit');
+    newConv({ id: 'r46m' });
+    const s0 = db.stmts.length;
+    r = await say('r46m', CLAIM, { content: AI_SAYS, onCall: verifiesAs('r46m', '#r46r', '9000000150') });
+    eq(r.body.conversationId, 'r46r');
+    eq(textOf(r), HANDOFF.en);
+    eq(C('r46r').status, 'human_needed');
+    ok(!since(s0).some((x) => x.q === AUTO_SQL.red));
+    // A threat merged into a Ship again chat: red + the 1-hour line.
+    marked({ id: 'r46x', customer_key: '9000000151' });
+    order('#r46x', 'In Transit');
+    newConv({ id: 'r46y' });
+    r = await say('r46y', 'tracking fake hai, chargeback karunga', { content: AI_SAYS, onCall: verifiesAs('r46y', '#r46x', '9000000151') });
+    eq(r.body.conversationId, 'r46x');
+    eq(textOf(r), URGENT_HI);
+    deq([C('r46x').status, C('r46x').case_kind], ['human_needed', 'reship']);
+  });
+
+  await t('R47 the one-time move: a moved AI chat goes to Needs you on Remove or undo (never back to the AI), and the inbox never says a moved chat was promised', async () => {
+    const root = path.resolve(__dirname, '../..');
+    const flat = (f) => norm(fs.readFileSync(path.join(root, f), 'utf8').replace(/--.*$/gm, ''));
+    const move = flat('chat-tracking-reship-move.sql'), undo = flat('chat-tracking-reship-move-undo.sql');
+    ok(move.includes("SET case_prev_status = CASE WHEN b.status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,"));
+    ok(!/case_prev_status = b\.status/.test(move));
+    ok(move.includes("status = CASE WHEN b.status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END"));
+    ok(move.includes("'Chikki (auto)', 'backfill' FROM moved") && !/INSERT INTO messages/i.test(move), 'no message to anyone');
+    ok(undo.includes("SET status = CASE WHEN c.status = 'resolved' THEN c.status WHEN c.case_prev_status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,"));
+    ok(!move.includes("'ai_handling'") && !undo.includes("'ai_handling'"), 'nothing goes back to the AI');
+    // A moved chat (the AI was answering it, so prev = Needs you): the customer's next question gets
+    // the one reminder; Remove sends it to Needs you.
+    at(ist(14, 0, 10));
+    marked({ id: 'r47', case_prev_status: 'human_needed' }, 'Chikki (auto)', 'backfill');
+    global.__recentSaid = ['link kab milega?'];
+    const r = await say('r47', 'link kab milega?');
+    global.__recentSaid = [];
+    eq(textOf(r), REMINDER.hinglish);
+    eq(C('r47').status, 'agent_handling');
+    status(await patch('rahul', 'r47', { caseKind: null }), 200);
+    deq([C('r47').status, C('r47').case_kind], ['human_needed', null]);
+    // The inbox can tell a moved chat (actor_role 'backfill') from a live promise: the list and the
+    // thread carry case_mark_role, and the texts differ.
+    await list('owner', '?case=reship');
+    ok(/ AS case_mark_role,/.test(db.list.sql) && db.list.sql.includes('g.case_mark_role'));
+    marked({ id: 'r47b' }, 'Chikki (auto)', 'backfill');
+    status(await thread('owner', 'r47b'), 200);
+    ok(/ AS case_mark_role,/.test(fs.readFileSync(path.join(SRC, 'app/api/chat/conversations/[id]/route.ts'), 'utf8')));
+    const page = fs.readFileSync(path.join(SRC, 'app/admin/chat/page.tsx'), 'utf8');
+    ok(page.includes("role === 'backfill'") && page.includes('the move sent the customer no message'));
+  });
+
+  // ── R48-R53: review fixes (2026-10-02, third run) ──────────────────────────────────────
+  const REFUND_LINE = 'Aapki refund ya cancellation ki request maine note kar li hai. Hamari team 24 ghante ke andar isi chat mein aapko jawab degi.';
+  const aiSaid = (id, content, minsAgo) => db.messages.push({
+    id: 'msg-' + (++seq), conversation_id: id, sender: 'ai', content, metadata: null,
+    created_at: new Date(clock - minsAgo * 60_000).toISOString(), deleted_at: null,
+  });
+  const isRedAt = (n) => {
+    const all = since(n).map((x) => x.q);
+    const iRed = all.indexOf(AUTO_SQL.red), iText = all.findIndex((q) => q.startsWith('INSERT INTO messages (id, conversation_id, sender, content, created_at)'));
+    return iRed >= 0 && (iText < 0 || iRed < iText);
+  };
+  // Chikki marks the chat while this turn's model is answering (the customer's first claim, sent a
+  // moment before from the same chat).
+  const markedMeanwhile = (id, agoMs = 5000) => () => {
+    Object.assign(C(id), { case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_marked_at: new Date(clock - agoMs).toISOString(), case_order_id: C(id).verified_order_id, case_prev_status: 'human_needed', status: 'agent_handling' });
+    db.caseEvents.push({ id: crypto.randomUUID(), conversation_id: id, site_id: 'S1', kind: 'reship', action: 'mark', order_id: C(id).verified_order_id, actor: 'Chikki (auto)', actor_role: 'system' });
+  };
+
+  await t('R48 no tracking claim, but the turn ends in a Ship again chat (merged into one, or Chikki marked it meanwhile): the model\'s text is dropped, red with the line for the case, or the one reminder', async () => {
+    at(ist(13, 0, 12));
+    const MODEL = 'Aapka order In Transit hai. Aap yahan dekh sakte hain:\nhttps://shiptrack.store/track/tok-x';
+    // The promise in r48t 20 hours ago; a refund request from another device, proved in the chat, merged.
+    marked({ id: 'r48t', customer_key: '9000000481', case_marked_at: new Date(clock - 20 * 3600e3).toISOString() });
+    order('#r48t', 'In Transit');
+    visitorSaid('r48t', CLAIM, 20 * 60);
+    aiSaid('r48t', PROMISE.en, 20 * 60 - 1);
+    newConv({ id: 'r48n' });
+    at(clock + 60_000);
+    let said = 'order r48t, phone 9000000481, mujhe refund chahiye';
+    ok(!tc.trackingClaimKind(said) && esc.routineHandOverKind(said) === 'refund');
+    let s0 = db.stmts.length;
+    let r = await say('r48n', said, { content: MODEL, onCall: verifiesAs('r48n', '#r48t', '9000000481') });
+    eq(r.body.conversationId, 'r48t');
+    eq(textOf(r), REFUND_LINE, 'the refund line alone, never the model\'s text');
+    deq([C('r48t').status, C('r48t').case_kind, C('r48n').merged_into], ['human_needed', 'reship', 'r48t']);
+    ok(isRedAt(s0), 'red before the text');
+    ok(waitingNow('r48t'), 'the team owes an answer');
+    eq(ce('r48t').length, 1, 'no new mark');
+    // A link question from another device: the one reminder (no model text about the link), not red.
+    marked({ id: 'r48u', customer_key: '9000000482', case_marked_at: new Date(clock - 3 * 3600e3).toISOString() });
+    order('#r48u', 'In Transit');
+    aiSaid('r48u', PROMISE.hinglish, 3 * 60);
+    newConv({ id: 'r48m' });
+    said = 'order r48u, phone 9000000482, naya link kab milega?';
+    ok(!tc.trackingClaimKind(said));
+    global.__recentSaid = [said];
+    r = await say('r48m', said, { content: MODEL, onCall: verifiesAs('r48m', '#r48u', '9000000482') });
+    global.__recentSaid = [];
+    eq(textOf(r), REMINDER.hinglish);
+    deq([C('r48u').status, C('r48u').case_kind], ['agent_handling', 'reship']);
+    ok(waitingNow('r48u'));
+    // Merged into a chat that is red already: the line, no second flag.
+    marked({ id: 'r48x', customer_key: '9000000484', status: 'human_needed' });
+    order('#r48x', 'In Transit');
+    newConv({ id: 'r48y' });
+    s0 = db.stmts.length;
+    r = await say('r48y', 'order r48x, phone 9000000484, mujhe refund chahiye', { content: MODEL, onCall: verifiesAs('r48y', '#r48x', '9000000484') });
+    eq(textOf(r), REFUND_LINE);
+    eq(C('r48x').status, 'human_needed');
+    ok(!since(s0).some((x) => x.q === AUTO_SQL.red));
+    // Merged into a chat a person marked: no message at all (rule 9.2), the model's text dropped; unread
+    // and waiting in its section.
+    marked({ id: 'r48s', customer_key: '9000000483' }, 'Rahul', 'manager');
+    order('#r48s', 'In Transit');
+    newConv({ id: 'r48p' });
+    r = await say('r48p', 'order r48s, phone 9000000483, mujhe refund chahiye', { content: MODEL, onCall: verifiesAs('r48p', '#r48s', '9000000483') });
+    eq(r.body.conversationId, 'r48s');
+    eq(textOf(r), null);
+    eq(C('r48s').status, 'agent_handling');
+    eq(db.messages.filter((m) => m.conversation_id === 'r48s' && m.sender === 'ai' && String(m.content || '').trim()).length, 0);
+    ok(waitingNow('r48s'));
+    // Not merged: Chikki marked the chat while the model answered (the claim sent a moment before).
+    known({ id: 'r48r' }); order('#r48r', 'In Transit');
+    r = await say('r48r', 'mujhe refund chahiye', { content: AI_SAYS, onCall: markedMeanwhile('r48r') });
+    eq(textOf(r), REFUND_LINE);
+    deq([C('r48r').status, C('r48r').case_kind], ['human_needed', 'reship']);
+    // An ordinary verified chat: the model's text, one cheap read, nothing else.
+    known({ id: 'r48z' }); order('#r48z', 'In Transit');
+    s0 = db.stmts.length;
+    r = await say('r48z', 'mujhe refund chahiye', { content: AI_SAYS });
+    eq(textOf(r), `${AI_SAYS}\n\n${REFUND_LINE}`);
+    deq([C('r48z').status, C('r48z').case_kind], ['human_needed', null]);
+    eq(since(s0).filter((x) => x.q === AUTO_SQL.reship).length, 1);
+    // The read fails: today's path (the model's text and its line), never an error for the customer.
+    known({ id: 'r48f' }); order('#r48f', 'In Transit');
+    db.fail.push({ re: /^SELECT c\.status, c\.case_marked_at,/, code: '57014', once: true });
+    r = await say('r48f', 'mujhe refund chahiye', { content: AI_SAYS });
+    eq(db.fail.length, 0);
+    eq(textOf(r), `${AI_SAYS}\n\n${REFUND_LINE}`);
+  });
+
+  await t('R49 after the 48 hours: a claim, anger or a fraud claim is red with the team line, never the 24-48 h reminder again', async () => {
+    at(ist(13, 0, 13));
+    const RED_FRAUD = URGENT_HI;
+    for (const [id, said, want] of [
+      ['r49a', '3 din ho gaye, tracking abhi bhi invalid aa raha hai valmo pe', HANDOFF.hinglish],
+      ['r49b', 'BHAI 3 DIN HO GAYE LINK KAHAN HAI', HANDOFF.hinglish],
+      ['r49c', 'ye fraud hai, 3 din se link ka wait kar raha hu', RED_FRAUD],
+      ['r49d', '4 days and the tracking is still not updating', HANDOFF.en],
+    ]) {
+      marked({ id, case_marked_at: new Date(clock - 72 * 3600e3).toISOString() });
+      order('#' + id, 'In Transit');
+      visitorSaid(id, 'valmo pe tracking id invalid bata raha hai', 72 * 60);
+      aiSaid(id, PROMISE.hinglish, 72 * 60 - 1);
+      global.__recentSaid = [said, 'valmo pe tracking id invalid bata raha hai'];
+      const r = await say(id, said);
+      global.__recentSaid = [];
+      eq(textOf(r), want, id);
+      ok(!/24-48/.test(textOf(r)), `${id}: no new 24-48 hours`);
+      deq([C(id).status, C(id).case_kind], ['human_needed', 'reship'], id);
+    }
+    // The red flag cannot be saved after the 48 hours: nothing is sent (not even the reminder).
+    const RED_RE = /^UPDATE conversations SET status = 'human_needed', updated_at = now\(\) WHERE id = \$1 AND case_kind = 'reship'/;
+    marked({ id: 'r49e', case_marked_at: new Date(clock - 72 * 3600e3).toISOString() });
+    db.fail.push({ re: RED_RE, code: '55P03', once: true }, { re: RED_RE, code: '55P03', once: true });
+    global.__recentSaid = ['tracking abhi bhi fake hai'];
+    const r = await say('r49e', 'tracking abhi bhi fake hai');
+    global.__recentSaid = [];
+    eq(db.fail.length, 0);
+    eq(textOf(r), null);
+    eq(C('r49e').status, 'agent_handling');
+  });
+
+  await t('R50 one reminder whatever the language: English then Hinglish, or a Take over without a reply after the red reminder, turns it red with the hand-off', async () => {
+    at(ist(13, 0, 14));
+    marked({ id: 'r50', case_marked_at: new Date(clock - 2 * 3600e3).toISOString() });
+    order('#r50', 'In Transit');
+    visitorSaid('r50', CLAIM, 120);
+    aiSaid('r50', PROMISE.en, 119);
+    global.__recentSaid = ['When will I get the new link?', CLAIM];
+    let r = await say('r50', 'When will I get the new link?');
+    eq(textOf(r), REMINDER.en);
+    eq(C('r50').status, 'agent_handling');
+    at(clock + 10 * 60_000);
+    global.__recentSaid = ['bhai link kab milega', 'When will I get the new link?', CLAIM];
+    r = await say('r50', 'bhai link kab milega');
+    global.__recentSaid = [];
+    eq(textOf(r), HANDOFF.hinglish, 'never a second reminder');
+    eq(C('r50').status, 'human_needed');
+    eq(db.messages.filter((m) => m.conversation_id === 'r50' && m.sender === 'ai' && /naya tracking link bana rahi|preparing your new tracking link/.test(m.content)).length, 1);
+    // The fraud line went out with the reminder (red); a person presses Take over and writes nothing;
+    // the customer asks again: the hand-off, not the reminder again.
+    marked({ id: 'r50b', case_marked_at: new Date(clock - 2 * 3600e3).toISOString() });
+    order('#r50b', 'In Transit');
+    aiSaid('r50b', PROMISE.hinglish, 119);
+    global.__recentSaid = ['ye sab fraud hai, link kab aayega'];
+    r = await say('r50b', 'ye sab fraud hai, link kab aayega');
+    eq(textOf(r), `${REMINDER.hinglish}\n\nHamari team isi chat mein 1 ghante ke andar aapko jawab degi.`);
+    eq(C('r50b').status, 'human_needed');
+    at(clock + 5 * 60_000);
+    status(await takeOver('rahul', 'r50b'), 200);
+    eq(C('r50b').status, 'agent_handling');
+    at(clock + 5 * 60_000);
+    global.__recentSaid = ['link kab milega?', 'ye sab fraud hai, link kab aayega'];
+    r = await say('r50b', 'link kab milega?');
+    global.__recentSaid = [];
+    eq(textOf(r), HANDOFF.hinglish);
+    eq(C('r50b').status, 'human_needed');
+    // The reminder that went out with the sensitive-data warning in front still counts.
+    marked({ id: 'r50c', case_marked_at: new Date(clock - 2 * 3600e3).toISOString() });
+    aiSaid('r50c', `Please do not share card details here.\n\n${REMINDER.en}`, 30);
+    global.__recentSaid = ['link?'];
+    r = await say('r50c', 'link?');
+    global.__recentSaid = [];
+    eq(textOf(r), HANDOFF.en);
+    eq(C('r50c').status, 'human_needed');
+  });
+
+  await t('R51 a question on another subject in a Chikki-marked chat is red with the hand-off; "?" alone and a link question get the reminder', async () => {
+    at(ist(13, 0, 15));
+    for (const [id, said] of [['r51a', 'address change karna hai?'], ['r51b', 'Can I change my delivery address?'], ['r51c', 'COD available hai?'], ['r51d', 'mujhe exchange chahiye?']]) {
+      marked({ id });
+      at(clock + 60_000);
+      global.__recentSaid = [said];
+      const r = await say(id, said);
+      eq(textOf(r), esc.handoffReply(said), id);
+      deq([C(id).status, C(id).case_kind], ['human_needed', 'reship'], id);
+    }
+    for (const [id, said, want] of [['r51e', '?', REMINDER.en], ['r51f', 'new link kab tak aayega?', REMINDER.hinglish]]) {
+      marked({ id });
+      at(clock + 60_000);
+      global.__recentSaid = [said];
+      const r = await say(id, said);
+      eq(textOf(r), want, id);
+      eq(C(id).status, 'agent_handling', id);
+    }
+    global.__recentSaid = [];
+  });
+
+  await t('R52 the same claim sent twice at once: the second turn sees Chikki\'s fresh mark and gets the reminder, not red (13a); a threat or a refund with it still goes red', async () => {
+    at(ist(13, 0, 16));
+    known({ id: 'r52' });
+    order('#r52', 'In Transit');
+    const said = 'valmo pe tracking id galat bata raha hai';
+    global.__recentSaid = [said, CLAIM];
+    let r = await say('r52', said, { content: AI_SAYS, onCall: markedMeanwhile('r52') });
+    eq(textOf(r), REMINDER.hinglish);
+    deq([C('r52').status, C('r52').case_kind, ce('r52').length], ['agent_handling', 'reship', 1]);
+    // Older than 10 minutes, or a person's mark: red + the hand-off, as before.
+    known({ id: 'r52o' }); order('#r52o', 'In Transit');
+    r = await say('r52o', said, { content: AI_SAYS, onCall: markedMeanwhile('r52o', 11 * 60_000) });
+    eq(textOf(r), HANDOFF.hinglish);
+    eq(C('r52o').status, 'human_needed');
+    // A threat with the claim: red + the 1-hour line.
+    known({ id: 'r52t' }); order('#r52t', 'In Transit');
+    r = await say('r52t', 'tracking fake hai, chargeback karunga', { content: AI_SAYS, onCall: markedMeanwhile('r52t') });
+    eq(textOf(r), URGENT_HI);
+    eq(C('r52t').status, 'human_needed');
+    // A refund request with the claim: red + the hand-off (it reaches the team).
+    known({ id: 'r52r' }); order('#r52r', 'In Transit');
+    r = await say('r52r', 'tracking id invalid hai, mujhe refund chahiye', { content: AI_SAYS, onCall: markedMeanwhile('r52r') });
+    eq(textOf(r), HANDOFF.hinglish);
+    eq(C('r52r').status, 'human_needed');
+    global.__recentSaid = [];
+  });
+
+  await t('R53 the one-time move\'s candidate list leaves out a claim that also asks for a refund, cancel or payment (the live route would not mark it) and counts it', async () => {
+    const cand = require(path.resolve(__dirname, '../tracking-reship-candidates.js'));
+    const now = Date.now();
+    const chat = (id) => ({ id, site_id: 'S1', status: 'agent_handling', held: true, verified_order_id: '#' + id, subject_label: null, tracker_business_id: 'P1', order_in_ship_again: false });
+    const said = { k1: ['tracking link fake hai, mujhe refund chahiye'], k2: ['tracking link fake hai'], k3: ['tracking link fake hai, mujhe refund chahiye', 'tracking id invalid hai'] };
+    const client = { query: async (sql, p) => {
+      if (/FROM conversations c JOIN sites s/.test(sql)) return { rows: ['k1', 'k2', 'k3'].map(chat) };
+      if (/sender = 'visitor'/.test(sql)) return { rows: p[0].flatMap((id) => said[id].map((content, i) => ({ conversation_id: id, content, t: now - (10 - i) * 60_000 }))) };
+      if (/sender = 'agent'/.test(sql)) return { rows: [] };
+      if (/FROM orders o/.test(sql)) return { rows: [{ tracking_status: 'In Transit', is_cancelled: false, created_at: new Date(now - 6 * 86400e3), status_updated_at: null, estimated_delivery: null, delivered_at: null, state: null, city: null, origin_city: null }] };
+      throw new Error('candidates: unexpected SQL');
+    } };
+    const out = await cand.run(client);
+    deq(out.rows.map((x) => x.id), ['k2', 'k3']);
+    deq([out.withClaim, out.noUsable, out.routineOnly, out.threatOnly, out.otherOrderOnly], [3, 1, 1, 0, 0]);
+    eq(out.rows.find((x) => x.id === 'k3').hits, 1, 'only the claim without a refund counts');
+    const printed = [];
+    const log = console.log;
+    console.log = (...a) => printed.push(a.join(' '));
+    try { cand.report(out); } finally { console.log = log; }
+    ok(printed.some((l) => l.includes('only with a refund / payment request with the claim: 1')));
   });
 
   Object.assign(console, realConsole);

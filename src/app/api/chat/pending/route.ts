@@ -20,8 +20,9 @@ export async function GET(request: NextRequest) {
 
   const businessId = new URL(request.url).searchParams.get('businessId') || '';
 
-  // A Refund / Ship again chat (chat-cases.sql) is counted under its own section, not here.
-  const conditions: string[] = [`c.status = 'human_needed'`, 'c.case_kind IS NULL'];
+  // A Refund / Ship again chat (chat-cases.sql) is counted under its own section, not here, except a
+  // red Ship again chat (status human_needed, owner 2026-10-02, answer 8): it is in Needs you too.
+  const conditions: string[] = [`c.status = 'human_needed'`, "(c.case_kind IS NULL OR c.case_kind = 'reship')"];
   const params: unknown[] = [];
   let pi = 1;
 

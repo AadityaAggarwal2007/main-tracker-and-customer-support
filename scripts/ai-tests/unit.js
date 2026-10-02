@@ -251,12 +251,17 @@ t('courierFor', () => {
 });
 t('withoutUnaskedCourier / asksAboutCourier', () => {
   const f = (r, c = 'Track my order') => rg.withoutUnaskedCourier(r, c, ['Valmo']).text;
-  assert.strictEqual(f('Your order #4715 has been shipped via Valmo and is on its way.'), 'Your order #4715 has been shipped and is on its way.');
+  assert.strictEqual(f('Your order #4715 has been shipped via Valmo and is on its way.'), 'Your order #4715 has been shipped via our courier partner and is on its way.');
   assert.strictEqual(f('Handed to our courier partner, Valmo. Estimated delivery 10 October.'), 'Handed to our courier partner. Estimated delivery 10 October.');
   assert.strictEqual(f('Tracking ID: ST1\nCourier: Valmo\nStatus: Shipped'), 'Tracking ID: ST1\nStatus: Shipped');
   assert.strictEqual(f('Valmo will deliver your order.'), 'Our courier partner will deliver your order.');
   assert.strictEqual(f('Aapka order Valmo se ship ho gaya hai.'), 'Aapka order hamare courier partner se ship ho gaya hai.');
-  assert.strictEqual(f('Your order is delivered through Valmo.', 'which courier is delivering?'), 'Your order is delivered through Valmo.');
+  // Owner 2026-10-02 10:55: the name only on the customer's 3rd ask (courier-ask.js has the rest).
+  // A 1st ask, or a count that could not be read (null), still hides it; the 3rd ask keeps it.
+  // The sentence stays whole and still answers: "through our courier partner" (2026-10-02 review).
+  assert.strictEqual(f('Your order is delivered through Valmo.', 'which courier is delivering?'), 'Your order is delivered through our courier partner.');
+  assert.strictEqual(rg.withoutUnaskedCourier('Your order is delivered through Valmo.', 'which courier is delivering?', ['Valmo'], 1).text, 'Your order is delivered through our courier partner.');
+  assert.strictEqual(rg.withoutUnaskedCourier('Your order is delivered through Valmo.', 'which courier is delivering?', ['Valmo'], 3).text, 'Your order is delivered through Valmo.');
   assert.strictEqual(f('See https://valmo.in/track/x for details.'), 'See https://valmo.in/track/x for details.');
   assert.ok(rg.asksAboutCourier('mera order kaunse courier se aa raha hai?'));
   assert.ok(rg.asksAboutCourier('kaun deliver kar raha hai'));
@@ -405,6 +410,15 @@ t('rulebook: numbers unique and in order, every rule complete, panel values fill
   assert.ok(/Super Admin's first reply or Take over/.test(rule('7.7').text));
   // Owner answer A5 (2026-10-02, chat-team-owner-back.sql): his customers go to the open pool.
   assert.ok(/Super Admin's customers go to the team instead: if their latest chat was his, or they write again in a Closed chat he holds, it goes to the open pool \(his open chats stay his\)\./.test(rule('7.7').text));
+  // Fake / invalid tracking (owner 2026-10-02): 6.5, 9.7, 9.8 at the ends of their sections.
+  for (const id of ['6.5', '9.7', '9.8']) assert.ok(rb.RULE_IDS.has(id), id);
+  assert.ok(rule('6.5').text.includes('"Aapke order ka naya tracking link 24-48 ghante me isi chat me bhej denge"'));
+  assert.ok(rule('6.3').text.includes('(6.5)') && rule('7.2').text.includes('(9.8)'));
+  assert.ok(rule('9.2').text.includes('(9.7)') && rule('9.2').text.includes('(9.8)'));
+  assert.ok(rule('9.6').text.includes('no senior needed'));
+  // Courier (owner 2026-10-02): named only on the 3rd ask; the tracking page no longer shows it (c201314).
+  assert.ok(/3rd/.test(rule('4.8').text) && rule('4.8').text.startsWith('{courier} '));
+  assert.ok(!rule('4.8').text.includes('The tracking page is not changed'));
 });
 t('effort: groups by score, visitors stay Normal, panel choice cleaned', () => {
   assert.strictEqual(ef.groupFor(false, 99), 'visitor');
@@ -467,5 +481,183 @@ t('message rules follow the permissions', () => {
   assert.ok(mr.canChangeMessage(agent, ai) && mr.canChangeMessage(agent, mine) && !mr.canChangeMessage(agent, other));
   assert.ok(!mr.canChangeMessage(viewer, ai) && mr.canChangeMessage(admin, other));
   assert.ok(mr.canChangeMessage({ username: 'x', role: 'admin' }, other));
+});
+
+// ── Fake / invalid tracking claims (owner 2026-10-02; tracking-claim.ts, spec 9.1) ───────
+// tracking-claim.ts imports '@/lib/journey': loaded next to it as './journey' (escalation is above).
+load('journey', '../../src/lib');
+const tcl = (() => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/tracking-claim.ts'), 'utf8').replace("from '@/lib/journey'", "from './journey'");
+  fs.writeFileSync(path.join(dir, 'tracking-claim.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
+  return require(path.join(dir, 'tracking-claim.js'));
+})();
+const waiting = load('waiting');
+const CLAIM_MATCH = [
+  'Valmo website shows trecking id invalid', 'valmo pe tracking id invalid bata raha hai', 'tracking id galat hai',
+  'tracking number is wrong', 'The tracking number you gave is not found on Valmo', 'valmo app me order nahi dikh raha',
+  'valmo par tracking id nahi mil rahi', 'AWB not found', 'tracking link fake hai', 'is this tracking link fake?', 'ye tracking farzi hai',
+  'fraud hai, fake tracking diya', 'tracking link me kisi aur ka naam aa raha hai', "the link shows someone else's order",
+  'tracking link is not working', 'link nahi khul raha', 'tracking link kaam nahi kar raha', 'tracking 5 din se update nahi hua',
+  'tracking not updating since 4 days', 'status same hai 3 din se', 'parcel ek hi jagah atka hua hai', 'traking id invalid',
+  'trackig link not opening', 'ट्रैकिंग आईडी गलत है', 'वाल्मो पर ट्रैकिंग नहीं दिख रही', 'ट्रैकिंग लिंक नकली है', 'ट्रैकिंग अपडेट नहीं हो रही',
+  'लिंक नहीं खुल रहा', 'Valmo says no record found for this tracking id', 'tracking page shows different order',
+  'out for delivery 3 din se same status', 'Volmo site pe number exist nahi karta', 'tracking id show nahi ho rahi valmo pe',
+  'valmo pe order not found aa raha', 'website pe tracking nahi dikh rahi', 'No update on tracking for a week', 'tracking me koi update nahi',
+  'valmo me id nahi mil rahi', 'वाल्मो पर आईडी नहीं मिल रही', 'tracking pe fake delivered dikha raha', 'Valmo pe ST number dalne par invalid aata hai',
+];
+const CLAIM_NOT = [
+  // Asking for the link.
+  'tracking link kya hai?', 'tracking link bhejo', 'send me the tracking link', 'tracking link nahi mila', 'I did not get the tracking link',
+  'tracking link nahi aa raha', 'tracking id kya hai', 'how to track my order', 'track kaise kare', 'ट्रैकिंग लिंक भेजो', 'ट्रैकिंग लिंक नहीं मिला',
+  'tracking update kab hoga', 'any update on tracking?', 'I want to track my other order', 'tracking link sahi hai kya',
+  'tracking id bhej do please', 'mera tracking number kya hai?', 'can you share the AWB number', 'order track karna hai',
+  'valmo ka tracking link do', 'link mil gaya thanks', 'tracking link open ho gaya, thanks', 'tracking link khul gaya',
+  // Something else called invalid / wrong / fake.
+  'coupon code invalid', 'promo code not working', 'otp invalid aa raha', 'payment link not working', 'website not opening', 'fake order',
+  'fake product mila', 'wrong size received', 'galat order aaya hai, tracking dekho', 'wrong product delivered, tracking says delivered',
+  'address galat hai', 'my phone number is wrong in the order', 'refund status kya hai',
+  // Delay / delivery: handled elsewhere (delay ladder, rule 4.9).
+  'mera order kab aayega', 'order 10 din se nahi aaya', 'order stuck hai', 'where is my order', 'courier nahi aa raha',
+  'valmo wala delivery boy nahi aa raha', 'valmo se parcel nahi mila', 'delivered dikha raha hai par mila nahi', 'Which courier? Valmo?',
+  'valmo ka number do', 'parcel kab tak aayega?',
+  // Plain fraud claims stay the fraud path.
+  'This is a fraud site, you people are scammers', 'This is fraud, where is my tracking link?',
+];
+t('trackingClaimKind: 41 claims found, 49 other messages left alone, the kind of each', () => {
+  assert.strictEqual(CLAIM_MATCH.length, 41); assert.strictEqual(CLAIM_NOT.length, 49);
+  for (const s of CLAIM_MATCH) assert.ok(tcl.trackingClaimKind(s), `should be a claim: ${s}`);
+  for (const s of CLAIM_NOT) assert.strictEqual(tcl.trackingClaimKind(s), null, `not a claim: ${s}`);
+  assert.strictEqual(tcl.trackingClaimKind('tracking link fake hai'), 'fake');
+  assert.strictEqual(tcl.trackingClaimKind('AWB not found'), 'invalid');
+  assert.strictEqual(tcl.trackingClaimKind('tracking not updating since 4 days'), 'stuck');
+  for (const s of ['', '   ', null, undefined]) assert.strictEqual(tcl.trackingClaimKind(s), null);
+  assert.ok(tcl.mentionsTracking('mera tracking number kya hai?') && tcl.mentionsTracking('वाल्मो') && !tcl.mentionsTracking('mera order kab aayega'));
+});
+t('claimLang: Hindi, Hinglish or English over the claim and the last messages', () => {
+  assert.strictEqual(tcl.claimLang(['ट्रैकिंग लिंक नकली है']), 'hi');
+  assert.strictEqual(tcl.claimLang(['tracking link fake hai']), 'hinglish');
+  assert.strictEqual(tcl.claimLang(['Valmo website shows trecking id invalid']), 'en');
+  assert.strictEqual(tcl.claimLang(['Valmo website shows trecking id invalid', 'link kab milega?']), 'hinglish');
+  assert.strictEqual(tcl.claimLang(['AWB not found', 'मेरा ऑर्डर']), 'hi');
+  assert.notStrictEqual(tcl.claimLang(['order ४७१५']), 'hi', 'Devanagari digits alone are not Hindi');
+  assert.strictEqual(tcl.claimLang([]), 'en');
+});
+t('the fixed texts: no today, no courier name, the promise and the reminder keep a chat waiting, the reminder is not the promise', () => {
+  const LINK = 'https://shiptrack.store/track/x';
+  const notAnswer = new RegExp(waiting.AI_NOT_AN_ANSWER_REGEX, 'i');
+  assert.ok(!waiting.AI_NOT_AN_ANSWER_REGEX.includes("'"), 'no apostrophe: it goes into SQL');
+  assert.ok(!notAnswer.test(`Here is your tracking link: ${LINK}`));
+  assert.ok(notAnswer.test('Sorry, that took longer than expected on my end.') && notAnswer.test('Let me get that confirmed by our team.'));
+  for (const lang of ['en', 'hinglish', 'hi']) {
+    const A = tcl.promiseReply(lang), B = tcl.reminderReply(lang), C = tcl.preDispatchReply(lang, LINK);
+    const all = [A, B, C, tcl.preDispatchReply(lang, null), tcl.deliveredReply(lang), tcl.teamHasItReply(lang, lang === 'en' ? 'AWB not found' : 'tracking galat hai')];
+    for (const x of all) {
+      assert.ok(x && !tp.promisesToday(x), `${lang}: ${x}`);
+      assert.ok(!/v[ao]lmo|वाल्मो/i.test(x), `${lang}: no courier name`);
+      assert.ok(!/today|tonight|tomorrow|\baaj\b|\bkal\b|आज|कल तक/i.test(x), `${lang}: ${x}`);
+      assert.ok(!/1 hour|1 ghante|10 AM/i.test(x), `${lang}: no team reply time`);
+    }
+    assert.ok(notAnswer.test(A) && notAnswer.test(B), `${lang}: the promise and the reminder are not an answer`);
+    for (const x of all.slice(2)) assert.ok(!notAnswer.test(x), `${lang}: ${x}`);
+    assert.ok(/24-48/.test(A) && /24-48/.test(B));
+    assert.ok(!esc.isRepeatedReply(B, [A]) && esc.isRepeatedReply(B, [B]) && esc.isRepeatedReply(C, [C]), lang);
+    assert.ok(C.endsWith(`\n${LINK}`), `${lang}: the link last, nothing after it`);
+    assert.ok(!tcl.preDispatchReply(lang, null).includes('\n') && !tcl.preDispatchReply(lang, '  ').includes('http'));
+    // The same day and night: they are never sent through the night-line helpers.
+    assert.strictEqual(esc.dropReplyTimes(A).text, A);
+  }
+  assert.strictEqual(tcl.promiseReply('hinglish'), 'Pareshani ke liye sorry. Aapke order ka naya tracking link 24-48 ghante me isi chat me bhej denge.');
+  assert.strictEqual(tcl.promiseReply('en'), 'Sorry for the trouble. We will send a new tracking link for your order here in this chat within 24-48 hours.');
+  assert.strictEqual(tcl.teamHasItReply('en', 'AWB not found'), esc.routineLine('payment', 'AWB not found'));
+  assert.strictEqual(tcl.teamHasItReply('hinglish', 'tracking galat hai'), esc.routineLine('payment', 'tracking galat hai'));
+  assert.strictEqual(tcl.AUTO_MARK_NAME, 'Chikki (auto)');
+  for (const f of ['tracking-claim.ts', 'case-auto.ts']) {
+    const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat', f), 'utf8');
+    assert.ok(!/\b(withHandOverLine|dropReplyTimes)\b/.test(src.replace(/\/\/.*$/gm, '')), `${f} never uses the night-line helpers`);
+  }
+  // The pure file stays pure: the inbox page imports it.
+  const imports = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/tracking-claim.ts'), 'utf8').match(/from '[^']+'/g);
+  assert.deepStrictEqual(imports, ["from '@/lib/journey'", "from './escalation'"]);
+});
+t('claimStage: not dispatched, in transit, delivered, other', () => {
+  for (const s of ['Order Placed', 'Processing', 'Packed']) assert.strictEqual(tcl.claimStage({ status: s }), 'pre_dispatch', s);
+  for (const s of ['Shipped', 'Shipment Picked Up', 'In Transit', 'Reached State', 'Reached City', 'Local Hub', 'Out for Delivery']) assert.strictEqual(tcl.claimStage({ status: s, cancelled: false }), 'in_transit', s);
+  assert.strictEqual(tcl.claimStage({ status: 'Delivered' }), 'delivered');
+  assert.strictEqual(tcl.claimStage({ status: 'In Transit', cancelled: true }), 'other');
+  for (const s of ['RTO', 'Return to Origin', 'Delivery Exception', 'Order Cancelled', null]) assert.strictEqual(tcl.claimStage({ status: s }), 'other', String(s));
+  assert.strictEqual(tcl.claimStage(null), 'other');
+});
+t('followUpAction: a Chikki-marked chat reminds once or goes red; a team-marked one only goes red on a new claim', () => {
+  const base = { said: 'link kab milega?', urgent: null, routine: null, claim: null, angry: false, hoursSinceMark: 1, repeated: false };
+  const act = (auto, o = {}) => tcl.followUpAction({ ...base, auto, ...o });
+  const rows = [
+    // [what, input, Chikki's mark, a person's mark (or the team wrote)]
+    ['courtesy', { said: 'ok thanks' }, [false, null], [false, null]],
+    ['emoji', { said: '👍' }, [false, null], [false, null]],
+    ['threat', { said: 'I will file a police complaint', urgent: 'threat' }, [true, 'threat'], [false, null]],
+    ['refund', { said: 'mujhe refund chahiye', routine: 'refund' }, [true, 'routine'], [false, null]],
+    ['payment', { said: 'payment kat gaya', routine: 'payment' }, [true, 'routine'], [false, null]],
+    ['fraud + claim', { said: 'tracking link fake hai, fraud', urgent: 'accusation', claim: 'fake' }, [true, 'reminder+team'], [true, null]],
+    ['fraud only', { said: 'fraud ho tum log', urgent: 'accusation' }, [true, 'reminder+team'], [false, null]],
+    ['claim again', { said: 'tracking link abhi bhi fake hai', claim: 'fake' }, [true, 'reminder'], [true, null]],
+    ['"ok" with a claim', { said: 'ok', claim: 'fake' }, [true, 'reminder'], [true, null]],
+    ['anger', { said: 'WHERE IS MY LINK', angry: true }, [true, 'reminder'], [false, null]],
+    ['another subject', { said: 'address change karna hai' }, [true, 'handoff'], [false, null]],
+    ['48 hours', { said: 'link?', hoursSinceMark: 48 }, [true, 'handoff'], [false, null]],
+    ['the reminder again', { said: '??', repeated: true }, [true, 'handoff'], [false, null]],
+    ['claim, reminder sent', { said: 'tracking abhi bhi fake hai', claim: 'fake', repeated: true }, [true, 'handoff'], [true, null]],
+    ['fraud, reminder sent', { said: 'fraud', urgent: 'accusation', repeated: true }, [true, 'threat'], [false, null]],
+    ['a question', { said: 'link kab milega?' }, [false, 'reminder'], [false, null]],
+    ['a question, mark time unknown', { said: 'link?', hoursSinceMark: null }, [false, 'reminder'], [false, null]],
+    ['Hindi question', { said: 'लिंक कब मिलेगा' }, [false, 'reminder'], [false, null]],
+    // Review fixes (2026-10-02): after the 48 hours the reminder (a fresh 24-48 h) is never sent again.
+    ['claim after 48 h', { said: '3 din ho gaye, tracking abhi bhi invalid aa raha hai valmo pe', claim: 'invalid', hoursSinceMark: 72 }, [true, 'handoff'], [true, null]],
+    ['anger after 48 h', { said: 'BHAI 3 DIN HO GAYE LINK KAHAN HAI', angry: true, hoursSinceMark: 72 }, [true, 'handoff'], [false, null]],
+    ['fraud after 48 h', { said: 'ye fraud hai, 3 din se link ka wait kar raha hu', urgent: 'accusation', hoursSinceMark: 72 }, [true, 'threat'], [false, null]],
+    ['fraud + claim after 48 h', { said: 'tracking fake hai, fraud', urgent: 'accusation', claim: 'fake', hoursSinceMark: 48 }, [true, 'threat'], [true, null]],
+    ['claim at 47 h', { said: 'tracking abhi bhi fake hai', claim: 'fake', hoursSinceMark: 47 }, [true, 'reminder'], [true, null]],
+    ['threat after 48 h', { said: 'I will file a police complaint', urgent: 'threat', hoursSinceMark: 72 }, [true, 'threat'], [false, null]],
+    ['refund after 48 h', { said: 'mujhe refund chahiye', routine: 'refund', hoursSinceMark: 72 }, [true, 'routine'], [false, null]],
+    // A question mark alone is about the link; a question on another subject is not (row 7).
+    ['"?" alone', { said: '?' }, [false, 'reminder'], [false, null]],
+    ['"??" alone', { said: ' ?? ' }, [false, 'reminder'], [false, null]],
+    ['address question', { said: 'address change karna hai?' }, [true, 'handoff'], [false, null]],
+    ['delivery address question', { said: 'Can I change my delivery address?' }, [true, 'handoff'], [false, null]],
+    ['exchange question', { said: 'mujhe exchange chahiye?' }, [true, 'handoff'], [false, null]],
+    ['COD question', { said: 'COD available hai?' }, [true, 'handoff'], [false, null]],
+    ['a question about the link', { said: 'new link kab tak aayega?' }, [false, 'reminder'], [false, null]],
+  ];
+  for (const [what, o, chikki, staff] of rows) {
+    assert.deepStrictEqual(act(true, o), { red: chikki[0], reply: chikki[1] }, `Chikki's mark: ${what}`);
+    assert.deepStrictEqual(act(false, o), { red: staff[0], reply: staff[1] }, `a person's mark: ${what}`);
+  }
+  assert.ok(tcl.FOLLOW_UP.test('kab milega') && !tcl.FOLLOW_UP.test('?') && !tcl.FOLLOW_UP.test('address change karna hai'));
+  for (const s of ['?', '??', '? ?', '?!', 'link?', 'kab milega', 'लिंक कब मिलेगा', 'where is my order?']) assert.ok(tcl.aboutTheLink(s), s);
+  for (const s of ['', '.', 'address change karna hai?', 'Can I change my delivery address?', 'COD available hai?', 'mujhe exchange chahiye?', 'size change ho sakta hai?', 'return kaise karu?']) {
+    assert.ok(!tcl.aboutTheLink(s), s);
+  }
+  // The one reminder is found in any language (case-auto.ts readReshipState): one head per language,
+  // each the start of its reminder, none in the promise.
+  assert.strictEqual(tcl.REMINDER_HEADS.length, 3);
+  for (const lang of ['en', 'hinglish', 'hi']) {
+    const heads = tcl.REMINDER_HEADS.filter((h) => tcl.reminderReply(lang).startsWith(h));
+    assert.strictEqual(heads.length, 1, lang);
+    assert.ok(heads[0].length >= 30 && !/[%_]/.test(heads[0]), lang);
+    assert.ok(!tcl.REMINDER_HEADS.some((h) => tcl.promiseReply(lang).includes(h)), `${lang}: the promise is not a reminder`);
+  }
+});
+// claimAction (spec TC6) is not a separate export: case-auto.ts trackingClaimTurn keeps the rows of
+// spec 2.2 inline, and team-routing.js R24-R41 test them through the real widget route.
+t('mentionsOtherOrder: another order number typed, or a lookup that found only other orders', () => {
+  assert.strictEqual(tcl.mentionsOtherOrder('#4716 ka tracking fake hai', '#4715', null), true);
+  assert.strictEqual(tcl.mentionsOtherOrder('#4715 ka tracking fake hai', '#4715', null), false);
+  assert.strictEqual(tcl.mentionsOtherOrder('9876543210', '#4715', null), false, 'a phone is not an order');
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking 5 din se update nahi hua', '#4715', null), false);
+  const found = (...ids) => JSON.stringify({ found: true, count: ids.length, orders: ids.map((order_id) => ({ order_id })) });
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', found('#4715')), false);
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', found('#4716')), true);
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', found('#4716', '#4715')), false);
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', JSON.stringify({ found: false })), false);
+  assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', 'not json'), false);
 });
 console.log(`UNIT: ${n} groups passed`);

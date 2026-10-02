@@ -29,8 +29,13 @@ export const NO_REPLY_NEEDED_REGEX =
 // ending in one of these has been answered by nobody. The auto-close (auto-close.ts)
 // treats it as still waiting, so it is never closed over the customer's head. The
 // inbox's Waiting timer and its Unread filter use it too (conversations route, 2026-10-01). No apostrophes: it goes into SQL.
+// Since 2026-10-02 (owner, fake / invalid tracking claims) also the new-tracking-link promise and
+// the reminder (tracking-claim.ts promiseReply / reminderReply, English / Hinglish / Hindi): the
+// team still owes that customer the link, so a Ship again chat stays waiting (and is never
+// auto-closed) until a team member writes. Stricter, never looser.
 export const AI_NOT_AN_ANSWER_REGEX =
-  '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)';
+  '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)' +
+  '|(naya|new|नया) (tracking link|ट्रैकिंग लिंक)[^.]{0,80}24-48';
 
 export type WaitingLevel = 'fresh' | 'soon' | 'overdue';
 

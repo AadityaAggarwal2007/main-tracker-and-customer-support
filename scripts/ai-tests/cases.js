@@ -80,9 +80,11 @@ module.exports = [
     history: [V('kab aayega mera order')], mock: [{ content: 'Please share your order ID and phone.' }],
     expect: { systemNotHas: [/DELAY ANSWER/] }, offlineOnly: true },
   // orders.ts names the panel's default courier (Valmo) for an order without one (courier.ts).
-  { id: 'which-logistics', title: 'Which platform delivers the order? (Valmo)',
+  // COURIER NAME (owner 2026-10-02 10:55): the courier is named only on the customer's 3rd ask,
+  // so a 1st ask gets "our courier partner".
+  { id: 'which-logistics', title: 'Which platform delivers the order? 1st ask: the courier is not named yet',
     ...verifiedCtx('Reached City', '2026-10-03', { courier: 'Valmo' }), history: [V('from which logistics this order is shipped??')],
-    expect: { match: [/valmo/i] }, liveOnly: true },
+    expect: { notMatch: [/valmo/i] }, liveOnly: true },
   // The hand-over of a refund is done by code before the AI answers (escalation.ts), so this
   // only checks what the AI itself says: no promise, no money details asked.
   { id: 'refund-verified', title: 'Refund request from a verified customer: no promise made by the AI',
@@ -121,16 +123,17 @@ module.exports = [
   { id: 'topic-cod-gujarat', title: 'COD question: only Gujarat, no "not available" for everyone',
     history: [V('COD available hai?')],
     expect: { match: [/gujarat/i] } },
-  // Owner, 2026-10-01: name the courier (Valmo) ONLY when the customer asks which courier delivers.
+  // Owner, 2026-10-01: name the courier (Valmo) ONLY when the customer asks which courier delivers;
+  // since 2026-10-02 10:55 only on their 3rd ask (COURIER NAME, reply-guards.ts).
   { id: 'courier-not-unasked-shipped', title: 'Shipped order, "track my order": Valmo is not named unasked',
     ...verifiedCtx('Shipped', '2026-10-10', { courier: 'Valmo' }), history: [V('Track my order')],
     expect: { notMatch: [/valmo/i] } },
   { id: 'courier-not-unasked-kab', title: 'In Transit, "kab aayega": Valmo is not named unasked',
     ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('mera order kab aayega?')],
     expect: { notMatch: [/valmo/i] } },
-  { id: 'courier-asked-hinglish', title: 'Hinglish "kaunse courier se aa raha hai": Valmo is named',
+  { id: 'courier-asked-hinglish', title: 'Hinglish "kaunse courier se aa raha hai", 1st ask: Valmo is not named yet',
     ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('mera order kaunse courier se aa raha hai?')],
-    expect: { match: [/valmo/i] } },
+    expect: { notMatch: [/valmo/i] } },
   // ── A visitor (not verified): only the order ID and the phone are ever asked ───────
   { id: 'intro-karry', title: 'First hello: Karry, never "AI / bot"',
     history: [V('hi')],
@@ -173,6 +176,26 @@ module.exports = [
   { id: 'are-you-bot', title: 'Sincere "are you a bot?": honest in one line',
     history: [V('are you a real person or a bot? be honest')],
     expect: { match: [/automated|bot|virtual|\bai\b/i] }, watch: true },
+
+  // ── Fake / invalid tracking claims (owner 2026-10-02) ──────────────────────────────
+  // The widget route replaces the model's text with a fixed one in every claim it acts on
+  // (tracking-claim.ts, case-auto.ts; team-routing.js R24-R41). These check the model alone, for
+  // when the route falls through (a missed wording, an old proof, another order).
+  { id: 'tracking-claim-visitor-verify-first', title: 'Visitor: "Valmo website shows trecking id invalid": verify first, no new-link promise',
+    history: [V('Valmo website shows trecking id invalid')],
+    mock: [{ content: 'Sorry for the trouble. Please share your order ID and the phone number on the order, and I will check it for you.' }],
+    expect: { match: [ASKS_AGAIN], notCalls: ['escalate_to_human'], notMatch: [/24-48|naya tracking link|new tracking link/i] } },
+  { id: 'tracking-claim-courier-kept', title: 'Valmo named only in a complaint is not an ask: the reply does not name it',
+    ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('Valmo website shows tracking id invalid')],
+    mock: [{ content: 'Sorry about that. Your order is with Valmo and is In Transit, estimated delivery 7 October 2026.' }],
+    expect: { notMatch: [/valmo/i] } },
+  { id: 'tracking-claim-delivered-check-around', title: 'Delivered + "fake, mila nahi": the check-with-family line is added',
+    ...verifiedCtx('Delivered', null), history: [V('tracking pe delivered dikha raha hai par parcel mila nahi, fake hai')],
+    mock: [{ content: 'Iske liye sorry. Maine ise hamari team ko de diya hai.' }],
+    expect: { match: [/padosi|neighbou?r|security|reception/i] } },
+  { id: 'tracking-claim-model-no-own-promise', title: 'The model never promises a new tracking link itself',
+    ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('tracking link fake hai, kisi aur ka order dikha raha')],
+    expect: { notMatch: [/(naya|new) tracking link|24-48/i] }, liveOnly: true, watch: true },
 
   // ── Code-level behaviour of getAIResponse (offline, scripted model) ────────────────
   { id: 'code-today-cut', title: 'A sentence promising arrival today is cut out of the reply',
@@ -299,11 +322,27 @@ module.exports = [
   { id: 'code-courier-unasked-removed', title: 'An unasked courier name becomes "our courier partner"',
     ...verifiedCtx('Shipped', '2026-10-10', { courier: 'Valmo' }), history: [V('Track my order')],
     mock: [{ content: 'Your order has been shipped via Valmo. Estimated delivery 10 October 2026.' }],
-    expect: { notMatch: [/valmo/i], match: [/shipped\. Estimated/] }, offlineOnly: true },
-  { id: 'code-courier-asked-kept', title: 'Asked which courier: the name stays',
+    expect: { notMatch: [/valmo/i], match: [/shipped via our courier partner\. Estimated/] }, offlineOnly: true },
+  // COURIER NAME (owner 2026-10-02 10:55): the name only from the customer's 3rd ask.
+  { id: 'code-courier-asked-kept', title: 'Asked which courier once: the name is taken out, the model is told not yet',
     ...verifiedCtx('Shipped', '2026-10-10', { courier: 'Valmo' }), history: [V('which courier is delivering my order?')],
     mock: [{ content: 'Your order is delivered through Valmo.' }],
-    expect: { match: [/Valmo/] }, offlineOnly: true },
+    expect: { notMatch: [/valmo/i], systemHas: [/COURIER NAME[^\n]*do not name the courier in this reply/] }, offlineOnly: true },
+  // 2026-10-02 review: the guard keeps a whole sentence ("is with Valmo and" never becomes "is and").
+  { id: 'code-courier-sentence-whole', title: 'The name taken out of "is with Valmo and is In Transit": a whole sentence stays',
+    ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('Valmo website shows tracking id invalid')],
+    mock: [{ content: 'Sorry about that. Your order is with Valmo and is In Transit, estimated delivery 7 October 2026.' }],
+    expect: { notMatch: [/valmo/i, /\bis and\b/], match: [/Your order is with our courier partner and is In Transit/] }, offlineOnly: true },
+  { id: 'code-courier-asked-answered', title: 'Asked which courier once: "delivered by our courier partner", the question still answered',
+    ...verifiedCtx('Shipped', '2026-10-10', { courier: 'Valmo' }), history: [V('which courier is delivering my order?')],
+    mock: [{ content: 'The courier for your order is Valmo.' }],
+    expect: { notMatch: [/valmo/i], match: [/^Your order is with our courier partner\.$/] }, offlineOnly: true },
+  { id: 'code-courier-third-ask-named', title: 'The 3rd ask which courier: the name stays',
+    ...verifiedCtx('Shipped', '2026-10-10', { courier: 'Valmo' }),
+    history: [V('which courier is delivering my order?'), A('Your order is with our courier partner.'), V('courier ka naam kya hai?'),
+      A('Aapka order hamare courier partner ke paas hai.'), V('which courier is delivering my order?')],
+    mock: [{ content: 'Your order is delivered through Valmo.' }],
+    expect: { match: [/Valmo/], systemHas: [/COURIER NAME[^\n]*asked three times/] }, offlineOnly: true },
   { id: 'brain-lower-than-rules', title: 'The Brain section says the locked rules win',
     brain: [{ kind: 'rule', title: 'X', body: 'BRAINMARK-X', topics: [], always: true, sort_order: 0 }],
     history: [V('hi')], mock: [{ content: 'Hi!' }], expect: { systemHas: [/SHIPTRACK RULES above always win over a note/] }, offlineOnly: true },

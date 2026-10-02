@@ -153,27 +153,135 @@ export function withCheckAround(reply: string, ctx: {
   return { text: `${reply.trimEnd()}\n\n${line}`, changed: true };
 }
 
-// 3. withoutUnaskedCourier (owner, 2026-10-01): the courier (Valmo for Vastora) is named only when
-//    the customer asks which courier / platform / company delivers. Every order now carries a
-//    courier (courier.ts), so without this the agent said "shipped via Valmo" to everyone. When
-//    they did not ask, the name becomes "our courier partner". Links are never touched.
-const ASKS_COURIER = /\b(?:courier|couriers|logistic\w*|platform|partner|company|carrier|valmo|volmo|delhivery|blue\s?dart|ekart|shadowfax|xpressbees|dtdc|india\s+post|speed\s?post)\b|कूरियर|कंपनी/i;
-const ASKS_WHO_DELIVERS = /\b(?:who|kaun|kon|kaunsa|konsa|kis|kisse|kiske)\b[^.?!\n]{0,30}\b(?:deliver\w*|bhej\w*|la\s+raha|aa\s+raha|ship\w*|de\s+raha)\b/i;
+// 3. withoutUnaskedCourier: the courier (Valmo for Vastora) is named only when the customer asks
+//    which courier / company delivers (owner, 2026-10-01), and since 2026-10-02 10:55 only from
+//    the customer's THIRD such ask, counted over this chat and their earlier chats on the site
+//    (ai.ts reads the count). Before that the name becomes "our courier partner" and a
+//    "Courier: X" line is dropped. Every order now carries a courier (courier.ts), so without
+//    this the agent said "shipped via Valmo" to everyone. Links are never touched. The result is
+//    always a whole sentence (2026-10-02 review): "delivered by Valmo" -> "delivered by our courier
+//    partner" (the preposition stays, so an ask is still answered and "is with Valmo and" never
+//    becomes "is and"), "the courier is Valmo" / "aapka courier Valmo hai" -> "your order is with our
+//    courier partner" / "aapka order hamare courier partner ke paas hai", "Valmo Logistics" -> one
+//    "our courier partner", and a reply that was only "Courier: Valmo" gets that sentence.
+//    An ask is a real question about WHO delivers: "which courier", "kaun sa courier", "courier
+//    ka naam kya hai", "kis company se aa raha hai", "kaun deliver karega", "कौन सा कूरियर", or a
+//    yes / no check of a name ("kya ye Valmo se aa raha hai?", "is it Valmo?"). A message that
+//    only names the courier in a complaint ("Valmo website shows tracking id invalid", "valmo
+//    wala delivery boy nahi aa raha", "valmo ka number do") is not an ask.
+export const COURIER_NAME_FROM_ASK = 3;
 
-export function asksAboutCourier(text: string): boolean {
-  return ASKS_COURIER.test(text || '') || ASKS_WHO_DELIVERS.test(text || '');
-}
+const COURIER_W = String.raw`(?:(?:delivery|shipping|shipment|courier|logistics?)\s+(?:company|companies|partner|partners|service|agency|provider|firm)|couri[eo]rs?|curr?i[eo]rs?|cori[eo]rs?|kuri[ae]?y?[ae]?rs?|kooriyar|logistic\w*|logestic\w*|carriers?)`;
+const COMPANY_W = String.raw`(?:company|companies|compan[iy]|compny|comapny|kampani|kampni|kumpani)`;
+const OTHER_W = String.raw`(?:platform|partner|agency|service|provider)`;
+const WHICH = String.raw`(?:which|wich|whch|kaun|kon|koun|kaunsa|konsa|kounsa|kaunsi|konsi|kaunse|konse|kis)`;
+const FILL = String.raw`(?:\s+(?:is|was|will|be|the|one|wala|vala|wali|wale|sa|si|se|hai|h|he|ka|ki|ke|delivery|shipping|your|ur|my|mera|meri|mere|aapka|aapki|apka|apki|ye|yeh))`;
+const NOT_A_DAY = String.raw`(?!\s+(?:(?:sa|si|se)\s+)?(?:din|date|tarikh|tareekh|time|samay|waqt|baje|jagah|jagha|city|day|month))`;
+const DELIVERY_CTX = /\b(?:deliver\w*|ship\w*|dispatch\w*|couri[eo]r\w*|logistic\w*|parcel|package|bhej\w*|send|sent|aa\s+(?:raha|rha|rahi|rhi|rahe)|aayega|aaega|ayega|aayegi|aaegi|la\s+(?:raha|rha|rahi|rhi)|layega|laega|laayega)\b|डिलीवर|भेज|आ रहा|आ रही|कूरियर/i;
+const PRODUCT_OR_STORE = /\b(?:product|products|item|items|brand|store|shop|website|site|earrings?|jhumk\w*|dress|kurti|saree|sari|suit|kapd\w*|cloth\w*|maal|saman|samaan|bag|you|u|aap|ap|tum|your|ur|aapki|apki|aapka|apka)\b/i;
+const NOT_WHO = /\b(?:contact|call|complain\w*|talk|speak|baat|refund|paisa|paise|money|reply|jawab|answer|number|phone|email|helpline|responsible|blame|fault|help)\b/i;
+
+// Questions about who delivers, tested one sentence at a time.
+const ASK_WHICH: RegExp[] = [
+  // "which courier", "kaun sa courier", "kaunse courier se", "which is the courier", "kis logistics se"
+  new RegExp(`\\b${WHICH}\\b${NOT_A_DAY}${FILL}{0,3}\\s+${COURIER_W}\\b`, 'i'),
+  // "what courier", "what is the courier name", "what's the logistics"
+  new RegExp(`\\bwhat(?:'s|s|\\s+is|\\s+was|\\s+will\\s+be)?(?:\\s+(?:the|your|ur|my))?\\s+${COURIER_W}\\b`, 'i'),
+  // "courier kaun sa hai", "courier konsa hai", "delivery partner kaun hai"
+  new RegExp(`\\b${COURIER_W}\\b(?:\\s+(?:company|partner|service|ka|ki|ke|wala|wale|hai|h|he|is|tha|hoga|hogi|aapka|apka|mera))?\\s+(?:kaun|kon|koun|kaunsa|konsa|kounsa|kaunsi|konsi|kaunse|konse)\\b${NOT_A_DAY}`, 'i'),
+  // "courier ka naam", "courier name", "courier partner name", "courier details"
+  new RegExp(`\\b${COURIER_W}\\b(?:\\s+(?:company|partner|service|wale|wala))?\\s*(?:ka|ki|ke|'s)?\\s*(?:naam|nam|name|details?|info|information)\\b`, 'i'),
+  // "name of the courier"
+  new RegExp(`\\b(?:naam|name)\\s+(?:of\\s+)?(?:the\\s+|your\\s+|ur\\s+)?${COURIER_W}\\b`, 'i'),
+];
+// "which company" / "kis company se" / "company ka naam": only about the delivery, never "kis
+// company ka product hai" or "aap kis company se ho".
+const ASK_COMPANY: RegExp[] = [
+  new RegExp(`\\b(?:${WHICH}|what)\\b${NOT_A_DAY}${FILL}{0,2}\\s+${COMPANY_W}\\b`, 'i'),
+  new RegExp(`\\b${COMPANY_W}\\s+(?:kaun|kon|koun|kaunsi|konsi|kaunsa|konsa)\\b`, 'i'),
+  new RegExp(`\\b${COMPANY_W}\\s*(?:ka|ki|ke|'s)?\\s*(?:naam|nam|name)\\b`, 'i'),
+];
+// "which platform / partner delivers": only with a delivery word in the sentence.
+const ASK_OTHER = new RegExp(`\\b(?:${WHICH}|what)\\b${NOT_A_DAY}${FILL}{0,2}\\s+${OTHER_W}\\b`, 'i');
+// "who delivers", "kaun deliver karega", "kaun la raha hai", "delivery kaun karega", "kisse aa raha hai"
+const ASK_WHO: RegExp[] = [
+  /\b(?:who|whom)(?:'s|s)?\b[^.?!\n]{0,25}?\b(?:deliver\w*|ship\w*|bring\w*|sending|send\w*|dispatch\w*|couri[eo]rs?|logistic\w*|carriers?)\b/i,
+  /\b(?:kaun|kon|koun)\b(?!\s*(?:sa|si|se)\b)(?:\s+\S+){0,3}?\s+(?:deliver\w*|delivery|la|laa|laega|layega|laayega|laaega|bhej\w*|ship\w*|dega|degi|aayega|aaega|ayega|aa\s+(?:raha|rha|rahi|rhi|rahe))\b/i,
+  /\b(?:delivery|deliver|parcel|order|saman|samaan)\s+(?:kaun|kon|koun)\s+(?:karega|karegi|karenge|kar\s+(?:raha|rha|rahi|rhi|rahe)|dega|degi|layega|laega|laayega|bhejega|la\s+(?:raha|rha))\b/i,
+  /\b(?:kisse|kis\s*se|kiske\s+(?:through|thru|dwara|zariye|zarie)|kis\s+ke\s+(?:through|thru|dwara|zariye)|kisne)\b(?:\s+\S+){0,3}?\s+(?:aa|aaya|aayega|aaega|ayega|bhej\w*|ship\w*|deliver\w*|send|sent|dispatch\w*)\b/i,
+];
+const ASK_HI: RegExp[] = [
+  /(?:कौन|कोन|किस)\s*(?:सा|सी|से)?\s*(?:कूरियर|कुरियर|कोरियर|कुरिअर|कंपनी|कम्पनी|लॉजिस्टिक|प्लेटफॉर्म|प्लेटफार्म|पार्टनर)/,
+  /(?:कूरियर|कुरियर|कोरियर|कंपनी|कम्पनी)\s*(?:पार्टनर\s*)?(?:का|की|के)?\s*(?:नाम|कौन|कोन)/,
+  /(?:कौन|कोन)\s*(?:डिलीवर|डिलिवर|डेलिवर|भेज|ला\s*रह|लाएगा|लायेगा)/,
+  /(?:डिलीवरी|डिलिवरी)\s*(?:कौन|कोन)/,
+  /(?:किससे|किस\s*से|किसने)\s*(?:\S+\s*){0,2}?(?:आ\s*रह|आएगा|आयेगा|भेज|डिलीवर)/,
+];
+// A yes / no check of a courier's name: "kya ye Valmo se aa raha hai?", "is it Valmo?", "Valmo?".
+const KNOWN_COURIERS = String.raw`v[ao]lmo|walmo|delhi?ver[yi]|blue\s?dart|e-?kart|shadowfax|xpress\s?bees|dtdc|india\s+post|speed\s?post|ecom\s+express|smartr|shiprocket|amazon\s+shipping`;
+const KNOWN_COURIERS_HI = 'वाल्मो|वॉल्मो|वालमो|डेल्हीवरी|दिल्लीवरी|ब्लू ?डार्ट|ईकार्ट';
+const YES_NO = /\?\s*$|\b(?:kya|kia|kyaa|is\s+it|isn'?t\s+it|right)\b|^\s*(?:is|are|will|would|does|do|did|was|has|have|can)\b|\b(?:na|naa)\s*\??\s*$|क्या/i;
+// Complaints, other questions (when / why / where / how), contact asks: never a check of the name.
+const NOT_A_CHECK = /\b(?:invalid|valid|wrong|galat|galt|glat|fake|farzi|farji|nakli|fraud|scam|error|stuck|atka\w*|ruka|update\w*|website|site|app|portal|online|tr[ae]?c?k\w*|awb|number|contact|phone|call\w*|helpline|care|office|hub|warehouse|boy|agent|rider|guy|banda|rude|refund|return|cancel\w*|rto|wapas|why|kyu|kyun|kyon|kab|when|where|kaha|kahan|kidhar|kitne|kitna|how|kaise|problem|issue|complain\w*|late|delay\w*|status|not|nahi|nahin|nhi|nai|never|don'?t|didn'?t|doesn'?t|won'?t|can'?t|cannot|bol\w*|said|says|told|keh\w*|msg|message|sms|otp|cod|paisa|paise|payment|pay|good|bad|achha|acha|bekar|bakwas|worst|trust|bharosa|reliable|safe)\b|गलत|ग़लत|नहीं|नही|फर्जी|फ़र्ज़ी|नकली|फेक|वेबसाइट|साइट|ऐप|ट्रैक|ट्रेक|नंबर|कब|कहाँ|कहां|क्यों|क्यूँ|कैसे|शिकायत|रिफंड|कॉल|फोन|अपडेट/i;
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const courierNameRe = (courierNames: string[]) => {
+  const names = Array.from(new Set(courierNames.map((n) => String(n || '').trim()).filter((n) => n.length >= 3)));
+  return new RegExp(`\\b(?:${[KNOWN_COURIERS, ...names.map(esc)].join('|')})\\b|${KNOWN_COURIERS_HI}`, 'i');
+};
 
-export function withoutUnaskedCourier(reply: string, customerLatest: string, courierNames: string[]): { text: string; changed: boolean } {
-  if (!reply || asksAboutCourier(customerLatest)) return { text: reply, changed: false };
+function sentenceAsks(s: string, nameRe: RegExp): boolean {
+  if (ASK_WHICH.some((re) => re.test(s)) || ASK_HI.some((re) => re.test(s))) return true;
+  if (ASK_COMPANY.some((re) => re.test(s)) && (DELIVERY_CTX.test(s) || !PRODUCT_OR_STORE.test(s))) return true;
+  if (ASK_OTHER.test(s) && DELIVERY_CTX.test(s)) return true;
+  if (ASK_WHO.some((re) => re.test(s)) && !NOT_WHO.test(s)) return true;
+  return nameRe.test(s) && YES_NO.test(s) && !NOT_A_CHECK.test(s);
+}
+
+// Does this message ask which courier / company delivers the order? One message is one ask.
+export function asksAboutCourier(text: string, courierNames: string[] = []): boolean {
+  const t = String(text || '').slice(0, 2000);
+  if (!t.trim()) return false;
+  const nameRe = courierNameRe(courierNames);
+  return t.split(/(?<=[.!?\n।])\s*/).some((s) => s.trim() !== '' && sentenceAsks(s, nameRe));
+}
+
+// How many of these customer messages ask which courier delivers.
+export function courierAskCount(texts: string[], courierNames: string[] = []): number {
+  return texts.filter((t) => asksAboutCourier(t, courierNames)).length;
+}
+
+// The name may be given only when the latest messages ask AND this is at least the third ask
+// (asks: every ask of this customer so far, the latest included). Unknown (null / not given)
+// = not yet: a failed read never names the courier.
+export function courierNameAllowed(customerLatest: string, asks: number | null | undefined, courierNames: string[] = []): boolean {
+  return typeof asks === 'number' && asks >= COURIER_NAME_FROM_ASK && asksAboutCourier(customerLatest, courierNames);
+}
+
+// The name in Devanagari (a Hindi reply) becomes "हमारे कूरियर पार्टनर"; "आपका कूरियर वाल्मो है"
+// becomes "आपका ऑर्डर हमारे कूरियर पार्टनर के पास है".
+const NAME_HI = /(?:वाल्मो|वॉल्मो|वालमो)/g;
+const NAME_HI_IS = /(?:(?:आपका|आपके)\s*)?(?:कूरियर|कुरियर|कोरियर)(?:\s*पार्टनर)?\s*(?:वाल्मो|वॉल्मो|वालमो)\s*(?:है|हैं)/g;
+const COURIER_SAYS_EN = 'your order is with our courier partner';
+const COURIER_SAYS_HINGLISH = 'aapka order hamare courier partner ke paas hai';
+
+export function withoutUnaskedCourier(
+  reply: string,
+  customerLatest: string,
+  courierNames: string[],
+  asks: number | null = null,   // the customer's courier asks so far, the latest included; null = unknown
+): { text: string; changed: boolean } {
+  if (!reply || courierNameAllowed(customerLatest, asks, courierNames)) return { text: reply, changed: false };
   const names = Array.from(new Set(courierNames.map((n) => String(n || '').trim()).filter((n) => n.length >= 3)));
   const alt = ['v[ao]lmo', ...names.map(esc)].join('|');
   const NAME = `(?:${alt})`;
-  if (!new RegExp(`\\b${NAME}\\b`, 'i').test(reply)) return { text: reply, changed: false };
+  if (!new RegExp(`\\b${NAME}\\b`, 'i').test(reply) && !/(?:वाल्मो|वॉल्मो|वालमो)/.test(reply)) return { text: reply, changed: false };
   const hinglish = looksHinglish(reply);
   const partner = hinglish ? 'hamare courier partner' : 'our courier partner';
+  // The name with a courier word after it ("Valmo Logistics", "Valmo courier"): one name.
+  const NAMED = `${NAME}(?:\\s+(?:courier|couriers|logistics|express))?`;
+  const KIND = String.raw`(?:courier|delivery|logistics|shipping)(?:\s+(?:partner|company|service|provider|agency))?`;
+  const FOR_ORDER = String.raw`(?:\s+(?:for|of|on)\s+(?:your|this|the)\s+(?:order|parcel|package|shipment))?`;
 
   // Never inside a link.
   const parts = reply.split(/(https?:\/\/\S+)/g);
@@ -181,21 +289,32 @@ export function withoutUnaskedCourier(reply: string, customerLatest: string, cou
     if (i % 2 === 1) return part;
     return part
       // "Courier: Valmo" on its own line
-      .replace(new RegExp(`^[ \\t]*(?:courier(?:\\s+partner)?|delivery\\s+partner|logistics(?:\\s+partner)?)\\s*[:\\-–—]\\s*${NAME}[ \\t]*\\.?[ \\t]*(?:\\r?\\n|$)`, 'gim'), '')
-      // "our courier partner, Valmo," / "courier partner (Valmo)"
-      .replace(new RegExp(`\\b((?:courier|delivery|logistics|shipping)\\s+partner)\\s*[,:(—–-]?\\s*${NAME}\\s*\\)?`, 'gi'), '$1')
-      // "Valmo (our courier partner)"
-      .replace(new RegExp(`${NAME}\\s*\\(\\s*((?:our|hamare)\\s+(?:courier|delivery|logistics)\\s+partner)\\s*\\)`, 'gi'), '$1')
-      // "shipped via Valmo" -> "shipped"
-      .replace(new RegExp(`\\s+(?:via|through|with|by)\\s+${NAME}\\b`, 'gi'), '')
-      // anything left: the name becomes "our courier partner"
-      .replace(new RegExp(`\\b${NAME}(?:'s)?\\b`, 'gi'), (m) => (/'s$/i.test(m) ? `${partner}'s` : partner));
+      .replace(new RegExp(`^[ \\t]*(?:courier(?:\\s+partner)?|delivery\\s+partner|logistics(?:\\s+partner)?)\\s*[:\\-–—]\\s*${NAMED}[ \\t]*\\.?[ \\t]*(?:\\r?\\n|$)`, 'gim'), '')
+      // "The courier for your order is Valmo", "Your courier partner is Valmo", "Valmo is our courier
+      // partner for this order" -> "your order is with our courier partner" (never "the courier is
+      // our courier partner"); "Aapka courier Valmo hai" -> "aapka order hamare courier partner ke paas hai"
+      .replace(new RegExp(`\\b(?:the|your|ur)\\s+${KIND}${FOR_ORDER}\\s+(?:is|will\\s+be|would\\s+be)\\s+${NAMED}\\b`, 'gi'), COURIER_SAYS_EN)
+      .replace(new RegExp(`\\b${NAMED}\\s+(?:is|will\\s+be)\\s+(?:the|your|our)\\s+${KIND}${FOR_ORDER}(?=\\s*(?:[.!?,]|$))`, 'gim'), COURIER_SAYS_EN)
+      .replace(new RegExp(`\\b(?:(?:aapka|aapke|apka|apke|aapki|apki|hamara|hamare|humare|hamari)\\s+)?(?:order\\s+(?:ka|ke)\\s+)?${KIND}\\s+${NAMED}\\s+(?:hai|hain)\\b`, 'gi'), COURIER_SAYS_HINGLISH)
+      // "our courier partner, Valmo," / "courier partner (Valmo)" / "courier partner Valmo se"
+      .replace(new RegExp(`\\b((?:courier|delivery|logistics|shipping)\\s+partner)(?:\\s*[,:(—–-]\\s*|\\s+)${NAMED}(?:\\s*\\))?`, 'gi'), '$1')
+      // "Valmo (our courier partner)" / "Valmo, our courier partner" -> "our courier partner"
+      .replace(new RegExp(`${NAMED}\\s*(?:\\(\\s*((?:our|hamare)\\s+(?:courier|delivery|logistics)\\s+partner)\\s*\\)|[,—–-]\\s*((?:our|hamare)\\s+(?:courier|delivery|logistics)\\s+partner)\\b)`, 'gi'), '$1$2')
+      // anything left: the name becomes "our courier partner" ("shipped via Valmo" -> "shipped via
+      // our courier partner", "is with Valmo and" -> "is with our courier partner and")
+      .replace(new RegExp(`\\b${NAMED}(?:'s)?\\b`, 'gi'), (m) => (/'s$/i.test(m) ? `${partner}'s` : partner))
+      .replace(NAME_HI_IS, 'आपका ऑर्डर हमारे कूरियर पार्टनर के पास है')
+      .replace(NAME_HI, 'हमारे कूरियर पार्टनर');
   }).join('');
-  const text = fixed
+  let text = fixed
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\s+([,.!?])/g, '$1')
-    .replace(/(^|[.!?]\s+|\n)(our courier partner|hamare courier partner)/g, (m, pre: string, p: string) => pre + p.charAt(0).toUpperCase() + p.slice(1))
+    .replace(/(^|[.!?]\s+|\n)(our courier partner|hamare courier partner|your order is with our|aapka order hamare)/g, (m, pre: string, p: string) => pre + p.charAt(0).toUpperCase() + p.slice(1))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  // The reply was only the courier line ("Courier: Valmo"): say it in a sentence instead.
+  if (!text.replace(/[^\p{L}\p{N}]/gu, '')) {
+    text = looksHinglish(customerLatest) ? 'Aapka order hamare courier partner ke paas hai.' : 'Your order is with our courier partner.';
+  }
   return { text, changed: text !== reply };
 }

@@ -266,6 +266,16 @@ export async function setActor(client: PoolClient, actor: Actor, reason: string)
   );
 }
 
+// The same, for a change the system makes by itself (owner 2026-10-02: Chikki's own Ship again mark
+// and red flag, case-auto.ts). The SAME SQL text as setActor, so the status trigger logs actor
+// 'system', this name and this reason.
+export async function setSystemActor(client: PoolClient, name: string, reason: string): Promise<void> {
+  await client.query(
+    `SELECT set_config('shiptrack.actor', $1, true), set_config('shiptrack.actor_name', $2, true), set_config('shiptrack.reason', $3, true)`,
+    ['system', name, reason]
+  );
+}
+
 export type ChatEventKind = 'claim' | 'take' | 'transfer' | 'merge' | 'reply' | 'case_mark' | 'case_remove';
 export interface ChatEventInput {
   conversationId: string; siteId: string | null; kind: ChatEventKind;
