@@ -20,6 +20,7 @@ const M = (n: string) => `Master rule ${n}`;
 const YOU_30 = 'Your decision, 30 Sep';
 const YOU_01 = 'Your decision, 1 Oct';
 const YOU_02 = 'Your decision, 2 Oct';
+const YOU_03 = 'Your decision, 3 Oct (from the chat report)';
 
 export const RULEBOOK: RuleSection[] = [
   {
@@ -120,6 +121,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Never asks for a card number, CVV, expiry, OTP, UPI PIN or password. If a customer types one, it is hidden before it is saved and they are told not to share it.' },
       { id: '5.8', how: 'setting', from: M('23'), title: 'Cash on Delivery',
         text: '{cod} Chikki brings COD up only when the customer asks, never advertises it, and gives a short, different answer if they ask again.' },
+      { id: '5.9', how: 'code', from: YOU_03, title: 'Never advises a chargeback, a bank / UPI dispute or a police / cyber complaint',
+        text: 'Chikki never tells a customer to raise a chargeback, a bank, UPI or card dispute or complaint, a cyber-crime or police report, or to go to a consumer forum (seen 1-3 Oct on three paid-but-no-order chats). Such sentences are removed by code and the chat goes to the team if verified; a visitor is asked for the order ID and phone (5.6). The team finds the payment and settles it in the chat, so no dispute reaches the gateway.' },
     ],
   },
   {

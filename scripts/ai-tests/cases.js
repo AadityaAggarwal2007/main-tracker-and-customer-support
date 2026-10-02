@@ -282,6 +282,18 @@ module.exports = [
       V('refund kab milega?')],
     expect: { notMatch: [REFUND_TIME, FORM_ONLY, /refund (?:has been |is )?(?:approved|processed)/i] }, liveOnly: true, watch: true },
 
+  // ── Chargeback / dispute advice (2026-10-03, chat report): on 1-3 Oct the model told three paid-but-no-order
+  // customers to raise a chargeback / UPI dispute / cybercrime complaint. dispute-advice.ts drops such
+  // sentences; ai.ts hands a verified chat to the team and asks a visitor for the order ID + phone (5.6). ──
+  { id: 'code-dispute-advice-verified', title: 'Verified customer told to raise a chargeback: the advice never goes, the team takes over',
+    ...verifiedCtx('In Transit', '2026-10-10'), history: [V('paisa kat gaya tha par order dikh nahi raha, kya karu?')],
+    mock: [{ content: 'I am sorry for the trouble. I strongly recommend you raise a complaint with HDFC Bank, they can initiate a chargeback. Could you share the date and amount?' }],
+    expect: { notMatch: [/chargeback|dispute|cyber|police|consumer|complaint/i, REFUND_TIME], match: [/team/i], escalated: true }, offlineOnly: true },
+  { id: 'code-dispute-advice-visitor', title: 'Visitor (paid, no order) told to raise a UPI dispute: the advice never goes, asked for the order ID + phone, not handed over',
+    history: [V('I paid 807 by GPay but got no order confirmation')],
+    mock: [{ content: 'Apne bank mein jakar ₹807 ki transaction ke liye dispute raise karein. cybercrime.gov.in par complaint file kar sakte hain.' }],
+    expect: { notMatch: [/chargeback|dispute|cyber|police|consumer|complaint|bank/i], match: [ASKS_AGAIN], escalated: false }, offlineOnly: true },
+
   // ── Code-level behaviour of getAIResponse (offline, scripted model) ────────────────
   { id: 'code-today-cut', title: 'A sentence promising arrival today is cut out of the reply',
     ...verifiedCtx('Out for Delivery', '2026-10-04'), history: [V('kab aayega')],

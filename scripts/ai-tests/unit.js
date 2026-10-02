@@ -895,4 +895,50 @@ t('rulebook: 6.6 and 9.14 (owner 2 Oct 18:45) at the ends of their sections, and
   assert.ok(rule('5.3').text.includes('(6.6)') && rule('6.2').text.includes('(6.6)') && rule('7.2').text.includes('6.6') && rule('6.2').text.includes('after 10 AM'));
   assert.ok(rule('9.2').text.includes('9.14') && /Refund \(6\.6\): no senior needed/.test(rule('9.6').text));
 });
+// ── Chargeback / dispute advice guard (dispute-advice.ts, 2026-10-03, from the chat report) ──
+const da = load('dispute-advice');
+t('dispute-advice: the real 1-3 Oct advice sentences are caught, in English, Hinglish and Hindi', () => {
+  for (const s of [
+    'raising a complaint with your bank (HDFC) for a chargeback could be a valid next step.',
+    'I strongly recommend you raise a complaint with HDFC Bank.',
+    'They can initiate a chargeback.',
+    'Apne bank mein jakar ₹807 ki transaction ke liye dispute raise karein.',
+    'cybercrime.gov.in par complaint file kar sakte hain.',
+    'Bank chargeback raise kar sakta hai.',
+    'Kal apne bank branch jaaiye, manager ko poori baat batayein - "fraudulent transaction" bolkar dispute raise karwayein.',
+    'you can raise a dispute directly through your UPI app (Google Pay, PhonePe, etc.) for the transaction.',
+    'Bank dispute: Apne bank jaakar batayein ki ₹807 ka payment ek fake website ko ho gaya.',
+    'Please contact your bank to get the money back.',
+    'You may approach the consumer forum.',
+    'Aap police complaint bhi kar sakte hain.',
+    'आप अपने बैंक में शिकायत कर सकते हैं।',
+  ]) assert.ok(da.mentionsDispute(s), s);
+});
+t('dispute-advice: normal support lines, the refund-form promise and order facts are left alone', () => {
+  for (const s of [
+    'Our team will reply to you right here in this chat.',
+    'Pareshani ke liye sorry. Hum aapka refund process kar rahe hain, hamari team isi chat me aapko refund form bhejegi jisme aap apni UPI / bank details de payenge.',
+    'The amount was paid by UPI; could you share the order ID and the phone number on the order?',
+    'Your order #4715 is In Transit and the estimated delivery is 9 October.',
+    'Refunds are processed back to the original payment method by our team.',
+    'Main samajh raha hoon, aapka order late hai. Hamari team courier se check karwa rahi hai.',
+    'The bank statement shows the merchant name; please share your order ID too.',
+    "I couldn't match that to an order yet. Please share your order ID and the phone number on the order, both together.",
+  ]) assert.ok(!da.mentionsDispute(s), s);
+});
+t('dispute-advice: only the advice sentence goes, an all-advice reply is emptied, untouched text is byte-identical', () => {
+  const r = da.dropDisputeAdvice('I am sorry for the trouble. I strongly recommend you raise a complaint with HDFC Bank. Could you share the date and amount?');
+  assert.deepStrictEqual(r, { text: 'I am sorry for the trouble. Could you share the date and amount?', changed: true, emptied: false });
+  const two = da.dropDisputeAdvice('Aapke paas do options hain:\n- Bank dispute: apne bank jaakar dispute raise karein.\n- cybercrime.gov.in par complaint file kar sakte hain.');
+  assert.deepStrictEqual(two, { text: 'Aapke paas do options hain:', changed: true, emptied: false });
+  assert.deepStrictEqual(da.dropDisputeAdvice('They can initiate a chargeback.'), { text: '', changed: true, emptied: true });
+  const same = 'Hello there.\n\nYour order is on its way.  ';
+  assert.deepStrictEqual(da.dropDisputeAdvice(same), { text: same, changed: false, emptied: false });
+  assert.deepStrictEqual(da.dropDisputeAdvice(''), { text: '', changed: false, emptied: false });
+});
+t('rulebook: 5.9 (owner 3 Oct, chat report) is a code rule that names the hand-over and the visitor ask', () => {
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  assert.ok(rb.RULE_IDS.has('5.9') && rule('5.9').how === 'code');
+  assert.ok(/chargeback/.test(rule('5.9').text) && /cyber-crime or police/.test(rule('5.9').text) && /\(5\.6\)/.test(rule('5.9').text));
+});
 console.log(`UNIT: ${n} groups passed`);

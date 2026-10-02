@@ -21,6 +21,7 @@ import { fixOrderMentions } from './order-mention';
 import { asksAboutCourier, COURIER_NAME_FROM_ASK, dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { FORM_VERIFY_ASK, dropFormMentions } from '@/lib/refund/link-mask';
+import { dropDisputeAdvice } from './dispute-advice';
 import { codAlreadyToldNote } from './cod';
 import { brainSection, selectNotes, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
@@ -736,6 +737,8 @@ export async function getAIResponse(
   const agentTexts = recent.rows.filter((r) => r.sender === 'ai' || r.sender === 'agent').map((r) => r.content || '');
   // What the form guard did in the latest withReplyGuards call (formFollowUp below reads it).
   let formDropped = false, formEmptied = false;
+  // ... and the dispute-advice guard (disputeFollowUp below).
+  let disputeDropped = false;
   const withReplyGuards = (text: string): string => {
     let out = text;
     // Chikki never sends or mentions a refund / return form, and never any Google Form link (owner,
@@ -745,6 +748,14 @@ export async function getAIResponse(
     const form = dropFormMentions(out, looksHinglish(visitorTexts.slice(-2).join('\n')));
     formDropped = form.changed; formEmptied = form.emptied;
     if (form.changed) { out = form.text; console.log(`[AI] Form mention removed for conv ${conversationId}`); }
+    // Chikki never advises a chargeback, a bank / UPI dispute or complaint, a cyber-crime or police
+    // report or a consumer forum (the store's first rule; seen live 1-3 Oct on paid-but-no-order
+    // chats; dispute-advice.ts): such sentences are dropped and disputeFollowUp hands a verified chat
+    // to the team / asks a visitor for the order ID + phone. Emptied: the hand-over line, so a
+    // model that escalated itself still sends something.
+    const dispute = dropDisputeAdvice(out);
+    disputeDropped = dispute.changed;
+    if (dispute.changed) { out = dispute.emptied ? handOverReply(guardRows) : dispute.text; console.log(`[AI] Dispute advice removed for conv ${conversationId}`); }
     const echo = dropAddressEcho(out, visitorTexts.slice(-8));
     if (echo.changed) { out = echo.text; console.log(`[AI] Address echo removed for conv ${conversationId}`); }
     let delivered = false;
@@ -868,7 +879,7 @@ export async function getAIResponse(
   // The same status change escalate_to_human makes, with a fixed reply that
   // says nothing about any order. Callers treat it as an escalation: the widget
   // stops answering, and email holds the draft for the team.
-  const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6' | 'FORM', result: AIResult): Promise<AIResult> => {
+  const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6' | 'FORM' | 'DISPUTE', result: AIResult): Promise<AIResult> => {
     // A visitor is never handed to the team (owner, 2026-09-30): the chat stays as it
     // is and the customer is told what is still needed.
     if (!(await chatIsVerified(conversationId))) {
@@ -900,6 +911,15 @@ export async function getAIResponse(
     else return null;
     console.log(`[AI] Guard FORM for conv ${conversationId}: not verified, asked for the order ID and phone`);
     return null;
+  };
+
+  // DISPUTE (2026-10-03, chat report): the dispute-advice guard dropped part or all of a reply that
+  // did not escalate. Whatever is left is not sent: a verified chat goes to the team with the fixed
+  // hand-over line (money was taken and only a person can find the payment); a visitor is asked
+  // for the order ID + phone (rules 5.6 and 2.9), both by handOver.
+  const disputeFollowUp = async (r: AIResult): Promise<AIResult | null> => {
+    if (r.escalated || !disputeDropped) return null;
+    return handOver('DISPUTE', r);
   };
 
   // Asking for the order ID or last 4 once the order is known, unless the
@@ -999,6 +1019,8 @@ export async function getAIResponse(
       // FORM: the form guard dropped part or all of the reply (formFollowUp above).
       const formHandOver = await formFollowUp(result);
       if (formHandOver) return formHandOver;
+      const disputeHandOver = await disputeFollowUp(result);
+      if (disputeHandOver) return disputeHandOver;
       // H3: asking yet again after lookups that keep coming back not found.
       if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
       // The lookup ran and matched nothing, yet the reply only asks for the
@@ -1044,6 +1066,8 @@ export async function getAIResponse(
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
         const retryHandOver = await formFollowUp(retry);
         if (retryHandOver) return retryHandOver;
+        const retryDispute = await disputeFollowUp(retry);
+        if (retryDispute) return retryDispute;
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
         return finish(retry, model);
       }
