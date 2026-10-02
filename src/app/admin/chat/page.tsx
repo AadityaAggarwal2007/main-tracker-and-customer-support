@@ -15,6 +15,7 @@ import { cleanTransferNote } from '@/lib/chat/team-rules';
 import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
+import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { HEALTH_PIN_MIN, healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS, formatWaiting, waitingLevel } from '@/lib/chat/waiting';
@@ -142,7 +143,7 @@ interface NewerChat {
 
 interface ChatMessage {
   id: string;
-  sender: 'visitor' | 'ai' | 'agent';
+  sender: 'visitor' | 'ai' | 'agent' | 'system';   // 'system' = refund form messages (Vastora Support)
   content: string;
   metadata: {
     withheld?: string; emailed?: boolean; agent?: string; hidden?: boolean;
@@ -1208,6 +1209,8 @@ export default function ChatSupportPage() {
   // From the thread's answer: what this login may do on the open chat and its team history, tied to
   // their chat like the order line, so a fast switch never shows the last chat's buttons.
   const [threadTeam, setThreadTeam] = useState<{ id: string; staff: StaffBlock | null; log: TeamLogEntry[] } | null>(null);
+  // Refund form (owner 2026-10-02): the thread answer's refund_form (Super Admin + Refund chats only).
+  const [threadRefund, setThreadRefund] = useState<{ id: string; state: RefundThreadState | null } | null>(null);
   const [teamLogOpen, setTeamLogOpen] = useState(false);
   const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
@@ -1365,6 +1368,7 @@ export default function ChatSupportPage() {
       setActiveConv(data.conversation);
       setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [] });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable });
+      setThreadRefund({ id, state: data.refund_form ?? null });
       setMessages(data.messages || []);
       const older = data.earlier ?? data.conversation?.earlier;
       setEarlier(Array.isArray(older) ? older : []);
@@ -1375,7 +1379,7 @@ export default function ChatSupportPage() {
 
   useEffect(() => {
     if (activeId) fetchThread(activeId);
-    else { setActiveConv(null); setOrderInfo(null); setThreadTeam(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
+    else { setActiveConv(null); setOrderInfo(null); setThreadTeam(null); setThreadRefund(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
   }, [activeId, fetchThread]);
 
   // The team history and the transfer dialog belong to the chat they were opened on; the release
@@ -2081,6 +2085,7 @@ export default function ChatSupportPage() {
         <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
           {msg.sender === 'visitor' ? 'Customer'
             : msg.sender === 'agent' ? ((msg.author_key ? msg.author_key === (staff?.me ?? meKey) : (msg.metadata?.agent && msg.metadata.agent === user.username)) ? 'You' : (msg.author || 'Team'))
+            : msg.sender === 'system' ? `${supportLabel(activeConv?.site_name || activeConv?.panel_name)} · System`
             : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
         </span>
         {!mine || readOnly ? bubble : (
@@ -2698,6 +2703,10 @@ export default function ChatSupportPage() {
                         <>
                           <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
                           <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>
+                          {activeConv.case_kind === 'refund' && isSuperAdmin(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
+                            <RefundFormControl token={token} conversationId={activeConv.id} state={threadRefund.state} onChanged={() => fetchThread(activeConv.id, true)} onAlert={showAlert}
+                              label={supportLabel(activeConv.site_name || activeConv.panel_name)} />
+                          )}
                         </>
                       ) : (
                         <>

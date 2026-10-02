@@ -65,6 +65,9 @@ const WINDOW_SQL = `(CASE WHEN ${IS_VISITOR_SQL}
 // `w` mirrors the list route's waiting join (its message filters are the list's own);
 // customer_waiting is that rule made STRICTER, never looser: whatever the inbox shows
 // as waiting is waiting here too (checked against the live list, see AGENTS.md).
+// Refund form messages (sender 'system', owner 2026-10-02) are left out of `w` like tool rows: a
+// form link posted after the customer's question never makes them stop waiting (stricter only,
+// AGENTS.md rule 6; the same filter as WAITING_LATERAL).
 const CANDIDATES_SQL = `
   SELECT c.id,
          ${IS_VISITOR_SQL} AS is_visitor,
@@ -96,7 +99,7 @@ const CANDIDATES_SQL = `
              (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'ai'))[1] AS last_ai_text
         FROM messages m
        WHERE m.conversation_id = c.id
-         AND m.sender <> 'tool_result'
+         AND m.sender NOT IN ('tool_result', 'system')
          AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
          AND COALESCE(m.metadata->>'withheld', '') = ''
          AND m.content IS NOT NULL AND btrim(m.content) <> ''

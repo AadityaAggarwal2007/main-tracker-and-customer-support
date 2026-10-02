@@ -34,6 +34,9 @@ export function isOurMessage(m: MessageForRules): boolean {
 }
 
 export function canChangeMessage(user: RulesUser, m: MessageForRules): boolean {
+  // Refund form messages are fixed: nobody edits or deletes them, not even the Super Admin
+  // (owner 2026-10-02). Without this any chat.reply login could edit the link into another one.
+  if (m.sender === 'system') return false;
   if (!isOurMessage(m) || m.deleted_at) return false;
   if (can(user, 'chat.edit')) return true;
   if (!can(user, 'chat.reply')) return false;
@@ -47,5 +50,6 @@ export function senderLabel(m: MessageForRules): { who: string; type: string; or
     return { who: m.metadata?.agent || 'Team member', type: 'Team member', origin: 'Written by a person' };
   }
   if (m.sender === 'visitor') return { who: 'Customer', type: 'Customer', origin: 'Written by the customer' };
+  if (m.sender === 'system') return { who: 'System', type: 'System', origin: 'Sent by ShipTrack (refund form)' };
   return { who: m.sender, type: 'System', origin: 'System-generated' };
 }

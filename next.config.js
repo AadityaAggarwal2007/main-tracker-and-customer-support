@@ -35,6 +35,28 @@ const nextConfig = {
           { key: 'Cache-Control', value: 'public, max-age=300' },
         ],
       },
+      {
+        // The customer's refund form (owner, 2026-10-02). The link's key is in the URL fragment, so
+        // nothing secret is in the address; still: never cached, never framed, never indexed, no
+        // referrer. No Access-Control-* header: only this page, on this domain, may call /api/refund/*.
+        source: '/refund',
+        headers: [
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
+          { key: 'Permissions-Policy', value: 'geolocation=(), camera=(), microphone=()' },
+        ],
+      },
+      {
+        // The refund form's public routes (open, submit): never cached or indexed; no CORS.
+        source: '/api/refund/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'X-Robots-Tag', value: 'noindex' },
+        ],
+      },
     ];
   },
 };

@@ -71,6 +71,7 @@ stub('ai', `module.exports = {
   AI_BUSY_REPLY: 'Sorry, that took longer than expected on my end. Could you send that again?',
   getAIResponse: async (...a) => { global.__ai.calls.push(a); if (global.__ai.next.onCall) global.__ai.next.onCall(); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: false, toolCallMeta: global.__ai.next.toolCallMeta || null }; },
 };`);
+stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: false, block: "setup" }), refundMarkLocked: async () => false };');
 global.__emails = [];
 global.__ai = { calls: [], next: { content: '' } };
 global.__orders = {};
@@ -81,11 +82,15 @@ global.__recentSaid = [];
 const compile = (from, to) => {
   const src = fs.readFileSync(path.join(SRC, from), 'utf8')
     .replace(/from '@\/lib\/chat\/([\w-]+)'/g, "from './$1'")
+    .replace(/from '@\/lib\/refund\/([\w-]+)'/g, "from './refund-$1'")
     .replace(/from '@\/lib\/([\w-]+)'/g, "from './$1'")
     .replace(/from 'next\/server'/g, "from './next-server'");
   fs.writeFileSync(path.join(dir, to + '.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText);
 };
 for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib/${f}.ts`, f);
+// Refund form (owner 2026-10-02): the pure link mask is the real one; the refund server (its own suite,
+// refund-route.js) is a stub here: no refund data, so the Refund mark is never locked.
+compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
   'reply-guards', 'tracking-claim', 'case-auto']) compile(`lib/chat/${f}.ts`, f);

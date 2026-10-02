@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
+import { hasFormLink } from '@/lib/refund/link-mask';
 import { can, canAccessPanel } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
 import {
@@ -48,6 +49,9 @@ export async function POST(request: NextRequest) {
     const { conversationId, content, attachmentIds } = await request.json();
     // Pasted **bold** would reach the customer as literal asterisks.
     const text = stripMarkdownEmphasis(content == null ? '' : String(content));
+    // No Google Form (any: owner answer Q7) and no refund-form link in a team reply, chat or email, for
+    // every login (owner 2026-10-02): refund forms go out only through the Super Admin's Send button.
+    if (hasFormLink(text)) return NextResponse.json({ error: "Refund forms go only through 'Send refund form' (Super Admin, Refund section). Remove the form link." }, { status: 403 });
     const hasText = text.trim() !== '';
     const fileIds: unknown[] = Array.isArray(attachmentIds) ? attachmentIds : [];
 

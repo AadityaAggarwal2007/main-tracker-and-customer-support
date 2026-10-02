@@ -9,7 +9,9 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from './waiting';
 
 // What a chat's messages say about waiting (alias w): the last customer message, the last staff
 // reply, the last urgent customer message, who wrote last and what the customer last wrote.
-// Closed chats skip the work (all NULL).
+// Closed chats skip the work (all NULL). Refund form messages (sender 'system', owner 2026-10-02)
+// are left out like tool rows, so a form link posted after the customer's question never hides a
+// waiting customer: stricter only (AGENTS.md rule 6; auto-close.ts has the same filter).
 export const WAITING_LATERAL = `LEFT JOIN LATERAL (
            SELECT max(m.created_at) FILTER (WHERE m.sender = 'visitor') AS last_visitor_at,
                   max(m.created_at) FILTER (WHERE m.sender = 'agent') AS last_agent_at,
@@ -19,7 +21,7 @@ export const WAITING_LATERAL = `LEFT JOIN LATERAL (
                   (array_agg(m.content ORDER BY m.created_at DESC, m.id DESC) FILTER (WHERE m.sender = 'ai'))[1] AS last_ai_text
              FROM messages m
             WHERE m.conversation_id = c.id AND c.status <> 'resolved'
-              AND m.sender <> 'tool_result'
+              AND m.sender NOT IN ('tool_result', 'system')
               AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
               AND COALESCE(m.metadata->>'withheld', '') = ''
               AND m.content IS NOT NULL AND btrim(m.content) <> ''

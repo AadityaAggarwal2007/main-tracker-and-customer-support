@@ -5,6 +5,7 @@ import ChikkiCard from '@/components/ChikkiCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
+import RefundRequestsCard from '@/components/RefundRequestsCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { ROLE_INFO, can, isSuperAdmin, type Permission, type Role } from '@/lib/permissions';
@@ -15,7 +16,7 @@ import {
   Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail, ShieldCheck, UserRound,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
-  Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight, Trophy
+  Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight, Trophy, Undo2
 } from 'lucide-react';
 
 /* ═══════════ TYPES ═══════════ */
@@ -53,7 +54,7 @@ interface PanelImpact {
   chatSites: number; chatConversations: number; chatMessages: number;
   teamMembers: number; teamMembersLosingAccess: number;
 }
-type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score';
+type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds';
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -66,6 +67,10 @@ export default function AdminDashboard() {
   const openMe = () => (user?.role === 'admin' ? setSecurityOpen(true) : setProfileOpen(true));
   const [activeTab, setActiveTab] = useState<TabType>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Refund requests (owner, 2026-10-02; Super Admin only): the red pill = New requests he has not
+  // opened yet, and the request a chat's "Open request" link asks to open (/admin?tab=refunds&open=<id>).
+  const [refundUnseen, setRefundUnseen] = useState(0);
+  const [refundOpenId, setRefundOpenId] = useState<string | null>(null);
 
   // Orders
   const [orders, setOrders] = useState<Order[]>([]);
@@ -336,6 +341,41 @@ export default function AdminDashboard() {
     return () => { alive = false; clearInterval(t); };
   }, [token, activePanelId]);
   useEffect(() => { fetchEmailedOrders(); }, [fetchEmailedOrders]);
+
+  // Refund requests badge (Super Admin only): every 60 s and when the window gets focus. Advisory: a
+  // failed poll keeps the last number. Counts only, never a request's details.
+  const superAdmin = isSuperAdmin(user);
+  const refreshRefundCounts = useCallback(async () => {
+    if (!token || !superAdmin) return;
+    try {
+      const r = await fetch('/api/refunds/counts', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      setRefundUnseen(Number(d?.unseen) || 0);
+    } catch { /* the badge is advisory */ }
+  }, [token, superAdmin]);
+  useEffect(() => {
+    if (!token || !superAdmin) return;
+    void refreshRefundCounts();
+    const t = setInterval(() => { void refreshRefundCounts(); }, 60000);
+    const onFocus = () => { void refreshRefundCounts(); };
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [token, superAdmin, refreshRefundCounts]);
+  // Deep link from a Refund chat ("Open request"): /admin?tab=refunds&open=<request id>. Read once, then
+  // the address bar goes back to /admin (same pattern as the inbox's ?open=).
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('tab') !== 'refunds') return;
+      setActiveTab('refunds');
+      const open = sp.get('open') || '';
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(open)) setRefundOpenId(open);
+      window.history.replaceState(window.history.state, '', '/admin');
+    } catch { /* ignore */ }
+  }, []);
+  // Anyone else who lands on that link gets the normal start tab.
+  useEffect(() => { if (user && activeTab === 'refunds' && !superAdmin) setActiveTab('orders'); }, [user, activeTab, superAdmin]);
   // Auto-refresh email stats every 30 seconds
   useEffect(() => {
     if (!token) return;
@@ -862,6 +902,7 @@ export default function AdminDashboard() {
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
     { id: 'score' as TabType, label: isSuperAdmin(user) ? 'Team score' : 'My score', icon: Trophy, show: isSuperAdmin(user) || can(user, 'chat.reply') },
+    { id: 'refunds' as TabType, label: 'Refund requests', icon: Undo2, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
 
   return (
@@ -964,6 +1005,16 @@ export default function AdminDashboard() {
             >
               <item.icon size={18} />
               {item.label}
+              {item.id === 'refunds' && refundUnseen > 0 && (
+                <span title={`${refundUnseen} new refund ${refundUnseen === 1 ? 'request' : 'requests'} you have not opened`}
+                  style={{
+                    marginLeft: 'auto', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 9999,
+                    background: 'var(--danger, #ef4444)', color: '#fff', fontSize: '0.6875rem', fontWeight: 700,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                  {refundUnseen}
+                </span>
+              )}
             </button>
           ))}
           {/* Chat Support — chat widget conversations and email in one inbox (for logins that may open it) */}
@@ -1025,7 +1076,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab}</span>
         </div>
 
         <div className="main-inner">
@@ -2201,6 +2252,12 @@ export default function AdminDashboard() {
           )}
           {activeTab === 'score' && (isSuperAdmin(user) || can(user, 'chat.reply')) && (
             <div className="animate-fade-in-up"><TeamScoreCard token={token} onAlert={showAlert} mine={!isSuperAdmin(user)} /></div>
+          )}
+          {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
+          {activeTab === 'refunds' && isSuperAdmin(user) && (
+            <div className="animate-fade-in-up">
+              <RefundRequestsCard token={token} onAlert={showAlert} openId={refundOpenId} onSeen={() => { void refreshRefundCounts(); }} />
+            </div>
           )}
         </div>
       </main>

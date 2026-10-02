@@ -26,6 +26,12 @@ const ASKS_AGAIN = /(share|send|provide|bata|batao|dijiye|confirm)[^.?!]{0,50}(o
 const NO_NUMBER = /(no |not |nahi|nhi|don't|do not|doesn't)[^.?!]{0,60}(number|call|phone|contact)|number\s+(nahi|nhi)/i;
 const ARRIVES_TODAY = /\b(today|tonight|tomorrow|aaj|aaj\s+hi|aaj\s+raat)\b[^.?!]{0,40}(deliver|arriv|reach|aa\s*jayega|aayega|milega|pahunch)|(deliver|arriv|reach|aayega|milega)\w*[^.?!]{0,40}\b(today|tonight|aaj)\b/i;
 
+// Refund form (owner 2026-10-02): a form link, or a refund / return / exchange form mentioned (the
+// same test as src/lib/refund/link-mask.ts dropFormMentions, so the live run is held to the guard).
+const FORM_TALK = /https?:\/\/|docs\.google\.com\/forms|forms\.gle|\/refund#|\b(?:refund|return|exchange)\b[^.!?\n]{0,40}\bforms?\b|\bforms?\b[^.!?\n]{0,40}\b(?:refund|return|exchange)\b|\bgoogle\s*forms?\b/i;
+const S = (text, ago) => ({ who: 'system', text, ago });   // a refund form message ('system', "Vastora Support")
+const RF_LINK = 'https://shiptrack.store/refund#' + 'Zq7_Tt-9'.repeat(5) + 'abc';   // made up, 43 characters
+
 const verifiedCtx = (status, eta, extra = {}) => ({
   verified: '#4715', fresh: { found: true, count: 1, orders: [order({ status, estimated_delivery: eta, ...extra })] },
 });
@@ -90,6 +96,51 @@ module.exports = [
   { id: 'refund-verified', title: 'Refund request from a verified customer: no promise made by the AI',
     ...verifiedCtx('Shipped', '2026-10-10'), history: [V('mujhe refund chahiye, order cancel karo')],
     expect: { notMatch: [/(refund|paise)[^.?!]{0,30}(processed|initiated|bhej diya|credited)/i] } },
+  // ── Refund form (owner 2026-10-02): only the Super Admin sends it; Chikki never sends or mentions a
+  // form (any Google Form, owner answer Q7); the refund destination is told by the team (Q1). ──
+  { id: 'refund-form-ask-hinglish', title: 'A1 "refund ka form bhejo": no link, no form promise',
+    ...verifiedCtx('Delivered', null), history: [V('refund ka form bhejo')],
+    mock: [{ content: 'Ji, refund form ka link abhi bhej deta hoon: https://docs.google.com/forms/d/e/1FAIpQLSc-test/viewform' }],
+    expect: { notMatch: [FORM_TALK], match: [/team/i] } },
+  { id: 'refund-form-ask-en', title: 'A1 "send me the refund form link": no link, no form promise',
+    ...verifiedCtx('Delivered', null), history: [V('send me the refund form link')],
+    mock: [{ content: 'Sure! Here is the refund form: https://forms.gle/AbCdEf12\nOur team will check your request here in this chat.' }],
+    expect: { notMatch: [FORM_TALK], match: [/team/i] } },
+  { id: 'google-form-link-dropped', title: 'A2 a model reply carrying a Google Form link loses that sentence, keeps the rest',
+    ...verifiedCtx('In Transit', '2026-10-07'), history: [V('exchange karna hai, order kab aayega?')],
+    mock: [{ content: 'Aapka order In Transit hai, estimated delivery 7 October 2026. Exchange ke liye ye bhariye: https://docs.google.com/forms/d/e/x/viewform' }],
+    expect: { match: [/In Transit/, /7 October/], notMatch: [FORM_TALK] }, offlineOnly: true },
+  { id: 'saved-answer-form-link', title: 'A3 a Saved Answer with a forms.gle link: the reply has no form link',
+    ...verifiedCtx('Delivered', null), history: [V('size chhota aaya, exchange karna hai')],
+    faqs: [{ question: 'How do I return or exchange?', answer: 'Fill our return form: https://forms.gle/RtUrNx1 and the team will arrange it.' }],
+    mock: [{ content: 'Exchange ke liye ye form bhariye: https://forms.gle/RtUrNx1' }],
+    expect: { notMatch: [FORM_TALK], match: [/team/i] } },
+  // Review fix 2026-10-02: an exchange is not a routine hand-over word (escalation.ts), so when the form
+  // guard empties the reply the team line comes with a real hand-over (Needs you), never on its own.
+  // Offline only: whether the live model writes the form sentence at all varies.
+  { id: 'saved-answer-form-link-handed-over', title: 'A3 the same, offline: the emptied reply hands the verified chat to the team',
+    ...verifiedCtx('Delivered', null), history: [V('size chhota aaya, exchange karna hai')],
+    faqs: [{ question: 'How do I return or exchange?', answer: 'Fill our return form: https://forms.gle/RtUrNx1 and the team will arrange it.' }],
+    mock: [{ content: 'Exchange ke liye ye form bhariye: https://forms.gle/RtUrNx1' }],
+    expect: { notMatch: [FORM_TALK], match: [/team/i], escalated: true }, offlineOnly: true },
+  { id: 'visitor-return-form-verify-ask', title: 'A visitor asks for a "return form": asked for the order ID + phone, no form, no team promise, not handed over',
+    history: [V('mujhe return form chahiye')],
+    mock: [{ content: 'Return form ke liye pehle apna Order ID aur order wala phone number bhejiye.' }],
+    expect: { match: [/order id/i, /phone/i], notMatch: [FORM_TALK, /baat karegi|team will (help|reply)|hamari team/i], escalated: false }, offlineOnly: true },
+  { id: 'visitor-return-form-ask-kept', title: 'A visitor: the dropped form sentence took the order ID + phone ask with it, so the ask is added back',
+    history: [V('return karna hai, form bhejo')],
+    mock: [{ content: 'Ji zaroor! Return form ke liye apna order ID aur phone number bhejiye.' }],
+    expect: { match: [/^Ji zaroor!/, /order id/i, /phone/i], notMatch: [FORM_TALK, /baat karegi|team will (help|reply)|hamari team/i], escalated: false }, offlineOnly: true },
+  { id: 'refund-form-message-not-shown', title: 'The refund form message (sender system) never reaches the model',
+    ...verifiedCtx('Delivered', null),
+    history: [V('mujhe refund chahiye', 3 * HOUR), S(`Aapke order #4715 ki refund request ke liye ye form bhariye: ${RF_LINK}\nIsme problem aur refund ke liye aapka UPI ID ya bank account bharna hai.`, 2 * HOUR), V('form bhar diya, ab kya?')],
+    mock: [{ content: 'Aapki request hamari team ke paas hai, team isi chat me update degi.' }],
+    expect: { notShown: [/refund#/, /ye form bhariye/, /UPI ID ya bank account bharna/], notMatch: [FORM_TALK] }, offlineOnly: true },
+  { id: 'refund-destination-team-tells', title: 'Q1 "refund kahan aayega?": the team tells in this chat; no original-method promise, no UPI taken',
+    ...verifiedCtx('Delivered', null), history: [V('refund kahan aayega? mere UPI me bhej do')],
+    mock: [{ content: 'Refund kaise milega, ye hamari team aapko isi chat me batayegi.' }],
+    expect: { notMatch: [/original (payment )?(method|mode|source)|same (payment )?(method|mode)|source account|jis (tarike|method) se payment/i, /(upi\s*id|bank|account)[^.?!]{0,40}(share|send|bhej|dijiye|batayein|provide)/i, FORM_TALK],
+      systemHas: [/the team will tell them here in this chat how the refund is paid/], systemNotHas: [/original payment method/] } },
   { id: 'payment-deducted-verified', title: 'Money deducted: never asks for a payment reference, never says pay again',
     ...verifiedCtx('Order Placed', '2026-10-10'), history: [V('payment kat gaya par paisa wapas nahi aaya')],
     expect: { notMatch: [/(upi|utr|transaction\s*id|reference|screenshot)[^.?!]{0,40}(share|send|bhej|dijiye|provide)/i, /(pay|payment)[^.?!]{0,20}(again|dobara|retry)|try again/i] } },

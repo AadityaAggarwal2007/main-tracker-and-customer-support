@@ -17,6 +17,14 @@ for (const f of FILES) {
   fs.writeFileSync(path.join(OUT, f + '.js'), js);
 }
 
+// ai.ts imports the pure refund-form guard (src/lib/refund/link-mask.ts, owner 2026-10-02) by its
+// '@/' path; it is compiled next to the chat files and served for that path below.
+const REFUND_LINK_MASK = path.join(SRC, 'lib/refund/link-mask.ts');
+if (fs.existsSync(REFUND_LINK_MASK)) {
+  const js = ts.transpileModule(fs.readFileSync(REFUND_LINK_MASK, 'utf8'), { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText;
+  fs.writeFileSync(path.join(OUT, 'refund-link-mask.js'), js);
+}
+
 // What the current test case set up, read by the stubs below.
 const state = {
   mode: 'offline', history: [], verifiedOrderId: null, fresh: null, verified: false, facts: null,
@@ -94,6 +102,7 @@ const origLoad = Module._load;
 const realOpenAI = () => origLoad.call(Module, 'openai', module, false);
 Module._load = function (req, parent, isMain) {
   if (stubs[req]) return stubs[req];
+  if (req === '@/lib/refund/link-mask') return origLoad.call(this, path.join(OUT, 'refund-link-mask.js'), parent, isMain);
   if (req.startsWith('./') && parent && parent.filename && parent.filename.startsWith(OUT)) {
     const p = path.join(OUT, req.slice(2) + '.js');
     if (fs.existsSync(p)) return origLoad.call(this, p, parent, isMain);

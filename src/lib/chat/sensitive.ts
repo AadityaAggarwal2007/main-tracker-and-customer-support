@@ -29,6 +29,15 @@ const HIDDEN: Record<SensitiveKind, string> = {
   password: '[password hidden]',
 };
 
+// A refund form link (owner, 2026-10-02) a customer pastes back into the chat or an email: masked
+// before it is stored, like the payment details above, so staff, search and the AI never see a live
+// token. Same as REFUND_LINK_RE in src/lib/refund/link-mask.ts (this file keeps zero imports;
+// scripts/ai-tests/refund-isolation.js checks the two are the same). Not a payment detail: it adds
+// no kind, so no warning line is sent for it. The token is matched with or without a scheme, in any
+// case, and percent-encoded the way a mail gateway rewrites a link ("%2Frefund%23<token>", Outlook
+// Safe Links): a customer pasting the rewritten link back never stores a live token (review fix).
+const REFUND_LINK = /[^\s]*?(?:\/|%2F)refund(?:#|%23)[A-Za-z0-9_-]{16,}/gi; // same as src/lib/refund/link-mask.ts (refund-isolation.js pins it)
+
 const CARD_WORDS = /\b(?:card|credit|debit|visa|master ?card|rupay|amex)\b|कार्ड/i;
 // Words that mean the digits are an order, tracking or phone number.
 const ID_WORD_BEFORE = /(?:order|awb|tracking|track|consignment|phone|mobile|contact|whatsapp|pin ?code|pincode|zip|postal)\W*(?:id|no|number|num|code)?\W*(?:is|hai|h)?\W*$/i;
@@ -147,8 +156,10 @@ export function maskSensitive(input: string): MaskResult {
     return hideTail(m, v, 'password', found);
   });
 
-  if (!found.size) return { text: input, kinds: [] };
-  return { text, kinds: Array.from(found) };
+  const base = found.size ? text : input;
+  const out = base.replace(REFUND_LINK, '[refund form link]');
+  if (!found.size) return { text: out, kinds: [] };
+  return { text: out, kinds: Array.from(found) };
 }
 
 // Hindi in Devanagari, or Hinglish written in Latin letters.

@@ -29,7 +29,7 @@ prompt. FAIL = code or prompt does the opposite. NOT BUILT = no code yet.
 | 15 | Threat / fraud: Needs You, top, 1h SLA | DEPLOYED 2026-09-30 (75674fe) | Chat: a threat (chargeback, police, court, legal action, bad reviews, dispute) goes to Needs You at once, gets a fixed reply with no AI text (apology, passed to team, reply within 1 hour). Email: held for a person, no auto-reply. Inbox: such a chat is the very first row while nobody has answered, and counts as overdue after 1 hour instead of 2. Not built: a push / sound alert, and the 1h promise is only visible as the overdue colour. Old chats untouched. Night (19:30-10:00, owner 2026-10-01): the team replies "in the morning, after 10 AM" instead; see "Owner change 2026-10-01 (evening)" below. |
 | 16 | Fake-site claim: proof, then Needs You | DEPLOYED 2026-09-30 (75674fe) | Fraud / fake-site claim: the AI answers first (it can give the tracking link and order status when the customer is verified), then the chat goes to Needs You and the reply ends with the 1-hour line. The proof still depends on the AI's answer; there is no fixed proof block. Night (19:30-10:00, owner 2026-10-01): the team replies "in the morning, after 10 AM" instead; see "Owner change 2026-10-01 (evening)" below. Owner change 2026-10-02: a fraud claim that is about fake tracking, on a dispatched order, goes to Ship again with the new-link promise instead of Needs You with the 1-hour line (the message keeps its urgent marker). Any other fraud claim is unchanged. |
 | 17 | Refund / cancel: record, Needs You, 24h | DEPLOYED 2026-09-30 (75674fe) | Code: a refund or cancellation request (also by email) is handed to a person and the customer gets "noted, team replies here within 24 hours", whatever the AI said. The prompt no longer runs the 3-step persuasion (default prompt rewritten, owner block overrides the live one). Missing: a record of a completed refund (amount, date, method) and a 24h overdue timer. Night (19:30-10:00, owner 2026-10-01): the team replies "in the morning, after 10 AM" instead; see "Owner change 2026-10-01 (evening)" below. |
-| 18 | Refund only to original method | PARTIAL, prompt only | In the owner-rules block. Not seen in the model test (it asked for the order first). |
+| 18 | Refund only to original method | OWNER CHANGE 2026-10-02 (answer Q1), built, not deployed | The owner changed this rule for the refund form: the refund goes to the UPI ID or bank account the customer gives in the form, for EVERY order (COD and prepaid), after the Super Admin checks it. Chikki no longer says "original payment method": it says the team will tell how the refund is paid, here in this chat, with no promise of method, time or amount, and never asks for, accepts or repeats a UPI ID or bank details (`ai.ts`, rulebook 5.4). See "Owner change 2026-10-02: refund form" below. SHIPTRACK_MASTER_RULES.md itself is not edited; the owner may add his own note there. |
 | 19 | Tracking truth | PARTIAL | Prompt forbids inventing. But the ETA the AI quotes is ShipTrack's own estimate from the tracking page (`journey.ts`, `AUTO_DELIVER_DAY = 13`), not a courier date. Decision D2 below. Proactive delay message not built. Owner change 2026-10-02: tracking-ID-invalid / fake / stuck claims get fixed replies by code (dispatched: new link in 24-48 h; not dispatched: courier tracking starts after dispatch + the tracking link). Root cause seen: tracking_id is ShipTrack's own "ST" ID, not a Valmo AWB, so Valmo's site always says invalid. Owner 2026-10-02: the courier name no longer shows on the tracking pages, the public track API or the status emails (commit c201314), and the chat names it only on the customer's 3rd ask (see the last section). |
 | 20 | Card / CVV / OTP / PIN | DEPLOYED 2026-09-30 (75674fe) | `src/lib/chat/sensitive.ts` hides card number (Luhn), expiry, CVV, OTP, UPI/ATM PIN and spoken passwords BEFORE a customer message is stored (widget route + email poller), so the DB, the AI provider, scorers and the inbox never see them. The reply gets the "do not share" line added by code. Tested: 30+ cases incl. order IDs, phones, AWBs, pin codes left alone; route tested against a fake DB. Not covered: old chats (untouched by owner's order, may hold raw card data), the original email in the mailbox, messages typed by the team, chats not in AI mode (customer gets no warning; team sees the hidden text), no inbox chip yet for `sensitive_hidden`. Photos of a card: the widget cannot receive files. |
 | 21 | No payment links, never "pay again" | DEPLOYED 2026-09-30 (75674fe) | Prompt: never send a payment link, UPI ID or bank details, never say pay again / retry (default prompt fixed, block overrides the live one). Model test: refused to send a payment link and took the payment reference instead. Code: a payment problem (failed, money deducted, no order) is handed to a person. |
@@ -192,3 +192,39 @@ the consent for THIS change only. SHIPTRACK_MASTER_RULES.md is not edited; the o
   partner" in a whole sentence ("delivered by our courier partner", "your order is with our courier partner")
   (`reply-guards.ts` `COURIER_NAME_FROM_ASK`, `ai.ts`; rulebook 4.8; test `courier-ask.js`). Built
   2026-10-02, not deployed yet.
+
+## Owner change 2026-10-02: refund form (master rule 18 changed by the owner)
+
+Built 2026-10-02, not deployed yet (local only: no commit, SQL or deploy). Owner (Jatin, ~11:10 IST, about the Google
+Form the team gives customers): "yeh ek refund form ha jo hum log customer ko dete ha, toh tuh isko update karka sirf
+super admin isko bhej paee aur woh bhi refund wala page pa only, bakki yeh refund form kahi par bhi na dekhe, iski
+detail humara admin panel pa hi save ho jae". His answers to the open questions (12:30 IST): Q1 yes (UPI / bank for
+every order, COD and prepaid: rule 18 changed), Q3 no (no customer message shows the UPI ID or account, not even
+masked), Q7 yes (every Google Form link is blocked in team and Chikki replies), Q12 yes (the "checked with family /
+neighbours / security" tick for "shows delivered but not received"); the other defaults as proposed. 15:00 IST: "upload
+yeh sab mat bana, humein sirf bank details mil jaye bahut hai" (no photo / video upload at all).
+
+- 17 (refund record): the Refunded message gives the amount, the date, "to the UPI / bank account you gave" (never the
+  number, Q3) and the reference number (UTR); amount, date, UTR and method are stored on the request. BUILT; PASS once live.
+- 18 (refund destination): owner note above (Q1). Prepaid orders are not blocked (`PREPAID_PAYOUT_ALLOWED` true); the
+  panel shows a "check the gateway first" tick before Refunded on a prepaid order (no double refund).
+- 20 (card / OTP / PIN): the form never asks for a PIN, OTP, card or password; UPI / bank details are encrypted
+  before they reach SQL (AES-256-GCM, key only in `/etc/tracker/.env`), shown masked, every full view recorded; log
+  lines carry ids, refs, steps, statuses and codes only (tests R13, I8).
+- 21 (no payment details in chat): the form is the owner-approved secure flow; the chat carries only the form link
+  (sender 'system', "Vastora Support") and fixed status lines; Chikki never asks for or repeats UPI / bank details
+  and never sends or mentions a form (`dropFormMentions`); team replies with a Google Form or refund link are refused.
+- 24 (auto-close / waiting): refund form messages (sender 'system') are left out of who-wrote-last, so a link posted
+  after the customer's question never hides a waiting customer or lets the chat auto-close: stricter only.
+- 26 / 27 (support screen, nothing deleted): 'system' messages cannot be edited or deleted by anyone; refund records
+  are never deleted (no DELETE grant); staff see "[refund form link]" instead of the link everywhere.
+- 28 (database): `refund-forms.sql` is additive, GRANTs to `tracker_user`, not applied anywhere yet.
+- 29 (secrets): the new key `REFUND_DATA_KEY` lives only in `/etc/tracker/.env`, created on the server at deploy by
+  the lead (never printed, never in Git; `.env.example` lists the name only).
+- 30 / 31 (widget API): no `/api/widget/*` route and no `widget.js` change; the form has its own routes `/api/refund/*`
+  with no CORS.
+- 9 (verification): the form is sent only for a verified customer's own order (`verified_order_id` = the Refund mark's
+  order); order ID, name and phone (last 4) are filled in by the server and locked.
+- Rulebook: 5.4 (Refund destination), 9.2, 9.4 (only the Super Admin removes or switches the Refund mark while a link
+  is open or a request is New / Approved, Q6), 9.6, new 9.9-9.13 (the tracking build already used 9.7 and 9.8).
+

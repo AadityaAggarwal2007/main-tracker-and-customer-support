@@ -45,6 +45,7 @@ function rowsFor(history) {
     const at = new Date(now - (h.ago ?? (history.length - i) * 20000));
     if (h.who === 'visitor') rows.push({ sender: 'visitor', content: h.text, metadata: null, created_at: at });
     else if (h.who === 'ai') rows.push({ sender: 'ai', content: h.text, metadata: null, created_at: at });
+    else if (h.who === 'system') rows.push({ sender: 'system', content: h.text, metadata: { system: 'refund', step: 'form', lang: 'hinglish' }, created_at: at });
     else if (h.who === 'lookup') {
       rows.push({ sender: 'ai', content: '', created_at: at, metadata: { hidden: true, tool_calls: [{ id: h.id, type: 'function', function: { name: 'lookup_order', arguments: JSON.stringify({ order_id: h.orderId, phone_number: h.phone }) } }] } });
       rows.push({ sender: 'tool_result', content: JSON.stringify(h.result), created_at: at, metadata: { hidden: true, tool_call_id: h.id } });

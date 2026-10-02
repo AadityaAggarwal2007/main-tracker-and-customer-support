@@ -11,6 +11,7 @@ import { can } from '@/lib/permissions';
 import { isOfficeHours } from '@/lib/office-hours';
 import { staffActor, teamDirectory } from '@/lib/chat/team-routing';
 import { OWNER_KEY } from '@/lib/chat/team-rules';
+import { REFUND_LINK_SQL } from '@/lib/refund/link-mask';
 
 export const dynamic = 'force-dynamic';
 
@@ -270,6 +271,8 @@ export async function GET(request: NextRequest) {
   // case_mark_role: who made a marked chat's latest mark (chat_case_events.actor_role): 'system' = Chikki's
   // live Ship again mark (the customer was promised a new tracking link), 'backfill' = the one-time move of
   // 2 Oct (no message was sent). The inbox words the chip and the Remove question by it.
+  // last_message: a refund form link (owner 2026-10-02) shows as "[refund form link]" in the list, for
+  // every login (REFUND_LINK_SQL has no quotes or backslashes, so it is safe inside the literal).
   const result = await query(
     `WITH ${search.cte ? search.cte + ',' : ''}
      base AS (
@@ -345,7 +348,7 @@ export async function GET(request: NextRequest) {
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             count(*) OVER ()::int AS total_rows,
             ${search.snippet} AS match_snippet,
-            (SELECT m.content
+            (SELECT regexp_replace(m.content, '${REFUND_LINK_SQL}', '[refund form link]', 'gi')
                FROM messages m
               WHERE m.conversation_id = g.id
                 AND m.sender <> 'tool_result'

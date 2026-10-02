@@ -6,6 +6,7 @@ import { MAX_MESSAGE_LENGTH, canChangeMessage, isOurMessage } from '@/lib/chat/m
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
 import { can, canAccessPanel } from '@/lib/permissions';
+import { hasFormLink, maskRefundLinks } from '@/lib/refund/link-mask';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,9 +85,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       [params.id]
     );
 
+    // A refund form link (owner 2026-10-02) is masked here too, in the text and in every revision.
+    const unlink = (t: unknown) => (typeof t === 'string' ? maskRefundLinks(t) : t);
     return NextResponse.json({
-      message,
-      revisions: revisions.rows,
+      message: { ...message, content: maskRefundLinks(message.content) },
+      revisions: revisions.rows.map((r) => ({ ...r, previous_content: unlink(r.previous_content), new_content: unlink(r.new_content) })),
       canChange: canChangeMessage(user, message),
     });
   } catch (err) {
@@ -106,6 +109,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   try {
     const { content } = await request.json();
     const text = typeof content === 'string' ? stripMarkdownEmphasis(content).trim() : '';
+    // The same rule as a new reply (owner 2026-10-02, Q7): no Google Form or refund-form link.
+    if (hasFormLink(text)) return NextResponse.json({ error: "Refund forms go only through 'Send refund form' (Super Admin, Refund section). Remove the form link." }, { status: 403 });
     if (text.length > MAX_MESSAGE_LENGTH) {
       return NextResponse.json({ error: `A message can be at most ${MAX_MESSAGE_LENGTH} characters.` }, { status: 400 });
     }

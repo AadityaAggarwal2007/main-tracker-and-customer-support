@@ -6,7 +6,9 @@ import { query, queryOne, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
-import { can, canAccessPanel } from '@/lib/permissions';
+import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { maskRefundLinks } from '@/lib/refund/link-mask';
+import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
   canAct, claimsOnAct, cleanTransferNote, transferStatus, type Actor, type TakeKind,
@@ -281,7 +283,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       ? { ...m, author: w.name, author_key: w.key }
       : { ...m, author: author((m.metadata as { agent?: unknown } | null)?.agent), author_key: null };
   };
-  const earlier = thread.earlier.map((c) => ({ ...c, messages: c.messages.map(withAuthor) }));
+  // A refund form link (owner 2026-10-02) is "[refund form link]" on every staff screen, the Super
+  // Admin's too: the raw link lives only in the 'system' message the customer opens. Any text that
+  // names "refund" is checked (a percent-encoded "%2Frefund%23<token>" too: link-mask.ts).
+  const unlink = <M extends { content: string }>(m: M) => (/refund/i.test(m.content ?? '') ? { ...m, content: maskRefundLinks(m.content) } : m);
+  const earlier = thread.earlier.map((c) => ({ ...c, messages: c.messages.map((m) => unlink(withAuthor(m))) }));
 
   // The chat's team history (claims, takes, transfers with their note, returning customers,
   // merges), newest first, names as they are today. STAFF ONLY: the note is never sent to the
@@ -304,7 +310,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
   return NextResponse.json({
     conversation,
-    messages: messages.rows.map((m) => withAuthor(m as { sender: string; metadata: unknown })),
+    messages: messages.rows.map((m) => unlink(withAuthor(m as { sender: string; metadata: unknown; content: string }))),
     earlier,
     earlier_total: thread.earlierTotal,
     newer_chat: thread.newer,
@@ -313,6 +319,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     team_log: teamLog,
     staff: await staffBlock(conversation, user),
+    // The refund form chip (owner 2026-10-02): only the Super Admin, only in a Refund chat. Staff never
+    // get this key. A read error leaves it null (the chip then hides); it never fails the thread.
+    ...(isSuperAdmin(user) && conversation.case_kind === 'refund' ? { refund_form: await refundThreadState(conversation).catch(() => null) } : {}),
   });
 }
 
@@ -583,6 +592,13 @@ async function setCase(
 ): Promise<{ res: NextResponse; log: string | null }> {
   const actor = (user.displayName || user.username || '').trim() || 'support';
   const orderId = chat.verified_order_id || chat.phone_match_order_id || null;
+
+  // Owner answer Q6 (2026-10-02, rulebook 9.4): while a refund form link is open or a refund request is
+  // New / Approved, only the Super Admin removes or switches the Refund mark (the chat would otherwise
+  // go back to an AI that never saw the form messages). Before refund-forms.sql: not locked.
+  if (chat.case_kind === 'refund' && kind !== 'refund' && !isSuperAdmin(user) && await refundMarkLocked(client, chat)) {
+    return { res: NextResponse.json({ error: 'A refund form is open for this chat. Only the Super Admin can change or remove the Refund mark now.' }, { status: 409 }), log: null };
+  }
 
   if (kind) {
     if (!orderId) {

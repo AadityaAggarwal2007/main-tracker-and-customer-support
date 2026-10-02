@@ -33,8 +33,11 @@ export interface InboxSearch {
 export const MIN_SEARCH_CHARS = 2;
 const MAX_SEARCH_CHARS = 80;
 
+// Refund form messages (sender 'system', owner 2026-10-02) are never searched: their text is fixed,
+// and staff must not probe a form link's token letter by letter.
 const VISIBLE_TEXT = `m.deleted_at IS NULL
       AND m.sender <> 'tool_result'
+      AND m.sender <> 'system'
       AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'`;
 
 export function parseInboxSearch(raw: string | null | undefined, firstParam: number): InboxSearch {
@@ -69,7 +72,7 @@ export function parseInboxSearch(raw: string | null | undefined, firstParam: num
     ? `m.content ~* ('"customer_name":"[^"]*' || ${pNameRe} || '[^"]*"')` : 'false';
   const cte = `msg_hits AS MATERIALIZED (
        SELECT m.conversation_id,
-              bool_or(m.sender <> 'tool_result' AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
+              bool_or(m.sender NOT IN ('tool_result', 'system') AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
                       AND m.content ILIKE ${pLike}) AS text_hit,
               bool_or(m.sender = 'tool_result' AND ${orderTest}) AS order_hit,
               bool_or(m.sender = 'tool_result' AND ${nameTest}) AS name_hit

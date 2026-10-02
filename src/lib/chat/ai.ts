@@ -23,6 +23,7 @@ import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
 import { asksAboutCourier, COURIER_NAME_FROM_ASK, courierAskCount, dropAddressEcho, withCheckAround, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
+import { FORM_VERIFY_ASK, dropFormMentions } from '@/lib/refund/link-mask';
 import { codAlreadyToldNote, codStatesPrompt } from './cod';
 import { brainSection, selectNotes, similarity, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
@@ -420,7 +421,7 @@ Not verified yet: a chat can only be handed to the team after the customer has v
 
 Next step: every reply says what happens next and who does it. Never leave the customer with only "not possible". Refund or cancellation: "our team will reply here in this chat within 24 hours".
 
-Refund or cancellation: always ask once, politely, for the reason (the owner's rule: the team needs it to answer, and refunds are not given without one); asking the reason is not persuasion. Do not argue, do not talk them out of it, do not ask them to wait, run no persuasion steps. Note it, say it is with the team, and call escalate_to_human straight away, with the order ID if you have it. Never say it is approved, processed or on its way. If they ask where the money will come back to: refunds go only to the original payment method through the payment gateway, never to another account or UPI ID.
+Refund or cancellation: always ask once, politely, for the reason (the owner's rule: the team needs it to answer, and refunds are not given without one); asking the reason is not persuasion. Do not argue, do not talk them out of it, do not ask them to wait, run no persuasion steps. Note it, say it is with the team, and call escalate_to_human straight away, with the order ID if you have it. Never say it is approved, processed or on its way. If they ask where or how the money will come back: say the team will tell them here in this chat how the refund is paid; promise no method, time or amount, and never ask for, accept or repeat a UPI ID or bank details in the chat.
 
 Angry customer, fraud or fake-site claim, or a threat (chargeback, police, court, legal action, bad reviews): no defence, no argument. Apologise once, give only proof you really have from a lookup (tracking link, order status), and call escalate_to_human at once. For a fraud claim or a threat say that a person answers here within 1 hour; for a customer who is only angry say that a person will reply here in this chat, with no time. A second order ID is not a contradiction: ask for that order's phone number and look it up like the first.
 
@@ -1313,8 +1314,17 @@ export async function getAIResponse(
   // Delivered order did not reach them is asked once to check with family / neighbours / security.
   const visitorTexts = recent.rows.filter((r) => r.sender === 'visitor').map((r) => r.content || '');
   const agentTexts = recent.rows.filter((r) => r.sender === 'ai' || r.sender === 'agent').map((r) => r.content || '');
+  // What the form guard did in the latest withReplyGuards call (formFollowUp below reads it).
+  let formDropped = false, formEmptied = false;
   const withReplyGuards = (text: string): string => {
     let out = text;
+    // Chikki never sends or mentions a refund / return form, and never any Google Form link (owner,
+    // 2026-10-02, Q7; link-mask.ts): such sentences are dropped, and a reply left empty becomes
+    // "our team will help you here in this chat" - never sent on its own: formFollowUp hands a verified
+    // chat to the team and asks a visitor for the order ID + phone (review fix 2026-10-02).
+    const form = dropFormMentions(out, looksHinglish(visitorTexts.slice(-2).join('\n')));
+    formDropped = form.changed; formEmptied = form.emptied;
+    if (form.changed) { out = form.text; console.log(`[AI] Form mention removed for conv ${conversationId}`); }
     const echo = dropAddressEcho(out, visitorTexts.slice(-8));
     if (echo.changed) { out = echo.text; console.log(`[AI] Address echo removed for conv ${conversationId}`); }
     let delivered = false;
@@ -1438,7 +1448,7 @@ export async function getAIResponse(
   // The same status change escalate_to_human makes, with a fixed reply that
   // says nothing about any order. Callers treat it as an escalation: the widget
   // stops answering, and email holds the draft for the team.
-  const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6', result: AIResult): Promise<AIResult> => {
+  const handOver = async (why: 'H1' | 'H3' | 'H4' | 'H5' | 'H6' | 'FORM', result: AIResult): Promise<AIResult> => {
     // A visitor is never handed to the team (owner, 2026-09-30): the chat stays as it
     // is and the customer is told what is still needed.
     if (!(await chatIsVerified(conversationId))) {
@@ -1451,6 +1461,25 @@ export async function getAIResponse(
     );
     console.log(`[AI] Guard hand-over for conv ${conversationId}: ${why}`);
     return { content: handOverReply(guardRows), toolCallMeta: result.toolCallMeta, escalated: true };
+  };
+
+  // FORM (review fix 2026-10-02): after the form guard dropped something from a reply that did not
+  // escalate. Its "our team will help you here" line never goes out on its own: nothing else hands
+  // the chat over for a return / exchange question, so the customer would wait for nobody.
+  //   - verified, reply emptied: handed to the team like H1-H6 (Needs you; the routes add their lines).
+  //   - not verified (a visitor is never told the team will reply, rulebook 2.9): asked for the order
+  //     ID + phone, in place of the emptied reply, or after what is left when it no longer asks.
+  // Answers the hand-over to return, or null to go on (r.content may have changed).
+  const formFollowUp = async (r: AIResult): Promise<AIResult | null> => {
+    if (r.escalated || !formDropped) return null;
+    const emptied = formEmptied;
+    if (await chatIsVerified(conversationId)) return emptied ? handOver('FORM', r) : null;
+    const ask = FORM_VERIFY_ASK[looksHinglish(visitorTexts.slice(-2).join('\n')) ? 'hinglish' : 'en'];
+    if (emptied) r.content = ask;
+    else if (!reasksForOrderDetails(r.content, Array.from(knownOrderIds)).orderId) r.content = `${r.content}\n\n${ask}`;
+    else return null;
+    console.log(`[AI] Guard FORM for conv ${conversationId}: not verified, asked for the order ID and phone`);
+    return null;
   };
 
   // Asking for the order ID or last 4 once the order is known, unless the
@@ -1494,6 +1523,11 @@ export async function getAIResponse(
         return r;
       }
       let fixed = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(stripMarkdown(out.text)))));
+      // A fix that brings a form mention back is refused: the draft already went through formFollowUp.
+      if (formDropped) {
+        console.log(`[AI] Self-check for conv ${conversationId}: the fix mentioned a form, the draft goes`);
+        return r;
+      }
       if (alreadyReplied) fixed = dropRepeatedIntroduction(fixed);
       if (!fixed.trim()) return r;
       spent.changed = true;
@@ -1542,6 +1576,9 @@ export async function getAIResponse(
       // H1: they typed both and no lookup with those values happened. (A
       // model that then said nothing no longer gets here: see BlankReplyError.)
       if (pending && !typedLookupRan) return handOver('H1', result);
+      // FORM: the form guard dropped part or all of the reply (formFollowUp above).
+      const formHandOver = await formFollowUp(result);
+      if (formHandOver) return formHandOver;
       // H3: asking yet again after lookups that keep coming back not found.
       if (asksAgainAfterFailedLookups(result.content, guardRows, lookupOutcomes)) return handOver('H3', result);
       // The lookup ran and matched nothing, yet the reply only asks for the
@@ -1585,6 +1622,8 @@ export async function getAIResponse(
         retry.toolCallMeta = retry.toolCallMeta || result.toolCallMeta;
         retry.content = withReplyGuards(withRightOrderNumbers(withoutTodayPromise(stripMarkdownEmphasis(retry.content))));
         if (alreadyReplied) retry.content = dropRepeatedIntroduction(retry.content);
+        const retryHandOver = await formFollowUp(retry);
+        if (retryHandOver) return retryHandOver;
         if (!retry.escalated && asksAgain(retry.content)) return handOver('H4', retry);
         return finish(retry, model);
       }
