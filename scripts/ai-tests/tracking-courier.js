@@ -123,5 +123,17 @@ let n = 0;
     assert.ok(src.includes('{order.tracking_id}') && src.includes('>Tracking ID<'), rel + ' lost the Tracking ID');
   }
   n++;
+  // 6. Owner rule (no "arrives today"): no status email promises today / tonight / tomorrow
+  //    (the Out for Delivery email said "out for delivery today" / "will reach you today").
+  for (const status of statuses) {
+    const e = tpl.generateTrackingEmail({
+      customerName: 'Test Buyer', orderId: '#9001', productNames: ['Jhumka box'], trackingId: 'STQAW7X2LQYT',
+      courierPartner: '', trackingUrl: 'https://shiptrack.store/track/tok123', businessName: 'Vastora',
+      supportEmail: 'help@example.test', supportPhone: '', estimatedDelivery: '2026-10-08', orderTotal: 356, city: 'Surat',
+    }, status);
+    const text = (e.subject + ' ' + e.html.replace(/<[^>]+>/g, ' '));
+    assert.ok(!/\b(today|tonight|tomorrow)\b/i.test(text), `${status} email promises a day: ` + (text.match(/[^.]*\b(today|tonight|tomorrow)\b[^.]*/i) || [''])[0]);
+  }
+  n++;
   console.log(`TRACKING-COURIER: ${n} groups passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

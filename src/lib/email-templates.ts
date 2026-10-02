@@ -62,9 +62,9 @@ const STATUS_CONFIG: Record<string, { emoji: string; subject: string; headline: 
   },
   'Out for Delivery': {
     emoji: '🏠',
-    subject: 'Your order {orderId} is out for delivery today!',
+    subject: 'Your order {orderId} is out for delivery!',
     headline: 'Out for Delivery!',
-    message: 'Exciting! Your order is out for delivery and will reach you today. Please keep your phone handy.',
+    message: 'Your order is in the final delivery stage. Please keep your phone reachable for the delivery agent.',
     buttonText: 'Track Delivery',
   },
   'Delivered': {
