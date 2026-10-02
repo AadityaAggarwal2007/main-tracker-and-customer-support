@@ -613,7 +613,8 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
   // ── H7: the inbox ─────────────────────────────────────────────
   await t('H7 the inbox draws hot_lock: Close / Hand to AI off with the reason, a line on every screen size, the Super Admin\'s line', () => {
-    const page = read('app/admin/chat/page.tsx');
+    const chatFiles = (d) => fs.readdirSync(path.join(SRC, d), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? chatFiles(`${d}/${e.name}`) : /\.tsx?$/.test(e.name) ? [`${d}/${e.name}`] : []));
+    const page = ['app/admin/chat/page.tsx', ...chatFiles('app/admin/chat').filter((f) => f !== 'app/admin/chat/page.tsx').sort()].map(read).join('\n');
     ok(/hotLock: data\.hot_lock \?\? null/.test(page), 'the thread answer\'s hot_lock is kept with its chat');
     ok(/disabled=\{!!hotLock && !hotLock\.can_hand_to_ai\}[\s\S]{0,200}onClick=\{\(\) => changeStatus\('ai_handling'\)\}>Hand to AI</.test(page), 'Hand to AI off');
     ok(/disabled=\{!!hotLock && !hotLock\.can_close\}[\s\S]{0,200}onClick=\{\(\) => changeStatus\('resolved'\)\}>Close</.test(page), 'Close off');
