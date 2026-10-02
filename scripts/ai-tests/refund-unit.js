@@ -727,7 +727,7 @@ t('U9 no route under src/app/api/refund* takes a file, multipart or raw-bytes bo
     for (const m of src.matchAll(/publicGuard\(\s*\w+\s*,\s*\{\s*kind:\s*'(\w+)'/g)) eq(m[1], 'json', `${rel}: a public route takes JSON only`);
     if (rel.startsWith(path.join('src', 'app', 'api', 'refund') + path.sep)) ok(/publicGuard\(\s*\w+\s*,\s*\{\s*kind:\s*'json'/.test(src), `${rel} goes through the JSON guard`);
   }
-  const server = noComments(read('src/lib/refund/server.ts'));
+  const server = noComments(['server', 'server-shared', 'server-send', 'server-public', 'server-admin'].map((f) => read(`src/lib/refund/${f}.ts`)).join('\n'));
   ok(!/refund_files?\b|refund_file_parts|file_ids|sealPart|openPart|sniff|\bPART_BYTES\b/.test(server), 'server.ts never touches files');
   for (const fn of ['createFile', 'putPart', 'deleteFile', 'readRefundFile', 'sweepStaged']) ok(!new RegExp(`\\b${fn}\\b`).test(server), `server.ts has no ${fn}`);
 });

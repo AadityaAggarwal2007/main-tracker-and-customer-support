@@ -265,7 +265,7 @@ t('I8 refund log lines name no customer data and never print an error object', (
   for (const f of files) for (const c of consoleCalls(stripComments(read(f)))) if (LOG_WORDS.test(c) || BARE_ERROR.test(c)) bad.push(`${f}: ${c.slice(0, 90)}`);
   deq(bad, []);
   // The shared helper prints a code and at most 80 characters of a pg message (never err.detail).
-  const server = read('src/lib/refund/server.ts');
+  const server = ['server', 'server-shared', 'server-send', 'server-public', 'server-admin'].map((f) => read(`src/lib/refund/${f}.ts`)).join('\n');
   ok(/console\.error\(`\[refund\] \$\{where\} failed:`, codeOf\(e\), msgOf\(e\)\)/.test(server), 'logFail prints codeOf + msgOf only');
   ok(/slice\(0, 80\)/.test(server.slice(server.indexOf('export const msgOf'), server.indexOf('export function logFail'))), 'msgOf is cut to 80 characters');
 });
