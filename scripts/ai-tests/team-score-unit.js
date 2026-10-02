@@ -524,8 +524,9 @@ t('W8 nothing outside the team-score files mentions the new tables or modules', 
   assert.deepStrictEqual(bad, []);
 });
 t('W8 the AI, learner, search and widget never see it; only judge.ts imports the AI client', () => {
-  const must = ['src/lib/chat/ai.ts', 'src/lib/chat/inbox-search.ts', 'src/lib/chat/widget-api.ts', 'public/widget.js',
-    ...fs.readdirSync(path.join(ROOT, 'src/lib/chat')).filter((f) => /^brain.*\.ts$/.test(f)).map((f) => `src/lib/chat/${f}`),
+  const must = ['src/lib/chat/inbox-search.ts', 'src/lib/chat/widget-api.ts', 'public/widget.js',
+    // ai.ts and the parts split out of it on 2026-10-02 (ai-models / ai-prompt / ai-tools / ai-history).
+    ...fs.readdirSync(path.join(ROOT, 'src/lib/chat')).filter((f) => /^(ai|ai-.*|brain.*)\.ts$/.test(f)).map((f) => `src/lib/chat/${f}`),
     ...walk('src/app/api/widget', [])];
   assert.ok(must.length >= 8, must.join());
   for (const f of must) assert.ok(!MENTION.test(read(f)), f);

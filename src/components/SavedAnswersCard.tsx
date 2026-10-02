@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react';
 
 interface Faq { id: string; question: string; answer: string; is_enabled: boolean }
 
-// Keep in step with FAQ_CHAR_BUDGET in src/lib/chat/ai.ts.
+// Keep in step with FAQ_CHAR_BUDGET in src/lib/chat/ai-prompt.ts.
 const BUDGET = 25000;
 
 export default function SavedAnswersCard({ faqs, busy, businessId, request, draft, setDraft, onAdd, embedded = false }: {
