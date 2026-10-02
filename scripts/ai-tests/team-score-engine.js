@@ -14,6 +14,17 @@
 //            chat with no team reply, a courtesy nudge keeps the clock, range parts when weights change
 //   E19d     review 2026-10-02 (second pass): "ok thank u" to a holding line after a complaint is not
 //            convinced (shown not counted, convinced_not_counted), and does not use the complaint up
+//   E19e E19f  review 2026-10-02 (third pass): a later holding line + "ok", or a later new question,
+//            never takes back a convinced already earned that day (S7), nor across days (S1b); a later
+//            complaint does
+//   E17c E19g E19h E19i  fourth pass: "ok thanks" after a holding line with a fact (mixed: S2, the 12
+//            lines of the check) goes to the AI, after a pure one it is not counted; only a new question
+//            or request that is not a rejection falls back to an earlier acceptance; a complaint in ANY
+//            of the customer's chats takes it back; a mixed holding line in S7, and across days
+//   E17d E19j E19k E19l E32b  fifth pass (lead design v5): the pure / mixed battery in the engine; a
+//            question with push-back is the last word (B); a complaint in any chat after the acceptance
+//            takes it back on every path (C); one linear walk back, 2,000 questions under 300 ms (D);
+//            "ai_failed" on an "ok" to a mixed line never replaces a +2 already earned (E)
 // TEAM_SCORE_JS_DIR (set by team-score-mutate.js only) loads already compiled, mutated modules.
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert'), crypto = require('crypto');
 const ts = require('typescript');
@@ -403,6 +414,106 @@ t('E17b "ok thank u" / "ok thanku" / "ok thnx" / "ok tq" / "ok thanks bhaiya" af
   const k = heldByA(fx()); k.ag('c1', '2026-10-05 15:50', 'check karke batata hu', A); k.v('c1', '2026-10-05 16:00', 'thank you so much mil gaya');
   assert.deepStrictEqual([one(k.run(), D, A, 'thanks').counted, one(k.run(), D, A, 'thanks').points], [true, 3]);
 });
+// The 12 lines of the third-pass check: 'pure' = not counted (keywords), 'mixed' = the AI decides.
+const CHECK12 = [
+  ['pure', 'Please wait while I check your order'], ['pure', 'please wait, checking your order'], ['pure', 'Kindly wait, we are looking into it'],
+  ['pure', 'Please wait a moment while we check the status'], ['pure', 'please wait for some time'],
+  ['mixed', 'Let me check if your refund has been initiated'], ['mixed', 'We will update you once it is dispatched'],
+  ['mixed', "I'll check if it is delivered and update you"], ['mixed', 'Let me confirm whether the refund is processed'],
+  ['mixed', 'Kal tak confirm karke batata hu delivery kab hogi'], ['mixed', 'We will update you within 2 days'], ['mixed', "I'll share the tracking link shortly"],
+];
+const PENDING_WHY = 'Waiting for the AI check (the keywords could not decide)';
+const POLITE_WHY = 'Polite "ok thanks" while still waiting for the answer';
+t('E17c S2 and the 12 lines: "ok thanks" after a holding line with a fact goes to the AI (pending, 0 points; a saved verdict decides), after a pure one it is not counted', () => {
+  // S2: complaint, "Aapka refund process ho gaya hai, please wait 5-7 working days", "ok thank you".
+  const S2 = 'Aapka refund process ho gaya hai, please wait 5-7 working days';
+  const s2 = (verdict) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'refund kab milega, abhi tak nahi aaya');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', S2, A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'ok thank you', { id: 'mS2' });
+    if (verdict) f.inp.verdicts = { mS2: verdict };
+    return { r: f.run(), ids };
+  };
+  let { r, ids } = s2(null);
+  let th = one(r, D, A, 'thanks'), c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([th.counted, th.pending, th.points, th.by, th.why, th.msgs], [false, true, 0, null, PENDING_WHY, [ids.rep, ids.m]]);
+  assert.deepStrictEqual([c.counted, c.pending, c.points, c.by, c.why, c.msgs], [false, true, 0, null, PENDING_WHY, [ids.rep, ids.o, ids.m]]);
+  assert.deepStrictEqual(r.candidates.map((k) => [k.messageId, k.teamText, k.customerText]), [[ids.m, S2, 'ok thank you']]);
+  let pc = pd(r, D, A).counts;
+  assert.deepStrictEqual([pc.thanks, pc.thanks_pending, pc.convinced, pc.convinced_pending], [0, 1, 0, 1]);
+  assert.deepStrictEqual([pd(r, D, A).parts.thanks.points, pd(r, D, A).parts.convinced.points], [0, 0]);
+  // The AI said thanks + convinced: C+3 and C+2, by the AI.
+  ({ r, ids } = s2({ thanks: true, convinced: true, source: 'ai' }));
+  th = one(r, D, A, 'thanks'); c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([th.counted, th.pending, th.points, th.by, th.msgs], [true, false, 3, 'ai', [ids.rep, ids.m]]);
+  assert.deepStrictEqual([c.counted, c.pending, c.points, c.by, c.msgs], [true, false, 2, 'ai', [ids.rep, ids.o, ids.m]]);
+  assert.strictEqual(c.why, "Customer complained at 11:00; their last message at 11:06 accepts Anurag's answer.");
+  assert.deepStrictEqual([pd(r, D, A).parts.thanks, pd(r, D, A).parts.convinced, r.candidates.length], [{ n: 1, each: 3, points: 3 }, { n: 1, each: 2, points: 2 }, 0]);
+  // The AI said no to both (still waiting): nothing.
+  ({ r } = s2({ thanks: false, convinced: false, source: 'ai' }));
+  none(r, D, A, 'thanks'); none(r, D, A, 'convinced');
+  assert.strictEqual(r.candidates.length, 0);
+  // The 12 lines + complaint + "ok thanks": 0 points without a verdict; pure = not counted, mixed = pending (AI).
+  for (const [kind, line] of CHECK12) {
+    const f = heldByA(fx());
+    f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    f.ag('c1', '2026-10-05 11:05', line, A);
+    const m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+    const rr = f.run();
+    const tt = one(rr, D, A, 'thanks'), cc = one(rr, D, A, 'convinced');
+    assert.deepStrictEqual([tt.counted, cc.counted, pd(rr, D, A).parts.thanks.points, pd(rr, D, A).parts.convinced.points], [false, false, 0, 0], line);
+    if (kind === 'pure') {
+      assert.deepStrictEqual([tt.pending, tt.why, cc.pending, cc.why, rr.candidates.length], [false, POLITE_WHY, false, E.HOLDING_ACK_WHY, 0], line);
+    } else {
+      assert.deepStrictEqual([tt.pending, cc.pending, rr.candidates.map((k) => k.messageId)], [true, true, [m]], line);
+    }
+  }
+  // A short real answer with "ek minute" or "kar diya" in it is mixed: pending, not "not counted".
+  for (const line of ['Haan size M available hai, ek minute', 'Refund kar diya hai, ek minute']) {
+    const f = heldByA(fx());
+    f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    f.ag('c1', '2026-10-05 11:05', line, A);
+    const m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+    const rr = f.run();
+    assert.deepStrictEqual([one(rr, D, A, 'thanks').pending, one(rr, D, A, 'convinced').pending, rr.candidates.map((k) => k.messageId)], [true, true, [m]], line);
+  }
+  // A real short holding line: "ok thanks" after it is still not counted, for either rule, never asked of the AI.
+  for (const hold of ['Ek minute, check karke batata hu', 'Please wait sir', 'एक मिनट, चेक करके बताता हूँ']) {
+    const h = heldByA(fx());
+    h.v('c1', '2026-10-05 11:00', 'refund kab milega, abhi tak nahi aaya');
+    h.ag('c1', '2026-10-05 11:05', hold, A);
+    h.v('c1', '2026-10-05 11:06', 'ok thanks');
+    const rh = h.run();
+    assert.deepStrictEqual([one(rh, D, A, 'thanks').counted, one(rh, D, A, 'thanks').why], [false, POLITE_WHY], hold);
+    assert.deepStrictEqual([one(rh, D, A, 'convinced').counted, one(rh, D, A, 'convinced').why, rh.candidates.length], [false, E.HOLDING_ACK_WHY, 0], hold);
+  }
+  // A strong thank-you that states the result counts after either kind of holding line (keywords).
+  for (const hold of ['check karke batata hu', 'Refund initiated, will update you']) {
+    const k = heldByA(fx()); k.ag('c1', '2026-10-05 15:50', hold, A); k.v('c1', '2026-10-05 16:00', 'thank you so much mil gaya');
+    const rk = k.run();
+    assert.deepStrictEqual([one(rk, D, A, 'thanks').counted, one(rk, D, A, 'thanks').points, one(rk, D, A, 'thanks').by], [true, 3, 'keyword'], hold);
+  }
+  // Unverified visitor (A3): after a mixed line the unsure "ok thanks" is never sent to the AI and leaves no
+  // item; a verdict already saved shows it as not verified. After a pure line: shown not verified, as before.
+  const uv = (line, verdict) => {
+    const f = fx(); f.conv('c1', { known: false }); f.hold('c1', '2026-10-04 12:00', null, A);
+    f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    f.ag('c1', '2026-10-05 11:05', line, A);
+    f.v('c1', '2026-10-05 11:06', 'ok thanks', { id: 'mU' });
+    if (verdict) f.inp.verdicts = { mU: verdict };
+    return f.run();
+  };
+  let ru = uv(S2);
+  none(ru, D, A, 'thanks'); none(ru, D, A, 'convinced');
+  assert.strictEqual(ru.candidates.length, 0);
+  ru = uv(S2, { thanks: true, convinced: true, source: 'ai' });
+  assert.deepStrictEqual([one(ru, D, A, 'thanks').counted, one(ru, D, A, 'thanks').by, one(ru, D, A, 'thanks').why], [false, 'ai', E.NOT_VERIFIED_WHY]);
+  assert.deepStrictEqual([one(ru, D, A, 'convinced').counted, one(ru, D, A, 'convinced').by, one(ru, D, A, 'convinced').why], [false, 'ai', E.NOT_VERIFIED_WHY]);
+  ru = uv('Please wait while I check your order');
+  assert.deepStrictEqual([one(ru, D, A, 'thanks').counted, one(ru, D, A, 'thanks').by, one(ru, D, A, 'thanks').why, ru.candidates.length], [false, 'keyword', E.NOT_VERIFIED_WHY, 0]);
+});
 t('E18 "thanks but kab aayega?": AI pending -> AI yes counted / AI no nothing / AI failed not counted', () => {
   const mk = () => {
     const f = heldByA(fx());
@@ -580,6 +691,354 @@ t('E19d a polite "ok thank u" / "ok tq" to a holding line after a complaint is n
   const ry = y.run();
   assert.deepStrictEqual([one(ry, D, A, 'convinced').counted, one(ry, D, A, 'convinced').msgs[1]], [true, o3]);
   assert.deepStrictEqual([one(ry, D, R, 'convinced').counted, one(ry, D, R, 'convinced').why], [false, HOLD_WHY]);
+});
+
+t('E19e S7: a later holding line + "ok", or a later new question, never takes back a convinced already earned that day; a later complaint does', () => {
+  // 11:00 complaint, 11:05 answer, 11:06 "ok thanks" (+2, +3), 11:07 a new question, 11:10 holding line, 11:11 "ok".
+  const s7 = (o = {}) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+    if (o.later !== null) f.v('c1', '2026-10-05 11:07', o.later || 'aur mera dusra order kab dispatch hoga');
+    if (o.hold !== false) {
+      f.ag('c1', '2026-10-05 11:10', 'Ek minute, check karke batata hu', A);
+      ids.ack = f.v('c1', '2026-10-05 11:11', o.ack || 'ok');
+    }
+    return { f, ids };
+  };
+  const { f, ids } = s7();
+  const r = f.run();
+  const c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.pending, c.points, c.by, c.msgs], [true, false, 2, 'keyword', [ids.rep, ids.o, ids.m]]);
+  assert.strictEqual(c.why, "Customer complained at 11:00; their message at 11:06 accepts Anurag's answer.");
+  const th = one(r, D, A, 'thanks');
+  assert.deepStrictEqual([th.counted, th.points, th.msgs], [true, 3, [ids.rep, ids.m]]);
+  const pc = pd(r, D, A).counts;
+  assert.deepStrictEqual([pc.convinced, pc.convinced_pending, pc.convinced_not_counted, pc.thanks, pc.thanks_not_counted, r.candidates.length], [1, 0, 0, 1, 0, 0]);
+  assert.deepStrictEqual([pd(r, D, A).parts.convinced, pd(r, D, A).parts.thanks], [{ n: 1, each: 2, points: 2 }, { n: 1, each: 3, points: 3 }]);
+  // "ok thanks" to the holding line: the thank-you rule is unchanged (not counted), convinced stays +2.
+  let x = s7({ ack: 'ok thanks' }).f.run();
+  assert.deepStrictEqual(its(x, D, A, 'thanks').map((i) => [i.counted, i.why.startsWith('Polite')]), [[true, false], [false, true]]);
+  assert.deepStrictEqual([one(x, D, A, 'convinced').counted, one(x, D, A, 'convinced').points], [true, 2]);
+  // Only the holding line + "ok" after the acceptance; only the new question after it: +2 for 11:06 both times.
+  x = s7({ later: null }).f.run();
+  assert.deepStrictEqual([one(x, D, A, 'convinced').counted, one(x, D, A, 'convinced').at], [true, ist('2026-10-05 11:06')]);
+  x = s7({ hold: false }).f.run();
+  assert.deepStrictEqual([one(x, D, A, 'convinced').counted, one(x, D, A, 'convinced').at, x.candidates.length], [true, ist('2026-10-05 11:06'), 0]);
+  // A later complaint is the last word: no convinced (and a holding line + "ok" after it is shown, not counted).
+  x = s7({ later: 'abhi tak nahi aaya yaar, fraud hai', hold: false }).f.run();
+  none(x, D, A, 'convinced');
+  x = s7({ later: 'abhi tak nahi aaya yaar, fraud hai' }).f.run();
+  assert.deepStrictEqual([one(x, D, A, 'convinced').counted, one(x, D, A, 'convinced').why, pd(x, D, A).counts.convinced], [false, E.HOLDING_ACK_WHY, 0]);
+  // A complaint between the acceptance and the new question: the acceptance is taken back (the question goes to the AI).
+  const g = s7({ later: 'abhi tak nahi aaya yaar', hold: false }).f;
+  const q = g.v('c1', '2026-10-05 11:08', 'aur mera dusra order kab dispatch hoga', { id: 'mQ' });
+  const rg = g.run();
+  assert.deepStrictEqual([one(rg, D, A, 'convinced').pending, one(rg, D, A, 'convinced').counted, rg.candidates.map((k) => k.messageId)], [true, false, [q]]);
+});
+t('E19f S1b: across days the +2 is earned once, on the day of the first acceptance, and never lost to a holding line + "ok thanks"', () => {
+  const f = fx({ days: [D0, D] }); f.conv('c1'); f.hold('c1', '2026-10-03 12:00', null, A);
+  const o = f.v('c1', '2026-10-04 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+  const rep = f.ag('c1', '2026-10-04 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+  const m = f.v('c1', '2026-10-04 11:06', 'ok');
+  f.ag('c1', '2026-10-04 11:10', 'confirm karke update karta hu', A);
+  f.v('c1', '2026-10-04 11:11', 'ok thanks');
+  f.ag('c1', '2026-10-05 11:00', 'Confirm ho gaya, aapka order kal deliver ho jayega', A);
+  f.v('c1', '2026-10-05 11:10', 'theek hai');
+  const r = f.run();
+  const c = one(r, D0, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.points, c.msgs], [true, 2, [rep, o, m]]);
+  assert.strictEqual(c.why, "Customer complained at 11:00; their message at 11:06 accepts Anurag's answer.");
+  none(r, D, A, 'convinced');
+  assert.deepStrictEqual([one(r, D0, A, 'thanks').counted, one(r, D0, A, 'thanks').why], [false, 'Polite "ok thanks" while still waiting for the answer']);
+  const merged = E.mergeDays(r.days, f.inp.people, f.inp.nowMs).people.find((p) => p.key === A);
+  assert.deepStrictEqual([merged.counts.convinced, merged.counts.convinced_pending, merged.counts.convinced_not_counted, merged.parts.convinced],
+    [1, 0, 0, { n: 1, each: 2, points: 2 }]);
+});
+
+t('E19g after an accepted answer: a new question or request keeps the +2; a rejection ("no", "not ok", "nahi", "I am not convinced", an AI "not convinced") takes it back; any other unsure message is the last word (AI)', () => {
+  const mk = (laters, verdicts) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'ok');
+    ids.later = laters.map((x, i) => f.v('c1', `2026-10-05 11:${String(8 + i).padStart(2, '0')}`, x, { id: `mL${i}` }));
+    if (verdicts) f.inp.verdicts = verdicts;
+    return { r: f.run(), ids };
+  };
+  // A new question or request: +2 for 11:06.
+  for (const q of ['dusra order kab aayega?', 'aur mera dusra order kab dispatch hoga', 'bill bhej do', 'दूसरा ऑर्डर कब आएगा', 'can you check my other order']) {
+    const { r, ids } = mk([q]);
+    const c = one(r, D, A, 'convinced');
+    assert.deepStrictEqual([c.counted, c.points, c.msgs, r.candidates.length], [true, 2, [ids.rep, ids.o, ids.m], 0], q);
+    assert.strictEqual(c.why, "Customer complained at 11:00; their message at 11:06 accepts Anurag's answer.", q);
+  }
+  // Rejections: never the +2 of 11:06 (no item, or the rejection itself goes to the AI).
+  for (const [later, exp] of [['no', 'none'], ['not ok', 'none'], ['nahi', 'none'], ['I am not convinced', 'pending'], ['nahi, kab aayega?', 'none'],
+    ['not ok, when will it come?', 'none'], ["I don't agree, why so late?", 'none'], ['ye sahi nahi hai, kab aayega', 'pending'], ['abhi tak nahi aaya, kab aayega?', 'none']]) {
+    const { r, ids } = mk([later]);
+    assert.strictEqual(pd(r, D, A).counts.convinced, 0, later);
+    if (exp === 'none') none(r, D, A, 'convinced');
+    else assert.deepStrictEqual([one(r, D, A, 'convinced').pending, one(r, D, A, 'convinced').msgs[2]], [true, ids.later[0]], later);
+  }
+  // A new question the AI already judged NOT convinced (a saved verdict) is a rejection too.
+  let x = mk(['aur mera dusra order kab dispatch hoga'], { mL0: { thanks: false, convinced: false, source: 'ai' } });
+  none(x.r, D, A, 'convinced');
+  // A rejection between the acceptance and the new question takes it back as well.
+  x = mk(['not ok', 'dusra order kab aayega?']);
+  none(x.r, D, A, 'convinced');
+  x = mk(['I am not convinced', 'aur mera dusra order kab dispatch hoga']);
+  assert.deepStrictEqual([pd(x.r, D, A).counts.convinced, one(x.r, D, A, 'convinced').pending, one(x.r, D, A, 'convinced').msgs[2]], [0, true, x.ids.later[1]]);
+  // Two new questions in a row: still the +2 of 11:06.
+  x = mk(['dusra order kab aayega?', 'aur bill bhej do']);
+  assert.deepStrictEqual([one(x.r, D, A, 'convinced').counted, one(x.r, D, A, 'convinced').msgs[2]], [true, x.ids.m]);
+  // Any other unsure later message (not a question, not a rejection) is the last word: the AI decides (c113ed0).
+  x = mk(['mujhe kal office jaana hai']);
+  assert.deepStrictEqual([one(x.r, D, A, 'convinced').pending, one(x.r, D, A, 'convinced').msgs[2], x.r.candidates.map((k) => k.messageId)],
+    [true, x.ids.later[0], [x.ids.later[0]]]);
+});
+t('E19h a complaint in ANY of the customer\'s chats between the acceptance and the new question takes the +2 back', () => {
+  const mk = (c3At) => {
+    const f = fx();
+    for (const c of ['c1', 'c2', 'c3']) { f.conv(c, { cuKey: 'cust' }); f.hold(c, '2026-10-04 12:00', null, c === 'c3' ? R : A); }
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'theek hai');
+    if (c3At) f.v('c3', c3At, 'abhi tak nahi aaya, refund chahiye, bakwas service');
+    f.v('c2', '2026-10-05 12:00', 'hello mera exchange ka status batao');
+    f.ag('c2', '2026-10-05 12:05', 'Exchange pickup kal hoga', A);
+    ids.q = f.v('c2', '2026-10-05 12:06', 'pickup kitne baje hoga bhai');
+    return { r: f.run(), ids };
+  };
+  // No complaint elsewhere: the question in chat c2 keeps the +2 of chat c1.
+  let { r, ids } = mk(null);
+  assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs], [true, [ids.rep, ids.o, ids.m]]);
+  // A complaint in a third chat (c3, held by Rahul) between them: no +2.
+  ({ r } = mk('2026-10-05 11:30'));
+  assert.strictEqual(pd(r, D, A).counts.convinced, 0);
+  none(r, D, A, 'convinced');
+  // The same complaint after the question changes nothing for Anurag's +2.
+  ({ r, ids } = mk('2026-10-05 12:30'));
+  assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs[2]], [true, ids.m]);
+});
+t('E19i a mixed holding line in S7: "ok" to it waits for the AI; AI "not convinced" = still waiting (the earlier +2 stands); AI "convinced" = +2 for it; across days a mixed "ok" never uses the complaint up (same result in a one-day report)', () => {
+  const s7m = (o = {}) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+    f.v('c1', '2026-10-05 11:07', 'aur mera dusra order kab dispatch hoga');
+    ids.rep2 = f.ag('c1', '2026-10-05 11:10', 'Ek minute, aapka dusra order kal dispatch ho jayega', A);
+    ids.ack = f.v('c1', '2026-10-05 11:11', 'ok', { id: 'mAck' });
+    if (o.q2) ids.q2 = f.v('c1', '2026-10-05 11:20', o.q2);
+    if (o.v) f.inp.verdicts = { mAck: o.v };
+    return { r: f.run(), ids };
+  };
+  // No verdict: the "ok" is the last word, the AI decides.
+  let { r, ids } = s7m();
+  let c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.pending, c.msgs, r.candidates.map((k) => [k.messageId, k.teamText])],
+    [false, true, [ids.rep2, ids.o, ids.ack], [['mAck', 'Ek minute, aapka dusra order kal dispatch ho jayega']]]);
+  // The AI: not convinced (still waiting): the +2 of 11:06 stands.
+  ({ r, ids } = s7m({ v: { thanks: false, convinced: false, source: 'ai' } }));
+  c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.points, c.by, c.msgs, r.candidates.length], [true, 2, 'keyword', [ids.rep, ids.o, ids.m], 0]);
+  // The AI: convinced: +2 for 11:11, once.
+  ({ r, ids } = s7m({ v: { thanks: false, convinced: true, source: 'ai' } }));
+  c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.points, c.by, c.msgs], [true, 2, 'ai', [ids.rep2, ids.o, ids.ack]]);
+  // Another new question after the mixed "ok" (no verdict): the walk crosses the "ok" and the question: +2 of 11:06, nothing for the AI.
+  ({ r, ids } = s7m({ q2: 'aur bill kab bhejoge?' }));
+  c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.msgs, r.candidates.length], [true, [ids.rep, ids.o, ids.m], 0]);
+  // Across days: complaint + mixed line + "ok thanks" on 4 Oct, a real answer + "theek hai" on 5 Oct. The mixed
+  // "ok" never uses the complaint up (keywords only: a frozen day is computed alone and does not load an
+  // earlier day's verdict), so 5 Oct is the same whatever the AI says about 4 Oct, and in a one-day report.
+  const xd = (v, days = [D0, D]) => {
+    const f = fx({ days }); f.conv('c1'); f.hold('c1', '2026-10-03 12:00', null, A);
+    const q = {};
+    q.o = f.v('c1', '2026-10-04 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    q.r0 = f.ag('c1', '2026-10-04 11:05', 'Refund initiated, will update you', A);
+    q.m0 = f.v('c1', '2026-10-04 11:06', 'ok thanks', { id: 'mD0' });
+    q.r1 = f.ag('c1', '2026-10-05 11:00', 'Courier se baat ki, kal pakka aa jayega', A);
+    q.m1 = f.v('c1', '2026-10-05 11:10', 'theek hai');
+    if (v) f.inp.verdicts = { mD0: v };
+    return { res: f.run(), q };
+  };
+  const dItem = (res) => JSON.stringify(its(res, D, A, 'convinced'));
+  let { res, q } = xd(null);   // 4 Oct waits for the AI; 5 Oct: +2
+  assert.deepStrictEqual([one(res, D0, A, 'convinced').pending, one(res, D0, A, 'thanks').pending, res.candidates.map((k) => k.messageId)], [true, true, ['mD0']]);
+  assert.deepStrictEqual([one(res, D, A, 'convinced').counted, one(res, D, A, 'convinced').points, one(res, D, A, 'convinced').msgs], [true, 2, [q.r1, q.o, q.m1]]);
+  const base5 = dItem(res);
+  ({ res } = xd({ thanks: true, convinced: true, source: 'ai' }));   // the AI says yes: +3 and +2 on 4 Oct by the AI
+  assert.deepStrictEqual([one(res, D0, A, 'convinced').counted, one(res, D0, A, 'convinced').by, one(res, D0, A, 'thanks').counted, one(res, D0, A, 'thanks').points],
+    [true, 'ai', true, 3]);
+  assert.strictEqual(dItem(res), base5);
+  ({ res } = xd({ thanks: false, convinced: false, source: 'ai' }));   // the AI says no: nothing on 4 Oct
+  none(res, D0, A, 'convinced'); none(res, D0, A, 'thanks');
+  assert.strictEqual(dItem(res), base5);
+  assert.strictEqual(dItem(xd(null, [D]).res), base5);
+  assert.strictEqual(dItem(xd({ thanks: true, convinced: true, source: 'ai' }, [D]).res), base5);
+});
+
+// ── Fifth pass (lead design v5) ──
+const BATTERY_PURE = [
+  'Please wait while I check your order', 'please wait, checking your order', 'Kindly wait, we are looking into it',
+  'Please wait a moment while we check the status', 'please wait for some time', 'Ek minute, check karke batata hu', 'check karke batata hu sir',
+  'thoda wait kariye', 'I am looking into it', 'एक मिनट सर', 'मैं चेक करके बताता हूँ', 'Let me check and update you', 'dekhta hu ek minute',
+];
+const BATTERY_MIXED = [
+  'Pickup kal hoga, thoda wait kariye', 'Order aaj nikal jayega, plz wait', 'Refund 24-48 hours me aa jayega, plz wait', 'आपका ऑर्डर कल पहुँच जाएगा, एक मिनट',
+  'रिफंड प्रोसेस हो रहा है, कृपया प्रतीक्षा करें', 'We are looking into the delay, your parcel is at the Delhi hub', 'Wait karo, order aa jayega',
+  'Delivery kal tak hogi, please wait', 'Dispatch hua hai sir, please wait', 'Haan COD hai, ek minute', 'Haan size M available hai, ek minute',
+  'Aapka refund process ho gaya hai, please wait 5-7 working days', 'Let me check if your refund has been initiated', 'We will update you once it is dispatched',
+  "I'll check if it is delivered and update you", 'Kal tak confirm karke batata hu delivery kab hogi', 'We will update you within 2 days',
+  "I'll share the tracking link shortly", 'Courier ne pickup kar liya hai, please wait',
+];
+t('E17d fifth pass, the battery in the engine: complaint + line + "ok thanks": a pure line is not counted (0 points, never the AI); a mixed one waits for the AI with that line as the team text, never "not counted"', () => {
+  const run = (line) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', line, A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+    return { r: f.run(), ids };
+  };
+  for (const line of BATTERY_PURE) {
+    const { r } = run(line);
+    const th = one(r, D, A, 'thanks'), c = one(r, D, A, 'convinced');
+    assert.deepStrictEqual([th.counted, th.pending, th.points, th.why, c.counted, c.pending, c.points, c.why,
+      pd(r, D, A).parts.thanks.points, pd(r, D, A).parts.convinced.points, r.candidates.length],
+    [false, false, 0, POLITE_WHY, false, false, 0, E.HOLDING_ACK_WHY, 0, 0, 0], line);
+  }
+  for (const line of BATTERY_MIXED) {
+    const { r, ids } = run(line);
+    const th = one(r, D, A, 'thanks'), c = one(r, D, A, 'convinced');
+    assert.deepStrictEqual([th.counted, th.pending, th.why, c.counted, c.pending, c.why, c.msgs, pd(r, D, A).parts.convinced.points,
+      r.candidates.map((k) => [k.messageId, k.teamText])],
+    [false, true, PENDING_WHY, false, true, PENDING_WHY, [ids.rep, ids.o, ids.m], 0, [[ids.m, line]]], line);
+  }
+  // A strong thank-you that states the result still counts after either kind (keywords): +3.
+  for (const line of [BATTERY_PURE[0], BATTERY_MIXED[0]]) {
+    const f = heldByA(fx()); f.ag('c1', '2026-10-05 15:50', line, A); f.v('c1', '2026-10-05 16:00', 'thank you so much mil gaya');
+    const r = f.run();
+    assert.deepStrictEqual([one(r, D, A, 'thanks').counted, one(r, D, A, 'thanks').points, one(r, D, A, 'thanks').by], [true, 3, 'keyword'], line);
+  }
+});
+t('E19j fifth pass (B): after "theek hai", a question with push-back is the last word (never the +2 by keyword); a plain new question keeps it, also behind a holding line + "ok"', () => {
+  const mk = (later, verdict) => {
+    const f = heldByA(fx());
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'theek hai');
+    ids.later = f.v('c1', '2026-10-05 11:08', later, { id: 'mL' });
+    if (verdict) f.inp.verdicts = { mL: verdict };
+    return { r: f.run(), ids };
+  };
+  // A question with push-back is a keyword "no" (c113ed0): no item, nothing for the AI.
+  for (const later of ['itna time kyu lag raha hai?', 'why is it taking so long?', 'pehle bhi yahi bola tha, kab aayega?', 'aap log kuch karte kyu nahi?',
+    'seriously? kitne din aur?', 'dusra order kab aayega???']) {
+    const { r } = mk(later);
+    none(r, D, A, 'convinced');
+    assert.deepStrictEqual([pd(r, D, A).counts.convinced, pd(r, D, A).counts.convinced_pending, r.candidates.length], [0, 0, 0], later);
+  }
+  // An unsure one with push-back is the last word too: the AI decides it (pending, 0 points), never the +2 of 11:06.
+  for (const later of ['mujhe nahi chahiye ab ye order', 'ye kya mazak hai', 'kitna time aur lagega', 'DUSRA ORDER KAB AAYEGA']) {
+    const { r, ids } = mk(later);
+    const c = one(r, D, A, 'convinced');
+    assert.deepStrictEqual([c.counted, c.pending, c.points, c.msgs, r.candidates.map((k) => k.messageId)], [false, true, 0, [ids.rep, ids.o, ids.later], ['mL']], later);
+  }
+  // ...and the saved verdict decides: not convinced = nothing; convinced = +2 for that message, by the AI.
+  let x = mk('ye kya mazak hai', { thanks: false, convinced: false, source: 'ai' });
+  none(x.r, D, A, 'convinced');
+  x = mk('mujhe nahi chahiye ab ye order', { thanks: false, convinced: true, source: 'ai' });
+  assert.deepStrictEqual([one(x.r, D, A, 'convinced').counted, one(x.r, D, A, 'convinced').by, one(x.r, D, A, 'convinced').msgs[2]], [true, 'ai', 'mL']);
+  // A plain new question (no push-back) keeps the +2 of 11:06 (E19g).
+  for (const later of ['aur mera dusra order kab dispatch hoga', 'pickup kitne baje hoga bhai', 'COD available hai kya']) {
+    const { r, ids } = mk(later);
+    assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs[2], r.candidates.length], [true, ids.m, 0], later);
+  }
+  // A holding line + "ok" between the acceptance and the new question is skipped by the walk back: still the +2 of 11:06.
+  const f = heldByA(fx());
+  f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+  f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+  const m = f.v('c1', '2026-10-05 11:06', 'theek hai');
+  f.ag('c1', '2026-10-05 11:10', 'Ek minute, check karke batata hu', A);
+  f.v('c1', '2026-10-05 11:11', 'ok');
+  f.v('c1', '2026-10-05 11:20', 'aur mera dusra order kab dispatch hoga');
+  const r = f.run();
+  assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs[2], r.candidates.length], [true, m, 0]);
+});
+t('E19k fifth pass (C): a complaint in ANY of the customer\'s chats after the acceptance takes the +2 back on every path, also behind a later "ok" to a holding line', () => {
+  const mk = (o = {}) => {
+    const f = fx();
+    for (const c of ['c1', 'c3']) { f.conv(c, { cuKey: 'cust' }); f.hold(c, '2026-10-04 12:00', null, c === 'c3' ? R : A); }
+    f.conv('c4', { cuKey: 'other' }); f.hold('c4', '2026-10-04 12:00', null, R);
+    const ids = {};
+    ids.o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+    ids.rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+    ids.m = f.v('c1', '2026-10-05 11:06', 'theek hai');
+    if (o.cAt) f.v(o.cConv || 'c3', o.cAt, 'abhi tak nahi aaya, refund chahiye, bakwas service');
+    if (o.ask) ids.ask = f.v('c1', '2026-10-05 12:00', o.ask, { id: 'mAsk' });
+    else {
+      f.ag('c1', '2026-10-05 12:00', o.hold || 'check karke batata hu', A);
+      f.v('c1', '2026-10-05 12:01', 'ok', { id: 'mAck' });
+    }
+    if (o.v) f.inp.verdicts = { mAck: o.v };
+    return { r: f.run(), ids };
+  };
+  // No complaint: the +2 of 11:06 stands behind the "ok" to the holding line (S7).
+  let { r, ids } = mk();
+  assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').points, one(r, D, A, 'convinced').msgs], [true, 2, [ids.rep, ids.o, ids.m]]);
+  // A complaint in a third chat (held by Rahul, never answered) at 11:30: no +2; the "ok" is shown, not counted.
+  ({ r } = mk({ cAt: '2026-10-05 11:30' }));
+  assert.deepStrictEqual([pd(r, D, A).counts.convinced, pd(r, D, A).parts.convinced.points, one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').why],
+    [0, 0, false, E.HOLDING_ACK_WHY]);
+  // The same behind an "ok" to a MIXED line that the AI judged not convinced, or could not judge.
+  for (const v of [{ thanks: false, convinced: false, source: 'ai' }, { thanks: null, convinced: null, source: 'ai_failed' }]) {
+    ({ r } = mk({ cAt: '2026-10-05 11:30', hold: 'Ek minute, aapka dusra order kal dispatch ho jayega', v }));
+    assert.deepStrictEqual([pd(r, D, A).counts.convinced, its(r, D, A, 'convinced').filter((i) => i.counted).length], [0, 0], v.source);
+  }
+  // A new question after that complaint: the walk back never crosses the complaint, so the question is the
+  // last word and the AI decides it (pending, 0 points), as for a complaint in the same chat (E19e).
+  ({ r, ids } = mk({ cAt: '2026-10-05 11:30', ask: 'aur mera dusra order kab dispatch hoga' }));
+  assert.deepStrictEqual([one(r, D, A, 'convinced').pending, one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs[2], r.candidates.map((k) => k.messageId)],
+    [true, false, 'mAsk', ['mAsk']]);
+  // Not a take-back: a complaint before the acceptance, after the customer's last message to Anurag that day, or by another customer.
+  for (const o of [{ cAt: '2026-10-05 10:30' }, { cAt: '2026-10-05 13:00' }, { cAt: '2026-10-05 11:30', cConv: 'c4' }]) {
+    ({ r, ids } = mk(o));
+    assert.deepStrictEqual([one(r, D, A, 'convinced').counted, one(r, D, A, 'convinced').msgs[2]], [true, ids.m], JSON.stringify(o));
+  }
+});
+t('E19l fifth pass (E): "ai_failed" on an "ok" to a mixed line is still waiting: it never replaces a +2 already earned; on its own it is "AI could not decide"', () => {
+  const f = heldByA(fx());
+  const o = f.v('c1', '2026-10-05 11:00', 'mera order abhi tak nahi aaya, refund chahiye');
+  const rep = f.ag('c1', '2026-10-05 11:05', 'Courier se baat ki, kal pakka aa jayega', A);
+  const m = f.v('c1', '2026-10-05 11:06', 'ok thanks');
+  f.v('c1', '2026-10-05 11:07', 'aur mera dusra order kab dispatch hoga');
+  f.ag('c1', '2026-10-05 11:10', 'Dusra order dispatch ho gaya hai, please wait 2 days', A);
+  f.v('c1', '2026-10-05 11:11', 'ok thanks', { id: 'mAck' });
+  f.inp.verdicts = { mAck: { thanks: null, convinced: null, source: 'ai_failed' } };
+  let r = f.run();
+  const c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.points, c.by, c.msgs, pd(r, D, A).counts.convinced, pd(r, D, A).counts.convinced_not_counted, r.candidates.length],
+    [true, 2, 'keyword', [rep, o, m], 1, 0, 0]);
+  // S2 alone (no earlier acceptance), the AI failed: "AI could not decide", 0 points, as before.
+  const g = heldByA(fx());
+  const o2 = g.v('c1', '2026-10-05 11:00', 'refund kab milega, abhi tak nahi aaya');
+  const rep2 = g.ag('c1', '2026-10-05 11:05', 'Aapka refund process ho gaya hai, please wait 5-7 working days', A);
+  g.v('c1', '2026-10-05 11:06', 'ok thank you', { id: 'mS2' });
+  g.inp.verdicts = { mS2: { thanks: null, convinced: null, source: 'ai_failed' } };
+  r = g.run();
+  const c2 = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c2.counted, c2.pending, c2.points, c2.by, c2.why, c2.msgs, pd(r, D, A).counts.convinced_not_counted, r.candidates.length],
+    [false, false, 0, 'ai', 'AI could not decide', [rep2, o2, 'mS2'], 1, 0]);
 });
 
 // ── Solved and closed-while-waiting ────────────────────────────
@@ -934,6 +1393,22 @@ t('E32 speed: 3,000 chats, 40,000 messages, 2,000 holder rows in under 1.5 s', (
   assert.ok(r.days[0].items.length > 1000);
   assert.ok(ms < 1500, `${ms} ms`);
 });
+t('E32b speed (fifth pass, D): one customer, one member, 2,000 new questions after an acceptance in one day: one walk back, under 300 ms, still the +2', () => {
+  const f = heldByA(fx());
+  f.v('c1', '2026-10-05 10:00', 'mera order abhi tak nahi aaya, refund chahiye');
+  f.ag('c1', '2026-10-05 10:01', 'Courier se baat ki, kal pakka aa jayega', A);
+  const m = f.v('c1', '2026-10-05 10:02', 'theek hai');
+  const t0 = ist('2026-10-05 10:03');
+  for (let i = 0; i < 2000; i++) {
+    f.inp.msgs.push({ id: 'q' + i, conv: 'c1', sender: 'visitor', at: t0 + i * 15_000, text: 'aur mera dusra order kab dispatch hoga ' + i,
+      aiNotAnswer: false, noReply: false, login: null, eventActor: null });
+  }
+  let best = Infinity, r = null;
+  for (let k = 0; k < 3 && best >= 300; k++) { const s0 = Date.now(); r = f.run(); best = Math.min(best, Date.now() - s0); }
+  assert.ok(best < 300, `${best} ms`);
+  const c = one(r, D, A, 'convinced');
+  assert.deepStrictEqual([c.counted, c.points, c.msgs[2], r.candidates.length], [true, 2, m, 0]);
+});
 t('E33 a day before part 3 went live: event numbers "-", replies and thanks still counted, no points', () => {
   const f = heldByA(fx({ eventsSince: '2026-10-06 10:00' }));
   f.v('c1', '2026-10-05 11:00', 'order kab'); f.ag('c1', '2026-10-05 13:00', 'Your order arrives on 7 Oct', A); f.v('c1', '2026-10-05 14:00', 'thank you');
@@ -1176,6 +1651,7 @@ t('X15 after-hours replies count as replies, marked outside 10:00-19:30', () => 
 });
 t('X16 no customer text and no raw customer key ever leaves the engine', () => {
   const f = scenario();
+  // Not a new question or request, so it is the last word after "theek hai" and goes to the AI (E19g).
   f.v('c1', '2026-10-05 16:00', 'mera number 9876543210 hai SECRETWORD');
   const res = f.run();
   const out = JSON.stringify(res.days);                   // what the report shows and freezes

@@ -31,20 +31,78 @@ const ACCEPT_DEVA = /(इंतज़ार|इंतजार कर|रुक 
 // Copied from brain-examples.ts (copied, not imported: a learner change must never move scores).
 const POLITE_WORDS = new Set('ok okk okkk okay okey k kk thanks thank thanku thankyou thnx thx ty you so much very theek thik hai h accha achha acha ji haan han ha done great good nice alright sure got it noted cool fine sir mam maam madam maim mem dear bhai bhaiya didi sahi samajh gaya gayi samjha shukriya dhanyavad dhanyawad welcome'.split(' '));
 const DONE = /\b(?:change|changed|update|updated|cancel|cancelled|done|correct|sahi|theek)\w*\s+(?:ho\s+)?(?:gaya|gayi|gya|hua|ho gya)\b/i;
+// A holding line: the reply says "I will check / confirm / update", "please wait", "ek minute" (owner
+// default kept: "ok thanks" after "check karke batata hu" is not a thank-you). holdingKind() splits them
+// (review 2026-10-02, fourth pass; fifth pass: by what is LEFT, see holdingKind): 'pure' = only the
+// holding line, the keywords decide; 'mixed' = a holding phrase AND anything more ("Aapka refund ho gaya
+// hai, please wait 5-7 working days", "Pickup kal hoga, thoda wait kariye"): the keywords cannot tell an
+// answer from a promise, the AI decides (owner Q12: keywords first, AI only when unsure). No length limit.
 const HOLDING = [
   /\b(will|we'?ll|i'?ll|let\s+me|going\s+to|shall)\b[^.?!]{0,40}\b(check|update|confirm|get\s+back|look\s+into|inform|share|revert|escalate)/i,
-  /\b(please|kindly|pls)\s+wait\b/i,
+  /\b(please|kindly|pls|plz)\s+wait\b/i,
+  /\bwait\s+(karo|kro|kariye|kijiye|kare|karein|karen|kar\s+lijiye|kr\s+lijiye)\b|\b(ruko|rukiye|rukie|rukein)\b/i,
+  /\blooking\s+into\b/i,
   /\b(check|confirm|pata)\s+(karke|kar\s+ke|krke|kr\s+ke)\s+(bata|btata|batate|batati|update)/i,
   /\bdekh\s*(ke|kar|kr)\s+(bata|btata|batate|batati)/i,
   /\bteam\s+(ko|se)\s+(forward|puch|pooch|bhej)/i,
   /\bescalat(e|ed|ing)\b/i,
-  /(चेक करके|देख कर बता|देखकर बता|पता करके)/,
+  /(चेक करके|चेक कर रहा|चेक कर रही|कन्फर्म करके|देख कर बता|देखकर बता|पता करके|देखता हूँ|देखता हूं|देखती हूँ|देखती हूं|एक मिनट|प्रतीक्षा करें|प्रतीक्षा कीजिए|इंतज़ार करें|इंतजार करें|इंतज़ार कीजिए|इंतजार कीजिए|रुकिए|रुको)/,
   // "Dekhta hu", "ruko check kar raha hu", "Checking, ek minute" (review 2026-10-02). Never a bare
   // "checking": "after checking, your order arrives 7 Oct" is a real answer.
   /\b(dekhta|dekhti)\s+(hu|hun|hoon|hai|h)\b|\bdekh\s+(raha|rahi|rha|rhi)\b/i,
   /\bcheck\s+(kar|kr)\s+(raha|rahi|rha|rhi)\b/i,
   /\b(ek|1)\s*min(ute)?\b/i,
 ];
+// Facts and done work: a reply with one of these says what happened or when, even with a "please
+// wait" or "we will update you" in it. Fifth pass: only a safety net; a holding line with more than one
+// word left over is 'mixed' anyway (holdingKind).
+const HOLDING_FACT = [
+  /\b(ho|hogaya|hogya)\s*(gaya|gayi|gyi|gya|gaye|chuka|chuki|chuke)\b|\bhogaya\b|\bhogya\b/i,
+  /\b(done|completed?|processed|refunded|initiated|credited|approved|shipped|dispatched|delivered|out\s+for\s+delivery|in\s+transit|cancell?ed|replaced|resolved)\b/i,
+  /\b(aaj|kal|parso|tomorrow|today|tonight)\b[^.?!]{0,30}\b(aa\s*ja[ye]*g[ai]|aa\s*jaeg[ai]|aay?eg[ai]|aaeg[ai]|deliver\w*|dispatch\w*|ship\w*|pahunch\w*|mil\s*ja[ye]*g[ai]|mileg[ai]|arriv\w*|reach\w*)/i,
+  /\b\d+\s*(?:(?:-|–|to|se|or|ya)\s*\d+\s*)?(?:working\s+|business\s+)?(?:days?|din|weeks?|hafte|hafta)\b/i,
+  /\b\d{1,2}\s*(?:st|nd|rd|th)?\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?\b/i,
+  /\b\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?\b|\b\d{1,2}-\d{1,2}-\d{2,4}\b/,
+  /https?:\/\/|\bwww\.|(?<![\w])(?:ST|AWB)[A-Z0-9]{6,}\b|\d{8,}/i,
+  /(हो गया|हो गयी|हो गई|हो चुका|हो चुकी|डिलीवर|डिस्पैच|शिप हो|ट्रैकिंग|लिंक|कल (?:तक )?आ जाएगा|कल (?:तक )?आ जायेगा|कल आएगा|कल आयेगा|[0-9०-९]+\s*दिन)/,
+  // Done work, stock, where the parcel is and when (fourth pass): "refund kar diya", "courier ne pickup kar
+  // liya", "confirm kiya hai", "Haan size M available hai, ek minute", "stock me hai", "exchange possible
+  // hai", "it is on the way", "order aa raha hai", "please wait till Monday", "one more day".
+  /\b(kar|kr)\s*(diya|diye|dia|di|dii|liya|liye|lia|li)\b|\bavailable\s+(hai|h|he|hain|hn)\b|\bkiya\s+(hai|h|he|tha)\b|\bpossible\s+(hai|h|he)\b|\b(in|out\s+of)\s+stock\b|\bstock\s+(me|mein|mai)\s+(hai|h|he)\b|(कर दिया|कर दी|कर दिए|कर लिया|उपलब्ध है)/i,
+  /\bon\s+(the|its)\s+way\b|\bis\s+with\s+(the\s+|our\s+)?courier\b|\braste\s+(me|mein|mai|main)\b|\baa\s+(raha|rahi|rhi|rha)\s+(hai|h|he)\b/i,
+  /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|somvar|mangalvar|budhvar|guruvar|shukravar|shanivar|ravivar)\b|\b(one|two|three|four|five|ek|teen|char|paanch)\s+(more\s+|aur\s+)?(days?|din|weeks?|hafte|hafta)\b/i,
+];
+// Fifth pass (lead design v5): what is left of a holding line once every holding phrase (HOLDING_CUT:
+// HOLDING with the "will ... check" gap made lazy, so it never swallows the words in between, each match
+// taken to the end of its word, "bata" -> "batata"; and a chained "... and get back to you") and these
+// polite / filler words are taken out. Not a fact list: anything NOT here is content. "haan" / "yes" /
+// "nahi" / "no" are never filler: a yes or no is an answer (ANSWER_WORD). "hai" is content too.
+const HOLDING_CUT = [
+  ...HOLDING.map((re) => new RegExp('(?:' + re.source.replace('[^.?!]{0,40}\\b', '[^.?!]{0,40}?\\b') + ')[a-z]*', re.flags + 'g')),
+  /\bget\s+back\b/gi,
+];
+const FILLER = new Set((
+  'sir maam madam mam ji please pls plz kindly just ok okay sure while i we me my us our your you it this that the a an for of on in to ' +
+  'with is are am and let will shall moment minute minutes min second seconds sec time some status details check checking update ' +
+  'updating team shortly soon asap wait waiting sorry inconvenience patience thanks thank dear hello hi ' +
+  'thoda bas abhi main mai hum ham aap aapka aapke aapki aapko apka apke apki apko order ko ka ki ke se me mein ya aur hu hun hoon ' +
+  'raha rahi rahe rha rhi karta karti karte kar kr karke krke jaldi bhai bhaiya didi ' +
+  'सर मैम जी कृपया थोड़ा बस अभी मैं हम आप आपका आपके आपकी आपको ऑर्डर को का की के से में मे और या हूँ हूं हु रहा रही रहे करता करती करते कर करके ' +
+  'समय मिनट सेकंड स्टेटस चेक अपडेट टीम जल्दी'
+).normalize('NFC').split(' '));
+const ANSWER_WORD = /^(haan|han|haanji|hanji|yes|yeah|yep|yup|no|nope|not|nahi|nahin|nhi|हाँ|हां|नहीं)$/;
+// The words left of a holding line (lower case; punctuation, emoji and one-letter words dropped; a
+// number is a word).
+function leftOver(text: string): string[] {
+  let t = text;
+  for (const re of HOLDING_CUT) t = t.replace(re, ' ');
+  return t.normalize('NFC').toLowerCase()
+    .replace(/\b(i|we|you|it|that|there|let)['’](ll|m|re|ve|s|d)\b/g, '$1 ')
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9ऀ-ॣ०-ॿ]+/g, ' ')
+    .split(' ')
+    .filter((w) => w && !FILLER.has(w) && (w.length > 1 || /[0-9०-९]/.test(w)));
+}
 const ASKS_THANKS = [
   /\b(say|bol|bolo|boliye|bol\s+do|bol\s+dena|bol\s+dijiye|likh|likho|likhiye|likh\s+do|likh\s+dena|type|send|reply\s+with)\b\W+(?:\w+\W+){0,3}?(thanks?|thank\s*(you|u)|shukriya|dhanyavad)\b/i,
   /\b(thanks?|thank\s*(you|u)|shukriya|dhanyavad)\b\W+(?:\w+\W+){0,2}?(bol|bolo|boliye|bol\s+do|bol\s+dena|likh|likho|likhiye|likh\s+do|type\s+kar)/i,
@@ -111,9 +169,26 @@ export function isPoliteAck(text: string): boolean {
   return ws.length > 0 && ws.length <= 8 && ws.every((w) => POLITE_WORDS.has(w) || ACK_THANKS.test(w));
 }
 
-// "We will check and update you", "please wait", "check karke batata hu".
+// 'pure': only a holding line ("We will check and update you", "Please wait while I check your order",
+// "Ek minute, check karke batata hu", "मैं देखता हूँ"): a polite "ok thanks" after it is not a thank-you
+// and not "convinced" (the keywords decide). 'mixed': a holding phrase AND anything more ("Aapka refund
+// process ho gaya hai, please wait 5-7 working days", "Pickup kal hoga, thoda wait kariye", "Haan COD
+// hai, ek minute"): a polite "ok thanks" after it goes to the AI (engine.ts). null: no holding phrase.
+// Fifth pass (lead design v5): decided by what is left (leftOver), not by a fact list: 'pure' = at most
+// one word left, not a yes / no, and no HOLDING_FACT. When in doubt it is 'mixed': a wrong trip to the
+// AI costs one capped call, a wrong 'pure' silently costs a member real points.
+export type HoldingKind = 'pure' | 'mixed' | null;
+export function holdingKind(staffText: string): HoldingKind {
+  const t = String(staffText || '').trim();
+  if (!t || !any(HOLDING, t)) return null;
+  if (any(HOLDING_FACT, t)) return 'mixed';
+  const left = leftOver(t);
+  return left.length <= 1 && !left.some((w) => ANSWER_WORD.test(w)) ? 'pure' : 'mixed';
+}
+
+// Any holding line, pure or mixed.
 export function isHoldingReply(staffText: string): boolean {
-  return any(HOLDING, String(staffText || ''));
+  return holdingKind(staffText) !== null;
 }
 
 // "thank you bol dena", "rate us 5 stars": a thank-you after it is not counted.
@@ -162,6 +237,38 @@ function convinced(customerText: string): { tri: Tri; why: ConvincedWhy } {
 
 export function keywordConvinced(customerText: string): Tri {
   return convinced(customerText).tri;
+}
+
+// A new question or request after an accepted answer ("aur mera dusra order kab dispatch hoga", "bill
+// bhej do", "can you check my other order?"): the customer asks for more, it does not take the earlier
+// acceptance back (engine.ts, fourth pass). Only these fall back to it; any other unsure message is the
+// last word, as before.
+const ASK = /\b(kab|kya|kaise|kaisa|kaisi|kitne|kitna|kitni|kaha|kahan|kahaan|kyu|kyun|kyon|kaun|kon|konsa|kaunsa|when|what|where|how|why|which|who|can\s+you|could\s+you|will\s+you|would\s+you|can\s+i|do\s+you|is\s+there)\b|(कब|क्या|कैसे|कितने|कितना|कितनी|कहाँ|कहां|क्यों|कौन|बताओ|बताइए|बताइये|बता दो|भेज दो|भेजो|भेजिए|चाहिए)/i;
+export function isNewAsk(customerText: string): boolean {
+  const t = String(customerText || '');
+  return t.includes('?') || ASK.test(t) || REQUEST.test(t);
+}
+
+// Fifth pass (lead design v5): push-back in a later message ("itna time kyu lag raha hai?", "why is it
+// taking so long?", "pehle bhi yahi bola tha, kab aayega?", "seriously? kitne din aur?", "ye kya mazak
+// hai", "mujhe nahi chahiye ab ye order"). Such a question is NOT a new ask that keeps an earlier
+// acceptance: it is the last word, as in c113ed0. A complaint (isObjection), anger or shouting from the
+// health counts (caps, "???" / "!!!"), or one of these words. A repeated complaint is a complaint.
+const PUSHBACK = /\b(kyu|kyun|kyon|kyo|why|kitne\s+din|kitna\s+time|kab\s+tak|pehle\s+bhi|phir\s+se|fir\s+se|mazak|mazaak|majak|(nahi|nahin|nhi)\s+chahiye|cancel\w*|refund\w*|seriously|bakwas|worst|fraud\w*|cheat\w*|ghatiya|late|delay\w*|abhi\s+tak|still\s+not|not\s+received|kuch\s+kar(te|ti|o|oge|enge)?)\b|(क्यों|क्यूं|कितने दिन|कितना समय|कब तक|पहले भी|फिर से|मज़ाक|मजाक|नहीं चाहिए|कैंसिल|रिफंड|बकवास|घटिया|फ्रॉड|धोखा|देरी|अभी तक|कुछ करते)/i;
+export function pushesBack(customerText: string): boolean {
+  const t = String(customerText || '');
+  if (isObjection(t) || PUSHBACK.test(t)) return true;
+  const s = signals(t);
+  return s.caps + s.burst > 0;
+}
+
+// The customer says no to the answer: "no", "not ok", "nahi", "I am not convinced", "ye sahi nahi hai".
+const REJECT = /^\s*(no+|nope|nah|nahi+|nahin|nhi|nai)\b(?!\s+(problem|prob|worries|worry|issue|issues|need|tension|baat))|\bnot\s+(ok|okay|fine|happy|satisfied|convinced|acceptable|agreed?)\b|\b(i\s+am|i'?m|im)\s+not\s+(ok|okay|fine|happy|satisfied|convinced|sure)\b|\b(don'?t|do\s+not|can'?t|cannot)\s+(agree|accept|believe)\b|\bunacceptable\b|\b(sahi|theek|thik|thek|thk)\s+(nahi|nahin|nhi|nai)\b|\b(nahi|nahin|nhi)\s+(chalega|manunga|manungi|maanunga|maanungi)\b|(^\s*नहीं|सही नहीं|ठीक नहीं|मंजूर नहीं|मंज़ूर नहीं|नहीं चलेगा)/i;
+// A rejection takes an earlier acceptance back: a complaint (isObjection), a "no" phrase, or a keyword
+// "no" that is not a new question ("no", "not ok", "nahi"; "kab aayega?" is 'no' only for its "?").
+export function rejectsAnswer(customerText: string): boolean {
+  const t = String(customerText || '');
+  return isObjection(t) || REJECT.test(t) || (keywordConvinced(t) === 'no' && !isNewAsk(t));
 }
 
 // An auto-close counts as solved only when the customer's last word was thanks / "mil gaya" /
@@ -217,7 +324,7 @@ export function maskForJudge(text: string, max = 500): string {
   return cps.length > max ? cps.slice(0, Math.max(0, max)).join('') : s;
 }
 
-export const JUDGE_INSTRUCTION = `You check one customer message from an online store's support chat, for the store owner's staff report. You get the support team's last reply and the customer's next message. Judge only the CUSTOMER's message. THANKS: is the customer genuinely thanking the team (not sarcastic, not "no thanks", not only a polite "ok" while still waiting)? CONVINCED: does the customer accept the answer or say the problem is settled (agrees to wait, says ok / understood, got the order), with no new complaint, demand or open question? Answer with exactly one line: THANKS=yes|no CONVINCED=yes|no`;
+export const JUDGE_INSTRUCTION = `You check one customer message from an online store's support chat, for the store owner's staff report. You get the support team's last reply and the customer's next message. Judge only the CUSTOMER's message. THANKS: is the customer genuinely thanking the team (not sarcastic, not "no thanks", not only a polite "ok" while still waiting)? CONVINCED: does the customer accept the answer or say the problem is settled (agrees to wait, says ok / understood, got the order), with no new complaint, demand or open question? If the team's reply only promises to check, confirm or update later and gives no answer yet, a polite ok / thanks is THANKS=no and CONVINCED=no; if it gives a real answer (even with "please wait N days"), judge normally. Answer with exactly one line: THANKS=yes|no CONVINCED=yes|no`;
 
 // Never staff names, scores, points or notes: only the two masked texts.
 export function buildJudgeInput(teamText: string, customerText: string): string {

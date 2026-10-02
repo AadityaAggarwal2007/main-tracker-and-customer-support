@@ -13,9 +13,10 @@ import type {
 } from './types';
 import { DAY_MS, MIN_MS, istDay, istDayStart, openMs, closeMs, officeMs, addOfficeMs, hhmm, dayLabel, todayIst } from './clock';
 import {
-  stripEmailQuote, isTrivialReply, isHoldingReply, asksForThanks, isObjection, keywordThanks, keywordConvinced,
-  cameBack, acceptsClose, isSignOff, isPoliteAck,
+  stripEmailQuote, isTrivialReply, holdingKind, asksForThanks, isObjection, keywordThanks, keywordConvinced,
+  cameBack, acceptsClose, isSignOff, isPoliteAck, isNewAsk, rejectsAnswer, pushesBack,
 } from './words';
+import type { Tri } from './words';
 import {
   FAST_REPLY_MIN, UNANSWERED_MIN, TAKEN_NO_REPLY_MIN, ANGRY_MIN, ANGRY_HELD_MIN, THANKS_WINDOW_MS, SOLVED_QUIET_MS,
   SOLVED_REPLY_WITHIN_MS, OBJECTION_LOOKBACK_MS, SOLICIT_LOOKBACK_MS, DEFAULT_WEIGHTS, WEIGHT_KEYS, OWNER_RANKED,
@@ -363,10 +364,17 @@ const AI_FAILED_WHY = 'AI could not decide';
 export const NOT_VERIFIED_WHY = 'Visitor not verified';
 // Review 2026-10-02: a polite "ok thank u" / "ok tq" to a holding line ("check karke batata hu")
 // accepts nothing yet; the customer is still waiting for the answer. It is not "convinced", as it is
-// not a thank-you, and it does not use up the complaint for the real answer that follows.
+// not a thank-you, and it does not use up the complaint for the real answer that follows. Third pass:
+// it is simply ignored for Convinced, so it never cancels an acceptance of a real answer that day;
+// it is shown (not counted) only when nothing else decides for that person, customer and day.
+// Fourth pass: that is for a 'pure' holding line only ("Please wait while I check your order"). After a
+// 'mixed' one, a holding phrase with a fact ("Aapka refund ho gaya hai, please wait 5-7 working days",
+// "Let me check if it is delivered"), the keywords cannot tell whether the customer got an answer: the
+// "ok thanks" is unsure, the AI decides thanks and convinced (owner Q12: keywords first, AI when unsure).
 export const HOLDING_ACK_WHY = 'Polite "ok" while still waiting for the answer';
-const ackToHolding = (reply: InMsg, customerText: string) =>
-  reply.sender === 'agent' && isHoldingReply(reply.text || '') && isPoliteAck(customerText);
+// 'pure' / 'mixed': a polite "ok thanks" right after that kind of holding line by a team member; null: not one.
+const ackTo = (reply: InMsg, customerText: string): 'pure' | 'mixed' | null =>
+  reply.sender === 'agent' && isPoliteAck(customerText) ? holdingKind(reply.text || '') : null;
 
 // The counts the engine and mergeDays build: Counts plus the "Convinced" items that do not count
 // (visitor not verified, AI could not decide, an "ok" to a holding line), like thanks_not_counted,
@@ -546,7 +554,8 @@ export function buildTeamScore(input: ScoreInput): EngineResult {
 
   // ── 3.5.4 Thank-you and convinced ──
   interface Last { M: Msg; R: Msg; t: string; cd: ConvData; X: string; D: string }
-  const lastTo = new Map<string, Last>();
+  // Every customer message answering X's reply, per (X, customer, day), in time order: "convinced" below.
+  const toX = new Map<string, Last[]>();
   const thanksSlot = new Set<string>();
   const aiThanks = new Set<string>();
   for (const M of ctx.msgs) {
@@ -580,20 +589,24 @@ export function buildTeamScore(input: ScoreInput): EngineResult {
     }
     const X = R.au;
     if (!X || X === 'unattributed') continue;
-    lastTo.set(`${X}|${cu}|${D}`, { M, R, t, cd, X, D });
+    const seen = toX.get(`${X}|${cu}|${D}`);
+    if (seen) seen.push({ M, R, t, cd, X, D }); else toX.set(`${X}|${cu}|${D}`, [{ M, R, t, cd, X, D }]);
     if (kw === 'no') continue;
+    // "ok thanks" to a holding line: 'pure' = not counted below; 'mixed' = never a sure thank-you, the AI decides.
+    const ack = ackTo(R, t);
+    const kwX: Tri = ack === 'mixed' ? 'unsure' : kw;
     const base = { kind: 'thanks' as ItemKind, actor: X, day: D, at: M.at, conv: M.conv, cu, msgs: [R.id, M.id] };
     if (!verified) {
       // A3: shown as not counted when it surely is a thank-you (keywords, or a verdict already saved);
       // an unsure one is never sent to the AI and leaves no item.
-      const v = kw === 'yes' ? null : ctx.verdictOf(M.id);
-      if (kw === 'yes' || (v && v.thanks === true)) {
-        items.push({ ...base, counted: false, pending: false, points: 0, by: kw === 'yes' ? 'keyword' : 'ai', why: NOT_VERIFIED_WHY });
+      const v = kwX === 'yes' ? null : ctx.verdictOf(M.id);
+      if (kwX === 'yes' || (v && v.thanks === true)) {
+        items.push({ ...base, counted: false, pending: false, points: 0, by: kwX === 'yes' ? 'keyword' : 'ai', why: NOT_VERIFIED_WHY });
       }
       continue;
     }
     let by: 'keyword' | 'ai';
-    if (kw === 'yes') by = 'keyword';
+    if (kwX === 'yes') by = 'keyword';
     else {
       const v = ctx.verdictOf(M.id);
       if (!v) {
@@ -609,7 +622,7 @@ export function buildTeamScore(input: ScoreInput): EngineResult {
       by = 'ai';
     }
     let reason: string | null = null;
-    if (isPoliteAck(t) && R.sender === 'agent' && isHoldingReply(R.text || '')) {
+    if (ack === 'pure') {
       reason = 'Polite "ok thanks" while still waiting for the answer';
     } else {
       let ask: Msg | null = null;
@@ -632,43 +645,98 @@ export function buildTeamScore(input: ScoreInput): EngineResult {
       });
     }
   }
-  for (const L of lastTo.values()) {
-    const { M, R, t, cd, X, D } = L;
-    // The complaint X turned around: before X's answer R (a complaint after it was never answered by
-    // X), within 72 h of M. A turnaround is used once: an earlier acceptance of a staff answer on
-    // another day, or of someone else's answer, already used the complaints before it.
-    let O: Msg | null = null;
+  // Does the customer's message t (id) accept the staff answer R? 'wait' = a polite "ok" while still
+  // waiting: after a pure holding line, or after a mixed one the AI judged not convinced, or could not
+  // judge (fifth pass, E: an 'ai_failed' verdict never replaces a +2 already earned with "AI could not
+  // decide"; when nothing else decides it is still shown so, below). After a mixed one with no verdict
+  // yet: 'unsure'. Otherwise the keywords, then a saved AI verdict when they are unsure.
+  const acceptOf = (R: InMsg, t: string, id: string): Tri | 'wait' => {
+    const a = ackTo(R, t);
+    if (a === 'pure') return 'wait';
+    const v = ctx.verdictOf(id);
+    if (a === 'mixed') return v?.convinced === true ? 'yes' : v ? 'wait' : 'unsure';
+    const kc = keywordConvinced(t);
+    if (kc !== 'unsure') return kc;
+    return v?.convinced === true ? 'yes' : v?.convinced === false ? 'no' : 'unsure';
+  };
+  // Worked out once per message: the walk back below reads it again.
+  const accMemo = new Map<Last, Tri | 'wait'>();
+  const acc = (L: Last): Tri | 'wait' => {
+    let a = accMemo.get(L);
+    if (a === undefined) { a = acceptOf(L.R, L.t, L.M.id); accMemo.set(L, a); }
+    return a;
+  };
+  // An earlier acceptance that already used the complaint up (turnedAround): keywords only, as before,
+  // because that message may be on another day, whose AI verdict a one-day computation (the frozen day)
+  // does not load. A polite "ok" to a holding line, pure or mixed, never uses it up.
+  const usesUp = (R: InMsg, t: string) => !ackTo(R, t) && keywordConvinced(t) === 'yes';
+  // Fifth pass (B): a later message keeps an earlier acceptance only when it is a new question or request
+  // (isNewAsk) with no push-back (pushesBack: a complaint, anger, "kyu", "kitne din", "pehle bhi", "mazak",
+  // "nahi chahiye", ...) and no rejection ("no", "not ok", "nahi", or an AI verdict convinced = false).
+  // Anything else is the last word, as in c113ed0.
+  const asksMore = (L: Last) => isNewAsk(L.t) && !rejectsAnswer(L.t) && !pushesBack(L.t) && ctx.verdictOf(L.M.id)?.convinced !== false;
+  // The complaint X turned around with the answer L.R: before R (a complaint after it was never
+  // answered by X), within 72 h of L.M. A turnaround is used once: an earlier acceptance of a staff
+  // answer on another day, or of someone else's answer, already used the complaints before it.
+  const turnedAround = (L: Last): Msg | null => {
+    const { M, R, cd, X, D } = L;
     for (let j = R.ci - 1; j >= 0; j--) {
       const m = cd.msgs[j];
       if (m.at < M.at - OBJECTION_LOOKBACK_MS) break;
       if (m.at >= M.at || m.sender !== 'visitor') continue;
       const tj = ctx.textOf(cd, j);
-      if (isObjection(tj)) { O = m; break; }
+      if (isObjection(tj)) return m;
       const pa = j > 0 ? cd.lastAns[j - 1] : -1;
-      if (pa >= 0 && cd.msgs[pa].sender === 'agent' && (istDay(m.at) !== D || cd.msgs[pa].au !== X) && keywordConvinced(tj) === 'yes'
-        && !ackToHolding(cd.msgs[pa], tj)) break;
+      if (pa >= 0 && cd.msgs[pa].sender === 'agent' && (istDay(m.at) !== D || cd.msgs[pa].au !== X)
+        && usesUp(cd.msgs[pa], tj)) break;
     }
-    if (!O) continue;
-    const kc = keywordConvinced(t);
-    if (kc === 'no') continue;
+    return null;
+  };
+  // The customer's messages in ALL their chats (ctx.cuVis, message order): each one's place, and the
+  // places of their complaints (isObjection). Built once per customer, so every complaint check below is
+  // a binary search and the walk back stays linear (fifth pass, D).
+  const cuIndex = new Map<string, { pos: Map<Msg, number>; obj: number[] }>();
+  const indexOf = (cu: string) => {
+    let x = cuIndex.get(cu);
+    if (!x) {
+      const pos = new Map<Msg, number>(), obj: number[] = [];
+      (ctx.cuVis.get(cu) || []).forEach((m, i) => {
+        pos.set(m, i);
+        if (isObjection(ctx.textOf(ctx.cds.get(m.conv)!, m.ci))) obj.push(i);
+      });
+      x = { pos, obj };
+      cuIndex.set(cu, x);
+    }
+    return x;
+  };
+  // The "Convinced" item for the customer's message L; false when L leaves none.
+  const judgeConvinced = (L: Last, isLast: boolean): boolean => {
+    const { M, R, t, cd, X, D } = L;
+    const O = turnedAround(L);
+    if (!O) return false;
+    const ack = ackTo(R, t);
+    // "ok thanks" to a mixed holding line: the keywords cannot decide, the AI does.
+    const kc: Tri = ack === 'mixed' ? 'unsure' : keywordConvinced(t);
+    if (kc === 'no') return false;
     const base = { kind: 'convinced' as ItemKind, actor: X, day: D, at: M.at, conv: M.conv, cu: cd.c.cu, msgs: [R.id, O.id, M.id] };
     if (!cd.c.known) {
       // A3: as for thanks: not counted, and never a question for the AI.
       const v = kc === 'yes' ? null : ctx.verdictOf(M.id);
       if (kc === 'yes' || (v && v.convinced === true)) {
         items.push({ ...base, counted: false, pending: false, points: 0, by: kc === 'yes' ? 'keyword' : 'ai', why: NOT_VERIFIED_WHY });
+        return true;
       }
-      continue;
+      return false;
     }
-    // "ok thank u" after "check karke batata hu": shown, not counted, never asked of the AI.
-    if (ackToHolding(R, t)) {
+    // "ok thank u" after "check karke batata hu" (a pure holding line): shown, not counted, never asked of the AI.
+    if (ack === 'pure') {
       items.push({ ...base, counted: false, pending: false, points: 0, by: 'keyword', why: HOLDING_ACK_WHY });
-      continue;
+      return true;
     }
-    const okWhy = `Customer complained at ${when(O.at, D)}; their last message at ${hhmm(M.at)} accepts ${ctx.nameOf(X)}'s answer.`;
+    const okWhy = `Customer complained at ${when(O.at, D)}; their ${isLast ? 'last ' : ''}message at ${hhmm(M.at)} accepts ${ctx.nameOf(X)}'s answer.`;
     if (kc === 'yes') {
       items.push({ ...base, counted: true, pending: false, points: ctx.pts('convinced', D), by: 'keyword', why: okWhy });
-      continue;
+      return true;
     }
     const v = ctx.verdictOf(M.id);
     if (!v) {
@@ -678,7 +746,45 @@ export function buildTeamScore(input: ScoreInput): EngineResult {
       items.push({ ...base, counted: true, pending: false, points: ctx.pts('convinced', D), by: 'ai', why: okWhy });
     } else if (v.convinced !== false) {
       items.push({ ...base, counted: false, pending: false, points: 0, by: 'ai', why: AI_FAILED_WHY });
+    } else return false;
+    return true;
+  };
+  // One item at most per (X, customer, day). The deciding message is the customer's last one to X that
+  // day, with two exceptions (review 2026-10-02, third to fifth pass): a polite "ok" while still waiting
+  // (acceptOf 'wait') is skipped (it decides only when nothing else does), and a later NEW QUESTION OR
+  // REQUEST with no push-back and no rejection ("aur mera dusra order kab dispatch hoga") does not take
+  // back an earlier acceptance of X's answer. One walk back from the last message (D): it crosses only
+  // such questions, polite "ok"s and "ok"s to a mixed line waiting for the AI, and never a complaint the
+  // customer made in any chat after the acceptance. Any other later message is the last word (the AI
+  // decides an unsure one). C: a complaint in any of the customer's chats after the deciding message, up
+  // to their last message to X that day, takes it back on every path (also behind a later polite "ok").
+  for (const all of toX.values()) {
+    const last = all[all.length - 1];
+    const x = indexOf(last.cd.c.cu);
+    const at = (L: Last) => x.pos.get(L.M)!;
+    let q = all.length - 1;
+    while (q >= 0 && acc(all[q]) === 'wait') q--;
+    if (q >= 0) {
+      const Q = all[q];
+      let pick = Q;
+      if (acc(Q) !== 'yes' && asksMore(Q)) {
+        const k = countLT(x.obj, at(Q));
+        const wall = k > 0 ? x.obj[k - 1] : -1;            // the customer's last complaint before Q
+        for (let i = q - 1; i >= 0; i--) {
+          const P = all[i];
+          if (at(P) < wall) break;
+          const a = acc(P);
+          if (a === 'wait') continue;
+          if (a === 'yes') { if (turnedAround(P)) pick = P; break; }
+          if (a === 'unsure' && ackTo(P.R, P.t) === 'mixed') continue;
+          if (!asksMore(P)) break;
+        }
+      }
+      const c = countLE(x.obj, at(pick));                   // the first complaint after the deciding message
+      const takenBack = c < x.obj.length && x.obj[c] <= at(last);
+      if (!takenBack && judgeConvinced(pick, pick === last)) continue;
     }
+    if (acc(last) === 'wait') judgeConvinced(last, true);
   }
 
   // ── 3.5.5 Picked, sent, received, taken from, released ──

@@ -9,6 +9,11 @@
 //   W10 owner answers 2026-10-02: weights (A2), points from the install day (A4), verified = the app's test (A3)
 //   W11 review fixes 2026-10-02: a polite "ok thank u" in any spelling, more holding lines, a courtesy
 //       nudge after an unanswered question still waits
+//   W12 review 2026-10-02 (fourth pass): holdingKind: 'pure' = only a holding line, 'mixed' = a holding
+//       phrase AND a fact (the AI decides), null = none; English, Hinglish and Devanagari; no length limit
+//   W13 a new question / request vs a rejection after an accepted answer (isNewAsk, rejectsAnswer)
+//   W14 fifth pass (lead design v5): pure / mixed by what is LEFT of the holding line (the battery,
+//       both directions)              W15 push-back in a later question (pushesBack)
 // The engine (engine.ts) is tested on synthetic chats in team-score-engine.js.
 // TEAM_SCORE_JS_DIR (set by team-score-mutate.js only) loads already compiled, mutated modules.
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert');
@@ -181,6 +186,119 @@ t('W11 isHoldingReply: "Dekhta hu", "check kar raha hu", "ek minute"; never a ba
   [true, ['Dekhta hu', 'ruko check kar raha hu', 'Checking, ek minute', 'dekh raha hu', 'ek min sir', 'Main dekhti hun']],
   [false, ['After checking, your order arrives on 7 Oct', 'Your order arrives in 1 week', 'Aapka order 11 min me nahi, kal aayega', 'We checked: it is out for delivery']],
 ]));
+// The 12 lines of the third-pass check (NOT OK item): every one is a holding line; 'pure' when it states
+// nothing, 'mixed' when it carries a fact, even a conditional or future one (no grammar parsing).
+const CHECK12 = [
+  ['pure', 'Please wait while I check your order'], ['pure', 'please wait, checking your order'], ['pure', 'Kindly wait, we are looking into it'],
+  ['pure', 'Please wait a moment while we check the status'], ['pure', 'please wait for some time'],
+  ['mixed', 'Let me check if your refund has been initiated'], ['mixed', 'We will update you once it is dispatched'],
+  ['mixed', "I'll check if it is delivered and update you"], ['mixed', 'Let me confirm whether the refund is processed'],
+  ['mixed', 'Kal tak confirm karke batata hu delivery kab hogi'], ['mixed', 'We will update you within 2 days'], ['mixed', "I'll share the tracking link shortly"],
+];
+t('W12 holdingKind: pure = only a holding line, mixed = a holding phrase and a fact, null = no holding phrase (English / Hinglish / Devanagari)', () => {
+  table(words.holdingKind, [
+    ['pure', [
+      // English
+      'Let me check', 'We will check and update you', 'Please wait sir', 'please wait', 'Kindly wait, I am checking', 'let me check the tracking',
+      'Sorry for the inconvenience, we will check with the courier and update you shortly.', 'Please wait while I check your order',
+      'please wait, checking your order', 'Kindly wait, we are looking into it', 'Please wait a moment while we check the status', 'please wait for some time',
+      // Hinglish
+      'Ek minute, check karke batata hu', 'confirm karke batata hu', 'confirm karke update karta hu', 'Thoda wait kariye', 'Dekhti hu maam',
+      'tracking check karke batata hu', 'ek min sir', 'ruko', 'Dekhta hu', 'main dekh ke batata hu',
+      // Devanagari
+      'एक मिनट, चेक करके बताता हूँ', 'मैं देखता हूँ', 'कृपया प्रतीक्षा करें।', 'पता करके बताती हूं', 'थोड़ा इंतज़ार करें',
+    ]],
+    ['mixed', [
+      // English: a fact, done work, a date, a day count, a link, even with "if" / "once" / "within"
+      'Let me check if your refund has been initiated', 'We will update you once it is dispatched', "I'll check if it is delivered and update you",
+      'Let me confirm whether the refund is processed', 'We will update you within 2 days', "I'll share the tracking link shortly",
+      'Please wait 5-7 working days', 'We will update you, your order was dispatched today', 'Ek minute: your tracking id is ST12345678',
+      'Order shipped, please wait for delivery', 'Please wait for the delivery, it is with the courier', 'Please wait, we will update you on 7/10',
+      'Let me check: https://example.com/t/1', 'We will update you by 7 Oct', 'Please wait, your order is on the way',
+      // Fifth pass: more than one word left beyond the filler ("noted", "concern", "courier", "partner"): the AI decides.
+      'We have noted your concern and we will check with our courier partner and update you shortly sir',
+      // Hinglish
+      'Aapka refund process ho gaya hai, please wait 5-7 working days', 'Kal aa jayega, please wait', 'Ek minute, link bhej raha hu',
+      'Ek minute, cancel ho gaya hai', '2 din me deliver hoga, ek minute', 'Kal tak confirm karke batata hu delivery kab hogi',
+      'Haan size M available hai, ek minute', 'Refund kar diya hai, ek minute', 'Exchange approve kar di hai, please wait', 'team ko forward kar diya hai',
+      'please wait, courier ne pickup kar liya hai', 'Haan exchange possible hai, check karke batata hu pickup kab hoga', 'please wait sir aapka order aa raha hai',
+      'Sir, humne warehouse team se confirm kiya hai ki size M stock me hai, main check karke batata hu ki pickup kab hoga', 'please wait till Monday',
+      'Please wait one more day', 'Thoda wait kariye, order raste me hai',
+      // Devanagari
+      'आपका रिफंड हो गया है, कृपया 5-7 दिन प्रतीक्षा करें', 'आपका ऑर्डर कल आ जाएगा, एक मिनट', 'एक मिनट, ट्रैकिंग लिंक भेज रहा हूँ', 'रिफंड कर दिया है, एक मिनट',
+    ]],
+    [null, [
+      'Courier se baat ki, kal pakka aa jayega', 'Your order arrives on 7 Oct', 'Aapka order kal aa jayega', 'After checking, your order arrives on 7 Oct',
+      'Haan size M available hai', 'Refund kar diya hai', 'thanks for waiting', 'आपका ऑर्डर कल आ जाएगा', '', '   ',
+    ]],
+  ]);
+  for (const [kind, line] of CHECK12) assert.strictEqual(words.holdingKind(line), kind, line);
+});
+t('W12 holdingKind: no length limit; isHoldingReply = pure or mixed', () => {
+  const long = 'We will check and update you' + ' sir'.repeat(60);
+  assert.ok(Array.from(long).length > 200);
+  assert.strictEqual(words.holdingKind(long), 'pure');
+  assert.strictEqual(words.holdingKind('एक मिनट '.repeat(40).trim()), 'pure');
+  assert.strictEqual(words.holdingKind(long + ', your order was dispatched today'), 'mixed');
+  for (const [x, exp] of [['Please wait while I check your order', true], ['Aapka refund process ho gaya hai, please wait 5-7 working days', true],
+    ['Courier se baat ki, kal pakka aa jayega', false], ['', false]]) assert.strictEqual(words.isHoldingReply(x), exp, x);
+});
+t('W13 isNewAsk: a new question or request (English / Hinglish / Devanagari)', () => table(words.isNewAsk, [
+  [true, ['aur mera dusra order kab dispatch hoga', 'dusra order kab aayega?', 'pickup kitne baje hoga bhai', 'bill bhej do', 'can you check my other order',
+    'size M chahiye', 'mera exchange ka status batao', 'what about my second order', 'kya COD hai', 'दूसरा ऑर्डर कब आएगा', 'बिल भेज दो', 'ok?']],
+  [false, ['ok', 'theek hai', 'mera number 9876543210 hai', 'I am not convinced', 'no', 'not ok', 'nahi', 'mujhe kal office jaana hai', '']],
+]));
+t('W13 rejectsAnswer: "no", "not ok", "nahi", "I am not convinced", a complaint; never a plain new question', () => table(words.rejectsAnswer, [
+  [true, ['no', 'not ok', 'nahi', 'I am not convinced', 'no, kab aayega?', 'not ok, when will it come?', 'ye sahi nahi hai, kab aayega',
+    'abhi tak nahi aaya', 'refund chahiye', 'नहीं, कब आएगा?', "I don't agree, why so late?", 'nope']],
+  [false, ['dusra order kab aayega?', 'kab aayega', 'bill bhej do', 'no problem', 'no worries, what about my other order?', 'theek hai', 'ok thanks',
+    'aur mera dusra order kab dispatch hoga', 'दूसरा ऑर्डर कब आएगा']],
+]));
+// Fifth pass (lead design v5): the battery. 'pure' = nothing but the holding line once the holding phrases
+// and the polite / filler words are taken out (at most one word left, not a yes / no, no fact); anything
+// more is 'mixed' and goes to the AI.
+const BATTERY_PURE = [
+  'Please wait while I check your order', 'please wait, checking your order', 'Kindly wait, we are looking into it',
+  'Please wait a moment while we check the status', 'please wait for some time', 'Ek minute, check karke batata hu', 'check karke batata hu sir',
+  'thoda wait kariye', 'I am looking into it', 'एक मिनट सर', 'मैं चेक करके बताता हूँ', 'Let me check and update you', 'dekhta hu ek minute',
+];
+const BATTERY_MIXED = [
+  'Pickup kal hoga, thoda wait kariye', 'Order aaj nikal jayega, plz wait', 'Refund 24-48 hours me aa jayega, plz wait', 'आपका ऑर्डर कल पहुँच जाएगा, एक मिनट',
+  'रिफंड प्रोसेस हो रहा है, कृपया प्रतीक्षा करें', 'We are looking into the delay, your parcel is at the Delhi hub', 'Wait karo, order aa jayega',
+  'Delivery kal tak hogi, please wait', 'Dispatch hua hai sir, please wait', 'Haan COD hai, ek minute', 'Haan size M available hai, ek minute',
+  'Aapka refund process ho gaya hai, please wait 5-7 working days', 'Let me check if your refund has been initiated', 'We will update you once it is dispatched',
+  "I'll check if it is delivered and update you", 'Kal tak confirm karke batata hu delivery kab hogi', 'We will update you within 2 days',
+  "I'll share the tracking link shortly", 'Courier ne pickup kar liya hai, please wait',
+];
+t('W14 holdingKind, fifth pass: the battery, both directions (pure = only the holding line; mixed = anything more)', () => {
+  for (const line of BATTERY_PURE) assert.strictEqual(words.holdingKind(line), 'pure', line);
+  for (const line of BATTERY_MIXED) assert.strictEqual(words.holdingKind(line), 'mixed', line);
+});
+t('W14 holdingKind, fifth pass: what is left decides (whole words cut, a lazy "will ... check" gap, a yes / no is an answer, the facts stay a safety net)', () => table(words.holdingKind, [
+  ['pure', [
+    'Let me check and get back to you', 'tracking check karke batata hu', 'courier se pata karke batata hu', 'Okay, let me check that for you',
+    'Please wait sir, I am checking with the courier', 'I will escalate this to the team', 'Hum check karke update karte hai', 'कन्फर्म करके बताता हूँ',
+    'please wait sir, dekh raha hu', "Thanks for your patience, we'll update you shortly 🙏",
+  ]],
+  ['mixed', [
+    // the words between "will" and "update" are never swallowed
+    'We will check, your parcel is at the hub, and update you',
+    // a yes / no is an answer, even alone
+    'Ji haan, ek minute', 'Yes sir, please wait', 'Abhi nahi, ek minute', 'नहीं, एक मिनट',
+    // one word left, but a fact (HOLDING_FACT): still mixed
+    'Delivered sir, ek minute', 'Please wait, it is on the way', 'Kar diya sir, ek minute', 'डिस्पैच, कृपया प्रतीक्षा करें',
+    // a real answer with "wait karo" / "ruko" in it
+    'Ruko mat, order nikal gaya hai', 'Aapka order Delhi hub pe hai, please wait', 'Refund in process hai, please wait',
+  ]],
+]));
+t('W15 pushesBack: a complaint, anger or a push-back word in a later question (English / Hinglish / Devanagari); never a plain new question', () => table(words.pushesBack, [
+  [true, ['itna time kyu lag raha hai?', 'why is it taking so long?', 'pehle bhi yahi bola tha, kab aayega?', 'aap log kuch karte kyu nahi?',
+    'seriously? kitne din aur?', 'mujhe nahi chahiye ab ye order', 'ye kya mazak hai', 'kitna time aur lagega', 'phir se wahi baat', 'why so late',
+    'abhi tak nahi aaya', 'refund chahiye', 'cancel kar do', 'still not received', 'dusra order kab aayega???', 'DUSRA ORDER KAB AAYEGA',
+    'इतना समय क्यों लग रहा है?', 'पहले भी यही बोला था', 'ये क्या मज़ाक है', 'मुझे नहीं चाहिए']],
+  [false, ['aur mera dusra order kab dispatch hoga', 'dusra order kab aayega?', 'bill bhej do', 'can you check my other order', 'size M chahiye',
+    'what about my second order', 'COD available hai kya', 'pickup kitne baje hoga bhai', 'Can I change my address', 'दूसरा ऑर्डर कब आएगा', 'ok', '']],
+]));
 // ── W4. Email ──────────────────────────────────────────────────
 t('W4 stripEmailQuote', () => {
   assert.strictEqual(words.stripEmailQuote('Where is my order?\n\nThanks,\nRam'), 'Where is my order?');
@@ -210,6 +328,8 @@ t('W5 the judge prompt carries no names, points or scores', () => {
   for (const w of ['Rahul', 'points', 'score']) assert.ok(!words.JUDGE_INSTRUCTION.includes(w) && !s.includes(w), w);
   assert.ok(!words.JUDGE_INSTRUCTION.includes('Anurag'));
   assert.ok(/THANKS=yes\|no CONVINCED=yes\|no$/.test(words.JUDGE_INSTRUCTION));
+  // Fourth pass: a polite ok to a reply that only promises to check is THANKS=no CONVINCED=no; a real answer is judged normally.
+  assert.ok(words.JUDGE_INSTRUCTION.includes('If the team\'s reply only promises to check, confirm or update later and gives no answer yet, a polite ok / thanks is THANKS=no and CONVINCED=no; if it gives a real answer (even with "please wait N days"), judge normally.'));
 });
 t('W5 parseJudgeReply', () => {
   assert.deepStrictEqual(words.parseJudgeReply('THANKS=yes CONVINCED=no'), { thanks: true, convinced: false });
