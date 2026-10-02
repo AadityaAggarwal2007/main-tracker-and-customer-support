@@ -37,7 +37,15 @@ const RF_LINK = 'https://shiptrack.store/refund#' + 'Zq7_Tt-9'.repeat(5) + 'abc'
 // line of refund-threat.ts, after the chat is marked Refund).
 const OWNER_EXAMPLE = 'I have raised the complaint against u in consumer department and also at instagram team against u';
 const MODEL_REFUND_PROMISE = /processing your refund|refund (?:process|initiate)\w* kar (?:rahe|diya|di|dete)|refund (?:has been |is |was )?(?:approved|initiated|processed)|रिफंड प्रोसेस/i;
-const REFUND_TIME = /\d+\s*(?:-\s*\d+\s*)?(?:din|days?|ghant\w*|hours?|working)|₹|\brs\.?\s*\d/i;
+// A refund time or amount: a duration or money within the same sentence as a refund word. The team's usual
+// "we will reply within 1 hour" line and an order's price in the order details are not refund promises
+// (2026-10-02 cleanup: the first regex failed on exactly those).
+const REFUND_WORD = '(?:refund|paise|paisa|amount|credit\\w*|wapas)';
+const REFUND_SPAN = '(?:\\d+\\s*(?:-\\s*\\d+\\s*)?(?:din|days?|ghant\\w*|hours?|working)|₹\\s*\\d|\\brs\\.?\\s*\\d)';
+const REFUND_TIME = new RegExp(`${REFUND_WORD}[^.!?\\n]{0,60}${REFUND_SPAN}|${REFUND_SPAN}[^.!?\\n]{0,60}${REFUND_WORD}`, 'i');
+// A form link or a form mentioned, without counting the order's own tracking link (the same as
+// src/lib/refund/link-mask.ts FORM_LINK_RE + FORM_WORDS_RE, which is all the live guard removes).
+const FORM_ONLY = /docs\.google\.com\/forms|forms\.gle|\/refund#|\b(?:refund|return|exchange)\b[^.!?\n]{0,40}\bforms?\b|\bforms?\b[^.!?\n]{0,40}\b(?:refund|return|exchange)\b|\bgoogle\s*forms?\b/i;
 
 const verifiedCtx = (status, eta, extra = {}) => ({
   verified: '#4715', fresh: { found: true, count: 1, orders: [order({ status, estimated_delivery: eta, ...extra })] },
@@ -266,13 +274,13 @@ module.exports = [
     expect: { match: [ASKS_AGAIN], notMatch: [MODEL_REFUND_PROMISE, FORM_TALK, REFUND_TIME] } },
   { id: 'refund-threat-not-late-no-promise', title: 'Verified, order not late yet, "nahi aaya to consumer court jaungi": the model never promises a refund',
     ...verifiedCtx('In Transit', '2026-10-30'), history: [V('order kab aayega? time pe nahi aaya to consumer court jaungi')],
-    expect: { notMatch: [MODEL_REFUND_PROMISE, FORM_TALK, ARRIVES_TODAY] }, liveOnly: true, watch: true },
+    expect: { notMatch: [MODEL_REFUND_PROMISE, FORM_ONLY, ARRIVES_TODAY] }, liveOnly: true, watch: true },
   { id: 'refund-threat-after-promise-no-time', title: 'After Chikki\'s refund promise, "refund kab milega": no time, no amount, no form',
     ...verifiedCtx('In Transit', '2026-09-28'),
     history: [V('order bahut late hai, chargeback karungi', 2 * HOUR),
       A('Pareshani ke liye sorry. Hum aapka refund process kar rahe hain, hamari team isi chat me aapko refund form bhejegi jisme aap apni UPI / bank details de payenge.', 2 * HOUR),
       V('refund kab milega?')],
-    expect: { notMatch: [REFUND_TIME, FORM_TALK, /refund (?:has been |is )?(?:approved|processed)/i] }, liveOnly: true, watch: true },
+    expect: { notMatch: [REFUND_TIME, FORM_ONLY, /refund (?:has been |is )?(?:approved|processed)/i] }, liveOnly: true, watch: true },
 
   // ── Code-level behaviour of getAIResponse (offline, scripted model) ────────────────
   { id: 'code-today-cut', title: 'A sentence promising arrival today is cut out of the reply',
