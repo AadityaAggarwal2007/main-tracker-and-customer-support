@@ -121,7 +121,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const { id, name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor } = await request.json();
+    const { id, name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor, originCity } = await request.json();
 
     if (!id) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
