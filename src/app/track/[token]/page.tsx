@@ -7,7 +7,7 @@ import { JourneyStepper, JourneyNoticeBanner, JourneyEta, JourneyActivity, Journ
 interface OrderItem { brand: string; product_name: string; quantity: number; price: number; }
 interface TrackingOrder {
   order_id: string; customer_name: string; tracking_status: string; tracking_id: string;
-  courier_partner: string; estimated_delivery: string; order_total: number; is_cancelled: boolean;
+  estimated_delivery: string; order_total: number; is_cancelled: boolean;
   city: string; state: string; created_at: string; order_items: OrderItem[];
 }
 interface Business { name: string; logo_url: string; support_email: string; support_phone: string; }
@@ -201,21 +201,18 @@ export default function TrackingTokenPage({ params }: { params: { token: string 
             </div>
           </div>
 
-          {/* RIGHT — Courier + Recent Activities */}
+          {/* RIGHT — Tracking ID + Recent Activities */}
           <div className="st-card" style={{ display: 'flex', flexDirection: 'column' }}>
-            {/* Courier header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '14px', marginBottom: '16px' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Courier Partner</div>
-                <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A' }}>{order.courier_partner || 'Courier Partner'}</div>
-              </div>
-              {order.tracking_id && (
+            {/* Tracking ID header, on the right as before. The courier's name is never shown to the
+                customer (owner, 2026-10-02); staff screens still have it. */}
+            {order.tracking_id && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '14px', marginBottom: '16px' }}>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: '12px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tracking ID</div>
                   <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A' }}>{order.tracking_id}</div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Recent Activities heading */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>

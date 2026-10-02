@@ -11,7 +11,7 @@ interface TemplateData {
   orderId: string;
   productNames: string[];
   trackingId: string;
-  courierPartner: string;
+  courierPartner: string;  // kept so callers compile; NEVER rendered: customers do not see the courier (owner, 2026-10-02)
   trackingUrl: string;
   businessName: string;
   businessLogoUrl?: string;
@@ -144,13 +144,6 @@ export function generateTrackingEmail(
        </tr>`
     : '';
 
-  const courierRow = data.courierPartner
-    ? `<tr>
-        <td style="padding:6px 0;font-size:13px;color:${MUTED_COLOR};">Courier</td>
-        <td style="padding:6px 0;font-size:13px;font-weight:600;text-align:right;">${data.courierPartner}</td>
-       </tr>`
-    : '';
-
   const deliveryRow = data.estimatedDelivery
     ? `<tr>
         <td style="padding:6px 0;font-size:13px;color:${MUTED_COLOR};">Est. Delivery</td>
@@ -177,7 +170,6 @@ export function generateTrackingEmail(
         <td style="padding:6px 16px;font-size:13px;font-weight:600;text-align:right;">${data.city}</td>
       </tr>
       ${trackingRow ? trackingRow.replace(/padding:6px 0/g, 'padding:6px 16px') : ''}
-      ${courierRow ? courierRow.replace(/padding:6px 0/g, 'padding:6px 16px') : ''}
       ${deliveryRow ? deliveryRow.replace(/padding:6px 0/g, 'padding:6px 16px') : ''}
     </table>
 

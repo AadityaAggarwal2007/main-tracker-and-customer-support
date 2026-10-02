@@ -28,6 +28,8 @@ async function getBusiness(businessId: unknown) {
 }
 
 // GET - public tracking by token or orderId+phone
+// The courier's name (orders.courier_partner) is never selected here: customers do not see
+// the courier on any tracking page (owner, 2026-10-02). Staff screens read it elsewhere.
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const token   = searchParams.get('token');
@@ -39,7 +41,7 @@ export async function GET(request: NextRequest) {
     const order = await queryOne<Record<string, unknown>>(
       `SELECT
          o.order_id, o.customer_name, o.tracking_status, o.tracking_id,
-         o.courier_partner, o.status_updated_at, o.estimated_delivery,
+         o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
          o.state, o.pincode, o.created_at, o.business_id, o.delivered_at,
          b.origin_city,
@@ -85,7 +87,7 @@ export async function GET(request: NextRequest) {
     const order = await queryOne<Record<string, unknown>>(
       `SELECT
          o.order_id, o.customer_name, o.tracking_status, o.tracking_id,
-         o.courier_partner, o.status_updated_at, o.estimated_delivery,
+         o.status_updated_at, o.estimated_delivery,
          o.order_total, o.payment_method, o.is_cancelled, o.city,
          o.state, o.pincode, o.created_at, o.customer_mobile, o.business_id, o.delivered_at,
          b.origin_city,
