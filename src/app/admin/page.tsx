@@ -14,8 +14,8 @@ import { useRouter } from 'next/navigation';
 import {
   Package, Upload, Users, Mail,
   Check, AlertCircle, ShoppingBag,
-  Loader2, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
-  Settings, Timer, ArrowRight, ToggleLeft, ToggleRight, Trophy, Undo2
+  Loader2, Trash2, Building2, Plus,
+  Settings, Trophy, Undo2
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
@@ -60,9 +60,6 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [emailFilter, setEmailFilter] = useState('');
-  const [sendingEmail, setSendingEmail] = useState(false);
-  const [showEmailModal, setShowEmailModal] = useState(false);
-  const [emailStatus, setEmailStatus] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [emailsSentToday, setEmailsSentToday] = useState(0);
@@ -78,9 +75,6 @@ export default function AdminDashboard() {
   const [uploadPanelId, setUploadPanelId] = useState<string>(''); // REQUIRED: panel for CSV
   const [dragOver, setDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, percent: 0 });
-  const [showUploadEmailPrompt, setShowUploadEmailPrompt] = useState(false);
-  const [uploadNewOrderIds, setUploadNewOrderIds] = useState<string[]>([]);
-  const [sendingUploadEmails, setSendingUploadEmails] = useState(false);
 
   // Draft queue
   const [queueStats, setQueueStats] = useState<{ pending: number; sent?: number; processing: number; done: number; failed: number; total: number } | null>(null);
@@ -1531,20 +1525,6 @@ export default function AdminDashboard() {
       {deletePanelTarget && (
         <DeletePanelModal deleteConfirmText={deleteConfirmText} deleteImpact={deleteImpact} deleteImpactLoading={deleteImpactLoading} deletePanelTarget={deletePanelTarget} deletingPanel={deletingPanel} handleDeletePanel={handleDeletePanel} setDeleteConfirmText={setDeleteConfirmText} setDeleteImpact={setDeleteImpact} setDeletePanelTarget={setDeletePanelTarget} />
       )}
-    </div>
-  );
-}
-
-
-/* ═══ STAT CARD COMPONENT ═══ */
-function StatCard({ icon: Icon, label, value, color }: { icon: typeof ShoppingBag; label: string; value: number; color: string }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-card-header">
-        <span className="stat-card-label">{label}</span>
-        <Icon size={18} className="stat-card-icon" style={{ color }} />
-      </div>
-      <p className="stat-card-value">{value}</p>
     </div>
   );
 }
