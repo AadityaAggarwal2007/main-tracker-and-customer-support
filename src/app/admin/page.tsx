@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
+import TeamScoreCard from '@/components/TeamScoreCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { ROLE_INFO, can, isSuperAdmin, type Permission, type Role } from '@/lib/permissions';
@@ -14,7 +15,7 @@ import {
   Package, Upload, Users, LogOut, Search, Eye, Link2, MessageCircle, Mail, ShieldCheck, UserRound,
   ChevronLeft, ChevronRight, X, Check, Truck, AlertCircle, ShoppingBag,
   Loader2, FileUp, Info, UserPlus, Trash2, Building2, Plus, Lock, Unlock,
-  Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight
+  Activity, Zap, Calendar, StickyNote, Settings, Timer, ArrowRight, ToggleLeft, ToggleRight, Trophy
 } from 'lucide-react';
 
 /* ═══════════ TYPES ═══════════ */
@@ -52,7 +53,7 @@ interface PanelImpact {
   chatSites: number; chatConversations: number; chatMessages: number;
   teamMembers: number; teamMembersLosingAccess: number;
 }
-type TabType = 'orders' | 'upload' | 'team' | 'settings';
+type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score';
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -860,6 +861,7 @@ export default function AdminDashboard() {
     { id: 'upload' as TabType, label: 'Upload CSV', icon: Upload, show: hasPermission('upload_csv') },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
+    { id: 'score' as TabType, label: isSuperAdmin(user) ? 'Team score' : 'My score', icon: Trophy, show: isSuperAdmin(user) || can(user, 'chat.reply') },
   ].filter((i) => i.show);
 
   return (
@@ -1023,7 +1025,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab}</span>
         </div>
 
         <div className="main-inner">
@@ -2196,6 +2198,9 @@ export default function AdminDashboard() {
               <TeamCard token={token} panels={businesses} onAlert={showAlert}
                 onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />
             </div>
+          )}
+          {activeTab === 'score' && (isSuperAdmin(user) || can(user, 'chat.reply')) && (
+            <div className="animate-fade-in-up"><TeamScoreCard token={token} onAlert={showAlert} mine={!isSuperAdmin(user)} /></div>
           )}
         </div>
       </main>

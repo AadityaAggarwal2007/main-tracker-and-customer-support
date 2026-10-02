@@ -403,6 +403,8 @@ t('rulebook: numbers unique and in order, every rule complete, panel values fill
   // Chat team (owner, 2026-10-01): 7.7-7.9 and 9.6; the Super Admin's own reply makes a chat his (owner Q2).
   for (const id of ['7.7', '7.8', '7.9', '9.6']) assert.ok(rb.RULE_IDS.has(id), id);
   assert.ok(/Super Admin's first reply or Take over/.test(rule('7.7').text));
+  // Owner answer A5 (2026-10-02, chat-team-owner-back.sql): his customers go to the open pool.
+  assert.ok(/Super Admin's customers go to the team instead: if their latest chat was his, or they write again in a Closed chat he holds, it goes to the open pool \(his open chats stay his\)\./.test(rule('7.7').text));
 });
 t('effort: groups by score, visitors stay Normal, panel choice cleaned', () => {
   assert.strictEqual(ef.groupFor(false, 99), 'visitor');

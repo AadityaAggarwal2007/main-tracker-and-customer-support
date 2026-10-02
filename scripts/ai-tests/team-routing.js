@@ -13,7 +13,9 @@
 //     would wait on its own lock);
 //   - conversations.assigned_to and chat_events.note keep their CHECKs (chat-team.sql);
 //   - trg_chat_status_event is played: one 'status' row per real status change, named by the
-//     transaction's set_config, else customer / ai / system.
+//     transaction's set_config, else customer / ai / system;
+//   - trg_chat_owner_back is played (chat-team-owner-back.sql, owner answer A5, R23): a Closed chat
+//     of the Super Admin's that the customer reopens goes to the open pool.
 // Every other statement must match one the routes are known to send, or the test fails.
 // The SQL itself (triggers, grants) is checked on the server in a rolled-back transaction.
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert');
@@ -108,7 +110,7 @@ const db = {
   ],
   convs: [], messages: [], events: [], caseEvents: [], presence: [], attachments: [],
   waiting: {}, waitingAsked: [], stmts: [], fail: [], after: [], lockWaits: 0,
-  teamGate: null, presenceMissing: false, eventsBroken: false,
+  teamGate: null, presenceMissing: false, eventsBroken: false, ownerBack: true,
   list: null, unanswered: { n: 4, mine_open: 2, mine_waiting: 1 },
 };
 const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
@@ -165,6 +167,22 @@ function add(tx, arr, item) {
 }
 function setRow(tx, obj, patch) {
   const before = { ...obj };
+  // trg_chat_owner_back (chat-team-owner-back.sql, owner answer A5): BEFORE UPDATE OF status. A Closed
+  // chat the Super Admin held BEFORE the update that is reopened with no staff person named in the
+  // transaction (the customer's own writes) goes to the open pool, its transfer event first. A chat
+  // that only becomes his in the same update (a merge target taking his chat's holder) stays his.
+  // A failed event only warns.
+  if ('status' in patch && db.ownerBack && db.convs.includes(obj) && !(tx && tx.actor)) {
+    const next = { ...obj, ...patch };
+    if (before.status === 'resolved' && next.status !== 'resolved' && before.assigned_to === 'owner' && next.assigned_to === 'owner' && !next.merged_into && !db.eventsBroken) {
+      add(tx, db.events, {
+        id: ++seq, conversation_id: obj.id, site_id: obj.site_id, kind: 'transfer', actor: 'system', actor_name: 'System',
+        from_owner: 'owner', to_owner: null, from_status: before.status, to_status: next.status, reason: 'owner_customer_back',
+        note: null, message_id: null, meta: { auto: true },
+      });
+      patch = { ...patch, assigned_to: null, assigned_at: nowIso() };
+    }
+  }
   if ('assigned_to' in patch && !(patch.assigned_to === null || patch.assigned_to === 'owner' || UUID.test(patch.assigned_to))) {
     throw pgErr('23514', 'new row for relation "conversations" violates check constraint "conversations_assigned_to_check"');
   }
@@ -1667,6 +1685,196 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(!/o\.assigned_to IS NOT NULL/.test(fn), 'emptied siblings are no longer skipped');
     ok(/CREATE INDEX IF NOT EXISTS chat_events_emptied_idx ON chat_events \(conversation_id\)\s+WHERE kind = 'transfer' AND to_owner IS NULL;/.test(sql));
     ok(/CREATE INDEX IF NOT EXISTS chat_events_message_idx ON chat_events \(message_id\) WHERE message_id IS NOT NULL;/.test(sql));
+  });
+
+  // ── R23: the Super Admin's customers go to the team (owner answer A5, 2026-10-02) ─
+  // chat-team-owner-back.sql: (1) a returning customer whose latest held chat is his inherits nothing
+  // (the SQL, below; the trigger itself runs in the rolled-back server trial); (2) trg_chat_owner_back,
+  // played by the fake database: a Closed chat he holds that the CUSTOMER reopens goes to the open
+  // pool, with one System transfer to nobody. His own reply / Take over / Hand to AI keeps it his.
+  const emptiedChat = (id) => db.events.some((e) => e.kind === 'transfer' && e.to_owner === null
+    && (e.conversation_id === id || (Array.isArray(e.meta && e.meta.group) && e.meta.group.includes(id))));
+  const BACK_EVENT = (from, to) => ({ kind: 'transfer', actor: 'system', actor_name: 'System', from_owner: 'owner', to_owner: null,
+    from_status: from, to_status: to, reason: 'owner_customer_back', note: null, meta: { auto: true } });
+  const EV_KEYS = ['kind', 'actor', 'actor_name', 'from_owner', 'to_owner', 'from_status', 'to_status', 'reason', 'note', 'meta'];
+  const customerSays = async (id, text, siteKey = 'key-s1') => {
+    global.__ai.next = { content: 'Your order is on the way and should reach you in 2 days.' };
+    const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey, content: text }));
+    status(r, 201, id);
+    return r;
+  };
+
+  await t('R23 the customer writes again in a Closed chat the Super Admin holds: it goes to the open pool, logged as a System transfer', async () => {
+    at(ist(11, 0, 4));
+    const old = new Date(clock - 86_400_000).toISOString();
+    known({ id: 'r23a', status: 'resolved', assigned_to: 'owner', assigned_at: old, customer_key: '9000000231', closed_by_name: 'Super Admin' });
+    const heldBefore = (await list('owner', '?mine=1')).body.mine.held;
+    const e0 = db.events.length;
+    await customerSays('r23a', 'hello, any update on my order?');
+    deq([C('r23a').status, C('r23a').assigned_to, C('r23a').assigned_at], ['ai_handling', null, nowIso()]);
+    const ev = db.events.slice(e0).filter((e) => e.conversation_id === 'r23a');
+    deq(ev.map((e) => e.kind), ['transfer', 'status']);                       // the BEFORE trigger's row first
+    deq(pick(ev[0], EV_KEYS), BACK_EVENT('resolved', 'ai_handling'));
+    // The status trigger (AFTER) sees the final row: the customer reopened it, nobody holds it now.
+    deq(pick(ev[1], ['actor', 'from_owner', 'to_owner', 'from_status', 'to_status']), { actor: 'customer', from_owner: 'owner', to_owner: null, from_status: 'resolved', to_status: 'ai_handling' });
+    // The row trg_chat_inherit_owner keys on: the AI's next hand-off cannot give it back to him.
+    ok(emptiedChat('r23a'));
+    // His open chats are unchanged ("Give all N" counts the same); the reopened chat was never one of them.
+    eq((await list('owner', '?mine=1')).body.mine.held, heldBefore);
+    // The team sees why in the chat's history; nobody holds it, so a member may answer.
+    const g = await thread('rahul', 'r23a');
+    deq(pick(g.body.team_log[0], ['kind', 'actor', 'actor_name', 'from_name', 'to_name', 'reason', 'note']),
+      { kind: 'transfer', actor: 'system', actor_name: 'System', from_name: 'Super Admin', to_name: null, reason: 'owner_customer_back', note: null });
+    deq([g.body.staff.holder, g.body.staff.can_act], [null, true]);
+    // The first member to reply gets it (an ordinary claim from the open pool).
+    status(await reply('anurag', 'r23a', 'Hi, I am checking your order now'), 200);
+    deq([C('r23a').assigned_to, C('r23a').status], [ANURAG, 'agent_handling']);
+    deq(pick(evs('r23a', 'claim')[0], ['actor', 'from_owner', 'to_owner', 'reason']), { actor: ANURAG, from_owner: null, to_owner: ANURAG, reason: 'reply' });
+    // Writing again in a chat that is open (not Closed) changes nothing: the trigger is for a reopen only.
+    const e1 = db.events.length;
+    await customerSays('r23a', 'ok');
+    deq([C('r23a').assigned_to, db.events.slice(e1).filter((e) => e.kind === 'transfer').length], [ANURAG, 0]);
+  });
+
+  await t('R23 every way a customer reopens his Closed chat sends it to the pool (AI off, Refund / Ship again, merge); members\' and unheld chats are as before', async () => {
+    at(ist(12, 0, 4));
+    // A site with the AI off: Needs you, nobody holds it.
+    siteOf('S1').ai_enabled = false;
+    try {
+      known({ id: 'r23off', status: 'resolved', assigned_to: 'owner', customer_key: '9000000232' });
+      await customerSays('r23off', 'please call me back');
+      deq([C('r23off').status, C('r23off').assigned_to], ['human_needed', null]);
+      deq(pick(evs('r23off', 'transfer')[0], EV_KEYS), BACK_EVENT('resolved', 'human_needed'));
+    } finally { siteOf('S1').ai_enabled = true; }
+    // A Refund / Ship again chat of his: With team (no AI), nobody holds it.
+    known({ id: 'r23case', status: 'resolved', assigned_to: 'owner', case_kind: 'refund', case_order_id: '#r23case', customer_key: '9000000233' });
+    await customerSays('r23case', 'when will I get my refund?');
+    deq([C('r23case').status, C('r23case').assigned_to, C('r23case').case_kind], ['agent_handling', null, 'refund']);
+    deq(pick(evs('r23case', 'transfer')[0], EV_KEYS), BACK_EVENT('resolved', 'agent_handling'));
+    // The customer's own merge (after proving an order) reopens his Closed chat: the pool, no merge event.
+    known({ id: 'r23mt', customer_key: 'K23m', status: 'resolved', assigned_to: 'owner' });
+    known({ id: 'r23mf', customer_key: 'K23m', status: 'ai_handling' });
+    eq(await mod.merge.mergeChats('r23mt', 'r23mf'), true);
+    deq([C('r23mt').status, C('r23mt').assigned_to, C('r23mf').merged_into, evs('r23mt', 'merge').length], ['ai_handling', null, 'r23mt', 0]);
+    deq(pick(evs('r23mt', 'transfer')[0], EV_KEYS), BACK_EVENT('resolved', 'ai_handling'));
+    // His OPEN chat merged into a Closed chat nobody held (review 2026-10-02): the target takes his
+    // holder (merge event) and stays his; the trigger only acts on a chat that was his before the update.
+    known({ id: 'r23ut', customer_key: 'K23u', status: 'resolved' });
+    known({ id: 'r23uf', customer_key: 'K23u', status: 'ai_handling', assigned_to: 'owner' });
+    eq(await mod.merge.mergeChats('r23ut', 'r23uf'), true);
+    deq([C('r23ut').status, C('r23ut').assigned_to, C('r23uf').merged_into, evs('r23ut', 'transfer').length], ['ai_handling', 'owner', 'r23ut', 0]);
+    deq(evs('r23ut', 'merge').map((e) => pick(e, ['from_owner', 'to_owner', 'reason'])), [{ from_owner: null, to_owner: 'owner', reason: 'merge' }]);
+    deq(evs('r23ut', 'status').map((e) => pick(e, ['from_owner', 'to_owner', 'from_status', 'to_status'])),
+      [{ from_owner: null, to_owner: 'owner', from_status: 'resolved', to_status: 'ai_handling' }]);
+    // A member's Closed chat goes back to the member (decision 4, unchanged); an unheld one stays unheld.
+    known({ id: 'r23m', status: 'resolved', assigned_to: ANURAG, customer_key: '9000000234' });
+    known({ id: 'r23n', status: 'resolved', customer_key: '9000000235' });
+    await customerSays('r23m', 'hello again');
+    await customerSays('r23n', 'hello again');
+    deq([C('r23m').status, C('r23m').assigned_to, C('r23n').status, C('r23n').assigned_to], ['ai_handling', ANURAG, 'ai_handling', null]);
+    deq([evs('r23m', 'transfer').length, evs('r23n', 'transfer').length], [0, 0]);
+    // A merged shell of his is never touched (WHEN ... merged_into IS NULL).
+    known({ id: 'r23shell', status: 'resolved', assigned_to: 'owner', merged_into: 'r23a' });
+    setRow(null, C('r23shell'), { status: 'ai_handling' });
+    deq([C('r23shell').assigned_to, evs('r23shell', 'transfer').length], ['owner', 0]);
+    // The event cannot be written (chat_events broken): the customer's message still goes through and
+    // the chat stays his (the trigger only warns, it never blocks a reopen).
+    known({ id: 'r23broken', status: 'resolved', assigned_to: 'owner', customer_key: '9000000236' });
+    db.eventsBroken = true;
+    try {
+      await customerSays('r23broken', 'any update?');
+    } finally { db.eventsBroken = false; }
+    deq([C('r23broken').status, C('r23broken').assigned_to, evs('r23broken').length], ['ai_handling', 'owner', 0]);
+  });
+
+  await t('R23 his own reply, Take over or Hand to AI on his Closed chat keeps it his: the person is named before the status changes', async () => {
+    at(ist(12, 30, 4));
+    known({ id: 'r23r', status: 'resolved', assigned_to: 'owner', customer_key: '9000000237' });
+    known({ id: 'r23t', status: 'resolved', assigned_to: 'owner', customer_key: '9000000238' });
+    known({ id: 'r23h', status: 'resolved', assigned_to: 'owner', customer_key: '9000000239' });
+    const s0 = db.stmts.length;
+    status(await reply('owner', 'r23r', 'One more thing about your order'), 200);
+    status(await takeOver('owner', 'r23t'), 200);
+    status(await patch('owner', 'r23h', { status: 'ai_handling' }), 200);
+    deq(['r23r', 'r23t', 'r23h'].map((id) => [C(id).status, C(id).assigned_to]),
+      [['agent_handling', 'owner'], ['agent_handling', 'owner'], ['ai_handling', 'owner']]);
+    deq(['r23r', 'r23t', 'r23h'].map((id) => evs(id, 'transfer').length), [0, 0, 0]);
+    // What the trigger keys on (shiptrack.actor): set_config runs before the status UPDATE, in the same transaction.
+    const txs = txStmts(s0);
+    eq(txs.length, 3);
+    for (const tx of txs) {
+      const iSet = tx.findIndex((q) => q.startsWith('SELECT set_config')), iUpd = tx.findIndex((q) => q.startsWith('UPDATE conversations SET status'));
+      ok(iSet > 0 && iUpd > iSet, 'set_config before the status UPDATE: ' + tx[iUpd]);
+    }
+    // A member cannot reopen it at all (his chats are read only for them), so no member path reaches the trigger.
+    known({ id: 'r23ro', status: 'resolved', assigned_to: 'owner' });
+    status(await takeOver('rahul', 'r23ro'), 409);
+    status(await reply('anurag', 'r23ro'), 409);
+    deq([C('r23ro').status, C('r23ro').assigned_to], ['resolved', 'owner']);
+  });
+
+  await t('R23 chat-team-owner-back.sql: additive, safe to run twice, the inherit rule is chat-team.sql\'s plus the owner line, the trigger as built', async () => {
+    const file = fs.readFileSync(path.resolve(__dirname, '../../chat-team-owner-back.sql'), 'utf8');
+    const base = fs.readFileSync(path.resolve(__dirname, '../../chat-team.sql'), 'utf8');
+    const code = (s) => s.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n');
+    const flat = (s) => code(s).replace(/\s+/g, ' ').trim();
+    const body = code(file);
+    // Header: the owner's answer and how to apply it.
+    ok(/owner answer A5, 2026-10-02/.test(file));
+    ok(file.includes('sudo -u postgres psql -d tracking_crm -v ON_ERROR_STOP=1 -f chat-team-owner-back.sql'));
+    // Statements: lock_timeout, two functions, one trigger. Nothing dropped, altered, granted, updated or
+    // deleted, no transaction of its own (the trial runs it inside BEGIN ... ROLLBACK), no messages.
+    ok(/^SET lock_timeout = '5s';/m.test(body));
+    deq((body.match(/\bCREATE\b[^\n]*/g) || []).map((x) => x.replace(/\(.*$/, '').trim()),
+      ['CREATE OR REPLACE FUNCTION chat_inherit_owner', 'CREATE OR REPLACE FUNCTION chat_owner_back', 'CREATE OR REPLACE TRIGGER trg_chat_owner_back']);
+    ok(!/\b(DROP|ALTER|TRUNCATE|GRANT|REVOKE|DELETE)\b/i.test(body));
+    ok(!/\bUPDATE\s+\w+\s+SET\b/i.test(body));
+    ok(!/^\s*(BEGIN|COMMIT|ROLLBACK|START TRANSACTION)\s*;/im.test(body));
+    ok(!/\bmessages\b/i.test(body));
+    // Only the holder columns of the row are ever set.
+    deq([...new Set((body.match(/NEW\.(\w+) :=/g) || []))].sort(), ['NEW.assigned_at :=', 'NEW.assigned_to :=']);
+    // (1) chat_inherit_owner: exactly chat-team.sql's function plus the owner line, placed after the lookup.
+    const fnOf = (s) => {
+      const i = s.indexOf('CREATE OR REPLACE FUNCTION chat_inherit_owner()');
+      return s.slice(i, s.indexOf('END $$;', i) + 'END $$;'.length);
+    };
+    // A5 (review 2026-10-02): only while none of his chats with that customer is open; else the new
+    // chat stays his (one person per customer).
+    const A5 = /IF prev = 'owner' AND NOT EXISTS \(\s+SELECT 1 FROM conversations x\s+WHERE x\.site_id = NEW\.site_id AND x\.customer_key = NEW\.customer_key AND x\.source = 'chat'\s+AND x\.id <> NEW\.id AND x\.merged_into IS NULL\s+AND x\.assigned_to = 'owner' AND x\.status <> 'resolved'\) THEN\s+prev := NULL;\s+END IF;/;
+    const fnNew = fnOf(file), fnOld = fnOf(base);
+    ok(A5.test(fnNew) && !A5.test(fnOld));
+    eq(flat(fnNew.replace(A5, '')), flat(fnOld));
+    const iLimit = fnNew.indexOf('LIMIT 1;'), iA5 = fnNew.search(A5), iUse = fnNew.indexOf('IF prev IS NOT NULL THEN');
+    ok(iLimit > 0 && iLimit < iA5 && iA5 < iUse, 'the owner line sits between the lookup and its use');
+    // The candidates still include his chats, so his latest chat means "nobody" (an older member's does not win).
+    ok(/AND \(o\.assigned_to = 'owner'\s+OR EXISTS \(SELECT 1 FROM team_users t WHERE t\.id::text = o\.assigned_to AND t\.is_active\)/.test(fnNew));
+    // (2) chat_owner_back: a staff person named => keep; else the event row first, then the holder.
+    const ob = file.slice(file.indexOf('CREATE OR REPLACE FUNCTION chat_owner_back()'), file.indexOf('CREATE OR REPLACE TRIGGER trg_chat_owner_back'));
+    const iGuard = ob.indexOf("IF NULLIF(current_setting('shiptrack.actor', true), '') IS NOT NULL THEN");
+    const iIns = ob.indexOf('INSERT INTO chat_events'), iClear = ob.indexOf('NEW.assigned_to := NULL;');
+    ok(iGuard > 0 && iGuard < iIns && iIns < iClear, 'guard, then the event, then the holder');
+    ok(/IS NOT NULL THEN\s+RETURN NEW;/.test(ob));
+    ok(/INSERT INTO chat_events \(conversation_id, site_id, kind, actor, actor_name, from_owner, to_owner,\s+from_status, to_status, reason, meta\)\s+VALUES \(NEW\.id, NEW\.site_id, 'transfer', 'system', 'System', 'owner', NULL,\s+OLD\.status, NEW\.status, 'owner_customer_back', '\{"auto":true\}'::jsonb\);/.test(ob));
+    ok(/NEW\.assigned_to := NULL;[^\n]*\n\s+NEW\.assigned_at := now\(\);/.test(ob));
+    ok(/EXCEPTION WHEN OTHERS THEN\s+RAISE WARNING 'chat_owner_back skipped for %: %', NEW\.id, SQLERRM;\s+END;\s+RETURN NEW;\s+END \$\$;/.test(ob));
+    // The event is the one the inherit guard reads as "put back in the pool on purpose".
+    ok(/WHERE e\.kind = 'transfer' AND e\.to_owner IS NULL\s+AND \(e\.conversation_id = NEW\.id OR e\.meta->'group' \? NEW\.id\)\) THEN\s+RETURN NEW;/.test(fnNew));
+    // The trigger: BEFORE UPDATE OF status, a reopen of a chat that was already his (OLD), never a merged shell.
+    ok(/CREATE OR REPLACE TRIGGER trg_chat_owner_back\s+BEFORE UPDATE OF status ON conversations\s+FOR EACH ROW\s+WHEN \(OLD\.status = 'resolved' AND NEW\.status <> 'resolved' AND OLD\.assigned_to = 'owner' AND NEW\.assigned_to = 'owner' AND NEW\.merged_into IS NULL\)\s+EXECUTE FUNCTION chat_owner_back\(\);/.test(file));
+    // BEFORE triggers fire in name order: inherit first (it only fills an EMPTY holder; one it fills
+    // with 'owner' was not his BEFORE the update, so trg_chat_owner_back leaves it alone).
+    ok('trg_chat_inherit_owner' < 'trg_chat_owner_back');
+    ok(/CREATE OR REPLACE TRIGGER trg_chat_inherit_owner\s+BEFORE UPDATE OF status, customer_key ON conversations\s+FOR EACH ROW\s+WHEN \(NEW\.assigned_to IS NULL /.test(base));
+    // The app user may write the event (chat-team.sql's grants; no new grant needed).
+    ok(/GRANT SELECT, INSERT ON chat_events TO tracker_user;/.test(base) && /GRANT USAGE, SELECT ON SEQUENCE chat_events_id_seq TO tracker_user;/.test(base));
+    // Part 4 (team-score.sql, when present): the holder log has no column list, so it logs this
+    // trigger's 'owner' -> NULL; its one-time backfill reads transfer events too.
+    const scorePath = path.resolve(__dirname, '../../team-score.sql');
+    if (fs.existsSync(scorePath)) {
+      const score = fs.readFileSync(scorePath, 'utf8');
+      ok(/CREATE OR REPLACE TRIGGER trg_team_holder_log\s+AFTER UPDATE ON conversations\s+FOR EACH ROW WHEN \(OLD\.assigned_to IS DISTINCT FROM NEW\.assigned_to\)/.test(score));
+      ok(/WHERE e\.kind IN \('claim', 'take', 'transfer', 'inherit', 'merge'\)/.test(score));
+    }
   });
 
   Object.assign(console, realConsole);

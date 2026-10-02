@@ -1441,6 +1441,15 @@ export default function ChatSupportPage() {
     return () => window.removeEventListener('popstate', onBack);
   }, []);
 
+  // Team score's "Open chat" link (/admin/chat?open=<id>): open that chat once, then drop the query.
+  useEffect(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get('open');
+      if (id && /^[\w-]{6,80}$/.test(id)) { setActiveId(id); window.history.replaceState(window.history.state, '', '/admin/chat'); }
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* ═══ ACTIONS ═══ */
   // Take over / Hand to AI / Close; take = "Take from X" (the chat becomes this login's).
   const changeStatus = async (status: string, take = false) => {
@@ -2510,7 +2519,7 @@ export default function ChatSupportPage() {
                           </span>
                           <span title={pill.title} style={{ fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, background: pill.bg, color: pill.fg, maxWidth: '9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pill.text}</span>
                           {forChip && (
-                            <span title={c.status === 'resolved' ? `If the customer writes again, it goes to ${rowHolderIsMe ? 'you' : rowHolderName}` : `${rowHolderIsMe ? 'You have' : `${rowHolderName} has`} this chat`} style={{
+                            <span title={c.status === 'resolved' ? (holderKey === 'owner' ? 'If the customer writes again, it goes to the open pool' : `If the customer writes again, it goes to ${rowHolderIsMe ? 'you' : rowHolderName}`) : `${rowHolderIsMe ? 'You have' : `${rowHolderName} has`} this chat`} style={{
                               fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0, maxWidth: '8rem',
                               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                               background: rowHolderIsMe ? 'var(--primary-light)' : 'var(--bg-subtle, rgba(0,0,0,0.05))', color: rowHolderIsMe ? 'var(--primary)' : 'var(--fg-muted)',
@@ -2616,7 +2625,7 @@ export default function ChatSupportPage() {
                         {activeConv.status === 'agent_handling' ? withText : STATUS_LABELS[activeConv.status]}
                       </span>
                       {forText && (
-                        <span title={activeConv.status === 'resolved' ? 'If the customer writes again, it goes to them' : undefined} style={{
+                        <span title={activeConv.status === 'resolved' ? (staff?.holder?.key === 'owner' ? 'If the customer writes again, it goes to the open pool' : 'If the customer writes again, it goes to them') : undefined} style={{
                           fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
                           background: holderIsMe ? 'var(--primary-light)' : 'var(--bg-subtle, rgba(0,0,0,0.05))', color: holderIsMe ? 'var(--primary)' : 'var(--fg-muted)',
                         }}>
@@ -2715,6 +2724,14 @@ export default function ChatSupportPage() {
                           <Lock size={12} /> {readOnlyText}
                         </span>
                       ) : null}
+                    </div>
+                  )}
+
+                  {/* Why Refund / Ship again is off (the server's staff.mark_note), as a small line of its own on
+                      every screen size: a phone has no hover (owner answer A6, 2026-10-02). */}
+                  {canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
+                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)', textAlign: 'right', wordBreak: 'break-word' }}>
+                      Refund / Ship again: {staff.mark_note}
                     </div>
                   )}
 
