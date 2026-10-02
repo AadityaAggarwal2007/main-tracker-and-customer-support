@@ -93,7 +93,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'case-auto']) compile(`lib/chat/${f}.ts`, f);
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
@@ -105,6 +105,7 @@ const wsql = require(path.join(dir, 'waiting-sql.js'));
 const waitingMod = require(path.join(dir, 'waiting.js'));
 const esc = require(path.join(dir, 'escalation.js'));
 const tc = require(path.join(dir, 'tracking-claim.js'));
+const rt = require(path.join(dir, 'refund-threat.js'));
 
 // ── The fake database ──────────────────────────────────────────
 const RAHUL = '11111111-1111-4111-8111-111111111111';   // senior (chat.senior)
@@ -284,6 +285,57 @@ const AUTO_SQL = {
                 WHERE m.conversation_id = c.id AND m.sender = 'ai' AND m.deleted_at IS NULL
                   AND m.created_at >= c.case_marked_at AND m.content ILIKE ANY ($2::text[])) AS reminded
   FROM conversations c WHERE c.id = $1 AND c.case_kind = 'reship'`),
+};
+// Chikki's own Refund mark for a chargeback / court / police threat on a late order (case-auto.ts, owner
+// 2026-10-02 18:45): exact, like the Ship again ones.
+const REFUND_SQL = {
+  state: norm(`SELECT c.site_id, c.customer_key, c.status, c.source, c.verified_order_id, c.verified_via, c.case_kind, c.merged_into,
+       s.tracker_business_id,
+       EXISTS (SELECT 1 FROM chat_case_events e
+                WHERE e.conversation_id = c.id AND e.kind = 'refund' AND e.action = 'remove') AS refund_removed,
+       r.id AS other_refund_id
+  FROM conversations c
+  JOIN sites s ON s.id = c.site_id
+  LEFT JOIN LATERAL (
+    SELECT o.id FROM conversations o
+     WHERE o.site_id = c.site_id AND o.id <> c.id AND o.merged_into IS NULL
+       AND o.case_kind = 'refund' AND o.case_order_id = c.verified_order_id
+     ORDER BY o.case_marked_at DESC LIMIT 1) r ON true
+ WHERE c.id = $1`),
+  mark: norm(`UPDATE conversations
+          SET case_prev_status = CASE WHEN status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,
+              case_kind = 'refund', case_marked_by = $2, case_marked_at = now(), case_order_id = $3,
+              status = CASE WHEN $4::boolean AND status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND case_kind IS NULL
+        RETURNING status`),
+  switch: norm(`UPDATE conversations
+          SET case_prev_status = CASE WHEN case_prev_status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,
+              case_kind = 'refund', case_marked_by = $2, case_marked_at = now(), case_order_id = $3,
+              status = CASE WHEN $4::boolean AND status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND case_kind = 'reship'
+        RETURNING status`),
+  follow: norm(`SELECT c.status, c.case_marked_at, c.case_marked_by,
+       (SELECT e.actor_role FROM chat_case_events e
+         WHERE e.conversation_id = c.id AND e.kind = 'refund' AND e.action = 'mark'
+         ORDER BY e.created_at DESC LIMIT 1) AS mark_role,
+       EXISTS (SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.sender IN ('agent', 'system') AND m.deleted_at IS NULL
+                  AND m.created_at > c.case_marked_at) AS team_wrote,
+       EXISTS (SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.sender = 'ai' AND m.deleted_at IS NULL
+                  AND m.created_at >= c.case_marked_at AND m.content ILIKE ANY ($2::text[])) AS reminded
+  FROM conversations c WHERE c.id = $1 AND c.case_kind = 'refund'`),
+  // The one-time move: the customer's own messages of the last N days, newest first.
+  said: norm(`SELECT m.content FROM messages m
+      WHERE m.conversation_id = $1 AND m.sender = 'visitor' AND m.deleted_at IS NULL
+        AND COALESCE(m.metadata->>'hidden', 'false') <> 'true' AND btrim(m.content) <> ''
+        AND m.created_at > now() - make_interval(days => $2::int)
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 100`),
 };
 // A red Ship again chat is also in Needs you and the lists (conversations/route.ts OUTSIDE_SECTION).
 const OUTSIDE_SECTION = "(c.case_kind IS NULL OR (c.case_kind = 'reship' AND c.status = 'human_needed'))";
@@ -537,6 +589,57 @@ async function handle(q, p, tx) {
       team_wrote: db.messages.some((m) => m.conversation_id === c.id && m.sender === 'agent' && !m.deleted_at && Date.parse(m.created_at) > markedAt),
       reminded: db.messages.some((m) => m.conversation_id === c.id && m.sender === 'ai' && !m.deleted_at && Date.parse(m.created_at) >= markedAt && ilike(m.content)),
     }]);
+  }
+  // ── Chikki's own Refund mark (case-auto.ts, owner 2026-10-02 18:45) ──
+  if (q === REFUND_SQL.state) {
+    const c = conv(p[0]);
+    if (!c) return rows([]);
+    const other = db.convs
+      .filter((o) => o.site_id === c.site_id && o.id !== c.id && !o.merged_into && o.case_kind === 'refund' && c.verified_order_id != null && o.case_order_id === c.verified_order_id)
+      .sort((a, b) => Date.parse(b.case_marked_at || 0) - Date.parse(a.case_marked_at || 0))[0];
+    return rows([{
+      ...pick(c, ['site_id', 'customer_key', 'status', 'source', 'verified_order_id', 'verified_via', 'case_kind', 'merged_into']),
+      tracker_business_id: siteOf(c.site_id).panel,
+      refund_removed: db.caseEvents.some((e) => e.conversation_id === c.id && e.kind === 'refund' && e.action === 'remove'),
+      other_refund_id: other ? other.id : null,
+    }]);
+  }
+  if (q === REFUND_SQL.mark || q === REFUND_SQL.switch) {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    const sw = q === REFUND_SQL.switch;
+    if (!c || (sw ? c.case_kind !== 'reship' : c.case_kind != null)) return rows([]);
+    if (typeof p[3] !== 'boolean') throw new Error('fake db: the Refund mark needs $4 (keep Needs you) as a boolean');
+    setRow(tx, c, {
+      case_prev_status: sw ? (c.case_prev_status === 'agent_handling' ? 'agent_handling' : 'human_needed') : (c.status === 'agent_handling' ? 'agent_handling' : 'human_needed'),
+      case_kind: 'refund', case_marked_by: p[1], case_marked_at: nowIso(), case_order_id: p[2],
+      status: p[3] && c.status === 'human_needed' ? 'human_needed' : 'agent_handling', auto_closed_at: null,
+    });
+    return { rows: [{ status: c.status }], rowCount: 1 };
+  }
+  if (q === REFUND_SQL.follow) {
+    const c = conv(p[0]);
+    if (!c || c.case_kind !== 'refund') return rows([]);
+    const marks = db.caseEvents.filter((e) => e.conversation_id === c.id && e.kind === 'refund' && e.action === 'mark');
+    const markedAt = Date.parse(c.case_marked_at);
+    if (!Array.isArray(p[1]) || !p[1].length || !p[1].every((x) => /^%[^%_]+%$/.test(x))) throw new Error('fake db: reminded wants [\'%text%\', ...]');
+    const ilike = (s) => p[1].some((x) => String(s || '').toLowerCase().includes(x.slice(1, -1).toLowerCase()));
+    return rows([{
+      status: c.status, case_marked_at: c.case_marked_at, case_marked_by: c.case_marked_by,
+      mark_role: marks.length ? marks[marks.length - 1].actor_role : null,
+      team_wrote: db.messages.some((m) => m.conversation_id === c.id && ['agent', 'system'].includes(m.sender) && !m.deleted_at && Date.parse(m.created_at) > markedAt),
+      reminded: db.messages.some((m) => m.conversation_id === c.id && m.sender === 'ai' && !m.deleted_at && Date.parse(m.created_at) >= markedAt && ilike(m.content)),
+    }]);
+  }
+  if (q === REFUND_SQL.said) {
+    if (!Number.isInteger(p[1])) throw new Error('fake db: the days must be a whole number');
+    const floor = clock - p[1] * 86400_000;
+    return rows(db.messages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.conversation_id === p[0] && m.sender === 'visitor' && !m.deleted_at && !(m.metadata && m.metadata.hidden)
+        && String(m.content || '').trim() !== '' && Date.parse(m.created_at) > floor)
+      .sort((a, b) => Date.parse(b.m.created_at) - Date.parse(a.m.created_at) || b.i - a.i)
+      .slice(0, 100).map(({ m }) => ({ content: m.content })));
   }
   // The sidebar's Needs you badge (/api/chat/pending): counted by the case condition the route sends.
   if (/^SELECT count\(DISTINCT CASE WHEN c\.customer_key IS NOT NULL AND c\.source = 'chat' THEN 'k:' \|\| c\.site_id \|\| ':' \|\| c\.customer_key ELSE 'c:' \|\| c\.id END\) AS human_needed, /.test(q)) {
@@ -2481,6 +2584,10 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
 
   // ── R42-R47: review fixes (2026-10-02, second run) ──────────────────────────────────────
   const FOUND = 'Thanks, I found your order. It is In Transit.';
+  // Since the owner's Refund rule (2026-10-02 18:45) a chargeback threat on an order past its estimated
+  // date goes to Refund (R54-R64). The threat-wins tests below keep testing the claim with a threat on an
+  // order that is NOT late yet (placed 25 Sep, estimated 31 Oct): there the threat path is unchanged.
+  const NOT_LATE = { estimated_delivery: '2026-10-31' };
   const verifiesAs = (id, orderId, key) => () => Object.assign(C(id), { verified_order_id: orderId, verified_via: 'chat_phone', customer_key: key });
 
   await t('R42 a refund, cancel or payment request with the claim reaches the team: the AI text + its line, Needs you, no promise, no mark', async () => {
@@ -2519,7 +2626,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
 
   await t('R43 a threat in the verifying message, the claim earlier or in the same message: the threat wins (1-hour line, Needs you, no mark)', async () => {
     at(ist(16, 0, 9));
-    newConv({ id: 'r43' }); order('#4743', 'In Transit');
+    newConv({ id: 'r43' }); order('#4743', 'In Transit', NOT_LATE);
     visitorSaid('r43', CLAIM, 3);
     const verifying = 'order 4743, phone 9000000043, link nahi diya to chargeback karunga';
     eq(tc.trackingClaimKind(verifying), null, 'the claim is only in the earlier message');
@@ -2527,13 +2634,13 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(textOf(r), URGENT_HI);
     eq(r.body.message.metadata.urgent, 'threat');
     deq([C('r43').status, C('r43').case_kind, ce('r43').length], ['human_needed', null, 0]);
-    newConv({ id: 'r43b' }); order('#4744', 'In Transit');
+    newConv({ id: 'r43b' }); order('#4744', 'In Transit', NOT_LATE);
     r = await say('r43b', 'order 4744 phone 9000000044, tracking fake hai, chargeback karunga', { content: FOUND, onCall: verifiesAs('r43b', '#4744', '9000000044') });
     eq(textOf(r), URGENT_HI);
     deq([C('r43b').status, C('r43b').case_kind, ce('r43b').length], ['human_needed', null, 0]);
     // Night: the morning line, still no mark.
     at(ist(22, 30, 9));
-    newConv({ id: 'r43n' }); order('#4745', 'In Transit');
+    newConv({ id: 'r43n' }); order('#4745', 'In Transit', NOT_LATE);
     visitorSaid('r43n', CLAIM, 3);
     r = await say('r43n', 'order 4745, phone 9000000045, warna chargeback karunga', { content: FOUND, onCall: verifiesAs('r43n', '#4745', '9000000045') });
     eq(textOf(r), 'Aapko jo pareshani hui, uske liye hamein sach mein afsos hai, aur ye baat hamare liye bahut zaroori hai. Maine ise abhi hamari team ko de diya hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.');
@@ -2634,7 +2741,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(!since(s0).some((x) => x.q === AUTO_SQL.red));
     // A threat merged into a Ship again chat: red + the 1-hour line.
     marked({ id: 'r46x', customer_key: '9000000151' });
-    order('#r46x', 'In Transit');
+    order('#r46x', 'In Transit', NOT_LATE);
     newConv({ id: 'r46y' });
     r = await say('r46y', 'tracking fake hai, chargeback karunga', { content: AI_SAYS, onCall: verifiesAs('r46y', '#r46x', '9000000151') });
     eq(r.body.conversationId, 'r46x');
@@ -2878,7 +2985,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(textOf(r), HANDOFF.hinglish);
     eq(C('r52o').status, 'human_needed');
     // A threat with the claim: red + the 1-hour line.
-    known({ id: 'r52t' }); order('#r52t', 'In Transit');
+    known({ id: 'r52t' }); order('#r52t', 'In Transit', NOT_LATE);
     r = await say('r52t', 'tracking fake hai, chargeback karunga', { content: AI_SAYS, onCall: markedMeanwhile('r52t') });
     eq(textOf(r), URGENT_HI);
     eq(C('r52t').status, 'human_needed');
@@ -2911,6 +3018,531 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     console.log = (...a) => printed.push(a.join(' '));
     try { cand.report(out); } finally { console.log = log; }
     ok(printed.some((l) => l.includes('only with a refund / payment request with the claim: 1')));
+  });
+
+  // ── R54-R64: chargeback / court / police threats on a late order -> Refund (owner 2026-10-02 18:45) ─
+  // The REAL widget route, case-auto.ts and refund-threat.ts. Orders are placed 25 Sep with no estimated
+  // date, so the day-13 end (8 Oct) is the estimated date and it has passed on these days; NOT_LATE is not.
+  const RPROMISE = {
+    en: "We're sorry for the trouble. We are processing your refund, and our team will send you a refund form here in this chat to collect your UPI / bank details.",
+    hinglish: 'Pareshani ke liye sorry. Hum aapka refund process kar rahe hain, hamari team isi chat me aapko refund form bhejegi jisme aap apni UPI / bank details de payenge.',
+    hi: 'परेशानी के लिए माफ़ी चाहते हैं। हम आपका रिफंड प्रोसेस कर रहे हैं, हमारी टीम इसी चैट में आपको रिफंड फॉर्म भेजेगी जिसमें आप अपनी UPI / बैंक डिटेल्स दे पाएँगे।',
+  };
+  const RREMINDER = {
+    en: 'Our team is processing your refund, and they will share the refund proof with you both here in this chat and on your email.',
+    hinglish: 'Hamari team aapka refund process kar rahi hai, refund ka proof aapko isi chat aur aapke Gmail / email dono pe de degi.',
+    hi: 'हमारी टीम आपका रिफंड प्रोसेस कर रही है, रिफंड का प्रूफ आपको इसी चैट और आपके ईमेल दोनों पर दे देगी।',
+  };
+  // The owner's own example (a chat of 2 Oct, 18:30 IST).
+  const OWNER_EXAMPLE = 'I have raised the complaint against u in consumer department and also at instagram team against u';
+  const URGENT_EN = "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat within 1 hour.";
+  const refundWrites = (n) => since(n).filter((x) => x.q === REFUND_SQL.mark || x.q === REFUND_SQL.switch || x.q.startsWith('INSERT INTO chat_case_events'));
+  const REFUND_STATE_HOOK = /^SELECT c\.site_id, c\.customer_key, c\.status, c\.source, /;
+  for (const lang of ['en', 'hinglish', 'hi']) { eq(rt.refundPromiseReply(lang), RPROMISE[lang]); eq(rt.refundReminderReply(lang), RREMINDER[lang]); }
+
+  await t('R54 the owner\'s own example (verified, In Transit, estimated date passed): the fixed promise and Chikki\'s Refund mark in one transaction, no AI call; Hinglish, Hindi, at night the same', async () => {
+    at(ist(14, 0, 17));
+    makeTokens();
+    known({ id: 'r54' });
+    order('#r54', 'In Transit');
+    global.__recentSaid = [];
+    const s0 = db.stmts.length, calls = global.__ai.calls.length;
+    const r = await say('r54', OWNER_EXAMPLE);
+    eq(textOf(r), RPROMISE.en);
+    eq(global.__ai.calls.length, calls, 'no AI call');
+    eq(r.body.message.metadata.urgent, 'threat', 'the message is still marked a threat (escalation.ts addition)');
+    deq(pick(C('r54'), ['status', 'case_kind', 'case_marked_by', 'case_order_id', 'case_prev_status', 'assigned_to']),
+      { status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_order_id: '#r54', case_prev_status: 'human_needed', assigned_to: null });
+    deq(ce('r54'), [['S1', 'refund', 'mark', '#r54', 'Chikki (auto)', 'system']]);
+    deq(pick(evs('r54', 'case_mark')[0], ['actor', 'actor_name', 'from_status', 'to_status', 'reason', 'meta']),
+      { actor: 'system', actor_name: 'System', from_status: 'ai_handling', to_status: 'agent_handling', reason: 'case_auto', meta: { case: 'refund', auto: true, trigger: 'consumer' } });
+    deq(evs('r54', 'status').map((e) => pick(e, ['actor', 'actor_name', 'reason', 'from_status', 'to_status'])),
+      [{ actor: 'system', actor_name: 'Chikki (auto)', reason: 'case_auto', from_status: 'ai_handling', to_status: 'agent_handling' }]);
+    const txs = txStmts(s0);
+    eq(txs.length, 1, 'one transaction');
+    const [tx] = txs;
+    eq(tx[0], 'BEGIN'); eq(tx[1], "SET LOCAL lock_timeout = '5s'"); ok(/FOR NO KEY UPDATE$/.test(tx[2]));
+    const iSet = tx.findIndex((q) => q.startsWith('SELECT set_config')), iUpd = tx.indexOf(REFUND_SQL.mark), iEv = tx.indexOf(OLD_CASE_SQL.eventMark);
+    ok(iSet > 2 && iSet < iUpd && iUpd < iEv, 'actor, then the mark, then its event');
+    eq(tx[tx.length - 1], 'COMMIT');
+    const all = since(s0).map((x) => x.q);
+    ok(all.indexOf('COMMIT') < all.findIndex((q) => q.startsWith("INSERT INTO messages (id, conversation_id, sender, content, created_at) VALUES (gen_random_uuid()::text, $1, 'ai'")), 'marked before the customer is told');
+    eq(lastAi('r54').content, RPROMISE.en);
+    ok(waitingNow('r54'), 'still waiting after the promise: the team owes the refund form');
+    // At night: the same promise (no time in it); Hinglish and Hindi in the customer's language.
+    at(ist(22, 30, 17));
+    for (const [id, said, want, trigger] of [
+      ['r54h', 'order bahut late hai, ab chargeback karungi', RPROMISE.hinglish, 'chargeback'],
+      ['r54d', 'मैं पुलिस में शिकायत करूँगी', RPROMISE.hi, 'police'],
+      ['r54l', 'I will send you a legal notice', RPROMISE.en, 'legal'],
+    ]) {
+      known({ id }); order('#' + id, 'Out for Delivery');
+      eq(textOf(await say(id, said)), want, id);
+      deq([C(id).status, C(id).case_kind], ['agent_handling', 'refund'], id);
+      deq(evs(id, 'case_mark')[0].meta, { case: 'refund', auto: true, trigger }, id);
+    }
+  });
+
+  await t('R55 a threat that is not for Refund (estimated date not passed or today, delivered, cancelled, returned, failed, not loadable, old proof, phone match, another order): the 1-hour line, Needs you, no mark', async () => {
+    at(ist(11, 0, 18));
+    for (const [id, stage, extra] of [
+      ['r55a', 'In Transit', NOT_LATE], ['r55b', 'Out for Delivery', { estimated_delivery: '2026-10-18' }],
+      ['r55c', 'Delivered', {}], ['r55d', 'In Transit', { cancelled: true }], ['r55e', 'Return to Origin', {}], ['r55f', 'Delivery Exception', {}],
+    ]) { known({ id }); order('#' + id, stage, extra); }
+    known({ id: 'r55x' });                                                          // the order cannot be loaded
+    known({ id: 'r55o', verified_via: 'chat' }); order('#r55o', 'In Transit');      // an old proof (last 4)
+    newConv({ id: 'r55p', phone_match_order_id: '#r55p' }); order('#r55p', 'In Transit');   // an old phone match only
+    for (const id of ['r55a', 'r55b', 'r55c', 'r55d', 'r55e', 'r55f', 'r55x', 'r55o', 'r55p']) {
+      const s0 = db.stmts.length;
+      const r = await say(id, 'I will go to consumer court');
+      eq(textOf(r), URGENT_EN, id);
+      deq([C(id).status, C(id).case_kind, ce(id).length], ['human_needed', null, 0], id);
+      eq(refundWrites(s0).length, 0, id);
+    }
+    known({ id: 'r55q', verified_order_id: '#4755' }); order('#4755', 'In Transit');
+    eq(textOf(await say('r55q', 'order #4756 ke liye consumer court jaungi')), URGENT_HI);
+    deq([C('r55q').status, C('r55q').case_kind, ce('r55q').length], ['human_needed', null, 0]);
+  });
+
+  await t('R56 a social-media threat, a fraud claim or anger alone on a late order: today\'s paths, no Refund (owner)', async () => {
+    at(ist(12, 0, 18));
+    known({ id: 'r56a' }); order('#r56a', 'In Transit');
+    let s0 = db.stmts.length;
+    let r = await say('r56a', 'I will post about your company on instagram');
+    eq(textOf(r), URGENT_EN);
+    deq([C('r56a').status, C('r56a').case_kind], ['human_needed', null]);
+    ok(!since(s0).some((x) => x.q === REFUND_SQL.state), 'not even read');
+    known({ id: 'r56d' }); order('#r56d', 'In Transit');
+    r = await say('r56d', 'complaint against you on instagram');
+    eq(textOf(r), URGENT_EN);
+    eq(r.body.message.metadata.urgent, 'threat');
+    deq([C('r56d').status, C('r56d').case_kind], ['human_needed', null]);
+    known({ id: 'r56b' }); order('#r56b', 'In Transit');
+    s0 = db.stmts.length;
+    r = await say('r56b', 'fraud company ho tum log');
+    eq(textOf(r), `${AI_SAYS}\n\nHamari team isi chat mein 1 ghante ke andar aapko jawab degi.`);
+    deq([C('r56b').status, C('r56b').case_kind], ['human_needed', null]);
+    ok(!since(s0).some((x) => x.q === REFUND_SQL.state));
+    known({ id: 'r56c' }); order('#r56c', 'In Transit');
+    r = await say('r56c', 'WORST SERVICE EVER, WHERE IS MY ORDER');
+    eq(textOf(r), AI_SAYS);
+    deq([C('r56c').status, C('r56c').case_kind], ['ai_handling', null]);
+  });
+
+  await t('R57 complained first, verified next: a threat in an earlier message or in the verifying one moves it to Refund (it wins over a tracking claim); not late: the threat path; not late and only earlier, or older than 24 hours: as today', async () => {
+    at(ist(11, 0, 19));
+    newConv({ id: 'r57' }); order('#4757', 'In Transit');
+    visitorSaid('r57', 'order nahi aaya to consumer court jaungi', 3);
+    let r = await say('r57', 'order 4757, phone 9000000057', { content: FOUND, onCall: verifiesAs('r57', '#4757', '9000000057') });
+    eq(textOf(r), RPROMISE.hinglish);
+    deq([C('r57').status, C('r57').case_kind, C('r57').case_marked_by], ['agent_handling', 'refund', 'Chikki (auto)']);
+    deq(evs('r57', 'case_mark')[0].meta, { case: 'refund', auto: true, trigger: 'consumer' });
+    newConv({ id: 'r57b' }); order('#4758', 'In Transit');
+    r = await say('r57b', 'order 4758 phone 9000000058, warna chargeback karungi', { content: FOUND, onCall: verifiesAs('r57b', '#4758', '9000000058') });
+    eq(textOf(r), RPROMISE.hinglish);
+    eq(C('r57b').case_kind, 'refund');
+    newConv({ id: 'r57c' }); order('#4759', 'In Transit');
+    r = await say('r57c', 'order 4759 phone 9000000059, tracking fake hai, chargeback karungi', { content: FOUND, onCall: verifiesAs('r57c', '#4759', '9000000059') });
+    eq(textOf(r), RPROMISE.hinglish);
+    deq(ce('r57c').map((e) => [e[1], e[2]]), [['refund', 'mark']], 'Refund, never Ship again');
+    newConv({ id: 'r57d' }); order('#4760', 'In Transit', NOT_LATE);
+    r = await say('r57d', 'order 4760 phone 9000000060, warna chargeback karungi', { content: FOUND, onCall: verifiesAs('r57d', '#4760', '9000000060') });
+    eq(textOf(r), URGENT_HI, 'the threat path, as for a customer verified before');
+    deq([C('r57d').status, C('r57d').case_kind, ce('r57d').length], ['human_needed', null, 0]);
+    newConv({ id: 'r57e' }); order('#4761', 'In Transit', NOT_LATE);
+    visitorSaid('r57e', 'consumer court jaungi', 3);
+    r = await say('r57e', 'order 4761, phone 9000000061', { content: FOUND, onCall: verifiesAs('r57e', '#4761', '9000000061') });
+    eq(textOf(r), FOUND);
+    deq([C('r57e').status, C('r57e').case_kind], ['ai_handling', null]);
+    newConv({ id: 'r57f', created_at: new Date(clock - 3 * 86400_000).toISOString() }); order('#4762', 'In Transit');
+    visitorSaid('r57f', 'consumer court jaungi', 30 * 60);
+    r = await say('r57f', 'order 4762, phone 9000000062', { content: FOUND, onCall: verifiesAs('r57f', '#4762', '9000000062') });
+    eq(textOf(r), FOUND);
+    deq([C('r57f').status, C('r57f').case_kind], ['ai_handling', null]);
+  });
+
+  await t('R58 a Ship again chat with such a threat moves to Refund (remove + mark, the promise; a person\'s mark too); not late: the Ship again rules as before; merged into one: switched there', async () => {
+    at(ist(15, 0, 19));
+    marked({ id: 'r58' });
+    order('#r58', 'In Transit');
+    aiSaid('r58', PROMISE.en, 60);
+    const calls = global.__ai.calls.length, s0 = db.stmts.length;
+    let r = await say('r58', 'link nahi aaya, ab chargeback karungi');
+    eq(textOf(r), RPROMISE.hinglish);
+    eq(global.__ai.calls.length, calls, 'the AI stays off');
+    deq(pick(C('r58'), ['status', 'case_kind', 'case_marked_by', 'case_order_id', 'case_prev_status']),
+      { status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_order_id: '#r58', case_prev_status: 'human_needed' });
+    deq(ce('r58').map((e) => [e[1], e[2], e[4], e[5]]),
+      [['reship', 'mark', 'Chikki (auto)', 'system'], ['reship', 'remove', 'Chikki (auto)', 'system'], ['refund', 'mark', 'Chikki (auto)', 'system']]);
+    deq(evs('r58', 'case_mark').pop().meta, { case: 'refund', auto: true, trigger: 'chargeback', from_case: 'reship' });
+    const [tx] = txStmts(s0);
+    const iSw = tx.indexOf(REFUND_SQL.switch), iRm = tx.indexOf(OLD_CASE_SQL.eventRemove), iMk = tx.indexOf(OLD_CASE_SQL.eventMark);
+    ok(iSw > 0 && iSw < iRm && iRm < iMk, 'the switch, its remove, then the mark, in one transaction');
+    ok(waitingNow('r58'));
+    // A Ship again chat a person marked: the owner's rule moves it too, and keeps its earlier status for Remove.
+    marked({ id: 'r58s', case_prev_status: 'agent_handling' }, 'Rahul', 'manager');
+    order('#r58s', 'In Transit');
+    r = await say('r58s', 'I will go to consumer court');
+    eq(textOf(r), RPROMISE.en);
+    deq(pick(C('r58s'), ['status', 'case_kind', 'case_marked_by', 'case_prev_status']), { status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_prev_status: 'agent_handling' });
+    // Not late: as before (Chikki's Ship again: red + the 1-hour line; a person's: nothing).
+    marked({ id: 'r58n' }); order('#r58n', 'In Transit', NOT_LATE);
+    global.__recentSaid = ['ab chargeback karungi'];
+    r = await say('r58n', 'ab chargeback karungi');
+    global.__recentSaid = [];
+    eq(textOf(r), URGENT_HI);
+    deq([C('r58n').status, C('r58n').case_kind], ['human_needed', 'reship']);
+    marked({ id: 'r58p' }, 'Rahul', 'manager'); order('#r58p', 'In Transit', NOT_LATE);
+    r = await say('r58p', 'ab chargeback karungi');
+    eq(textOf(r), null);
+    deq([C('r58p').status, C('r58p').case_kind], ['agent_handling', 'reship']);
+    // A new chat proves the order and is merged into a Ship again chat: switched there, the model's text dropped.
+    marked({ id: 'r58t', customer_key: '9000000580' }); order('#r58t', 'In Transit');
+    newConv({ id: 'r58m' });
+    r = await say('r58m', 'order r58t phone 9000000580, police complaint karungi', { content: AI_SAYS, onCall: verifiesAs('r58m', '#r58t', '9000000580') });
+    eq(r.body.conversationId, 'r58t');
+    eq(textOf(r), RPROMISE.hinglish);
+    deq([C('r58t').case_kind, C('r58t').status, C('r58m').merged_into], ['refund', 'agent_handling', 'r58t']);
+  });
+
+  await t('R58r review fix: a RED Ship again chat (Needs you) with such a threat on a late order is switched to Refund, stays in Needs you and gets the promise; not late, or no threat: nothing is sent, as before', async () => {
+    at(ist(15, 0, 24));
+    global.__recentSaid = [];
+    // Chikki's Ship again chat, flagged red earlier (the customer asked for a refund): status human_needed.
+    marked({ id: 'r58r', status: 'human_needed' }); order('#r58r', 'In Transit');
+    aiSaid('r58r', PROMISE.en, 120);
+    const calls = global.__ai.calls.length, s0 = db.stmts.length;
+    let r = await say('r58r', 'refund nahi diya to consumer court jaungi');
+    eq(textOf(r), RPROMISE.hinglish);
+    eq(global.__ai.calls.length, calls, 'the AI stays off');
+    deq(pick(C('r58r'), ['status', 'case_kind', 'case_marked_by', 'case_order_id', 'case_prev_status']),
+      { status: 'human_needed', case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_order_id: '#r58r', case_prev_status: 'human_needed' });
+    deq(ce('r58r').map((e) => [e[1], e[2], e[4], e[5]]),
+      [['reship', 'mark', 'Chikki (auto)', 'system'], ['reship', 'remove', 'Chikki (auto)', 'system'], ['refund', 'mark', 'Chikki (auto)', 'system']]);
+    deq(evs('r58r', 'case_mark').pop().meta, { case: 'refund', auto: true, trigger: 'consumer', from_case: 'reship' });
+    const [tx] = txStmts(s0);
+    ok(tx.indexOf(REFUND_SQL.switch) > 0, 'the switch, in its own transaction');
+    const all = since(s0).map((x) => x.q);
+    ok(all.indexOf('COMMIT') < all.findIndex((q) => q.startsWith("INSERT INTO messages (id, conversation_id, sender, content, created_at) VALUES (gen_random_uuid()::text, $1, 'ai'")), 'marked before the customer is told');
+    ok(waitingNow('r58r'));
+    // A person's red Ship again chat: the owner's rule moves it too.
+    marked({ id: 'r58q', status: 'human_needed', case_prev_status: 'agent_handling' }, 'Rahul', 'manager'); order('#r58q', 'In Transit');
+    eq(textOf(await say('r58q', 'I will go to consumer court')), RPROMISE.en);
+    deq([C('r58q').status, C('r58q').case_kind, C('r58q').case_marked_by], ['human_needed', 'refund', 'Chikki (auto)']);
+    // Not late: a red chat sends nothing and keeps its mark (today's behaviour).
+    marked({ id: 'r58o', status: 'human_needed' }); order('#r58o', 'In Transit', NOT_LATE);
+    let s1 = db.stmts.length;
+    r = await say('r58o', 'ab chargeback karungi');
+    eq(textOf(r), null);
+    deq([C('r58o').status, C('r58o').case_kind, ce('r58o').length], ['human_needed', 'reship', 1]);
+    eq(refundWrites(s1).length, 0);
+    // No such threat in a red chat: nothing is read for the rule, nothing is sent.
+    marked({ id: 'r58w', status: 'human_needed' }); order('#r58w', 'In Transit');
+    s1 = db.stmts.length;
+    r = await say('r58w', 'link kab aayega?');
+    eq(textOf(r), null);
+    deq([C('r58w').status, C('r58w').case_kind], ['human_needed', 'reship']);
+    ok(!since(s1).some((x) => REFUND_STATE_HOOK.test(x.q)), 'the Refund rule never reads the chat');
+  });
+
+  await t('R59 after Chikki\'s Refund mark: ONE reminder (proof in this chat and on email) in any language, then nothing; "ok": nothing; the team or the Super Admin\'s form wrote: nothing; a person\'s mark: nothing; kept in Needs you; merged into one', async () => {
+    at(ist(11, 0, 20));
+    known({ id: 'r59' }); order('#r59', 'In Transit');
+    eq(textOf(await say('r59', 'chargeback karungi')), RPROMISE.hinglish);
+    at(clock + 3600_000);
+    const calls = global.__ai.calls.length;
+    global.__recentSaid = ['refund kab milega?', 'chargeback karungi'];
+    let r = await say('r59', 'refund kab milega?');
+    eq(textOf(r), RREMINDER.hinglish);
+    eq(global.__ai.calls.length, calls, 'the AI stays off');
+    eq(C('r59').status, 'agent_handling');
+    ok(waitingNow('r59'), 'still waiting after the reminder');
+    at(clock + 600_000);
+    global.__recentSaid = ['hello??', 'refund kab milega?', 'chargeback karungi'];
+    eq(textOf(await say('r59', 'hello??')), null, 'one reminder only');
+    global.__recentSaid = ['When will I get my refund?'];
+    eq(textOf(await say('r59', 'When will I get my refund?')), null, 'not again in another language');
+    eq(db.messages.filter((m) => m.conversation_id === 'r59' && m.sender === 'ai' && /refund ka proof|refund proof/.test(m.content)).length, 1);
+    ok(waitingNow('r59'));
+    // "ok thanks" after the promise: nothing; the reminder stays for a real question.
+    known({ id: 'r59k' }); order('#r59k', 'In Transit');
+    global.__recentSaid = [];
+    eq(textOf(await say('r59k', 'I will file a police complaint')), RPROMISE.en);
+    at(clock + 60_000);
+    global.__recentSaid = ['ok thanks'];
+    eq(textOf(await say('r59k', 'ok thanks')), null);
+    global.__recentSaid = ['where is my refund?'];
+    eq(textOf(await say('r59k', 'where is my refund?')), RREMINDER.en);
+    // Hindi.
+    known({ id: 'r59h' }); order('#r59h', 'In Transit');
+    global.__recentSaid = [];
+    eq(textOf(await say('r59h', 'मैं कंज्यूमर कोर्ट जाऊँगी')), RPROMISE.hi);
+    at(clock + 60_000);
+    global.__recentSaid = ['रिफंड कब मिलेगा?'];
+    eq(textOf(await say('r59h', 'रिफंड कब मिलेगा?')), RREMINDER.hi);
+    // The Super Admin's refund form message (sender 'system') counts as the team writing: nothing.
+    known({ id: 'r59t' }); order('#r59t', 'In Transit');
+    global.__recentSaid = [];
+    eq(textOf(await say('r59t', 'chargeback karungi')), RPROMISE.hinglish);
+    at(clock + 60_000);
+    db.messages.push({ id: 'r59t-s', conversation_id: 'r59t', sender: 'system', content: 'Aapke order ki refund request ke liye ye form bhariye: [refund form link]', metadata: { system: 'refund', step: 'form', lang: 'hinglish' }, created_at: nowIso(), deleted_at: null });
+    at(clock + 60_000);
+    global.__recentSaid = ['form kaise bharu?'];
+    eq(textOf(await say('r59t', 'form kaise bharu?')), null);
+    // A person's Refund mark: nothing, as before.
+    known({ id: 'r59p', status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r59p', case_prev_status: 'human_needed' });
+    db.caseEvents.push({ id: crypto.randomUUID(), conversation_id: 'r59p', site_id: 'S1', kind: 'refund', action: 'mark', order_id: '#r59p', actor: 'Rahul', actor_role: 'manager' });
+    at(clock + 60_000);
+    eq(textOf(await say('r59p', 'refund kab milega?')), null);
+    eq(C('r59p').status, 'agent_handling');
+    // A chat waiting in Needs you (merged into): Refund AND it stays in Needs you; its next message gets the reminder once.
+    known({ id: 'r59w', status: 'human_needed', customer_key: '9000000591', created_at: new Date(clock - 2 * 86400_000).toISOString() });
+    order('#r59w', 'In Transit');
+    newConv({ id: 'r59x', created_at: new Date(clock - 5 * 60_000).toISOString() });
+    global.__recentSaid = [];
+    r = await say('r59x', 'order r59w phone 9000000591, consumer court jaungi', { content: AI_SAYS, onCall: verifiesAs('r59x', '#r59w', '9000000591') });
+    eq(r.body.conversationId, 'r59w');
+    eq(textOf(r), RPROMISE.hinglish);
+    deq(pick(C('r59w'), ['status', 'case_kind', 'case_prev_status']), { status: 'human_needed', case_kind: 'refund', case_prev_status: 'human_needed' });
+    deq(pick(evs('r59w', 'case_mark')[0], ['from_status', 'to_status']), { from_status: 'human_needed', to_status: 'human_needed' });
+    at(clock + 60_000);
+    global.__recentSaid = ['refund kab?'];
+    eq(textOf(await say('r59w', 'refund kab?')), RREMINDER.hinglish);
+    eq(C('r59w').status, 'human_needed');
+    // A new chat proves the order and is merged into Chikki's Refund chat: the model's text dropped, the reminder.
+    known({ id: 'r59m', customer_key: '9000000590' }); order('#r59m', 'In Transit');
+    global.__recentSaid = [];
+    eq(textOf(await say('r59m', 'chargeback karungi')), RPROMISE.hinglish);
+    newConv({ id: 'r59n' });
+    at(clock + 60_000);
+    global.__recentSaid = ['order r59m phone 9000000590, refund kab?'];
+    r = await say('r59n', 'order r59m phone 9000000590, refund kab?', { content: AI_SAYS, onCall: verifiesAs('r59n', '#r59m', '9000000590') });
+    global.__recentSaid = [];
+    eq(r.body.conversationId, 'r59m');
+    eq(textOf(r), RREMINDER.hinglish);
+    ok(!db.messages.some((m) => m.conversation_id === 'r59m' && m.content === AI_SAYS), 'the model\'s text never sent');
+  });
+
+  await t('R60 races: the chat locked elsewhere: the 1-hour line, Needs you, no mark; a Refund mark found on the locked row: the reminder (Chikki, a moment ago) or the hand-off (a person); Ship again meanwhile: switched; Closed meanwhile: no mark', async () => {
+    at(ist(15, 0, 20));
+    global.__recentSaid = [];
+    known({ id: 'r60' }); order('#r60', 'In Transit');
+    const free = holdLock('r60');
+    let r;
+    try { r = await say('r60', 'chargeback karungi'); } finally { free(); }
+    eq(textOf(r), URGENT_HI);
+    deq([C('r60').status, C('r60').case_kind, ce('r60').length], ['human_needed', null, 0]);
+    known({ id: 'r60a' }); order('#r60a', 'In Transit');
+    db.after.push({ re: REFUND_STATE_HOOK, fn: () => Object.assign(C('r60a'), { case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_marked_at: new Date(clock - 60_000).toISOString(), case_order_id: '#r60a', status: 'agent_handling' }) });
+    r = await say('r60a', 'chargeback karungi');
+    eq(textOf(r), RREMINDER.hinglish);
+    deq([C('r60a').status, ce('r60a').length], ['agent_handling', 0]);
+    known({ id: 'r60b' }); order('#r60b', 'In Transit');
+    db.after.push({ re: REFUND_STATE_HOOK, fn: () => Object.assign(C('r60b'), { case_kind: 'refund', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r60b', status: 'agent_handling' }) });
+    r = await say('r60b', 'chargeback karungi');
+    eq(textOf(r), HANDOFF.hinglish);
+    deq([C('r60b').status, C('r60b').case_kind, C('r60b').case_marked_by], ['agent_handling', 'refund', 'Rahul']);
+    known({ id: 'r60c' }); order('#r60c', 'In Transit');
+    db.after.push({ re: REFUND_STATE_HOOK, fn: () => Object.assign(C('r60c'), { case_kind: 'reship', case_marked_by: 'Chikki (auto)', case_marked_at: nowIso(), case_order_id: '#r60c', case_prev_status: 'human_needed', status: 'agent_handling' }) });
+    r = await say('r60c', 'chargeback karungi');
+    eq(textOf(r), RPROMISE.hinglish);
+    deq([C('r60c').case_kind, C('r60c').status], ['refund', 'agent_handling']);
+    deq(ce('r60c').map((e) => [e[1], e[2]]), [['reship', 'remove'], ['refund', 'mark']]);
+    known({ id: 'r60d' }); order('#r60d', 'In Transit');
+    db.after.push({ re: REFUND_STATE_HOOK, fn: () => setRow(null, C('r60d'), { status: 'resolved' }) });
+    r = await say('r60d', 'chargeback karungi');
+    ok(textOf(r) !== RPROMISE.hinglish, 'never the promise without the mark');
+    deq([C('r60d').status, C('r60d').case_kind, ce('r60d').length], ['resolved', null, 0]);
+  });
+
+  await t('R61 Remove on Chikki\'s Refund mark sends the chat to Needs you; it is never marked Refund by itself again; the same order in Refund in another chat: the threat path', async () => {
+    at(ist(11, 0, 21));
+    makeTokens();
+    global.__recentSaid = [];
+    known({ id: 'r61' }); order('#r61', 'In Transit');
+    eq(textOf(await say('r61', 'chargeback karungi')), RPROMISE.hinglish);
+    status(await patch('owner', 'r61', { caseKind: null }), 200);
+    deq([C('r61').status, C('r61').case_kind], ['human_needed', null]);
+    status(await patch('owner', 'r61', { status: 'ai_handling' }), 200);
+    at(clock + 60_000);
+    const s0 = db.stmts.length;
+    eq(textOf(await say('r61', 'consumer court jaungi')), URGENT_HI);
+    deq([C('r61').status, C('r61').case_kind], ['human_needed', null]);
+    ok(!since(s0).some((x) => x.q === REFUND_SQL.mark || x.q === REFUND_SQL.switch));
+    deq(ce('r61').map((e) => [e[1], e[2]]), [['refund', 'mark'], ['refund', 'remove']]);
+    known({ id: 'r61a', verified_order_id: '#r61o' });
+    known({ id: 'r61b', verified_order_id: '#r61o', status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r61o' });
+    order('#r61o', 'In Transit');
+    eq(textOf(await say('r61a', 'chargeback karungi')), URGENT_HI);
+    deq([C('r61a').status, C('r61a').case_kind, ce('r61a').length], ['human_needed', null, 0]);
+    deq([C('r61b').status, C('r61b').case_kind], ['agent_handling', 'refund']);
+  });
+
+  await t('R62 the one-time move (--apply <ids> after the owner\'s OK): the same rule, mark and promise; a Closed chat opens in Refund, Needs you stays, Ship again is switched; anything else is refused and nothing is written', async () => {
+    at(ist(11, 0, 22));
+    global.__recentSaid = [];
+    const auto = require(path.join(dir, 'case-auto.js'));
+    // A chat staff Closed right after the customer's threat (the chat that started this).
+    known({ id: 'r62', status: 'resolved', closed_by_name: 'Rahul', closed_at: nowIso() }); order('#r62', 'In Transit');
+    visitorSaid('r62', OWNER_EXAMPLE, 2 * 24 * 60);
+    let s0 = db.stmts.length;
+    let res = await auto.applyRefundThreatMove('r62', 7);
+    deq(res, { done: 'marked', from: null, keptInNeedsYou: false, posted: true, trigger: 'consumer' });
+    deq(pick(C('r62'), ['status', 'case_kind', 'case_marked_by', 'case_prev_status']),
+      { status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Chikki (auto)', case_prev_status: 'human_needed' });
+    eq(lastAi('r62').content, RPROMISE.en);
+    deq(evs('r62', 'case_mark')[0].meta, { case: 'refund', auto: true, trigger: 'consumer', move: true });
+    deq(ce('r62'), [['S1', 'refund', 'mark', '#r62', 'Chikki (auto)', 'system']]);
+    const all = since(s0).map((x) => x.q);
+    ok(all.indexOf('COMMIT') < all.findIndex((q) => q.startsWith('INSERT INTO messages (id, conversation_id, sender, content, created_at)')), 'marked before the promise');
+    ok(waitingNow('r62'));
+    known({ id: 'r62n', status: 'human_needed' }); order('#r62n', 'In Transit');
+    visitorSaid('r62n', 'chargeback karungi', 60);
+    res = await auto.applyRefundThreatMove('r62n', 7);
+    deq([res.done, res.keptInNeedsYou, C('r62n').status, C('r62n').case_kind], ['marked', true, 'human_needed', 'refund']);
+    eq(lastAi('r62n').content, RPROMISE.hinglish);
+    marked({ id: 'r62s' }); order('#r62s', 'In Transit');
+    visitorSaid('r62s', 'police complaint karungi', 60);
+    res = await auto.applyRefundThreatMove('r62s', 7);
+    deq([res.done, res.from, C('r62s').case_kind], ['marked', 'reship', 'refund']);
+    // Refused, nothing written.
+    known({ id: 'r62a' }); order('#r62a', 'In Transit'); visitorSaid('r62a', OWNER_EXAMPLE, 9 * 24 * 60);
+    known({ id: 'r62b' }); order('#r62b', 'In Transit', NOT_LATE); visitorSaid('r62b', OWNER_EXAMPLE, 60);
+    known({ id: 'r62c' }); order('#r62c', 'Delivered'); visitorSaid('r62c', OWNER_EXAMPLE, 60);
+    newConv({ id: 'r62d' }); visitorSaid('r62d', OWNER_EXAMPLE, 60);
+    known({ id: 'r62e', status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Rahul', case_marked_at: nowIso(), case_order_id: '#r62e' }); order('#r62e', 'In Transit'); visitorSaid('r62e', OWNER_EXAMPLE, 60);
+    known({ id: 'r62f', merged_into: 'r62' }); visitorSaid('r62f', OWNER_EXAMPLE, 60);
+    known({ id: 'r62g', verified_order_id: '#4763' }); order('#4763', 'In Transit'); visitorSaid('r62g', 'order #4799 ke liye consumer court jaungi', 60);
+    const before = db.messages.length;
+    s0 = db.stmts.length;
+    const why = {};
+    for (const id of ['r62a', 'r62b', 'r62c', 'r62d', 'r62e', 'r62f', 'r62g', 'r62zz']) {
+      const out = await auto.applyRefundThreatMove(id, 7);
+      eq(out.done, 'refused', id);
+      why[id] = out.why;
+    }
+    deq(why, {
+      r62a: 'no such threat from the customer in the last 7 days', r62b: 'estimated date not passed', r62c: 'delivered order',
+      r62d: 'not verified by order ID + full phone', r62e: 'already in Refund', r62f: 'merged into another chat',
+      r62g: 'no such threat from the customer in the last 7 days', r62zz: 'no such chat',
+    });
+    eq(db.messages.length, before, 'no message posted');
+    eq(refundWrites(s0).length, 0, 'no mark written');
+  });
+
+  await t('R63 the read-only list (scripts/refund-threat-candidates.js) uses the same rule and prints no customer words; --apply never runs without ids', async () => {
+    const cand = require(path.resolve(__dirname, '../refund-threat-candidates.js'));
+    deq(cand.parseArgs([]), { mode: 'list', ids: [], days: 7 });
+    ok(cand.parseArgs(['--apply']).error && cand.parseArgs(['abc']).error && cand.parseArgs(['--days', '0']).error);
+    ok(cand.parseArgs(['--apply', "x'; drop table"]).error);
+    deq(cand.parseArgs(['--apply', 'a1,b2', 'c3', 'a1', '--days', '10']), { mode: 'apply', ids: ['a1', 'b2', 'c3'], days: 10 });
+    const now = ist(12, 0, 22);
+    const chat = (id, o = {}) => ({ id, site_id: 'S1', status: 'agent_handling', case_kind: null, held: false, verified_order_id: '#' + id, verified_via: 'form',
+      subject_label: null, health_score: 77, tracker_business_id: 'P1', refund_removed: false, order_in_refund: false, ...o });
+    const said = { k1: [OWNER_EXAMPLE], k2: ['tracking link fake hai'], k3: ['chargeback karungi'], k4: ['police complaint karungi'], k5: ['order #9999 pe consumer court jaungi'], k6: ['I will post on instagram'], k7: ['consumer court jaungi'],
+      // Review fixes 2026-10-02: an amount is not another order; a COD order stays out.
+      k8: ['I paid 1499 and got nothing, chargeback karungi'], k9: ['consumer court jaungi'] };
+    const late = { k1: true, k4: true, k7: true, k8: true, k9: true };
+    const client = { query: async (sql, p) => {
+      if (/FROM conversations c JOIN sites s/.test(sql)) { eq(p[0], 7); return { rows: [chat('k1', { status: 'resolved' }), chat('k2'), chat('k3'), chat('k4', { case_kind: 'reship' }), chat('k5'), chat('k6'), chat('k7', { refund_removed: true }), chat('k8'), chat('k9')] }; }
+      if (/sender = 'visitor'/.test(sql)) { eq(p[1], 7); return { rows: p[0].flatMap((id) => (said[id] || []).map((content, i) => ({ conversation_id: id, content, t: now - (10 - i) * 60_000 }))) }; }
+      if (/sender IN \('agent', 'system'\)/.test(sql)) return { rows: [{ conversation_id: 'k4', t: now }] };
+      if (/FROM orders o/.test(sql)) {
+        return { rows: [{ tracking_status: 'In Transit', is_cancelled: false, created_at: new Date(now - 6 * 86400e3), status_updated_at: null,
+          estimated_delivery: late[p[0].slice(1)] ? '2026-10-12' : '2026-10-30', delivered_at: null, state: null, city: null, origin_city: null,
+          payment_method: p[0] === '#k9' ? 'COD' : 'prepaid' }] };
+      }
+      throw new Error('candidates: unexpected SQL');
+    } };
+    const out = await cand.run(client, { days: 7, now });
+    deq(out.rows.map((x) => [x.id, x.from, x.threat, x.status, x.days_late]), [['k1', '-', 'consumer', 'resolved', 10], ['k4', 'Ship again', 'police', 'agent_handling', 10], ['k8', '-', 'chargeback', 'agent_handling', 10]]);
+    eq(out.rows[1].team_replied_after_last_hit, true);
+    deq(out.why, { 'estimated date not passed': 1, 'Refund removed before': 1, 'COD order, nothing paid': 1 });
+    deq([out.withThreat, out.otherOrderOnly], [7, 1]);
+    const printed = [];
+    const log = console.log;
+    console.log = (...a) => printed.push(a.join(' '));
+    try { cand.report(out); } finally { console.log = log; }
+    ok(printed.some((l) => l.includes('node scripts/refund-threat-candidates.js --apply k1 k4 k8')));
+    ok(!printed.some((l) => /consumer department|chargeback karungi|instagram|#k1|#k4/i.test(l)), 'no customer words or order IDs');
+    // The move runs the app's own server function (case-auto.ts), never a copy of it.
+    const src = fs.readFileSync(path.resolve(__dirname, '../refund-threat-candidates.js'), 'utf8');
+    ok(/auto\.applyRefundThreatMove/.test(src) && !/INSERT INTO|UPDATE conversations/.test(src), 'no write SQL of its own');
+  });
+
+  await t('R64 owner 19:20: a Hinglish "fir" (= phir), the store\'s "consumer care", an address with a court or police station on a late order never go to Refund (today\'s path); FIR in capitals among lower-case words, or F.I.R., does', async () => {
+    at(ist(12, 0, 23));
+    global.__recentSaid = [];
+    const promises = Object.values(RPROMISE);
+    for (const [id, said] of [
+      ['r64a', 'order nahi aaya to fir complaint karungi'],   // "then I will complain": a threat today, never Refund
+      ['r64b', 'fir kab aayega mera order'], ['r64c', 'fir se tracking link bhejo'], ['r64d', 'FIR KAB AAYEGA ORDER'],
+      ['r64e', 'consumer care number do'], ['r64f', 'mera address: Opp. District Court, Raipur'], ['r64g', 'papa police me hai, unke liye XL size'],
+    ]) {
+      known({ id }); order('#' + id, 'In Transit');
+      const s0 = db.stmts.length;
+      const r = await say(id, said);
+      ok(!promises.includes(textOf(r)), `${id}: no refund promise`);
+      deq([C(id).case_kind, ce(id).length], [null, 0], id);
+      ok(!since(s0).some((x) => x.q === REFUND_SQL.state), `${id}: the Refund rule never even reads the chat`);
+      if (id === 'r64b' || id === 'r64c') eq(textOf(r), AI_SAYS, `${id}: not a threat at all, the AI answers`);
+    }
+    // The police report itself.
+    for (const [id, said] of [['r64p', 'Mai FIR karwa dungi, order bahut late hai'], ['r64q', 'F.I.R. karungi main, order nahi aaya']]) {
+      known({ id }); order('#' + id, 'In Transit');
+      eq(textOf(await say(id, said)), RPROMISE.hinglish, id);
+      deq([C(id).case_kind, C(id).case_marked_by], ['refund', 'Chikki (auto)'], id);
+      deq(evs(id, 'case_mark')[0].meta, { case: 'refund', auto: true, trigger: 'police' }, id);
+    }
+  });
+
+  await t('R65 review fixes: an amount or a date in the threat is not another order; a COD order, a complaint to the store\'s own staff, a "not" in Hinglish, a money-back question, or the refund form switched off: never Refund', async () => {
+    at(ist(12, 0, 24));
+    global.__recentSaid = [];
+    const promises = Object.values(RPROMISE);
+    // The amount paid, a date: still the verified order (scen. S10, S11).
+    known({ id: 'r65a', verified_order_id: '#4801' }); order('#4801', 'In Transit');
+    eq(textOf(await say('r65a', 'I paid 1499 and got nothing, I will file a chargeback')), RPROMISE.en);
+    deq([C('r65a').case_kind, C('r65a').case_marked_by], ['refund', 'Chikki (auto)']);
+    known({ id: 'r65b', verified_order_id: '#4802' }); order('#4802', 'In Transit');
+    eq(textOf(await say('r65b', 'ordered on 25/09/2026, still nothing. chargeback karungi')), RPROMISE.hinglish);
+    eq(C('r65b').case_kind, 'refund');
+    // A Cash on Delivery order that is not delivered: nothing was paid, today's threat path (scen. S2).
+    known({ id: 'r65c' }); order('#r65c', 'In Transit', { payment: 'Cash on Delivery (COD)' });
+    let s0 = db.stmts.length;
+    eq(textOf(await say('r65c', 'order nahi aaya, consumer court jaungi')), URGENT_HI);
+    deq([C('r65c').status, C('r65c').case_kind, ce('r65c').length], ['human_needed', null, 0]);
+    eq(refundWrites(s0).length, 0);
+    // Not this rule at all: a complaint to the store's own staff, a Hinglish "I will NOT ...", a money-back question.
+    for (const [id, said] of [
+      ['r65d', 'Can I raise a complaint against you here?'], ['r65e', 'I will complain against you to your manager'],
+      ['r65g', 'legal action nahi lena chahti, bas order bhej do'], ['r65h', 'police me complaint nahi karungi, bas order bhejo'],
+      ['r65i', 'bank se paise wapas kab aayenge'], ['r65j', 'aap courier pe case file kar do na please'],
+    ]) {
+      known({ id }); order('#' + id, 'In Transit');
+      s0 = db.stmts.length;
+      const r = await say(id, said);
+      ok(!promises.includes(textOf(r)), `${id}: no refund promise`);
+      deq([C(id).case_kind, ce(id).length], [null, 0], id);
+      eq(refundWrites(s0).length, 0, id);
+    }
+    ok(!(db.messages.find((m) => m.conversation_id === 'r65i' && m.sender === 'visitor').metadata || {}).urgent, 'a money-back question is not a threat');
+    ok(!(db.messages.find((m) => m.conversation_id === 'r65j' && m.sender === 'visitor').metadata || {}).urgent, 'asking the store to chase the courier is not a threat');
+    // REFUND_FORMS=off (the owner's kill switch): no refund form can be sent, so none is promised.
+    process.env.REFUND_FORMS = 'off';
+    try {
+      known({ id: 'r65k' }); order('#r65k', 'In Transit');
+      s0 = db.stmts.length;
+      eq(textOf(await say('r65k', 'I will go to consumer court')), URGENT_EN);
+      deq([C('r65k').status, C('r65k').case_kind, ce('r65k').length], ['human_needed', null, 0]);
+      eq(refundWrites(s0).length, 0);
+      const auto = require(path.join(dir, 'case-auto.js'));
+      known({ id: 'r65m' }); order('#r65m', 'In Transit'); visitorSaid('r65m', OWNER_EXAMPLE, 60);
+      deq(await auto.applyRefundThreatMove('r65m', 7), { done: 'refused', why: 'refund form switched off' });
+      eq(C('r65m').case_kind, null);
+    } finally { delete process.env.REFUND_FORMS; }
+    known({ id: 'r65n' }); order('#r65n', 'In Transit');
+    eq(textOf(await say('r65n', 'I will go to consumer court')), RPROMISE.en, 'switched on again');
   });
 
   Object.assign(console, realConsole);

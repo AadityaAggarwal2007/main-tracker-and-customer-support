@@ -72,7 +72,18 @@ t('I1 only src/lib/refund/crypto.ts reads REFUND_DATA_KEY', () => {
   const hits = srcFiles.filter((f) => /REFUND_DATA_KEY/.test(read(f)));
   deq(hits, ['src/lib/refund/crypto.ts']);
   const env = srcFiles.filter((f) => f !== 'src/lib/refund/crypto.ts' && /process\.env\.REFUND_|process\.env\[['"]REFUND_/.test(read(f)));
-  deq(env, [], 'no other file reads a REFUND_* variable');
+  // Review fix 2026-10-02: the pure link-mask.ts reads the kill switch REFUND_FORMS (refundFormsOpen, for
+  // Chikki's threat path in src/lib/chat), nothing else; it says "off" exactly when crypto.ts does.
+  deq(env, ['src/lib/refund/link-mask.ts'], 'no other file reads a REFUND_* variable');
+  deq([...new Set([...read('src/lib/refund/link-mask.ts').matchAll(/process\.env(?:\.(\w+)|\[)/g)].map((m) => m[1] || '['))], ['REFUND_FORMS'], 'link-mask.ts reads only REFUND_FORMS');
+  const lm = load('lib/refund/link-mask.ts'), cr = load('lib/refund/crypto.ts');
+  const saved = process.env.REFUND_FORMS;
+  try {
+    for (const v of [undefined, '', 'on', 'off', ' OFF ', 'Off', 'no']) {
+      if (v === undefined) delete process.env.REFUND_FORMS; else process.env.REFUND_FORMS = v;
+      eq(lm.refundFormsOpen(), cr.refundFormsState() !== 'off', `REFUND_FORMS=${v}`);
+    }
+  } finally { if (saved === undefined) delete process.env.REFUND_FORMS; else process.env.REFUND_FORMS = saved; }
   const refundLib = srcFiles.filter((f) => /^src\/lib\/refund\//.test(f));
   deq(refundLib.filter((f) => /process\.env\.AUTH_TOKEN_SECRET|process\.env\[['"]AUTH_TOKEN_SECRET/.test(stripComments(read(f)))), [], 'the refund key is never derived from AUTH_TOKEN_SECRET');
 });
@@ -100,11 +111,15 @@ t('I2 chat, team score and widget code import at most the pure link-mask; no wid
     const s = read(f);
     for (const m of s.matchAll(/from\s+'([^']*refund[^']*)'|require\(\s*'([^']*refund[^']*)'\s*\)/g)) {
       const spec = m[1] || m[2];
-      if (!/^(@\/lib\/refund\/link-mask|\.\.\/refund\/link-mask)$/.test(spec)) bad.push(`${f} -> ${spec}`);
+      // src/lib/chat/refund-threat.ts (owner 2026-10-02 18:45) is a chat module, not a refund one: the threat
+      // detector and Chikki's fixed promise; it imports no refund module (checked below).
+      if (!/^(@\/lib\/refund\/link-mask|\.\.\/refund\/link-mask|@\/lib\/chat\/refund-threat|\.\/refund-threat)$/.test(spec)) bad.push(`${f} -> ${spec}`);
     }
     if (SECRET_RE.test(s)) bad.push(`${f} mentions a refund table / payout / server module`);
   }
   deq(bad, []);
+  const threatSpecs = [...read('src/lib/chat/refund-threat.ts').matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
+  deq(threatSpecs.filter((x) => /refund/.test(x)), [], 'refund-threat.ts imports no refund module');
   const widget = shared.filter((f) => /^src\/app\/api\/widget\//.test(f) && /lib\/refund|refund_/.test(read(f)));
   deq(widget, [], 'no /api/widget/* route imports or reads anything of the refund form');
   ok(!/\/api\/refunds?\b|refund_|\/refund#/.test(read('public/widget.js')), 'widget.js knows nothing of the refund form');

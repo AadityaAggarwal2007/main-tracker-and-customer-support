@@ -660,4 +660,239 @@ t('mentionsOtherOrder: another order number typed, or a lookup that found only o
   assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', JSON.stringify({ found: false })), false);
   assert.strictEqual(tcl.mentionsOtherOrder('tracking fake hai', '#4715', 'not json'), false);
 });
+// ── Chargeback / court / police threats on a late order -> Refund (owner 2026-10-02 18:45; refund-threat.ts) ──
+// refund-threat.ts imports '@/lib/journey' (loaded above as './journey'), './escalation' and a type from './tracking-claim'.
+const rtt = (() => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/refund-threat.ts'), 'utf8').replace("from '@/lib/journey'", "from './journey'");
+  fs.writeFileSync(path.join(dir, 'refund-threat.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
+  return require(path.join(dir, 'refund-threat.js'));
+})();
+const OWNER_EXAMPLE = 'I have raised the complaint against u in consumer department and also at instagram team against u';
+const THREAT_MATCH = [
+  [OWNER_EXAMPLE, 'consumer'],
+  ['I will do a chargeback', 'chargeback'], ['chargeback kar dungi', 'chargeback'], ['charge back karunga', 'chargeback'], ['charge-back karwa dungi', 'chargeback'],
+  ['I will raise a dispute with my bank', 'chargeback'], ['bank me dispute daal dunga', 'chargeback'], ['I will file a dispute on my credit card', 'chargeback'],
+  ['I will ask my bank to reverse the payment', 'chargeback'], ['चार्जबैक करूँगा', 'chargeback'], ['bank se paise wapas le lunga', 'chargeback'],
+  ['bank me complaint kar dungi', 'chargeback'], ['RBI me complaint karungi', 'chargeback'],
+  ['I will go to consumer court', 'consumer'], ['consumer forum me case karunga', 'consumer'], ['I have filed a complaint on the national consumer helpline', 'consumer'],
+  ['NCH pe complaint kar di hai', 'consumer'], ['consumer helpline pe complaint karungi', 'consumer'], ['I will complain to consumer forum', 'consumer'],
+  ['complaint against you in consumer court', 'consumer'],
+  ['उपभोक्ता फोरम में शिकायत करूँगा', 'consumer'], ['कंज्यूमर कोर्ट जाऊँगा', 'consumer'], ['consumer cell me complaint kar di', 'consumer'],
+  ['edaakhil pe case file kar diya hai', 'consumer'], ['consumer department me complaint kar di hai', 'consumer'],
+  ['Mai consumer complaint karungi', 'consumer'],
+  ['I will complain against you on instagram and in consumer forum', 'consumer'], ["Don't make me go to consumer court", 'consumer'],
+  ['If you do not deliver I will complain to consumer forum', 'consumer'],
+  ['I will send you a legal notice', 'legal'], ['legal action lunga', 'legal'], ['I will take legal action', 'legal'], ['my lawyer will contact you', 'legal'],
+  ['vakil se notice bhejunga', 'legal'], ['I will sue you', 'legal'], ['see you in court', 'legal'], ['court me case karunga', 'legal'],
+  ['kanooni karyawahi karunga', 'legal'], ['वकील से नोटिस भेजूँगा', 'legal'], ['कोर्ट में केस करूँगा', 'legal'], ['case kar dunga tum logo pe', 'legal'],
+  ['I will file an FIR', 'police'], ['police complaint karunga', 'police'], ['police me jaungi', 'police'], ['cyber cell me complaint kar di hai', 'police'],
+  ['I have reported this to cyber crime', 'police'], ['cybercrime.gov.in pe complaint daal di', 'police'], ['पुलिस में शिकायत करूँगी', 'police'],
+  ['साइबर सेल में शिकायत', 'police'], ['I will go to the police', 'police'], ['FIR darj karungi', 'police'],
+  ["if you don't refund I will go to the police", 'police'], ['order nahi aaya to police complaint karungi', 'police'],
+  // Review of 2 Oct evening: FIR only as F.I.R., FIR among lower-case words or an FIR phrase; a court with a
+  // threat around it; the bank / the customer reversing it; the police station; against you, Hinglish order.
+  ['F.I.R. karungi', 'police'], ['Mai FIR karwa dungi', 'police'], ['I will lodge an FIR against you', 'police'], ['fir darj karwaungi', 'police'],
+  ['police me FIR karungi', 'police'], ['thane me complaint karungi', 'police'], ['थाने में शिकायत करूँगी', 'police'], ['एफआईआर करूँगी', 'police'],
+  ['I will take you to court', 'legal'], ['court tak jaungi', 'legal'], ['main court jaungi', 'legal'], ['I will drag you to court', 'legal'],
+  ['vakil se baat karungi', 'legal'], ["I'll call the consumer helpline", 'consumer'],
+  ['bank se payment reverse karwa dungi', 'chargeback'], ['payment reverse karwa dungi', 'chargeback'], ['I will get the transaction reversed by my bank', 'chargeback'],
+  ['Never got my parcel, consumer court jaungi', 'consumer'],
+];
+const THREAT_NOT = [
+  // "consumer" / "court" / "legal" in another sense; "support", "issue".
+  'is this good for consumers?', 'consumer electronics', 'best consumer brand', 'my consumer number is wrong', 'Do consumers complain about the size?',
+  'mera order consumer ke liye gift hai', 'courtesy', 'your staff is not courteous', 'tennis court shoes', 'food court ke paas wala address', 'basketball court',
+  'court-style sneakers available?', 'courtyard wala ghar hai', 'courier boy rude tha', 'customer support team please help', 'support',
+  'there is an issue with my order', 'is this dress legal for school?', 'is this legal size paper?', 'my name is Sue', 'phone case chahiye',
+  'in case the parcel is late, tell me', 'I noticed the box was open', 'send me a notice when it ships',
+  // Said NOT to happen.
+  "I won't complain", 'I do not want to complain, just send the order', 'no complaints, thanks', 'I have no complaint', 'complaint nahi karungi bas order bhejo',
+  'mujhe koi complaint nahi hai', 'police case nahi karna, order bhejo', "I don't want to go to court, please just deliver", 'no dispute, just asking',
+  // Police / court as a place; "fir" = then; charges back.
+  'police verification pending hai', 'near police line', 'Police Line, Moradabad', 'police station ke paas address hai', 'address: opp police station, sector 4',
+  'police colony', 'fir kab aayega', 'fir se bhejo', 'FIR KAB AAYEGA ORDER', 'FIR SE BHEJO', 'COD charges back milenge?', 'delivery charge back milega?',
+  'refund bank me aayega?', 'my bank account details', 'bank ka naam galat hai, complaint karni hai',
+  // A lawyer as a person, not a threat.
+  'I am a lawyer, need a formal shirt', 'gift for my lawyer friend', 'mera bhai advocate hai, uske liye kurta', 'I always advocate for Vastora to my friends',
+  // Social media, fraud words, anger: not this rule (owner).
+  'I will post on instagram', 'bad review dunga', 'complaint against you on instagram', 'I will report you on google reviews', 'fraud hai ye', 'scam company',
+  'WORST SERVICE EVER', 'tum log chor ho',
+  // A complaint TO the store, or about someone else.
+  'I want to register a complaint about the damaged product', 'I raised a complaint here yesterday, any update?', 'complaint number kya hai?',
+  'I have a complaint about the size', 'complaint against the delivery boy, he was rude', 'complaint against your delivery boy', 'please report the issue to courier',
+  // Other paths.
+  'cancel my order', 'refund chahiye', 'mujhe refund chahiye, order cancel karo', 'payment kat gaya', 'tracking link fake hai',
+  'valmo pe tracking id invalid bata raha hai', 'where is my order', 'order 10 din se nahi aaya',
+  // "fir" = "then" (phir), owner 2 Oct 19:20: a listed chat had no threat, only Hinglish "fir". Capitals alone are not FIR.
+  'fir complaint karungi', 'fir se complaint karungi', 'order nahi aaya to fir complaint karungi', 'fir karungi', 'fir kar dungi',
+  'file fir se bhejo', 'fir file bhejo', 'register fir se karo', 'fir register karna padega', 'FIR KARUNGI', 'fir thana jaungi',
+  'fir bhi order nahi aaya, fir karwa dungi', 'Fir mujhe batao kab aayega, fir hi pay karungi',
+  // The store's customer care, not the consumer forum.
+  'consumer care number do', 'consumer care number kya hai, complaint karni hai', 'consumer care pe complaint ki thi', 'what is your consumer helpline number?',
+  'ग्राहक हेल्पलाइन नंबर दो',
+  // A court / the police / a lawyer as an address, a job, a person or a thing.
+  'Opp. District Court, Raipur', 'House 12, near District Court, Sector 5', 'my office is at Tis Hazari court road', 'court shoes size 7 hai?',
+  'court marriage ke liye lehenga chahiye', 'फूड कोर्ट के पास', 'my husband is a police officer, deliver before 6', 'papa police me hai, unke liye XL size',
+  'mere bhai police wale hain', 'Police Bazar, Shillong', 'delivery boy bola police checking chal rahi thi', 'traffic police ne roka tha delivery wale ko', 'मेरे पापा पुलिस में हैं', 'thane me delivery hai', 'Thana Bihta, Patna', 'थाना बिहटा, पटना',
+  'gift for my lawyer', 'papa advocate hai unke liye kurta bhejo jaldi se', 'mere papa vakil hai unko black coat chahiye',
+  'I work in cyber security, need formal shirts', 'cyber cafe se order kiya tha', 'साइबर कैफे के पास', 'nail polis wala colour hai kya',
+  // A refund request to the store, not a chargeback (today's refund path).
+  'please reverse the payment, I want to cancel', 'payment reverse kar do please', 'please reverse the amount to my bank account',
+  'my bank reported the payment failed', 'will you charge back the shipping fee?',
+  // Review fixes 2026-10-02. A complaint to the store's own staff (no consumer forum, court, police, bank or
+  // government named), or a support "case": not Refund (escalation.ts may still call it a threat: Needs you).
+  'Can I raise a complaint against you here?', 'I will complain against you to your manager', 'complaint against your team member who was rude',
+  'my parcel is lost, please file a case with the courier', 'please register a case for my parcel',
+  // A Hinglish "I will NOT ...".
+  'legal action nahi lena chahti, bas order bhej do', 'police me complaint nahi karungi, bas order bhejo', 'mujhe koi legal action nahi lena, bas mera order bhej do',
+  'legal notice nahi bhejna chahti, bas order chahiye', 'mai police me nahi jaungi, bas order bhejo', 'legal karwai nahi karni',
+  // A question about when the money comes back, or the store asked to chase the courier.
+  'bank se paise wapas aa jayenge na agar cancel karu?', 'bank se paise wapas kab aayenge', 'mere bank se paise wapas kab aayenge', 'bank se paise wapas chahiye',
+  'payment fail ho gaya tha, bank se paise wapas aayenge na?', 'bank se paise wapas karwa do please',
+  'please courier ke saath case file karo, mera parcel lost hai', 'aap courier pe case file kar do na please', 'can you raise a dispute with the courier?',
+];
+// Review fix 2026-10-02: a complaint "against you" with no outside body named: today's threat path (Needs you,
+// the 1-hour line), never Refund.
+const THREAT_TODAY = ['aapke khilaf complaint karungi', 'I will file a complaint against your company', 'I lodged a complaint against you',
+  'aapke khilaf shikayat darj karungi', 'आपके खिलाफ शिकायत करूँगी', 'against you complaint karungi'];
+t('refundThreatKind: the owner\'s own example and 71 threats found with their kind, 141 other messages left alone, 6 complaints "against you" left to the threat path; every one found is a threat in escalation.ts too', () => {
+  assert.strictEqual(THREAT_MATCH.length, 71); assert.strictEqual(THREAT_NOT.length, 141); assert.strictEqual(THREAT_TODAY.length, 6);
+  for (const s of THREAT_TODAY) { assert.strictEqual(rtt.refundThreatKind(s), null, `not Refund: ${s}`); assert.strictEqual(esc.urgentKind(s), 'threat', `still a threat: ${s}`); }
+  // ... and with an outside body named, it is one.
+  for (const [s, k] of [['I will file a complaint against you with my bank', 'consumer'], ['aapke khilaf consumer forum me complaint karungi', 'consumer'],
+    ['tumhare khilaf police complaint karungi', 'consumer'], ['case file karungi court me', 'legal'], ['bank se paise wapas le lungi', 'chargeback'],
+    ['bank se paise wapas karwa lungi', 'chargeback'], ['dispute raise karungi', 'chargeback'], ['case thok dunga', 'legal'],
+    ['agar refund nahi diya to legal action lungi', 'legal'], ['refund nahi mila to police me jaungi', 'police']]) {
+    assert.strictEqual(rtt.refundThreatKind(s), k, `${k}: ${s}`);
+    assert.strictEqual(esc.urgentKind(s), 'threat', s);
+  }
+  assert.strictEqual(rtt.refundThreatKind(OWNER_EXAMPLE), 'consumer');
+  for (const [s, k] of THREAT_MATCH) {
+    assert.strictEqual(rtt.refundThreatKind(s), k, `should be ${k}: ${s}`);
+    assert.strictEqual(esc.urgentKind(s), 'threat', `escalation.ts must call it a threat too: ${s}`);
+  }
+  for (const s of THREAT_NOT) assert.strictEqual(rtt.refundThreatKind(s), null, `not a Refund threat: ${s}`);
+  for (const s of ['', '   ', null, undefined]) assert.strictEqual(rtt.refundThreatKind(s), null);
+  // escalation.ts additions (owner's example) and its old lines: a social-media complaint is a threat (Needs you), never Refund.
+  assert.strictEqual(esc.urgentKind('complaint against you on instagram'), 'threat');
+  for (const s of ['fir kab aayega', 'refund chahiye', 'send me a notice when it ships', 'is this good for consumers?', 'I have a complaint about the size']) assert.strictEqual(esc.urgentKind(s), null, s);
+  // The 2 Oct additions to escalation.ts stay exact too (the lines before them are unchanged, some wider).
+  for (const s of ['fir file bhejo', 'fir register karna padega', 'fir karungi', 'nail polis wala colour hai kya', 'थाना बिहटा, पटना', 'Thana Bihta, Patna',
+    'I work in cyber security, need formal shirts', 'payment reverse kar do please', 'please reverse the amount to my bank account',
+    'my bank reported the payment failed', 'कंज्यूमर केयर नंबर दो',
+    // Review fixes 2026-10-02: null before the addition, null again.
+    'bank se paise wapas aa jayenge na agar cancel karu?', 'bank se paise wapas kab aayenge', 'mere bank se paise wapas kab aayenge', 'bank se paise wapas chahiye',
+    'payment fail ho gaya tha, bank se paise wapas aayenge na?', 'please courier ke saath case file karo, mera parcel lost hai', 'aap courier pe case file kar do na please',
+    'delivery boy ke khilaf complaint karni hai, wo rude tha', 'courier wale ke khilaf complaint karo', 'डिलीवरी बॉय के खिलाफ रिपोर्ट', 'legal karwai nahi karni', 'attorney',
+    'power of attorney chahiye']) assert.strictEqual(esc.urgentKind(s), null, `escalation.ts addition: ${s}`);
+  const escSrc = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/escalation.ts'), 'utf8');
+  assert.ok(!/^import /m.test(escSrc), 'escalation.ts keeps no imports');
+});
+t('etaOf / etaPassed: the order\'s date, else day 13 after it was placed; passed = the India day is over', () => {
+  const at = (iso) => Date.parse(iso);
+  assert.strictEqual(rtt.etaOf({ estimated_delivery: '2026-10-02', placed_on: '2026-09-01T10:00:00Z' }), at('2026-10-02T00:00:00Z'));
+  assert.strictEqual(rtt.etaOf({ estimated_delivery: null, placed_on: '2026-09-25T10:00:00.000Z' }), at('2026-10-08T10:00:00.000Z'), 'the day-13 end');
+  assert.strictEqual(rtt.etaOf({ estimated_delivery: new Date('2026-10-02T00:00:00Z') }), at('2026-10-02T00:00:00Z'));
+  assert.strictEqual(rtt.etaOf({}), null); assert.strictEqual(rtt.etaOf(null), null); assert.strictEqual(rtt.etaOf({ estimated_delivery: 'bad', placed_on: '' }), null);
+  const eta = rtt.etaOf({ estimated_delivery: '2026-10-02' });
+  assert.strictEqual(rtt.etaPassed(eta, at('2026-10-02T18:29:00Z')), false, '2 Oct 23:59 IST: due today, not passed');
+  assert.strictEqual(rtt.etaPassed(eta, at('2026-10-02T18:30:00Z')), true, '3 Oct 00:00 IST: passed');
+  assert.strictEqual(rtt.etaPassed(eta, at('2026-10-01T20:00:00Z')), false);
+  // A DATE read as midnight in India (a server in IST) is the same India day.
+  assert.strictEqual(rtt.etaPassed(at('2026-10-01T18:30:00Z'), at('2026-10-02T18:29:00Z')), false);
+  assert.strictEqual(rtt.etaPassed(null, Date.now()), null); assert.strictEqual(rtt.etaPassed(NaN, Date.now()), null);
+});
+t('the refund texts: the owner\'s words, the customer\'s language, no time / amount / courier / link; the promise and the reminder keep the chat waiting; one reminder head per language', () => {
+  const notAnswer = new RegExp(waiting.AI_NOT_AN_ANSWER_REGEX, 'i');
+  assert.ok(!waiting.AI_NOT_AN_ANSWER_REGEX.includes("'"), 'no apostrophe: it goes into SQL');
+  assert.strictEqual(rtt.refundPromiseReply('en'), "We're sorry for the trouble. We are processing your refund, and our team will send you a refund form here in this chat to collect your UPI / bank details.");
+  assert.strictEqual(rtt.refundReminderReply('hinglish'), 'Hamari team aapka refund process kar rahi hai, refund ka proof aapko isi chat aur aapke Gmail / email dono pe de degi.');
+  for (const lang of ['en', 'hinglish', 'hi']) {
+    const A = rtt.refundPromiseReply(lang), B = rtt.refundReminderReply(lang);
+    for (const x of [A, B]) {
+      assert.ok(x && !tp.promisesToday(x), `${lang}: ${x}`);
+      assert.ok(!/v[ao]lmo|वाल्मो|courier|कूरियर/i.test(x), `${lang}: no courier`);
+      assert.ok(!/today|tonight|tomorrow|\baaj\b|\bkal\b|आज|कल|hour|ghant|घंट|\bdin\b|days?\b|दिन/i.test(x), `${lang}: no time: ${x}`);
+      assert.ok(!/\d|₹|rs\.?\s|rupee|https?:|\/refund#|forms?\.gle|docs\.google/i.test(x), `${lang}: no amount, no link: ${x}`);
+      assert.ok(notAnswer.test(x), `${lang}: not an answer (the chat keeps waiting)`);
+      assert.strictEqual(esc.dropReplyTimes(x).text, x, `${lang}: the same at night`);
+    }
+    assert.ok(/UPI/.test(A) && /(refund form|रिफंड फॉर्म)/i.test(A), `${lang}: the promise names the refund form and UPI / bank`);
+    assert.ok(/(email|ईमेल)/i.test(B) && /(chat|चैट)/i.test(B) && /(proof|प्रूफ)/i.test(B), `${lang}: the reminder says proof in this chat and on email`);
+    assert.ok(!esc.isRepeatedReply(B, [A]) && esc.isRepeatedReply(B, [B]), lang);
+    const heads = rtt.REFUND_REMINDER_HEADS.filter((h) => B.startsWith(h));
+    assert.strictEqual(heads.length, 1, lang);
+    assert.ok(heads[0].length >= 30 && !/[%_]/.test(heads[0]), lang);
+    assert.ok(!rtt.REFUND_REMINDER_HEADS.some((h) => A.includes(h)), `${lang}: the promise is not the reminder`);
+  }
+  assert.strictEqual(rtt.REFUND_REMINDER_HEADS.length, 3);
+  // The old not-an-answer lines still match; ordinary replies and the refund form's own messages do not.
+  assert.ok(notAnswer.test(tcl.promiseReply('en')) && notAnswer.test(tcl.reminderReply('hi')));
+  for (const x of ['Your refund has been approved. As soon as the refund is sent, we will share the reference number here in this chat.',
+    'Your order is In Transit, estimated delivery 7 October 2026.', "I've noted your refund or cancellation request. Our team will reply to you here in this chat within 24 hours."]) {
+    assert.ok(!notAnswer.test(x), x);
+  }
+  // The pure file stays pure.
+  const imports = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/refund-threat.ts'), 'utf8').match(/from '[^']+'/g);
+  assert.deepStrictEqual(imports, ["from '@/lib/journey'", "from './escalation'", "from './tracking-claim'"]);
+});
+t('refundThreatStep: verified (order ID + full phone), not another order, not removed before, the order late and not delivered / cancelled / returned; Ship again is switched', () => {
+  const base = { strictProof: true, caseKind: null, otherOrder: false, refundRemoved: false, otherRefundChat: false };
+  const late = { stage: 'in_transit', etaPassed: true };
+  const step = (o) => rtt.refundThreatStep({ ...base, ...o });
+  assert.deepStrictEqual(step({}), { act: 'need_order' });
+  assert.deepStrictEqual(step({ order: late }), { act: 'mark' });
+  assert.deepStrictEqual(step({ order: { stage: 'pre_dispatch', etaPassed: true } }), { act: 'mark' });
+  assert.deepStrictEqual(step({ caseKind: 'reship', order: late }), { act: 'switch' });
+  assert.deepStrictEqual(step({ caseKind: 'refund', order: late }), { act: 'in_refund' });
+  for (const [o, why] of [
+    [{ strictProof: false, order: late }, 'not verified by order ID + full phone'],
+    [{ caseKind: 'other', order: late }, 'marked other'],
+    [{ otherOrder: true, order: late }, 'another order'],
+    [{ refundRemoved: true, order: late }, 'Refund removed before'],
+    [{ otherRefundChat: true, order: late }, 'order already in Refund in another chat'],
+    [{ order: null }, 'order not loaded'],
+    [{ order: { stage: 'delivered', etaPassed: true } }, 'delivered order'],
+    [{ order: { stage: 'other', etaPassed: true } }, 'cancelled / returned / failed order'],
+    [{ order: { stage: 'in_transit', etaPassed: null } }, 'no estimated date'],
+    [{ order: { stage: 'in_transit', etaPassed: false } }, 'estimated date not passed'],
+    // Review fix 2026-10-02: a Cash on Delivery order that is not delivered (nothing paid); delivered says so first.
+    [{ order: { stage: 'in_transit', etaPassed: true, cod: true } }, 'COD order, nothing paid'],
+    [{ order: { stage: 'pre_dispatch', etaPassed: true, cod: true } }, 'COD order, nothing paid'],
+    [{ order: { stage: 'delivered', etaPassed: true, cod: true } }, 'delivered order'],
+  ]) assert.deepStrictEqual(step(o), { act: 'today', why }, why);
+  assert.deepStrictEqual(step({ order: { ...late, cod: false } }), { act: 'mark' }, 'prepaid');
+  // Checked before the order is read (no lookup for a visitor or a removed mark).
+  assert.deepStrictEqual(step({ strictProof: false }), { act: 'today', why: 'not verified by order ID + full phone' });
+});
+t('threatNamesOtherOrder (review fix 2026-10-02): an order written as one counts; an amount, a date, a PIN code or the verified order do not', () => {
+  const other = (said) => rtt.threatNamesOtherOrder(said, '#4715');
+  for (const s of ['I paid 1499 and got nothing, I will file a chargeback', 'ordered on 25/09/2026, still nothing. chargeback karungi', 'Rs 1499 diye the, consumer court jaungi',
+    '₹1,499 paid, chargeback', '1499/- de diye, police complaint karungi', 'price 2499.00 tha, chargeback karungi', 'PIN 110092, chargeback karungi',
+    'ordered on 25 Sep 2026, chargeback', 'Sept 25, 2026 ko order kiya, consumer court jaungi', '#4715 ka refund do warna chargeback', 'order 4715 pe chargeback karungi',
+    'phone 9876543210, chargeback karungi', 'chargeback karungi', '', null]) assert.strictEqual(other(s), false, String(s));
+  for (const s of ['order #4716 ke liye consumer court jaungi', 'order 4716 pe chargeback', 'order no. 4716, chargeback karungi', '#4716 ka chargeback',
+    '4716 wale order pe chargeback karungi', 'order id: 123456 chargeback']) assert.strictEqual(other(s), true, s);
+  // The tracking claim keeps its own wider test (an amount there still reads as another order).
+  assert.strictEqual(tcl.mentionsOtherOrder('I paid 1499, tracking fake hai', '#4715', null), true);
+});
+t('refundFollowUpAction: Chikki\'s Refund chat reminds once, "ok" gets nothing; a person\'s (or the team wrote): today\'s path', () => {
+  const act = (auto, said, repeated = false) => rtt.refundFollowUpAction({ auto, said, repeated });
+  assert.strictEqual(act(true, 'refund kab milega?'), 'reminder');
+  assert.strictEqual(act(true, 'chargeback karungi'), 'reminder');
+  assert.strictEqual(act(true, 'रिफंड कब मिलेगा?'), 'reminder');
+  assert.strictEqual(act(true, 'refund kab milega?', true), 'silent');
+  for (const s of ['ok', 'ok thanks', '👍', 'thank you']) assert.strictEqual(act(true, s), 'silent', s);
+  assert.strictEqual(act(false, 'refund kab milega?'), null);
+  assert.strictEqual(act(false, 'ok'), null);
+});
+t('rulebook: 6.6 and 9.14 (owner 2 Oct 18:45) at the ends of their sections, and the rules that point to them', () => {
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  for (const id of ['6.6', '9.14']) assert.ok(rb.RULE_IDS.has(id) && rule(id).how === 'code', id);
+  assert.ok(rule('6.6').text.includes('"we\'re sorry, we are processing your refund, our team will send you a refund form in this chat to collect your UPI / bank details"'));
+  assert.ok(/estimated date has passed/.test(rule('6.6').text) && /NOT for a social-media threat, fraud words or anger alone/.test(rule('6.6').text));
+  assert.ok(rule('9.14').text.includes('"Hamari team aapka refund process kar rahi hai, refund ka proof aapko isi chat aur aapke Gmail / email dono pe de degi"'));
+  assert.ok(rule('5.3').text.includes('(6.6)') && rule('6.2').text.includes('(6.6)') && rule('7.2').text.includes('6.6') && rule('6.2').text.includes('after 10 AM'));
+  assert.ok(rule('9.2').text.includes('9.14') && /Refund \(6\.6\): no senior needed/.test(rule('9.6').text));
+});
 console.log(`UNIT: ${n} groups passed`);

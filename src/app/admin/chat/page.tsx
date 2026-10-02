@@ -218,6 +218,15 @@ interface StaffBlock {
   mark_note: string | null;   // why Refund / Ship again is off, or the override line
   office_open: boolean;
 }
+// Close / Hand to AI on the open chat (the thread's answer: `hot_lock`, owner 2026-10-02). On a HOT chat
+// (an unanswered threat / fraud claim, At risk by the scorer's model, or Chikki's own Refund mark:
+// team-rules.ts hotChat) only the Super Admin
+// closes it or hands it to the AI; a member sees both off with lock_reason as a line of its own.
+interface HotLock {
+  can_close: boolean;
+  can_hand_to_ai: boolean;
+  lock_reason: string | null;
+}
 // The open chat's team history (the thread's answer: `team_log`), newest first: claims, takes,
 // transfers with their note, returning customers, merges. STAFF ONLY: the customer and the AI never
 // see any of it. Names are as they are today.
@@ -694,23 +703,28 @@ function CaseChip({ kind, by, at, status, role, big = false }: { kind: string; b
   // the new link at their next question about it (the one reminder).
   const auto = by === AUTO_MARK_NAME;
   const moved = auto && role === 'backfill';
+  // Chikki's own Refund mark (owner 2026-10-02): the customer was told their refund is being processed
+  // and that a refund form will come in this chat; only the Super Admin sends it and closes the chat.
+  const autoRefund = refund && auto;
   // Red (owner 2026-10-02, answer 8): a Ship again chat waiting for a person (the customer wrote again,
   // or it was already in Needs you). It stays in Ship again and also shows in Needs you until a person
-  // replies, takes it over, closes it or removes the mark.
-  const red = kind === 'reship' && status === 'human_needed';
+  // replies, takes it over, closes it or removes the mark. Chikki's own Refund mark keeps a chat that
+  // was already in Needs you there too: the same red.
+  const red = (kind === 'reship' || autoRefund) && status === 'human_needed';
   const who = `${CASE_LABELS[kind] || kind}${by ? ` · marked by ${by}` : ''}${when ? ` · ${when}` : ''}.`;
   const movedNote = 'Moved here in the one-time move of 2 Oct: the move sent the customer no message.';
+  const refundPromise = 'The customer was told: their refund is being processed and a refund form will come in this chat. Only the Super Admin sends it.';
   const title = red
     // A staff mark sends the customer nothing, so only Chikki's live mark carries a promise.
-    ? `${who} ${moved ? movedNote : auto ? 'The customer was promised a new tracking link.' : 'Customer wrote again.'} A person must reply now.`
-    : `${who} ${moved ? `${movedNote} Their next question about the link gets the 24-48 hour line.` : auto ? 'The customer was told: new tracking link here within 24-48 hours.' : 'Internal only: the customer is not told.'}`;
+    ? `${who} ${autoRefund ? refundPromise : moved ? movedNote : auto ? 'The customer was promised a new tracking link.' : 'Customer wrote again.'} A person must reply now.`
+    : `${who} ${autoRefund ? refundPromise : moved ? `${movedNote} Their next question about the link gets the 24-48 hour line.` : auto ? 'The customer was told: new tracking link here within 24-48 hours.' : 'Internal only: the customer is not told.'}`;
   return (
     <span title={title} style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
       fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4, fontWeight: 700,
       background: red ? '#fee2e2' : refund ? '#fef3c7' : '#e0e7ff', color: red ? '#b91c1c' : refund ? '#92400e' : '#3730a3',
     }}>
-      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {red ? `${CASE_LABELS.reship} · needs you` : CASE_LABELS[kind] || kind}
+      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {red ? `${CASE_LABELS[kind] || kind} · needs you` : CASE_LABELS[kind] || kind}
       {big && by ? <span style={{ fontWeight: 500 }}>· {by}{when ? `, ${when}` : ''}</span> : null}
     </span>
   );
@@ -1208,7 +1222,7 @@ export default function ChatSupportPage() {
   const [myChats, setMyChats] = useState<{ open: number; waiting: number; held: number }>({ open: 0, waiting: 0, held: 0 });
   // From the thread's answer: what this login may do on the open chat and its team history, tied to
   // their chat like the order line, so a fast switch never shows the last chat's buttons.
-  const [threadTeam, setThreadTeam] = useState<{ id: string; staff: StaffBlock | null; log: TeamLogEntry[] } | null>(null);
+  const [threadTeam, setThreadTeam] = useState<{ id: string; staff: StaffBlock | null; log: TeamLogEntry[]; hotLock: HotLock | null } | null>(null);
   // Refund form (owner 2026-10-02): the thread answer's refund_form (Super Admin + Refund chats only).
   const [threadRefund, setThreadRefund] = useState<{ id: string; state: RefundThreadState | null } | null>(null);
   const [teamLogOpen, setTeamLogOpen] = useState(false);
@@ -1251,6 +1265,9 @@ export default function ChatSupportPage() {
   // What this login may do on the open chat, as the server said (never guessed here).
   const staff = activeConv && threadTeam?.id === activeConv.id ? threadTeam.staff : null;
   const teamLog = activeConv && threadTeam?.id === activeConv.id ? threadTeam.log : [];
+  // Close / Hand to AI on a hot chat (server's hot_lock). Missing (an older server): nothing is off here,
+  // and the server still refuses with its own message.
+  const hotLock = activeConv && threadTeam?.id === activeConv.id ? threadTeam.hotLock : null;
   // Someone else holds the open chat and this login may only read it (the Super Admin may act on any).
   const othersChat = !!staff?.holder && !staff.can_act;
   // The composer works only on a chat with the team (agent_handling) that this login may act on: its
@@ -1366,7 +1383,7 @@ export default function ChatSupportPage() {
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
-      setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [] });
+      setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [], hotLock: data.hot_lock ?? null });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });
       setMessages(data.messages || []);
@@ -1583,7 +1600,10 @@ export default function ChatSupportPage() {
         ? confirm(`Take this chat out of ${label}?\n\n${activeConv.case_mark_role === 'backfill'
           ? 'Chikki moved it here in the one-time move of 2 Oct; the move sent the customer no message.'
           : 'The customer was promised a new tracking link.'} The chat goes to Needs you (or back to the team member who had taken it), and Chikki will not move it here again by itself.`)
-        : confirm(`Take this chat out of ${label}?\n\nIt goes back to where it was. The history keeps who marked and who removed it.`);
+        : activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
+          // Chikki's own Refund mark (owner 2026-10-02): the customer is waiting for a refund form.
+          ? confirm(`Take this chat out of ${label}?\n\nChikki told the customer their refund is being processed and that a refund form will come in this chat. It goes back to where it was. The history keeps who marked and who removed it.`)
+          : confirm(`Take this chat out of ${label}?\n\nIt goes back to where it was. The history keeps who marked and who removed it.`);
     if (!ok) return;
     try {
       const res = await fetch(`/api/chat/conversations/${activeId}`, {
@@ -2419,7 +2439,8 @@ export default function ChatSupportPage() {
                       {caseKey === 'reship'
                         // Owner 2026-10-02: Chikki marks Ship again by itself for a fake / invalid tracking claim.
                         ? `Marked by your team: internal only, the customer is not told, the AI does not reply. Marked by ${AUTO_MARK_NAME}: the customer was promised a new tracking link within 24-48 hours, and Chikki only reminds them once (a chat moved in the one-time move of 2 Oct got no message: its customer's next question about the link gets that line). A red one also shows in Needs you.`
-                        : 'Internal only: customers are never told. These chats show only here; the AI does not reply in them.'}
+                        // Owner 2026-10-02: Chikki marks Refund by itself for a threat after the delivery date.
+                        : `Marked by your team: internal only, customers are never told; these chats show only here and the AI does not reply in them. Marked by ${AUTO_MARK_NAME}: the customer was told their refund is being processed and that a refund form will come in this chat; only the Super Admin sends it (Send refund form) and closes the chat.`}
                     </div>
                   </div>
                 );
@@ -2749,11 +2770,16 @@ export default function ChatSupportPage() {
                               title="Give this chat to someone else, with a one-line note for the team"
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><ArrowRightLeft size={13} /> Transfer</button>
                           )}
+                          {/* Hot chat (hot_lock, owner 2026-10-02): a member sees both off; why is the line below. */}
                           {activeConv.status === 'agent_handling' && !activeConv.case_kind && staff.can_act && (
-                            <button className="btn btn-outline btn-sm" onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
+                            <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_hand_to_ai}
+                              title={hotLock && !hotLock.can_hand_to_ai && hotLock.lock_reason ? hotLock.lock_reason : undefined}
+                              onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
                           )}
                           {activeConv.status !== 'resolved' && staff.can_act && (
-                            <button className="btn btn-outline btn-sm" onClick={() => changeStatus('resolved')}>Close</button>
+                            <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_close}
+                              title={hotLock && !hotLock.can_close && hotLock.lock_reason ? hotLock.lock_reason : undefined}
+                              onClick={() => changeStatus('resolved')}>Close</button>
                           )}
                         </>
                       ) : staff ? (
@@ -2770,6 +2796,23 @@ export default function ChatSupportPage() {
                   {canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
                     <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)', textAlign: 'right', wordBreak: 'break-word' }}>
                       Refund / Ship again: {staff.mark_note}
+                    </div>
+                  )}
+
+                  {/* Why Close / Hand to AI are off on a hot chat (the server's hot_lock.lock_reason), the same
+                      kind of line, on every screen size: a phone has no hover (owner 2026-10-02). */}
+                  {canReply && staff?.can_act && activeConv.status !== 'resolved' && hotLock?.lock_reason && (
+                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)', textAlign: 'right', wordBreak: 'break-word' }}>
+                      <Lock size={10} style={{ verticalAlign: '-1px', marginRight: 3 }} />Close / Hand to AI: {hotLock.lock_reason}
+                    </div>
+                  )}
+
+                  {/* Chikki's own Refund mark (owner 2026-10-02): the customer was told a refund form will come
+                      in this chat, and only the Super Admin sends it. Until a form link or a request exists. */}
+                  {canReply && canCases && isSuperAdmin(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
+                    && threadRefund?.id === activeConv.id && threadRefund.state && !threadRefund.state.link && !threadRefund.state.request && (
+                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', fontWeight: 600, color: '#b45309', textAlign: 'right', wordBreak: 'break-word' }}>
+                      Chikki promised a refund form - press Send refund form
                     </div>
                   )}
 

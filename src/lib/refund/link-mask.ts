@@ -9,8 +9,16 @@
 //     Owner answer Q7 (2026-10-02): EVERY Google Form link is blocked (docs.google.com/forms, the
 //     Workspace form docs.google.com/a/<domain>/forms, forms.gle, the old goo.gl/forms).
 //   - dropFormMentions: Chikki's replies never send or mention a refund / return form (the AI guard).
+//   - refundFormsOpen: the kill switch REFUND_FORMS=off, the only REFUND_* variable read outside crypto.ts.
 // src/lib/chat/sensitive.ts keeps its own copy of REFUND_LINK_RE (it has no imports); the isolation
 // test checks the two are the same.
+
+// Review fix 2026-10-02: is the refund form switched on? REFUND_FORMS=off is the owner's kill switch (the
+// same test as crypto.ts refundFormsState, which also knows whether the key is usable; only crypto.ts reads
+// the key). Chikki's threat-on-a-late-order path (src/lib/chat/case-auto.ts) never promises a refund form
+// while it is off: the Super Admin could not send one (server.ts blocks Send).
+export const refundFormsOpen = (): boolean =>
+  (typeof process === 'undefined' ? '' : String(process.env.REFUND_FORMS || '')).trim().toLowerCase() !== 'off';
 
 export const REFUND_LINK_RE = /[^\s]*?(?:\/|%2F)refund(?:#|%23)[A-Za-z0-9_-]{16,}/gi;
 export const REFUND_LINK_SQL = '[^[:space:]]*(/|%2F)refund(#|%23)[A-Za-z0-9_-]{16,}';   // for regexp_replace(..., 'gi')

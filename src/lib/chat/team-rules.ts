@@ -118,3 +118,77 @@ export function cleanTransferNote(x: unknown): string | null {
   if (Array.from(s).length < 3 || !/\p{L}/u.test(s)) return null;
   return s;
 }
+
+// ── Hot chats: Close and Hand to AI are the Super Admin's (owner, 2026-10-02) ──
+// A 77% Critical chat whose customer had threatened a consumer complaint was closed and handed to the
+// AI by staff within seconds (2026-10-02). The owner's answer: on an angry / threat chat only the
+// Super Admin may Close it or Hand it to the AI ("Close + Hand to AI band"); staff wording is not
+// blocked ("Kuch nahi"). Take over, Take from X, Transfer, replies and the Refund / Ship again marks
+// stay as they are, and the system (auto-close, merges, Chikki) is not a person: none of it is gated.
+//
+// HOT, for a KNOWN customer (a visitor is never in the inbox's problem tabs): the customer wrote a threat or
+// a fraud claim that no team member has answered since (the `urgent` marker escalation.ts / refund-threat.ts
+// put on the message itself, the inbox's 1-hour list), or the scorer's MODEL rates them HOT_SCORE_MIN+ (the
+// "At risk" level). Or Chikki marked it Refund by itself (the customer was told their refund is being
+// processed and a refund form will come).
+// Review fix 2026-10-02: never health-rules.ts's word counts (health_signals threat / accuse): they match
+// bare words ("fir" = phir, a court or police station in an address, "tracking id fake hai", "duplicate
+// order", "loot sale"), and a recent count also floors health_score at 85, so the model's own number
+// (health_signals.llm, health.ts) is read instead. A score saved before that key existed: health_score
+// stands until the customer writes again; the model failed (llm null): no 'risk' from the counts.
+// The same values as the rest of the app; this file has no imports, so hot-lock.js checks they agree.
+export const HOT_SCORE_MIN = 65;                 // = HEALTH_PIN_MIN (health-rules.ts), the "At risk" tab
+export const HOT_AUTO_MARKER = 'Chikki (auto)';  // = AUTO_MARK_NAME (tracking-claim.ts), Chikki's own marks
+
+export type HotKind = 'auto_refund' | 'threat' | 'fraud' | 'risk';
+export interface HotFacts {
+  known: boolean;                                // verified, or an old phone match (isKnownCustomer)
+  healthScore: number | null | undefined;        // conversations.health_score
+  modelScore?: unknown;                          // conversations.health_signals->'llm' (undefined = no such key)
+  urgent: unknown;                               // newest unanswered urgent marker: 'threat' | 'accusation' | null
+  caseKind: string | null | undefined;
+  caseMarkedBy: string | null | undefined;
+}
+
+// A count or score read from the database (a JSON number, a numeric string, or nothing): 0 unless finite.
+const countOf = (x: unknown): number => {
+  const n = typeof x === 'number' ? x : typeof x === 'string' && x.trim() !== '' ? Number(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+};
+
+// Why the chat is hot, the strongest reason first; null = not hot.
+export function hotChat(f: HotFacts): HotKind | null {
+  if (f.caseKind === 'refund' && f.caseMarkedBy === HOT_AUTO_MARKER) return 'auto_refund';
+  if (!f.known) return null;
+  if (f.urgent === 'threat') return 'threat';
+  if (f.urgent === 'accusation') return 'fraud';
+  const score = f.modelScore === undefined ? countOf(f.healthScore) : countOf(f.modelScore);
+  if (score >= HOT_SCORE_MIN) return 'risk';
+  return null;
+}
+
+// Close and Hand to AI on this chat: may this person press them? The Super Admin always; a member
+// never on a hot chat. (Who holds the chat is canAct's question, asked separately.)
+export function hotLocked(a: Pick<Actor, 'superAdmin'>, hot: HotKind | null): boolean {
+  return !a.superAdmin && hot !== null;
+}
+
+// The reason in plain words (staff screens only, never the customer).
+function hotWhy(kind: HotKind, score: number | null | undefined): string {
+  if (kind === 'auto_refund') return 'Chikki told the customer their refund is being processed and a refund form will come in this chat.';
+  if (kind === 'threat') return 'The customer made a threat (chargeback, court, police, legal action or bad reviews).';
+  if (kind === 'fraud') return 'The customer called the store a fraud.';
+  const s = countOf(score);
+  return `The customer is at risk (${Math.round(s)}% frustrated).`;
+}
+
+// The small line under the buttons, after "Close / Hand to AI: " (thread answer staff.lock_reason).
+export function hotLockNote(kind: HotKind, score?: number | null): string {
+  return `Super Admin only. ${hotWhy(kind, score)}`;
+}
+
+// The 403 a member gets for Close / Hand to AI on a hot chat (PATCH /api/chat/conversations/[id]).
+export function hotLockMessage(kind: HotKind, action: 'close' | 'hand_to_ai', score?: number | null): string {
+  const what = action === 'close' ? 'close this chat' : 'hand this chat to the AI';
+  return `Only the Super Admin can ${what}. ${hotWhy(kind, score)} You can still reply, take it over or transfer it.`;
+}

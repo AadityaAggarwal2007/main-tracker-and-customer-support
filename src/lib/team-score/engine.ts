@@ -160,8 +160,10 @@ class Ctx {
     for (const h of holders) { const cd = this.cds.get(h.conv); if (cd) { cd.holders.push(h); cd.hAts.push(h.at); } }
     this.statuses = (input.statuses || []).map((s) => ({ ...s, at: fl(s.at) })).sort((a, b) => a.at - b.at || a.id - b.id);
     for (const s of this.statuses) { const cd = this.cds.get(s.conv); if (cd) { cd.statuses.push(s); cd.sAts.push(s.at); } }
+    // A remove and a mark at the same instant are a switch (Refund <-> Ship again, one transaction: Chikki's
+    // threat move or a person's setCase): the remove first, so the chat stays marked (review fix 2026-10-02).
     const cases = (input.cases || []).map((c) => ({ ...c, at: fl(c.at) }))
-      .sort((a, b) => cmp(a.conv, b.conv) || a.at - b.at || cmp(a.action, b.action));
+      .sort((a, b) => cmp(a.conv, b.conv) || a.at - b.at || (a.action === b.action ? 0 : a.action === 'remove' ? -1 : 1));
     for (const c of cases) { const cd = this.cds.get(c.conv); if (cd) { cd.cases.push(c); cd.cAts.push(c.at); } }
     const health = (input.health || []).map((h) => ({ ...h, at: fl(h.at) }))
       .sort((a, b) => cmp(a.conv, b.conv) || a.at - b.at || a.score - b.score);

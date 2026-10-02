@@ -168,14 +168,16 @@ async function runOnce(conversationId: string): Promise<void> {
 
   // Only its own columns: updated_at stays, so the inbox order by activity does
   // not move. Never replaces a score written from a later read (the backfill
-  // script can run beside the app).
+  // script can run beside the app). health_signals also keeps the model's own
+  // number (`llm`, null when the model failed): the hot-chat lock (team-rules.ts
+  // hotChat, review fix 2026-10-02) reads it, never the word counts.
   await query(
     `UPDATE conversations
         SET health_score = $2, health_reason = $3, health_signals = $4::jsonb,
             health_updated_at = $5::timestamp(3)
       WHERE id = $1
         AND (health_updated_at IS NULL OR health_updated_at < $5::timestamp(3))`,
-    [conversationId, score, reason || null, JSON.stringify(signals), conv.read_at]
+    [conversationId, score, reason || null, JSON.stringify({ ...signals, llm: llm ? llm.score : null }), conv.read_at]
   );
   console.log(`[health] ${conversationId}: ${score}${llm ? '' : ' (counts only)'}`);
 }

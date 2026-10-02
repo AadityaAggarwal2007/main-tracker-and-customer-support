@@ -11,10 +11,11 @@ import { maskRefundLinks } from '@/lib/refund/link-mask';
 import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  canAct, claimsOnAct, cleanTransferNote, transferStatus, type Actor, type TakeKind,
+  canAct, claimsOnAct, cleanTransferNote, hotChat, hotLockMessage, hotLockNote, hotLocked, transferStatus,
+  type Actor, type HotKind, type TakeKind,
 } from '@/lib/chat/team-rules';
 import {
-  CASE_GATE_MESSAGE, ChatActionError, STARTING_MESSAGE, actionError, actionsReady, authorNamer, caseMarkState, heldMessage, holderOf,
+  BUSY_MESSAGE, CASE_GATE_MESSAGE, ChatActionError, STARTING_MESSAGE, actionError, actionsReady, authorNamer, caseMarkState, heldMessage, holderOf,
   holderView, isKnownCustomer, lockChatGroup, logChatEvent, nameOfKey, setActor, shownAway, staffActor, takeFor, transferList,
   type LockedChat,
 } from '@/lib/chat/team-routing';
@@ -32,6 +33,11 @@ interface ConversationRow {
   customer_key: string | null;
   subject_label: string | null; subject_summary: string | null; subject_updated_at: string | null;
   health_score: number | null; health_reason: string | null; health_updated_at: string | null;
+  // The counts behind the score (chat-health.sql) and the model's own number `llm` (health.ts), read by hotOf.
+  health_signals?: Record<string, unknown> | null;
+  // The newest urgent marker ('threat' / 'accusation', escalation.ts) on a customer message no team member
+  // has answered since, else null (hotOf below; the list route's urgent_since, one chat).
+  urgent_open?: string | null;
   auto_closed_at: string | null;
   closed_by_name: string | null; closed_at: string | null;
   case_kind: string | null; case_marked_by: string | null; case_marked_at: string | null; case_order_id: string | null; case_prev_status: string | null;
@@ -49,12 +55,21 @@ async function loadForUser(id: string, user: AuthUser): Promise<ConversationRow 
             c.category, c.unread_count, c.last_message_at, c.created_at,
             c.verified_order_id, c.verified_via, c.customer_key, c.phone_match_order_id,
             c.subject_label, c.subject_summary, c.subject_updated_at,
-            c.health_score, c.health_reason, c.health_updated_at, c.auto_closed_at, c.closed_by_name, c.closed_at,
+            c.health_score, c.health_reason, c.health_updated_at, c.health_signals, c.auto_closed_at, c.closed_by_name, c.closed_at,
             c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id, c.case_prev_status,
             CASE WHEN c.case_kind IS NOT NULL THEN
               (SELECT e.actor_role FROM chat_case_events e
                 WHERE e.conversation_id = c.id AND e.kind = c.case_kind AND e.action = 'mark'
                 ORDER BY e.created_at DESC LIMIT 1) END AS case_mark_role,
+            (SELECT u.metadata->>'urgent' FROM messages u
+              WHERE u.conversation_id = c.id AND u.sender = 'visitor' AND u.deleted_at IS NULL
+                AND u.metadata->>'urgent' IN ('threat', 'accusation')
+                AND COALESCE(u.metadata->>'hidden', 'false') <> 'true'
+                AND NOT EXISTS (SELECT 1 FROM messages a
+                                 WHERE a.conversation_id = c.id AND a.sender = 'agent' AND a.deleted_at IS NULL
+                                   AND COALESCE(a.metadata->>'hidden', 'false') <> 'true' AND COALESCE(a.metadata->>'withheld', '') = ''
+                                   AND a.content IS NOT NULL AND btrim(a.content) <> '' AND a.created_at > u.created_at)
+              ORDER BY (u.metadata->>'urgent' = 'threat') DESC, u.created_at DESC LIMIT 1) AS urgent_open,
             c.assigned_to, c.assigned_at, c.merged_into,
             s.name AS site_name, s.tracker_business_id,
             b.name AS panel_name
@@ -319,10 +334,47 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     team_log: teamLog,
     staff: await staffBlock(conversation, user),
+    hot_lock: hotLockBlock(conversation, user),
     // The refund form chip (owner 2026-10-02): only the Super Admin, only in a Refund chat. Staff never
     // get this key. A read error leaves it null (the chip then hides); it never fails the thread.
     ...(isSuperAdmin(user) && conversation.case_kind === 'refund' ? { refund_form: await refundThreadState(conversation).catch(() => null) } : {}),
   });
+}
+
+// Is this chat hot (team-rules.ts hotChat, owner 2026-10-02): a known customer's threat or fraud claim
+// that no team member has answered yet (the urgent marker saved with the message, so the lock holds from
+// that moment, before the scorer runs), a known customer the scorer's model rates At risk (HEALTH_PIN_MIN+),
+// or Chikki's own Refund mark. Never the word counts (review fix 2026-10-02). The score, the model's number
+// and the marker come from the thread's read (the locked row has none); PATCH passes the locked row for
+// who the customer is.
+function hotOf(conv: ConversationRow, locked?: LockedChat): HotKind | null {
+  const sig = conv.health_signals && typeof conv.health_signals === 'object' ? conv.health_signals : null;
+  return hotChat({
+    known: isKnownCustomer(locked ?? conv),
+    healthScore: conv.health_score,
+    modelScore: sig && Object.prototype.hasOwnProperty.call(sig, 'llm') ? sig.llm : undefined,
+    urgent: conv.urgent_open ?? null,
+    caseKind: conv.case_kind,
+    caseMarkedBy: conv.case_marked_by,
+  });
+}
+
+// Close / Hand to AI for this login (owner 2026-10-02, hot chats): the thread answer's `hot_lock`, a key
+// of its own beside `staff` (the team tests pin the staff block's exact shape). can_close / can_hand_to_ai:
+// may this login press them at all (the inbox still shows each only where it applies: Close on an open
+// chat, Hand to AI on a chat with the team); Hand to AI is never for a Refund / Ship again chat (the
+// mark is removed first, as PATCH says). lock_reason: why a member may not (the line under the buttons),
+// null when nothing is locked for this login. The PATCH below decides again on the locked row.
+function hotLockBlock(conv: ConversationRow, user: AuthUser) {
+  const actor = staffActor(user);
+  const acts = !!actor && !conv.merged_into && canAct(actor, holderOf(conv.assigned_to, conv.tracker_business_id));
+  const hot = hotOf(conv);
+  const locked = !!actor && hotLocked(actor, hot);
+  return {
+    can_close: acts && !locked,
+    can_hand_to_ai: acts && !locked && !conv.case_kind,
+    lock_reason: locked && hot ? hotLockNote(hot, conv.health_score) : null,
+  };
 }
 
 // What this person may do on this chat, decided here from team-rules.ts (the inbox draws it and
@@ -362,7 +414,10 @@ async function staffBlock(conv: ConversationRow, user: AuthUser) {
 //   { status }                 Take over / Hand to AI / Close: the holder, anyone on a chat nobody
 //                              holds, or the Super Admin. Take over on a chat nobody holds makes it
 //                              yours, with the customer's other open chats nobody holds. Close and
-//                              Hand to AI never change the holder.
+//                              Hand to AI never change the holder. On a HOT chat (team-rules.ts
+//                              hotChat: an unanswered threat / fraud claim, At risk by the scorer's
+//                              model, Chikki's own Refund) Close and Hand
+//                              to AI are the Super Admin's only: a member gets a 403 (owner 2026-10-02).
 //   { status: 'agent_handling', take: true }
 //                              "Take from X": the Super Admin from anyone, a senior from a junior,
 //                              anyone from a member away 30+ min (office hours) while the customer waits.
@@ -436,6 +491,19 @@ async function changeStatus(conversation: ConversationRow, user: AuthUser, staff
   const updated = await withTransaction(async (client) => {
     const now = Date.now();
     const { chat, siblings } = await lockChatGroup(client, conversation.id, conversation.site_id, conversation.customer_key);
+    // A hot chat (owner 2026-10-02, team-rules.ts hotChat): only the Super Admin closes it or hands it
+    // to the AI. A member gets a 403 saying why, first (on Chikki's own Refund mark, "remove the mark
+    // first" below would only invite them to undo it). Take over, Take from X, Transfer, replies and the
+    // marks are not gated. A Refund / Ship again mark made or removed since the read above (Chikki's own
+    // Refund mark comes with the customer's threat): whose mark it is now is not known here, so the
+    // member is asked to try again on a fresh read. Nothing is saved either way.
+    if ((status === 'resolved' || status === 'ai_handling') && !staff.superAdmin) {
+      if (chat.case_kind !== conversation.case_kind) throw new ChatActionError(409, BUSY_MESSAGE);
+      const hot = hotOf(conversation, chat);
+      if (hot && hotLocked(staff, hot)) {
+        throw new ChatActionError(403, hotLockMessage(hot, status === 'resolved' ? 'close' : 'hand_to_ai', conversation.health_score));
+      }
+    }
     // A Refund / Ship again chat is the team's: the AI stays off until the mark is removed.
     if (status === 'ai_handling' && chat.case_kind) {
       throw new ChatActionError(409, 'Remove the Refund / Ship again mark before handing this chat to the AI');

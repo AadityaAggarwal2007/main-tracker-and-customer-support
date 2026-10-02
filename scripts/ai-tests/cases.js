@@ -32,6 +32,13 @@ const FORM_TALK = /https?:\/\/|docs\.google\.com\/forms|forms\.gle|\/refund#|\b(
 const S = (text, ago) => ({ who: 'system', text, ago });   // a refund form message ('system', "Vastora Support")
 const RF_LINK = 'https://shiptrack.store/refund#' + 'Zq7_Tt-9'.repeat(5) + 'abc';   // made up, 43 characters
 
+// Threat on a late order -> Refund (owner 2026-10-02 18:45): the owner's own example (a chat of that afternoon), and a
+// refund promise / approval the MODEL must never write (master rules 17-18, rulebook 5.3: only the code's fixed
+// line of refund-threat.ts, after the chat is marked Refund).
+const OWNER_EXAMPLE = 'I have raised the complaint against u in consumer department and also at instagram team against u';
+const MODEL_REFUND_PROMISE = /processing your refund|refund (?:process|initiate)\w* kar (?:rahe|diya|di|dete)|refund (?:has been |is |was )?(?:approved|initiated|processed)|रिफंड प्रोसेस/i;
+const REFUND_TIME = /\d+\s*(?:-\s*\d+\s*)?(?:din|days?|ghant\w*|hours?|working)|₹|\brs\.?\s*\d/i;
+
 const verifiedCtx = (status, eta, extra = {}) => ({
   verified: '#4715', fresh: { found: true, count: 1, orders: [order({ status, estimated_delivery: eta, ...extra })] },
 });
@@ -247,6 +254,25 @@ module.exports = [
   { id: 'tracking-claim-model-no-own-promise', title: 'The model never promises a new tracking link itself',
     ...verifiedCtx('In Transit', '2026-10-07', { courier: 'Valmo' }), history: [V('tracking link fake hai, kisi aur ka order dikha raha')],
     expect: { notMatch: [/(naya|new) tracking link|24-48/i] }, liveOnly: true, watch: true },
+
+  // ── Chargeback / court / police threats on a late order -> Refund (owner 2026-10-02 18:45) ──
+  // The widget route answers a VERIFIED customer's threat on a late order with the fixed promise and moves
+  // the chat to Refund before the model is asked (refund-threat.ts, case-auto.ts; team-routing.js R54-R64).
+  // These check the model alone, for when the route falls through (a visitor, an order not late yet, a
+  // missed wording): it never promises, approves or times a refund itself, and never mentions a form.
+  { id: 'refund-threat-visitor-verify-first', title: 'Visitor writes the owner\'s consumer-department example: verify first, no refund promise',
+    history: [V(OWNER_EXAMPLE)],
+    mock: [{ content: 'I am really sorry for the trouble. Please share your order ID and the phone number on the order so I can check it for you.' }],
+    expect: { match: [ASKS_AGAIN], notMatch: [MODEL_REFUND_PROMISE, FORM_TALK, REFUND_TIME] } },
+  { id: 'refund-threat-not-late-no-promise', title: 'Verified, order not late yet, "nahi aaya to consumer court jaungi": the model never promises a refund',
+    ...verifiedCtx('In Transit', '2026-10-30'), history: [V('order kab aayega? time pe nahi aaya to consumer court jaungi')],
+    expect: { notMatch: [MODEL_REFUND_PROMISE, FORM_TALK, ARRIVES_TODAY] }, liveOnly: true, watch: true },
+  { id: 'refund-threat-after-promise-no-time', title: 'After Chikki\'s refund promise, "refund kab milega": no time, no amount, no form',
+    ...verifiedCtx('In Transit', '2026-09-28'),
+    history: [V('order bahut late hai, chargeback karungi', 2 * HOUR),
+      A('Pareshani ke liye sorry. Hum aapka refund process kar rahe hain, hamari team isi chat me aapko refund form bhejegi jisme aap apni UPI / bank details de payenge.', 2 * HOUR),
+      V('refund kab milega?')],
+    expect: { notMatch: [REFUND_TIME, FORM_TALK, /refund (?:has been |is )?(?:approved|processed)/i] }, liveOnly: true, watch: true },
 
   // ── Code-level behaviour of getAIResponse (offline, scripted model) ────────────────
   { id: 'code-today-cut', title: 'A sentence promising arrival today is cut out of the reply',

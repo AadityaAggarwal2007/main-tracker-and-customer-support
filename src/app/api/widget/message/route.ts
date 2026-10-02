@@ -14,8 +14,11 @@ import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
 import { addressConflict, addressConflictReply } from '@/lib/chat/address-conflict';
 import { recentVisitorMessages } from '@/lib/chat/chat-history';
-import { earlierVisitorMessages, reshipFollowUp, trackingClaimTurn, type ClaimTurn } from '@/lib/chat/case-auto';
+import {
+  earlierVisitorMessages, refundFollowUp, refundThreatTurn, reshipFollowUp, trackingClaimTurn, type ClaimTurn, type RefundThreatTurn,
+} from '@/lib/chat/case-auto';
 import { mentionsTracking, trackingClaimKind } from '@/lib/chat/tracking-claim';
+import { refundThreatKind } from '@/lib/chat/refund-threat';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,8 +74,9 @@ export async function POST(request: NextRequest) {
 
     // A threat or a fraud claim is marked on the message itself: the inbox ranks
     // the chat first while no person has answered, whatever the chat's status
-    // (master rules sections 15 and 16).
-    const urgent = urgentKind(String(masked.text));
+    // (master rules sections 15 and 16). A chargeback / court / police threat that can move a chat
+    // to Refund by itself (refund-threat.ts, owner 2026-10-02) is always a threat here too.
+    const urgent = urgentKind(String(masked.text)) ?? (refundThreatKind(String(masked.text)) ? 'threat' : null);
     // A refund, cancellation or payment problem is marked too: the auto-close never
     // closes such a chat (master rules section 24).
     const routine = routineHandOverKind(String(masked.text));
@@ -139,13 +143,25 @@ export async function POST(request: NextRequest) {
 
     // Owner 2026-10-02 (answers 4 and 8): a Ship again chat. The AI stays off; code may remind
     // the customer once or flag the chat red (case-auto.ts reshipFollowUp). The red flag is
-    // saved before any text.
-    if (status === 'agent_handling' && updated?.case_kind === 'reship') {
+    // saved before any text. Owner 2026-10-02 18:45: a chargeback / court / police threat on a late
+    // order moves it to Refund first, with the promise (case-auto.ts refundThreatTurn; the mark is
+    // saved before the text); any other threat keeps the Ship again rules. Review fix 2026-10-02: a RED
+    // Ship again chat (status human_needed: flagged by an earlier follow-up, or kept in Needs you when
+    // Chikki marked it) is switched too, and stays in Needs you; anything else in a red chat sends
+    // nothing, as before (the team already owes the answer).
+    if ((status === 'agent_handling' || status === 'human_needed') && updated?.case_kind === 'reship') {
       try {
-        const f = await reshipFollowUp({
-          convId: conversationId, said: String(masked.text), urgent, routine, after,
-          aiOn: !!site.ai_enabled, earlierAi: () => recentAiReplies(conversationId),
-        });
+        let f: { text: string | null } | null = null;
+        if (site.ai_enabled && refundThreatKind(String(masked.text))) {
+          const t = await refundThreatTurn({ convId: conversationId, said: String(masked.text), lookBack: null, toolResult: null, keepNeedsYou: true });
+          if (t && t.act !== 'today') f = { text: t.text };
+        }
+        if (!f && status === 'agent_handling') {
+          f = await reshipFollowUp({
+            convId: conversationId, said: String(masked.text), urgent, routine, after,
+            aiOn: !!site.ai_enabled, earlierAi: () => recentAiReplies(conversationId),
+          });
+        }
         if (f?.text) {
           aiMessage = await saveAiMessage(aiReply(f.text));
           await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
@@ -153,6 +169,24 @@ export async function POST(request: NextRequest) {
       } catch (err) {
         // The customer's message is saved and the chat is unread in its section, as today.
         console.error('[widget] Ship again follow-up failed:', (err as Error).message);
+      }
+    }
+
+    // Owner 2026-10-02 18:45: a Refund chat Chikki marked itself. The AI stays off; when the customer
+    // writes again they get ONE reminder (the refund proof comes in this chat and on their email), then
+    // nothing until the team writes (case-auto.ts refundFollowUp). A chat a person marked, or one the
+    // team has written in since, sends nothing, as before.
+    if ((status === 'agent_handling' || status === 'human_needed') && updated?.case_kind === 'refund') {
+      try {
+        const f = await refundFollowUp({
+          convId: conversationId, said: String(masked.text), aiOn: !!site.ai_enabled, earlierAi: () => recentAiReplies(conversationId),
+        });
+        if (f?.text) {
+          aiMessage = await saveAiMessage(aiReply(f.text));
+          await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
+        }
+      } catch (err) {
+        console.error('[widget] Refund follow-up failed:', (err as Error).message);
       }
     }
 
@@ -186,9 +220,19 @@ export async function POST(request: NextRequest) {
           await handOver('address conflict');
           aiMessage = await saveAiMessage(aiReply(addressConflictReply(looksHinglish(said))));
         } else if (urgent === 'threat' && verified) {
-          // No AI text at all: nothing to argue, nothing to defend.
-          await handOver('threat');
-          aiMessage = await saveAiMessage(aiReply(urgentAck(said, after)));
+          // No AI text at all: nothing to argue, nothing to defend. Owner 2026-10-02 18:45: a
+          // chargeback / court / police threat from a customer verified by order ID + full phone whose
+          // order's estimated date has passed goes to Refund instead, with the fixed promise
+          // (case-auto.ts refundThreatTurn: the mark is saved first). Anything else: Needs you as before.
+          const t = refundThreatKind(said)
+            ? await refundThreatTurn({ convId: conversationId, said, lookBack: null, toolResult: null, keepNeedsYou: true })
+            : null;
+          if (t && t.act !== 'today') {
+            aiMessage = await saveAiMessage(aiReply(t.text));
+          } else {
+            await handOver('threat');
+            aiMessage = await saveAiMessage(aiReply(urgentAck(said, after)));
+          }
         } else {
           const brainUsage: { brain: { id: string; title: string }[]; effort?: EffortUsage } = { brain: [] };
           const aiStarted = Date.now();
@@ -220,16 +264,34 @@ export async function POST(request: NextRequest) {
           }
 
           let text: string | null = aiResult.content;
+          // "Complained first, verified next": this conversation's own last messages (24 hours, never an
+          // older merged chat's history), read once for both checks below. [] when verified at the start.
+          let earlierSaid: string[] = [];
+          let earlierRead: Promise<string[]> | null = null;
+          const lookBack = () => (earlierRead ??= (verifiedAtStart ? Promise.resolve([]) : earlierVisitorMessages(conversationId, beforeMerge))
+            .then((rows) => (earlierSaid = rows)));
+          // Owner 2026-10-02 18:45: a chargeback / court / police threat (this message, or an earlier one
+          // when the customer verified in this turn) from a customer verified by order ID + full phone,
+          // whose order's estimated date has passed: Refund by itself with the fixed promise; a Ship again
+          // chat (merged into) switches to Refund (case-auto.ts refundThreatTurn, refund-threat.ts). It
+          // wins over a tracking claim, as a threat always did. Never throws: null = not this path.
+          let threatTurn: RefundThreatTurn | null = null;
+          if (!aiResult.allFailed && verified) {
+            threatTurn = await refundThreatTurn({
+              convId: conversationId, said, lookBack, toolResult: aiResult.toolCallMeta?.tool_result ?? null,
+              keepNeedsYou: merged || !aiResult.escalated,
+            });
+          }
+          const toRefund = !!threatTurn && threatTurn.act !== 'today';
           // Owner 2026-10-02: a fake / invalid / stuck tracking claim from a verified customer gets a
           // fixed reply by code, and a dispatched order goes to Ship again by itself (case-auto.ts,
           // tracking-claim.ts). No SQL unless the words match. Never throws: null = not this path.
           let claim: ClaimTurn | null = null;
-          let earlierSaid: string[] = [];
-          if (!aiResult.allFailed && verified) {
+          if (!aiResult.allFailed && verified && !toRefund) {
             claim = await trackingClaimTurn({
               convId: conversationId, trackerBusinessId: site.tracker_business_id, said, urgent, after,
               // Only this conversation's own recent messages: after a merge, never the older chat's history.
-              lookBack: async () => (earlierSaid = verifiedAtStart ? [] : await earlierVisitorMessages(conversationId, beforeMerge)),
+              lookBack,
               toolResult: aiResult.toolCallMeta?.tool_result ?? null,
               aiText: text, aiEscalated: !!aiResult.escalated, merged,
               earlierAi: () => recentAiReplies(conversationId),
@@ -246,7 +308,7 @@ export async function POST(request: NextRequest) {
           // (case-auto.ts reshipFollowUp: red with the line for the case, or the one reminder; the red
           // flag is saved first). null = not a Ship again chat. A failed read keeps today's path.
           let shipAgain: { text: string | null } | null = null;
-          if (verified && !claim && ![said, ...earlierSaid].some((t) => trackingClaimKind(t))) {
+          if (verified && !toRefund && !claim && ![said, ...earlierSaid].some((t) => trackingClaimKind(t))) {
             try {
               shipAgain = await reshipFollowUp({
                 convId: conversationId, said, urgent, routine, after, aiOn: true,
@@ -257,8 +319,25 @@ export async function POST(request: NextRequest) {
               console.error(`[widget] Ship again check after the AI turn failed on conv ${conversationId}:`, (err as Error).message);
             }
           }
-          if (shipAgain) {
+          // Owner 2026-10-02 18:45: the turn ended in a Refund chat Chikki marked (merged into it): the AI
+          // is off there, the model's text is dropped; the one reminder, or nothing (refundFollowUp).
+          // null = not such a chat: today's path.
+          let refundChat: { text: string | null } | null = null;
+          if (verified && !toRefund && !claim && !shipAgain) {
+            try {
+              refundChat = await refundFollowUp({ convId: conversationId, said, aiOn: true, earlierAi: () => recentAiReplies(conversationId) });
+              if (refundChat) console.log(`[widget] conv ${conversationId} turn ended in a Refund chat: ${refundChat.text ? 'the reminder' : 'no message'}`);
+            } catch (err) {
+              console.error(`[widget] Refund check after the AI turn failed on conv ${conversationId}:`, (err as Error).message);
+            }
+          }
+          if (threatTurn && threatTurn.act !== 'today') {
+            // The mark (or switch) is already saved; the fixed text replaces the model's.
+            text = threatTurn.text;
+          } else if (shipAgain) {
             text = shipAgain.text;
+          } else if (refundChat) {
+            text = refundChat.text;
           } else if (aiResult.allFailed) {
             if (verified) {
               // Every model is down (master rules section 13): a person takes it,
@@ -279,6 +358,12 @@ export async function POST(request: NextRequest) {
             // its own text stands, with the night line as today.
             if (claim.handOver) await handOver(claim.handOver);
             text = claim.text ?? withHandOverLine(text, said, 'escalated', after);
+          } else if (threatTurn?.act === 'today' && threatTurn.source === 'this') {
+            // A chargeback / court / police threat in this message that is not for Refund (the order is
+            // not late, delivered, another order ...), from a customer who verified in this turn: the
+            // threat path, as for one verified before (no AI text, Needs you, the 1-hour line).
+            text = urgentAck(said, after);
+            await handOver('threat');
           } else if (!aiResult.escalated && !merged && !isCourtesyOnly(said) && isRepeatedReply(text, await recentAiReplies(conversationId))) {
             // The same answer again (section 12): stop, and let a person take it.
             text = handoffReply(said);

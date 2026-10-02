@@ -1894,6 +1894,33 @@ t('X17 random chats: every promise the engine makes holds', () => {
   }
 });
 
+t('E36 review fix 2026-10-02: a switch (remove + mark at the same instant, Chikki moving Ship again to Refund) leaves the chat marked: no minus, as if it had stayed marked', () => {
+  // Anurag holds c1. Chikki marked Ship again at 10:30; at 11:00 the customer threatens a chargeback on a late
+  // order and the chat is switched to Refund in one transaction (remove reship + mark refund share now()).
+  const run = (rows) => {
+    const f = heldByA(fx());
+    f.v('c1', '2026-10-05 10:29', 'tracking link fake hai');
+    f.cs('c1', '2026-10-05 10:30', 'mark');
+    f.ai('c1', '2026-10-05 10:30', true);
+    f.v('c1', '2026-10-05 11:00', 'I will raise a chargeback with my bank');
+    for (const a of rows) f.cs('c1', '2026-10-05 11:00', a);
+    f.ai('c1', '2026-10-05 11:00', true);   // the refund promise: not an answer
+    return f.run();
+  };
+  const stayed = run([]);
+  for (const rows of [['remove', 'mark'], ['mark', 'remove']]) {   // either order as read from the database
+    const r = run(rows);
+    assert.deepStrictEqual(kinds(r, D, A), kinds(stayed, D, A), rows.join('+'));
+    assert.deepStrictEqual(kinds(r, D, A), []);
+    assert.strictEqual(pd(r, D, A).points, pd(stayed, D, A).points);
+  }
+  // A real Remove (no mark at that instant) still ends the pause: the 2-hour clock runs again.
+  const g = heldByA(fx());
+  g.v('c1', '2026-10-05 11:00', 'mera order kab aayega bhai');
+  g.cs('c1', '2026-10-05 10:30', 'mark').cs('c1', '2026-10-05 15:00', 'remove');
+  assert.strictEqual(one(g.run(), D, A, 'unanswered_2h').at, ist('2026-10-05 17:00'));
+});
+
 if (failed.length) {
   console.log(`TEAM-SCORE ENGINE: ${failed.length} failed (${failed.join(' | ')}), ${n} passed`);
   process.exit(1);

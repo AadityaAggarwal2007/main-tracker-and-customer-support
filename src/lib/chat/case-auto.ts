@@ -13,6 +13,11 @@ import {
   AUTO_MARK_NAME, claimLang, claimStage, deliveredReply, followUpAction, mentionsOtherOrder, preDispatchReply, PROMISE_HOURS,
   promiseReply, REMINDER_HEADS, reminderReply, teamHasItReply, trackingClaimKind, type TrackingClaim,
 } from './tracking-claim';
+import {
+  etaOf, etaPassed, REFUND_REMINDER_HEADS, refundFollowUpAction, refundPromiseReply, refundReminderReply, refundThreatKind,
+  refundThreatStep, threatNamesOtherOrder, type RefundThreat, type RefundThreatStep,
+} from './refund-threat';
+import { refundFormsOpen } from '@/lib/refund/link-mask';
 
 // ── Fake / invalid tracking claims: the server side (owner, 2026-10-02) ──
 // A verified customer (order ID + full phone) who says the tracking ID / link is invalid, fake or
@@ -444,4 +449,333 @@ export async function reshipFollowUp(x: {
     case 'handoff': return { text: handoffReply(x.said) };
     default: return { text: null };
   }
+}
+
+// ══ Chargeback / court / police threats on a late order -> Refund (owner, 2026-10-02 18:45) ══
+// A verified customer (order ID + full phone) who threatens a chargeback, a consumer court / complaint,
+// the police / cyber cell or a legal notice, and whose order's estimated date has passed: the chat goes
+// to Refund by itself, marked "Chikki (auto)" (actor_role 'system'), and the customer gets the fixed
+// promise "we are processing your refund, our team will send you a refund form in this chat"
+// (refund-threat.ts, the pure part). A Ship again chat with such a threat is switched to Refund (a remove
+// + mark pair in chat_case_events, as a person's switch writes). Every other threat keeps today's path
+// (Needs you with the 1-hour line). The mark is saved BEFORE the text is returned, so the customer is never
+// told something the team cannot see. The refund form itself is still sent only by the Super Admin
+// (rulebook 9.9); the inbox can tell this mark from a person's by case_marked_by + case_mark_role.
+
+// The exact chat_case_events rows a person's mark / switch writes (conversations/[id]/route.ts setCase).
+const CASE_EVENT_MARK_SQL = `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+       VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)`;
+const CASE_EVENT_REMOVE_SQL = `INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role)
+       VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)`;
+// Not marked -> Refund. case_prev_status as Chikki's Ship again mark: Remove never hands it back to the AI.
+const REFUND_MARK_SQL = `UPDATE conversations
+          SET case_prev_status = CASE WHEN status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,
+              case_kind = 'refund', case_marked_by = $2, case_marked_at = now(), case_order_id = $3,
+              status = CASE WHEN $4::boolean AND status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND case_kind IS NULL
+        RETURNING status`;
+// Ship again -> Refund: keeps the status the chat had before its first mark (as a person's switch does),
+// never the AI.
+const REFUND_SWITCH_SQL = `UPDATE conversations
+          SET case_prev_status = CASE WHEN case_prev_status = 'agent_handling' THEN 'agent_handling' ELSE 'human_needed' END,
+              case_kind = 'refund', case_marked_by = $2, case_marked_at = now(), case_order_id = $3,
+              status = CASE WHEN $4::boolean AND status = 'human_needed' THEN 'human_needed' ELSE 'agent_handling' END,
+              auto_closed_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND case_kind = 'reship'
+        RETURNING status`;
+
+// marked.red: the chat stayed in Needs you (status human_needed). marked.from: switched from Ship again.
+export type AutoRefundMark =
+  | { done: 'marked'; red: boolean; from: 'reship' | null }
+  | { done: 'already'; by: string | null; ageMs: number | null; status: string }
+  | { done: 'refused'; why: string };
+
+// Marks the chat Refund as "Chikki (auto)", or switches its Ship again mark to Refund. The same lock and
+// rules as autoMarkReship: one transaction (lockChatGroup), never over a person's Refund mark or another
+// kind, never a Closed chat (except reopen) or an order the locked row does not hold. A lock or write
+// failure throws (rolled back, nothing saved).
+// keepNeedsYou: a chat already in Needs you (not by this turn's own AI hand-over) stays there.
+// reopen / move: the owner-approved one-time move (scripts/refund-threat-candidates.js --apply) may mark a
+// Closed chat, which opens in the Refund section; move is noted on the chat_events row.
+export async function autoMarkRefund(x: {
+  convId: string; siteId: string; customerKey: string | null; orderId: string; trigger: RefundThreat;
+  keepNeedsYou: boolean; reopen?: boolean; move?: boolean;
+}): Promise<AutoRefundMark> {
+  return withTransaction(async (client) => {
+    const { chat } = await lockChatGroup(client, x.convId, x.siteId, x.customerKey);
+    if (chat.case_kind === 'refund') {
+      // Only on this race path: who marked it and how long ago, on the locked row.
+      const m = await client.query<{ case_marked_by: string | null; age_ms: number | null }>(
+        `SELECT case_marked_by, (extract(epoch FROM now() - case_marked_at) * 1000)::float8 AS age_ms FROM conversations WHERE id = $1`,
+        [chat.id]
+      );
+      return { done: 'already', by: m.rows[0]?.case_marked_by ?? null, ageMs: m.rows[0]?.age_ms ?? null, status: chat.status };
+    }
+    if (chat.case_kind && chat.case_kind !== 'reship') return { done: 'refused', why: `marked ${chat.case_kind}` };
+    if (chat.status === 'resolved' && !x.reopen) return { done: 'refused', why: 'closed' };
+    if (chat.verified_order_id !== x.orderId) return { done: 'refused', why: 'order changed' };
+    const from = chat.case_kind === 'reship' ? 'reship' : null;
+    await setSystemActor(client, AUTO_MARK_NAME, 'case_auto');
+    const r = await client.query<{ status: string }>(from ? REFUND_SWITCH_SQL : REFUND_MARK_SQL, [chat.id, AUTO_MARK_NAME, x.orderId, x.keepNeedsYou]);
+    if (!r.rowCount) return { done: 'refused', why: 'mark changed' };
+    const toStatus = r.rows[0]?.status === 'human_needed' ? 'human_needed' : 'agent_handling';
+    if (from) {
+      await client.query(CASE_EVENT_REMOVE_SQL, [crypto.randomUUID(), chat.id, chat.site_id, 'reship', chat.case_order_id, AUTO_MARK_NAME, 'system']);
+    }
+    await client.query(CASE_EVENT_MARK_SQL, [crypto.randomUUID(), chat.id, chat.site_id, 'refund', x.orderId, AUTO_MARK_NAME, 'system']);
+    await logChatEvent(client, 'system', {
+      conversationId: chat.id, siteId: chat.site_id, kind: 'case_mark', fromStatus: chat.status, toStatus, reason: 'case_auto',
+      meta: { case: 'refund', auto: true, trigger: x.trigger, ...(from ? { from_case: from } : {}), ...(x.move ? { move: true } : {}) },
+    });
+    return { done: 'marked', red: toStatus === 'human_needed', from };
+  });
+}
+
+// What the rule needs to know about the chat. One read, on the post-merge id, only after the detector
+// matched. tracker_business_id: the panel the verified order is looked up in (as the widget route's site).
+export interface RefundThreatState {
+  site_id: string; customer_key: string | null; status: string; source: string;
+  verified_order_id: string | null; verified_via: string | null; case_kind: string | null; merged_into: string | null;
+  tracker_business_id: string | null; refund_removed: boolean; other_refund_id: string | null;
+}
+export async function readRefundThreatState(convId: string): Promise<RefundThreatState | null> {
+  return queryOne<RefundThreatState>(
+    `SELECT c.site_id, c.customer_key, c.status, c.source, c.verified_order_id, c.verified_via, c.case_kind, c.merged_into,
+            s.tracker_business_id,
+            EXISTS (SELECT 1 FROM chat_case_events e
+                     WHERE e.conversation_id = c.id AND e.kind = 'refund' AND e.action = 'remove') AS refund_removed,
+            r.id AS other_refund_id
+       FROM conversations c
+       JOIN sites s ON s.id = c.site_id
+       LEFT JOIN LATERAL (
+         SELECT o.id FROM conversations o
+          WHERE o.site_id = c.site_id AND o.id <> c.id AND o.merged_into IS NULL
+            AND o.case_kind = 'refund' AND o.case_order_id = c.verified_order_id
+          ORDER BY o.case_marked_at DESC LIMIT 1) r ON true
+      WHERE c.id = $1`,
+    [convId]
+  );
+}
+
+// The rule for one threat message in one chat (refund-threat.ts refundThreatStep). The verified order is
+// loaded (orders.ts: the tracking page's stage, the estimated date with its day-13 fallback) only when
+// every other check passed.
+// Review fixes 2026-10-02: another order = a number written as an order in the threat, or this turn's
+// lookup found only other orders (an amount, a date or a PIN code is not an order: threatNamesOtherOrder);
+// a Cash on Delivery order (nothing paid) keeps today's threat path; with the refund form switched off
+// (REFUND_FORMS=off) no refund form is promised (today's threat path).
+async function checkRefundThreat(st: RefundThreatState, said: string, toolResult: string | null): Promise<RefundThreatStep> {
+  const facts = {
+    strictProof: !!st.verified_order_id && STRICT_PROOF.includes(st.verified_via || ''),
+    caseKind: st.case_kind,
+    otherOrder: threatNamesOtherOrder(said, st.verified_order_id) || mentionsOtherOrder('', st.verified_order_id, toolResult),
+    refundRemoved: !!st.refund_removed,
+    otherRefundChat: !!st.other_refund_id,
+  };
+  const pre = refundThreatStep(facts);
+  if (pre.act !== 'need_order') return pre;
+  if (!refundFormsOpen()) return { act: 'today', why: 'refund form switched off' };
+  const found = await lookupVerifiedOrder(st.verified_order_id as string, st.tracker_business_id);
+  const order = found.found && found.orders[0] ? found.orders[0] : null;
+  return refundThreatStep({
+    ...facts,
+    order: order ? { stage: claimStage(order), etaPassed: etaPassed(etaOf(order), Date.now()), cod: /^cash on delivery/i.test(order.payment || '') } : null,
+  });
+}
+
+// What the widget route does with a threat. promise: marked (or switched), send this text. line: already in
+// Refund (a second turn at the same moment): this text, nothing moves. today: a threat, but not this rule
+// (source 'this' = in this message: the route's urgent path; 'earlier' = an earlier message: as today).
+export type RefundThreatTurn =
+  | { act: 'promise'; text: string }
+  | { act: 'line'; text: string }
+  | { act: 'today'; source: 'this' | 'earlier'; why: string };
+
+export interface RefundThreatTurnInput {
+  convId: string;
+  said: string;                                  // this message, masked
+  lookBack: (() => Promise<string[]>) | null;    // the customer's earlier messages, newest first; null = this message only
+  toolResult: string | null;                     // this turn's stored tool result (JSON), for the other-order guard
+  keepNeedsYou: boolean;                         // a chat already waiting in Needs you stays there
+}
+
+// null: no such threat (in this message, or in the earlier ones when lookBack is given), or the chat is
+// in Refund already (the Refund chat's own follow-up, refundFollowUp, answers then). Never throws.
+export async function refundThreatTurn(x: RefundThreatTurnInput): Promise<RefundThreatTurn | null> {
+  let threatText = x.said;
+  let kind = refundThreatKind(x.said);
+  let source: 'this' | 'earlier' = 'this';
+  let earlier: string[] | null = null;
+  if (!kind && x.lookBack) {
+    try {
+      earlier = await x.lookBack();
+    } catch (err) {
+      console.error(`[widget] refund threat look-back failed on conv ${x.convId}:`, (err as Error).message);
+      return null;
+    }
+    for (const t of earlier) {
+      const k = refundThreatKind(t);
+      if (k) { kind = k; threatText = t; source = 'earlier'; break; }
+    }
+  }
+  if (!kind) return null;
+  const threat: RefundThreat = kind;
+  const log = (row: string) => console.log(`[widget] refund threat (${threat}) conv ${x.convId}: ${row}`);
+  const today = (why: string): RefundThreatTurn => { log(`${why}, today's path`); return { act: 'today', source, why }; };
+  const lang = async () => {
+    let texts = earlier;
+    if (!texts) {
+      try { texts = await recentVisitorMessages(x.convId, 3); } catch { texts = []; }
+    }
+    return claimLang([threatText, ...texts]);
+  };
+  try {
+    let st: RefundThreatState | null;
+    try {
+      st = await readRefundThreatState(x.convId);
+    } catch (err) {
+      console.error(`[widget] refund threat state read failed on conv ${x.convId}:`, (err as Error).message);
+      return today('chat not read');
+    }
+    if (!st) return today('chat not read');
+    const step = await checkRefundThreat(st, threatText, x.toolResult);
+    if (step.act === 'in_refund') { log('already in Refund, its follow-up'); return null; }
+    if (step.act === 'today') return today(step.why);
+    if (step.act === 'need_order') return today('order not loaded');
+    let mark: AutoRefundMark;
+    try {
+      mark = await autoMarkRefund({
+        convId: x.convId, siteId: st.site_id, customerKey: st.customer_key, orderId: st.verified_order_id as string,
+        trigger: threat, keepNeedsYou: x.keepNeedsYou,
+      });
+    } catch (err) {
+      console.error(`[widget] Refund mark failed on conv ${x.convId}:`, (err as Error)?.message);
+      mark = { done: 'refused', why: 'mark failed' };
+    }
+    if (mark.done === 'marked') {
+      log(`promise, ${mark.from ? 'switched Ship again to Refund' : 'marked Refund'}${mark.red ? ', kept in Needs you' : ''}`);
+      return { act: 'promise', text: refundPromiseReply(await lang()) };
+    }
+    if (mark.done === 'already') {
+      // The same threat from two tabs at once: Chikki marked it a moment ago, the reminder only.
+      if (mark.by === AUTO_MARK_NAME && mark.ageMs !== null && mark.ageMs < TEN_MIN_MS) {
+        log('just marked by Chikki, reminder');
+        return { act: 'line', text: refundReminderReply(await lang()) };
+      }
+      // A person's Refund mark found on the locked row: it stays there, unread.
+      log('already in Refund, unchanged');
+      return { act: 'line', text: handoffReply(threatText) };
+    }
+    // Refused or failed: never the promise without the mark.
+    return today(`not marked (${mark.why})`);
+  } catch (err) {
+    console.error(`[widget] refund threat failed on conv ${x.convId}:`, (err as Error)?.message);
+    return today('failed');
+  }
+}
+
+// ── The Refund chat: the customer writes again (the AI is off) ──
+// auto: Chikki's own Refund mark and no team message since (a person's reply, or the Super Admin's
+// refund form message, sender 'system'). reminded: an AI message since the mark carries the reminder.
+export interface RefundCaseState {
+  status: string; case_marked_at: string | null; case_marked_by: string | null; mark_role: string | null;
+  team_wrote: boolean; reminded: boolean;
+}
+export async function readRefundCaseState(convId: string): Promise<RefundCaseState | null> {
+  return queryOne<RefundCaseState>(
+    `SELECT c.status, c.case_marked_at, c.case_marked_by,
+            (SELECT e.actor_role FROM chat_case_events e
+              WHERE e.conversation_id = c.id AND e.kind = 'refund' AND e.action = 'mark'
+              ORDER BY e.created_at DESC LIMIT 1) AS mark_role,
+            EXISTS (SELECT 1 FROM messages m
+                     WHERE m.conversation_id = c.id AND m.sender IN ('agent', 'system') AND m.deleted_at IS NULL
+                       AND m.created_at > c.case_marked_at) AS team_wrote,
+            EXISTS (SELECT 1 FROM messages m
+                     WHERE m.conversation_id = c.id AND m.sender = 'ai' AND m.deleted_at IS NULL
+                       AND m.created_at >= c.case_marked_at AND m.content ILIKE ANY ($2::text[])) AS reminded
+       FROM conversations c WHERE c.id = $1 AND c.case_kind = 'refund'`,
+    [convId, REFUND_REMINDER_HEADS.map((h) => `%${h}%`)]
+  );
+}
+
+// From the widget route for a message in a Refund chat, and after an AI turn that ended in one (merged
+// into it). null: not a Refund chat Chikki marked (or the team has written since): today's path, a marked
+// chat sends nothing (rule 9.2). Otherwise the one reminder ("the refund proof comes in this chat and on
+// your email"), at most once; afterwards nothing ({ text: null }) and the chat waits for the team.
+export async function refundFollowUp(x: {
+  convId: string; said: string; aiOn: boolean; earlierAi: () => Promise<string[]>;
+}): Promise<{ text: string | null } | null> {
+  const st = await readRefundCaseState(x.convId);
+  if (!st) return null;
+  const auto = st.mark_role === 'system' && st.case_marked_by === AUTO_MARK_NAME && !st.team_wrote;
+  if (!auto) return null;
+  let texts: string[] = [];
+  try { texts = await recentVisitorMessages(x.convId, 3); } catch { texts = []; }
+  const reminder = refundReminderReply(claimLang(texts.length ? texts : [x.said]));
+  const repeated = !!st.reminded || isRepeatedReply(reminder, await x.earlierAi());
+  const act = refundFollowUpAction({ auto, said: x.said, repeated });
+  if (!x.aiOn || act !== 'reminder') return { text: null };
+  console.log(`[widget] conv ${x.convId} Refund chat (${AUTO_MARK_NAME}): the one reminder`);
+  return { text: reminder };
+}
+
+// ── The owner-approved one-time move (scripts/refund-threat-candidates.js --apply <ids>) ──
+// The same rule, mark and promise as the live path, for chats the owner picked from the read-only list.
+// The customer's own messages of the last `days` days are read; the newest threat that is not about
+// another order is the one checked. A Closed chat opens in the Refund section; a chat waiting in Needs
+// you stays there. The promise is posted as the live path posts it (sender 'ai', "Vastora Support").
+const RECENT_SAID_SQL = `SELECT m.content FROM messages m
+      WHERE m.conversation_id = $1 AND m.sender = 'visitor' AND m.deleted_at IS NULL
+        AND COALESCE(m.metadata->>'hidden', 'false') <> 'true' AND btrim(m.content) <> ''
+        AND m.created_at > now() - make_interval(days => $2::int)
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 100`;
+
+// One of Chikki's fixed lines into a chat, exactly as the widget route saves a reply.
+export async function postChikkiLine(convId: string, text: string): Promise<void> {
+  await query(
+    `INSERT INTO messages (id, conversation_id, sender, content, created_at)
+     VALUES (gen_random_uuid()::text, $1, 'ai', $2, now())
+     RETURNING id, conversation_id, sender, content, metadata, created_at`,
+    [convId, text]
+  );
+  await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [convId]);
+}
+
+export type RefundMove =
+  | { done: 'marked'; from: 'reship' | null; keptInNeedsYou: boolean; posted: boolean; trigger: RefundThreat }
+  | { done: 'refused'; why: string };
+
+export async function applyRefundThreatMove(convId: string, days: number): Promise<RefundMove> {
+  const refused = (why: string): RefundMove => ({ done: 'refused', why });
+  const st = await readRefundThreatState(convId);
+  if (!st) return refused('no such chat');
+  if (st.merged_into) return refused('merged into another chat');
+  if (st.source !== 'chat') return refused('not a chat-box chat');
+  const said = (await query<{ content: string }>(RECENT_SAID_SQL, [convId, days])).rows.map((r) => r.content);
+  const threatText = said.find((t) => refundThreatKind(t) && !threatNamesOtherOrder(t, st.verified_order_id));
+  if (!threatText) return refused(`no such threat from the customer in the last ${days} days`);
+  const trigger = refundThreatKind(threatText) as RefundThreat;
+  const step = await checkRefundThreat(st, threatText, null);
+  if (step.act === 'in_refund') return refused('already in Refund');
+  if (step.act === 'today') return refused(step.why);
+  if (step.act === 'need_order') return refused('order not loaded');
+  const mark = await autoMarkRefund({
+    convId, siteId: st.site_id, customerKey: st.customer_key, orderId: st.verified_order_id as string,
+    trigger, keepNeedsYou: true, reopen: true, move: true,
+  });
+  if (mark.done === 'already') return refused('already in Refund');
+  if (mark.done === 'refused') return refused(mark.why);
+  let texts: string[] = [];
+  try { texts = await recentVisitorMessages(convId, 3); } catch { texts = []; }
+  try {
+    await postChikkiLine(convId, refundPromiseReply(claimLang([threatText, ...texts])));
+  } catch (err) {
+    console.error(`[refund move] conv ${convId} marked, promise not posted:`, (err as Error)?.message);
+    return { done: 'marked', from: mark.from, keptInNeedsYou: mark.red, posted: false, trigger };
+  }
+  return { done: 'marked', from: mark.from, keptInNeedsYou: mark.red, posted: true, trigger };
 }

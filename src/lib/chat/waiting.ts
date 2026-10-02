@@ -33,9 +33,13 @@ export const NO_REPLY_NEEDED_REGEX =
 // the reminder (tracking-claim.ts promiseReply / reminderReply, English / Hinglish / Hindi): the
 // team still owes that customer the link, so a Ship again chat stays waiting (and is never
 // auto-closed) until a team member writes. Stricter, never looser.
+// Since 2026-10-02 18:45 (owner, chargeback / court / police threats on a late order) also Chikki's refund
+// promise and its one reminder (refund-threat.ts refundPromiseReply / refundReminderReply, all three
+// languages): the team still owes that customer the refund form, so the Refund chat stays waiting.
 export const AI_NOT_AN_ANSWER_REGEX =
   '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)' +
-  '|(naya|new|नया) (tracking link|ट्रैकिंग लिंक)[^.]{0,80}24-48';
+  '|(naya|new|नया) (tracking link|ट्रैकिंग लिंक)[^.]{0,80}24-48' +
+  '|processing your refund|refund process kar rah|रिफंड प्रोसेस कर रह';
 
 export type WaitingLevel = 'fresh' | 'soon' | 'overdue';
 
