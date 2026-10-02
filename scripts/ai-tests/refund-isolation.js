@@ -140,7 +140,7 @@ t('I2 screens import only the pure refund modules (rules, texts, link-mask); tho
 // ── I3 ───────────────────────────────────────────────────────────
 const SENDER_SYSTEM = /sender\s*(?:===?|!==?|<>)\s*'system'|sender\s+(?:NOT\s+)?IN\s*\([^)]*'system'|sender\s*=\s*ANY\([^)]*'system'/i;
 t("I3 the AI history loop has no 'system' branch; subject, health, learner and team score read named senders only", () => {
-  const ai = read('src/lib/chat/ai.ts');
+  const ai = ['ai', 'ai-models', 'ai-prompt', 'ai-tools', 'ai-history'].map((f) => read(`src/lib/chat/${f}.ts`)).join('\n');
   ok(!SENDER_SYSTEM.test(ai), "ai.ts never compares a sender with 'system'");
   const loop = ai.slice(ai.indexOf('for (const m of recent.rows) {'));
   ok(loop.length < ai.length, 'the history loop was found');
@@ -355,7 +355,7 @@ t('I12 a staff reply or edit with a form link is refused before anything is read
 
 // ── I13 ──────────────────────────────────────────────────────────
 t('I13 owner answer Q1: Chikki says the team tells how the refund is paid; no "original payment method" anywhere it is told', () => {
-  const ai = read('src/lib/chat/ai.ts');
+  const ai = ['ai', 'ai-models', 'ai-prompt', 'ai-tools', 'ai-history'].map((f) => read(`src/lib/chat/${f}.ts`)).join('\n');
   ok(!/original payment method/i.test(ai), 'the old line is gone from ai.ts');
   ok(/If they ask where or how the money will come back: say the team will tell them here in this chat how the refund is paid; promise no method, time or amount, and never ask for, accept or repeat a UPI ID or bank details in the chat\./.test(ai));
   const chatDir = srcFiles.filter((f) => /^src\/lib\/chat\//.test(f) && /original payment/i.test(read(f)));
