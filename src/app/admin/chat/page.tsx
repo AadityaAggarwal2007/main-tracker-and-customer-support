@@ -8,7 +8,6 @@ import {
   Menu,
   BadgeCheck,
 } from 'lucide-react';
-import { canChangeMessage } from '@/lib/chat/message-rules';
 import { can } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
@@ -23,16 +22,17 @@ import {
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, checkBrowserFile,
 } from '@/lib/chat/attachment-rules';
 import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress } from './_lib/types';
-import { minutesText, supportLabel, STATUS_LABELS, STATUS_STYLE, CATEGORY_LABELS, subjectStyle, WITHHELD_LABELS, POLL_MS, INBOX_TABS, chatStatusLabel, convName, nameFromOrder, nameNote, closedInfo, CASE_LABELS, isVisitorChat, timeAgo, matchedText, draggingFiles, fullDate } from './_lib/inbox';
-import { highlightText, renderWithLinks } from './_lib/text';
+import { minutesText, STATUS_LABELS, STATUS_STYLE, CATEGORY_LABELS, subjectStyle, POLL_MS, INBOX_TABS, chatStatusLabel, convName, nameFromOrder, nameNote, closedInfo, CASE_LABELS, isVisitorChat, timeAgo, matchedText, draggingFiles } from './_lib/inbox';
+import { highlightText } from './_lib/text';
 import { TransferDialog } from './_components/TransferDialog';
 import { WaitingChip, CameBackChip, CaseChip, HealthBadge, ThreadDivider } from './_components/chips';
 import { AddressDialog } from './_components/OrderLine';
-import { MessageActions, MessageEditor, DeleteMessageDialog, MessageDetailsDialog, MessageAttachments } from './_components/MessageTools';
+import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import ListHeader from './_components/ListHeader';
 import ThreadHeader from './_components/ThreadHeader';
 import Composer from './_components/Composer';
+import MessageRow from './_components/MessageRow';
 
 
 export default function ChatSupportPage() {
@@ -949,115 +949,6 @@ export default function ChatSupportPage() {
     : activeConv.status === 'ai_handling' ? 'The AI is handling this — take over to reply yourself.'
     : '';
 
-  // One message in the thread. readOnly = a message from an older chat of the
-  // same customer: shown as it was, without the edit/delete menu.
-  const renderMessage = (msg: ChatMessage, readOnly = false) => {
-    const mine = msg.sender !== 'visitor';
-    const deleted = !!msg.deleted_at;
-    const withheld = msg.metadata?.withheld;
-    const attached = msg.metadata?.attachments;
-    const files = Array.isArray(attached) ? attached : [];
-    // A files-only reply carries a text stand-in for older views; the files say it here.
-    const showText = !(files.length > 0 && msg.metadata?.captionless);
-    const isEditing = !readOnly && mine && !deleted && editing?.id === msg.id;
-
-    // A deleted message stays in the inbox as a marker, so the team can
-    // see something was removed; its text is under View details.
-    const bubble = (
-      <div style={{
-        padding: '0.625rem 0.875rem', borderRadius: 12, fontSize: '0.8125rem', lineHeight: 1.5,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-word', minWidth: 0,
-        background: msg.sender === 'visitor' ? 'var(--primary)' : 'var(--card-bg)',
-        color: msg.sender === 'visitor' ? '#fff' : 'var(--fg)',
-        border: withheld ? '1px dashed #f59e0b' : '1px solid var(--border)',
-        opacity: withheld ? 0.65 : 1,
-        ...(deleted ? { background: 'transparent', color: 'var(--fg-muted)', fontStyle: 'italic', border: '1px dashed var(--border)', opacity: 1 } : {}),
-      }}>
-        {deleted ? 'This message was deleted' : (
-          <>
-            {files.length > 0 && <MessageAttachments files={files} onImageLoad={keepThreadPinned} />}
-            {files.length > 0 && showText && <div style={{ height: '0.5rem' }} />}
-            {showText && renderWithLinks(msg.content, searchTerm)}
-          </>
-        )}
-      </div>
-    );
-
-    return (
-      <div key={msg.id} className={mine ? 'msg-row chat-msg' : 'chat-msg'} style={{
-        alignSelf: mine ? 'flex-start' : 'flex-end',
-        display: 'flex', flexDirection: 'column',
-        alignItems: mine ? 'flex-start' : 'flex-end',
-      }}>
-        {/* A team reply: "You" when this login wrote it, else the writer's name today ("Team" when the
-            server could not tell). The customer only ever sees the brand. */}
-        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginBottom: '0.25rem' }}>
-          {msg.sender === 'visitor' ? 'Customer'
-            : msg.sender === 'agent' ? ((msg.author_key ? msg.author_key === (staff?.me ?? meKey) : (msg.metadata?.agent && msg.metadata.agent === user.username)) ? 'You' : (msg.author || 'Team'))
-            : msg.sender === 'system' ? `${supportLabel(activeConv?.site_name || activeConv?.panel_name)} · System`
-            : supportLabel(activeConv?.site_name || activeConv?.panel_name)}
-        </span>
-        {!mine || readOnly ? bubble : (
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', maxWidth: '100%' }}>
-            {isEditing && editing ? (
-              <MessageEditor
-                value={editing.text}
-                original={messageText(msg)}
-                hasFiles={files.length > 0}
-                channel={activeConv?.source === 'email' ? 'email' : 'chat'}
-                saving={editing.saving}
-                error={editing.error}
-                onChange={text => setEditing(e => (e ? { ...e, text } : e))}
-                onCancel={() => setEditing(null)}
-                onSave={saveEdit}
-              />
-            ) : (
-              <>
-                {bubble}
-                <MessageActions
-                  msg={msg}
-                  open={menu?.id === msg.id}
-                  up={!!menu?.up}
-                  canChange={canChangeMessage(user, msg)}
-                  onToggle={button => toggleMenu(msg.id, button)}
-                  onEdit={() => startEdit(msg)}
-                  onDelete={() => { setMenu(null); setDeleting({ id: msg.id, busy: false, error: '' }); }}
-                  onCopy={() => copyMessage(msg)}
-                  onDetails={() => openDetails(msg.id)}
-                />
-              </>
-            )}
-          </div>
-        )}
-        {withheld && !deleted && (
-          <span style={{
-            fontSize: '0.625rem', color: '#b45309', background: '#fffbeb',
-            border: '1px solid #fde68a', borderRadius: 4, padding: '1px 6px', marginTop: '0.25rem',
-          }}>
-            Not sent — {WITHHELD_LABELS[withheld] ?? 'held for you'}
-          </span>
-        )}
-        {!deleted && msg.sender === 'ai' && Array.isArray(msg.brain) && msg.brain.length > 0 && (
-          // Which of Chikki's notes the reply used: one small chip, the list opens on a click
-          // (it was a long line under every AI reply; owner, 2026-10-01).
-          <details style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem', maxWidth: '32rem' }}>
-            <summary title="Chikki's notes used for this reply" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 8px', borderRadius: 999, background: 'var(--muted)' }}>
-              🤖 Chikki · {msg.brain.length} note{msg.brain.length === 1 ? '' : 's'}
-            </summary>
-            <div style={{ marginTop: 4, lineHeight: 1.5 }}>{msg.brain.map((n) => n.title).join(' · ')}</div>
-          </details>
-        )}
-        <span style={{ fontSize: '0.625rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-          {new Date(msg.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-          {msg.edited_at && !deleted && (
-            <span title={`Edited by ${msg.edited_by || 'unknown'}, ${fullDate(msg.edited_at)}`}> · Edited</span>
-          )}
-          {deleted && ` · Deleted${msg.deleted_by ? ` by ${msg.deleted_by}` : ''}`}
-        </span>
-      </div>
-    );
-  };
-
   return (
     // The inbox is a full-screen app: the page itself never scrolls, each column does. On a
     // short screen the sidebar used to run past the bottom, which made the whole page scroll:
@@ -1315,11 +1206,11 @@ export default function ChatSupportPage() {
                           Open
                         </button>
                       </ThreadDivider>
-                      {(block.messages || []).map(msg => renderMessage(msg, true))}
+                      {(block.messages || []).map(msg => <MessageRow key={msg.id} msg={msg} readOnly activeConv={activeConv} copyMessage={copyMessage} editing={editing} keepThreadPinned={keepThreadPinned} meKey={meKey} menu={menu} messageText={messageText} openDetails={openDetails} saveEdit={saveEdit} searchTerm={searchTerm} setDeleting={setDeleting} setEditing={setEditing} setMenu={setMenu} staff={staff} startEdit={startEdit} toggleMenu={toggleMenu} user={user} />)}
                     </Fragment>
                   ))}
                   {earlier.length > 0 && <ThreadDivider>{newerChat ? 'This chat' : 'Latest chat'}</ThreadDivider>}
-                  {messages.map(msg => renderMessage(msg))}
+                  {messages.map(msg => <MessageRow key={msg.id} msg={msg} activeConv={activeConv} copyMessage={copyMessage} editing={editing} keepThreadPinned={keepThreadPinned} meKey={meKey} menu={menu} messageText={messageText} openDetails={openDetails} saveEdit={saveEdit} searchTerm={searchTerm} setDeleting={setDeleting} setEditing={setEditing} setMenu={setMenu} staff={staff} startEdit={startEdit} toggleMenu={toggleMenu} user={user} />)}
                   <div ref={bottomRef} />
                 </div>
 
