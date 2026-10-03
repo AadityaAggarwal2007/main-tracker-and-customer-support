@@ -90,7 +90,7 @@ export default function ThreadHeader({ activeAddress, activeConv, activeHealth, 
         <div className="th-chips">
           {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
             : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : <VisitorChip />}
-          <Chip tone={holderIsMe && forText ? 'primary' : statusTone(activeConv.status)} title={statusTitle}>
+          <Chip tone={statusTone(activeConv.status)} title={statusTitle}>
             {statusText}{forText ? ` · ${forText}` : ''}
           </Chip>
         </div>

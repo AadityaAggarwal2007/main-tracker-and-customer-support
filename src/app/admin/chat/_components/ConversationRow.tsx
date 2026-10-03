@@ -88,7 +88,7 @@ export default function ConversationRow({ c, meKey, rowUnread, rowWaiting, searc
         <span className="row-about truncate" title={c.subject_summary || about}>
           {showPanelName ? `${c.panel_name || c.site_name} · ` : ''}{about}{(c.thread_count ?? 0) > 1 ? ` · ${c.thread_count} chats` : ''}
         </span>
-        <Chip tone={status.tone} title={status.title} className="row-status">{status.text}</Chip>
+        <Chip tone={status.tone} title={status.title}>{status.text}</Chip>
         {priority}
       </div>
       {searchActive && c.match_snippet ? (
