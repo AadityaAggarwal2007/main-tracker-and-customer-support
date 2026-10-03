@@ -19,11 +19,11 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, checkBrowserFile,
 } from '@/lib/chat/attachment-rules';
-import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress } from './_lib/types';
+import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems } from './_lib/types';
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
 import { ThreadDivider } from './_components/chips';
-import { AddressDialog } from './_components/OrderLine';
+import { AddressDialog, ItemsDialog } from './_components/OrderLine';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import ListHeader from './_components/ListHeader';
@@ -98,8 +98,9 @@ export default function ChatSupportPage() {
   // The open chat's order line; tied to its chat so a fast switch never shows the last one's.
   // My profile / Login & security, opened from the name at the bottom of the sidebar.
   const [meOpen, setMeOpen] = useState(false);
-  const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean } | null>(null);
+  const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean; items: StaffOrderItems | null; itemsEditable: boolean } | null>(null);
   const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  const [itemsEdit, setItemsEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
   // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -270,7 +271,7 @@ export default function ChatSupportPage() {
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
       setActiveConv(data.conversation);
       setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [], hotLock: data.hot_lock ?? null });
-      setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable });
+      setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable, items: data.order_items ?? null, itemsEditable: !!data.items_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });
       setMessages(data.messages || []);
       const older = data.earlier ?? data.conversation?.earlier;
@@ -287,7 +288,7 @@ export default function ChatSupportPage() {
 
   // The team history and the transfer dialog belong to the chat they were opened on; the release
   // question to the tab it was asked on.
-  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); }, [activeId]);
+  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); setItemsEdit(null); }, [activeId]);
   useEffect(() => { setRelease(null); }, [tab]);
 
   /* ═══ POLLING ═══ */
@@ -891,6 +892,27 @@ export default function ChatSupportPage() {
   const activeOrder = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.facts : null;
   const activeAddress = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.address : null;
   const addressEditable = !!activeAddress && !!orderInfo?.editable && can(user, 'orders.update');
+  const activeItems = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.items : null;
+  const itemsEditable = !!activeItems && !!orderInfo?.itemsEditable && can(user, 'orders.update');
+  // The order's items, like the address: PATCH .../items, ShipTrack only (owner 2026-10-03).
+  const saveItems = async (items: { product_name: string; quantity: number; price: number | null }[]) => {
+    if (!itemsEdit || !token) return;
+    const convId = itemsEdit.convId;
+    setItemsEdit({ ...itemsEdit, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}/items`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setItemsEdit({ convId, busy: false, error: data.error || 'Could not save the items' }); return; }
+      if (data.items) setOrderInfo(prev => prev && prev.id === convId ? { ...prev, items: data.items } : prev);
+      setItemsEdit(null);
+      showAlert('success', data.unchanged ? 'Nothing changed' : 'Items updated in ShipTrack');
+    } catch {
+      setItemsEdit({ convId, busy: false, error: 'Could not save the items' });
+    }
+  };
   const saveAddress = async (a: OrderAddress) => {
     if (!addrEdit || !token) return;
     const convId = addrEdit.convId;
@@ -1088,7 +1110,7 @@ export default function ChatSupportPage() {
             {activeConv && (
               <>
                 {/* Thread header */}
-                <ThreadHeader activeAddress={activeAddress} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">
@@ -1173,6 +1195,10 @@ export default function ChatSupportPage() {
         {addrEdit && activeAddress && activeConv?.id === addrEdit.convId && (
           <AddressDialog initial={activeAddress} orderId={activeAddress.order_id} busy={addrEdit.busy} error={addrEdit.error}
             onCancel={() => setAddrEdit(null)} onSave={saveAddress} />
+        )}
+        {itemsEdit && activeItems && activeConv?.id === itemsEdit.convId && (
+          <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}
+            onCancel={() => setItemsEdit(null)} onSave={saveItems} />
         )}
       </main>
     </div>

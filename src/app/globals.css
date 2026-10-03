@@ -1306,9 +1306,9 @@ a {
 }
 /* Counts as 7rem when the header decides what fits on its first line, so a wide actions
    group wraps to its own line instead of squeezing the name to a few pixels. */
-.th-id { flex: 1 1 7rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.th-id { flex: 1 1 14rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
 .th-name { font-weight: 700; font-size: 0.9375rem; }
-.th-chips { display: flex; align-items: center; gap: 0.375rem; min-width: 0; }
+.th-chips { display: flex; align-items: center; gap: 0.375rem; min-width: 0; flex: 0 0 auto; }
 .th-actions {
   position: relative;
   display: flex;
@@ -1316,10 +1316,13 @@ a {
   justify-content: flex-end;
   gap: 0.375rem;
   flex-wrap: wrap;
-  flex-shrink: 1;
-  min-width: 0;
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 100%;
 }
 .th-actions .btn { display: inline-flex; align-items: center; gap: 4px; }
+/* The ⋯ toggle is a phone thing: ".th-actions .btn" above would otherwise show it on a laptop. */
+.th-actions .th-more-toggle { display: none; }
 .th-more { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .th-more-toggle { display: none; }
 /* Refund / Ship again (or the mark's Remove): one group, set apart by a thin line. */
@@ -1371,7 +1374,7 @@ a {
   .th-chips::-webkit-scrollbar { display: none; }
   .th-actions { order: 10; flex-basis: 100%; justify-content: flex-start; padding-top: 0.5rem; border-top: 1px solid var(--border); }
   .th-actions > .btn { flex: 1 1 auto; min-width: 0; justify-content: center; }
-  .th-more-toggle { display: inline-flex; flex: 0 0 auto; }
+  .th-actions .th-more-toggle { display: inline-flex; flex: 0 0 auto; }
   .th-more { display: none; }
   .th-more.open {
     display: flex;
@@ -1400,7 +1403,7 @@ a {
   .th-more { display: flex !important; }
 }
 /* No menu to open when there is nothing in it (a Closed chat without Refund / Ship again). */
-.th-actions:has(.th-more:empty) .th-more-toggle { display: none; }
+.th-actions:has(.th-more:empty) .th-more-toggle { display: none !important; }
 
 /* ═══════════════════════════════════════════
    TIMELINE (tracking)

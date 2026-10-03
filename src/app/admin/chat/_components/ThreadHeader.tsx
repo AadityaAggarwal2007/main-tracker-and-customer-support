@@ -6,10 +6,10 @@ import { isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
-import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffBlock, TeamLogEntry } from '../_lib/types';
+import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffOrderItems, StaffBlock, TeamLogEntry } from '../_lib/types';
 import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
 import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, VerifiedBadge, statusTone, subjectTone } from './chips';
-import { OrderLine, AddressLine } from './OrderLine';
+import { OrderLine, AddressLine, ItemsLine } from './OrderLine';
 import { MoreMenu } from './MoreMenu';
 
 // The open chat's header (owner, 2026-10-03: compact, the same on a laptop and a phone).
@@ -19,8 +19,11 @@ import { MoreMenu } from './MoreMenu';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
   activeAddress: StaffAddress | null;
+  activeItems: StaffOrderItems | null;
+  itemsEditable: boolean;
+  setItemsEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
   activeConv: Conversation | null;
   activeHealth: { score: number; reason: string | null; updatedAt: string | null } | null;
   activeOrder: OrderFacts | null;
@@ -175,17 +178,23 @@ export default function ThreadHeader({ activeAddress, activeConv, activeHealth, 
             <> · <a href={`tel:${activeConv.visitor_phone}`}><Phone size={10} style={{ verticalAlign: '-1px' }} /> {activeConv.visitor_phone}</a></>
           )}
         </span>
-        {activeAddress && activeConv && (
+        {(activeAddress || activeItems) && activeConv && (
           <button type="button" className="meta-btn" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(o => !o)}
-            title="The delivery address on this order">
+            title="The delivery address and the items on this order">
             Details <ChevronDown />
           </button>
         )}
       </div>
-      {activeAddress && activeConv && detailsOpen && (
+      {(activeAddress || activeItems) && activeConv && detailsOpen && (
         <div className="th-details meta">
-          <AddressLine address={activeAddress} editable={addressEditable}
-            onEdit={() => setAddrEdit({ convId: activeConv.id, busy: false, error: '' })} />
+          {activeAddress && (
+            <AddressLine address={activeAddress} editable={addressEditable}
+              onEdit={() => setAddrEdit({ convId: activeConv.id, busy: false, error: '' })} />
+          )}
+          {activeItems && (
+            <ItemsLine items={activeItems} editable={itemsEditable}
+              onEdit={() => setItemsEdit({ convId: activeConv.id, busy: false, error: '' })} />
+          )}
         </div>
       )}
 
