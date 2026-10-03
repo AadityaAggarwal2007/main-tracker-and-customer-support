@@ -12,7 +12,6 @@ import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import { type RefundThreadState } from '@/components/RefundFormControl';
-import { healthLevel } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS } from '@/lib/chat/inbox-topics';
 import { type OrderAddress } from '@/lib/chat/order-address';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
@@ -1040,18 +1039,16 @@ export default function ChatSupportPage() {
               )}
 
               {conversations.map(c => (
+                // globals.css .chat-row: the open one is blue; a left stripe marks a pinned frustrated
+                // customer (red) or one waiting too long (amber). The inline display / width / text-align
+                // stay: the screenshot script finds rows by them.
                 <button
                   key={c.id}
                   onClick={() => openConversation(c.id)}
-                  style={{
-                    display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-                    padding: '0.75rem 1rem', border: 'none',
-                    borderBottom: '1px solid var(--border)',
-                    borderLeft: isActiveRow(c) ? '3px solid var(--primary)'
-                      : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? `3px solid ${healthLevel(c.health_score).bar}`
-                      : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? '3px solid #f59e0b' : '3px solid transparent',
-                    background: isActiveRow(c) ? 'var(--primary-light)' : 'transparent',
-                  }}
+                  className={`chat-row${isActiveRow(c) ? ' active'
+                    : c.health_pinned && !isVisitorChat(c) && c.health_score != null ? ' hot'
+                    : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? ' late' : ''}`}
+                  style={{ display: 'block', width: '100%', textAlign: 'left' }}
                 >
                   <ConversationRow c={c} meKey={meKey} rowUnread={rowUnread} rowWaiting={rowWaiting} searchActive={searchActive} searchTerm={searchTerm} showPanelName={showPanelName} team={team} />
                 </button>
@@ -1094,7 +1091,7 @@ export default function ChatSupportPage() {
                 <ThreadHeader activeAddress={activeAddress} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
 
                 {/* Messages */}
-                <div ref={threadRef} style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div ref={threadRef} className="chat-msgs">
                   {hiddenEarlier > 0 && (
                     <div style={{ textAlign: 'center', fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
                       {hiddenEarlier} older {hiddenEarlier === 1 ? 'chat' : 'chats'} not shown (empty, or before the last 5)

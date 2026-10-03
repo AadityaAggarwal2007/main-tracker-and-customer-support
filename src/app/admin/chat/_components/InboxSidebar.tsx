@@ -6,6 +6,7 @@ import { ROLE_INFO, type Role } from '@/lib/permissions';
 import { INBOX_TOPICS } from '@/lib/chat/inbox-topics';
 import type { AuthUser, Business, InboxTab } from '../_lib/types';
 import { TOPIC_ICONS, INBOX_TABS } from '../_lib/inbox';
+import { Chip } from './chips';
 
 export default function InboxSidebar({ activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, setTopicsOpen, sidebarOpen, tab, topicCounts, topicsShown, unreadTotal, user }: {
   activePanelId: string;
@@ -36,8 +37,8 @@ export default function InboxSidebar({ activePanelId, businesses, canReply, case
           <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
             <MessageCircle size={15} /> Chat Support
           </div>
-          <div style={{ fontSize: '0.7rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-            {unreadTotal > 0 ? `${unreadTotal} waiting for an answer` : 'Chat and email in one place'}
+          <div className="meta" style={{ marginTop: '0.25rem' }}>
+            {unreadTotal > 0 ? `${unreadTotal} waiting` : 'Chat and email in one place'}
           </div>
         </div>
 
@@ -76,18 +77,16 @@ export default function InboxSidebar({ activePanelId, businesses, canReply, case
               {s.v.startsWith('case:') && (caseCounts[s.v.slice(5)]?.total ?? 0) > 0 && (() => {
                 const c = caseCounts[s.v.slice(5)];
                 return (
-                  <span title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}`} style={{
-                    fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
-                    background: c.unread ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))', color: c.unread ? '#b91c1c' : 'var(--fg-muted)',
-                  }}>{c.unread ? `${c.unread} waiting` : c.total}</span>
+                  <Chip tone={c.unread ? 'danger' : 'muted'} title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}`}>
+                    {c.unread ? `${c.unread} waiting` : c.total}
+                  </Chip>
                 );
               })()}
               {s.v === 'mine' && myChats.open > 0 && (
                 // My chats: how many open chats this login holds; red while any customer waits.
-                <span title={`${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}`} style={{
-                  fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
-                  background: myChats.waiting ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))', color: myChats.waiting ? '#b91c1c' : 'var(--fg-muted)',
-                }}>{myChats.open}</span>
+                <Chip tone={myChats.waiting ? 'danger' : 'muted'} title={`${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}`}>
+                  {myChats.open}
+                </Chip>
               )}
             </button>
           ))}
@@ -99,7 +98,7 @@ export default function InboxSidebar({ activePanelId, businesses, canReply, case
               fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
             <span style={{ flex: 1, textAlign: 'left' }}>Problem type</span>
             {!topicsShown && (topicCounts.risk ?? 0) > 0 && (
-              <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, background: '#fee2e2', color: '#b91c1c', letterSpacing: 0, textTransform: 'none' }}>{topicCounts.risk} at risk</span>
+              <Chip tone="danger">{topicCounts.risk} at risk</Chip>
             )}
             <ChevronDown size={13} style={{ transition: 'transform .15s', transform: topicsShown ? 'rotate(180deg)' : 'none' }} />
           </button>
@@ -115,14 +114,10 @@ export default function InboxSidebar({ activePanelId, businesses, canReply, case
                 className={`nav-btn ${tab === id ? 'active' : ''}`}
                 style={{ width: '100%' }}
               >
-                <Icon size={16} style={t.key === 'risk' && n > 0 ? { color: '#dc2626' } : undefined} />
+                <Icon size={16} style={t.key === 'risk' && n > 0 ? { color: 'var(--danger)' } : undefined} />
                 <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{t.label}</span>
                 {n > 0 && (
-                  <span style={{
-                    fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 9999, flexShrink: 0,
-                    background: t.key === 'risk' ? '#fee2e2' : 'var(--bg-subtle, rgba(0,0,0,0.06))',
-                    color: t.key === 'risk' ? '#b91c1c' : 'var(--fg-muted)',
-                  }}>{n}</span>
+                  <Chip tone={t.key === 'risk' ? 'danger' : 'muted'}>{n}</Chip>
                 )}
               </button>
             );

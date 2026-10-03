@@ -29,7 +29,7 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
   return (
                   <div
                     ref={composerRef}
-                    style={{ borderTop: '1px solid var(--border)', padding: '0.75rem 1rem', position: 'relative' }}
+                    className="chat-composer"
                     onDragEnter={e => {
                       if (!draggingFiles(e)) return;
                       e.preventDefault();
