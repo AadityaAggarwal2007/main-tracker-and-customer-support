@@ -971,4 +971,79 @@ t('tracking links: two orders pick the closest token; a far token on our host wi
   const other = 'Check https://valmo.in/track/STN98AFI7GRW on their site.';
   assert.deepStrictEqual(rg.withExactTrackingLinks(other, [A]), { text: other, changed: false, fixed: 0 });
 });
+// ── Order items changed from the chat header (order-items.ts, owner 2026-10-03) ──
+const oi = load('order-items');
+t('cleanItems: the team\'s lines tidied (spaces, quantity as text, price to 2 decimals, no price = null); the body or the list itself', () => {
+  const body = { items: [
+    { product_name: '  Jhumka   box - Silver ', quantity: '2', price: '1299.004' },
+    { product_name: 'Earrings Set', quantity: 1 },
+    { product_name: 'Kurta Set - Blue / M', quantity: 3, price: 0 },
+  ] };
+  const want = [
+    { product_name: 'Jhumka box - Silver', quantity: 2, price: 1299 },
+    { product_name: 'Earrings Set', quantity: 1, price: null },
+    { product_name: 'Kurta Set - Blue / M', quantity: 3, price: 0 },
+  ];
+  assert.deepStrictEqual(oi.cleanItems(body), { items: want });
+  assert.deepStrictEqual(oi.cleanItems(body.items), { items: want });
+  // No quantity = 1; an empty price = none; a price with paise is kept to 2 decimals.
+  assert.deepStrictEqual(oi.cleanItems([{ product_name: 'Bangle', price: '' }]), { items: [{ product_name: 'Bangle', quantity: 1, price: null }] });
+  assert.deepStrictEqual(oi.cleanItems([{ product_name: 'Bangle', quantity: 20, price: 99.999 }]), { items: [{ product_name: 'Bangle', quantity: 20, price: 100 }] });
+  assert.deepStrictEqual(oi.cleanItems([{ product_name: 'Bangle', price: 100000 }]), { items: [{ product_name: 'Bangle', quantity: 1, price: 100000 }] });
+  // A name may carry a few digits (a size, a year), just not a phone number.
+  assert.deepStrictEqual(oi.cleanItems([{ product_name: 'Saree 2024 edition / 38' }]), { items: [{ product_name: 'Saree 2024 edition / 38', quantity: 1, price: null }] });
+  assert.strictEqual(oi.MAX_ITEMS, 10);
+  assert.deepStrictEqual(oi.cleanItems(Array.from({ length: 10 }, (_, i) => ({ product_name: 'Item ' + i }))).items.length, 10);
+});
+t('cleanItems: the first thing wrong, named by its line: none, too many, name, "<", link, phone, quantity, price', () => {
+  const err = (raw) => oi.cleanItems(raw).error;
+  assert.strictEqual(err(null), 'Add at least one item');
+  assert.strictEqual(err({}), 'Add at least one item');
+  assert.strictEqual(err({ items: [] }), 'Add at least one item');
+  assert.strictEqual(err({ items: 'x' }), 'Add at least one item');
+  assert.strictEqual(err(Array.from({ length: 11 }, () => ({ product_name: 'Item' }))), 'At most 10 items');
+  assert.strictEqual(err([{ product_name: 'A' }]), 'Item 1: write the product name (2-120 characters)');
+  assert.strictEqual(err([{ product_name: 'Ok' }, {}]), 'Item 2: write the product name (2-120 characters)');
+  assert.strictEqual(err([{ product_name: 'Ok' }, null]), 'Item 2: write the product name (2-120 characters)');
+  assert.strictEqual(err([{ product_name: 'x'.repeat(121) }]), 'Item 1: write the product name (2-120 characters)');
+  assert.strictEqual(err([{ product_name: '<b>Jhumka</b>' }]), 'Item 1: no "<" in a product name');
+  assert.strictEqual(err([{ product_name: 'Jhumka https://x.in/a' }]), 'Item 1: no links in a product name');
+  assert.strictEqual(err([{ product_name: 'see www.vastora.in' }]), 'Item 1: no links in a product name');
+  assert.strictEqual(err([{ product_name: 'call 98765 43210 now' }]), 'Item 1: no phone numbers in a product name');
+  assert.strictEqual(err([{ product_name: 'Jhumka', quantity: 0 }]), 'Item 1: quantity 1-20');
+  assert.strictEqual(err([{ product_name: 'Jhumka', quantity: 21 }]), 'Item 1: quantity 1-20');
+  assert.strictEqual(err([{ product_name: 'Jhumka', quantity: 1.5 }]), 'Item 1: quantity 1-20');
+  assert.strictEqual(err([{ product_name: 'Jhumka', quantity: 'two' }]), 'Item 1: quantity 1-20');
+  assert.strictEqual(err([{ product_name: 'Jhumka', price: -1 }]), 'Item 1: price 0-100000');
+  assert.strictEqual(err([{ product_name: 'Jhumka', price: 100000.01 }]), 'Item 1: price 0-100000');
+  assert.strictEqual(err([{ product_name: 'Jhumka', price: 'abc' }]), 'Item 1: price 0-100000');
+  // priceOf, used by the loader on the database's "1299.00" strings.
+  assert.strictEqual(oi.priceOf('1299.00'), 1299); assert.strictEqual(oi.priceOf(0), 0);
+  assert.strictEqual(oi.priceOf(null), null); assert.strictEqual(oi.priceOf(''), null); assert.strictEqual(oi.priceOf('x'), null);
+});
+t('sameItems: the same lines in any order; a name, quantity or price change (null is not 0) and a missing line are different', () => {
+  const a = [{ product_name: 'Jhumka box - Silver', quantity: 2, price: 1299 }, { product_name: 'Earrings Set', quantity: 1, price: 0 }];
+  assert.strictEqual(oi.sameItems(a, [a[1], a[0]]), true);
+  assert.strictEqual(oi.sameItems(a, a.map((x) => ({ ...x }))), true);
+  assert.strictEqual(oi.sameItems([], []), true);
+  assert.strictEqual(oi.sameItems(a, [a[0]]), false);
+  assert.strictEqual(oi.sameItems(a, [a[0], { ...a[1], product_name: 'Earrings set' }]), false);
+  assert.strictEqual(oi.sameItems(a, [a[0], { ...a[1], quantity: 2 }]), false);
+  assert.strictEqual(oi.sameItems(a, [a[0], { ...a[1], price: 1 }]), false);
+  assert.strictEqual(oi.sameItems(a, [a[0], { ...a[1], price: null }]), false);
+  assert.strictEqual(oi.sameItems([{ product_name: 'A', quantity: 1, price: 10 }], [{ product_name: 'A', quantity: 1, price: 10.001 }]), true);
+  // Two equal lines against one doubled: not the same.
+  assert.strictEqual(oi.sameItems([a[0], a[0]], [{ ...a[0], quantity: 4 }]), false);
+});
+t('itemsLine: "Jhumka box - Silver ×2 · Earrings Set"; ×N only above 1; about 80 characters then "…"', () => {
+  assert.strictEqual(oi.itemsLine([{ product_name: 'Jhumka box - Silver', quantity: 2, price: 1299 }, { product_name: 'Earrings Set', quantity: 1, price: null }]), 'Jhumka box - Silver ×2 · Earrings Set');
+  assert.strictEqual(oi.itemsLine([]), '');
+  assert.strictEqual(oi.itemsLine([{ product_name: 'Bangle', quantity: 1, price: 0 }]), 'Bangle');
+  const long = oi.itemsLine(Array.from({ length: 6 }, (_, i) => ({ product_name: `Kurta Set - Blue / M number ${i}`, quantity: 1, price: 0 })));
+  assert.ok(long.length <= 80 && long.endsWith('…') && !/[\s·]…$/.test(long), long);
+  assert.ok(long.startsWith('Kurta Set - Blue / M number 0 · Kurta Set - Blue / M number 1'), long);
+  const exact = oi.itemsLine([{ product_name: 'x'.repeat(80), quantity: 1, price: 0 }]);
+  assert.strictEqual(exact.length, 80); assert.ok(!exact.endsWith('…'));
+  assert.strictEqual(oi.itemsLine([{ product_name: 'x'.repeat(81), quantity: 1, price: 0 }]), 'x'.repeat(79) + '…');
+});
 console.log(`UNIT: ${n} groups passed`);
