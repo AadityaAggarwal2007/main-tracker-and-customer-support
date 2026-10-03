@@ -1,58 +1,87 @@
 'use client';
 
-import { RotateCw, Info, UserCheck, Undo2, Clock, PhoneCall, Truck } from 'lucide-react';
+import { RotateCw, Info, Check, Undo2, Clock, PhoneCall, Truck, User } from 'lucide-react';
 import { healthLevel } from '@/lib/chat/health-rules';
-import { formatWaiting, waitingLevel } from '@/lib/chat/waiting';
+import { formatWaiting, waitingLevel, type WaitingLevel } from '@/lib/chat/waiting';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
-import { WAITING_STYLE, msSince, CASE_LABELS, timeAgo } from '../_lib/inbox';
+import { msSince, CASE_LABELS, timeAgo, waitingText, SUBJECT_MONEY, SUBJECT_CHANGE, SUBJECT_PROBLEM } from '../_lib/inbox';
+
+// ── The one chip of the inbox (globals.css .chip) ──────────────
+// 11px, 600, 2px 8px, round, a tone from the page tokens. Every badge / tag / pill in
+// the inbox is one of these (owner, 2026-10-03: "rows me bahut chips", "rang ek jaise nahi").
+export type ChipTone = 'muted' | 'primary' | 'ok' | 'warn' | 'danger' | 'info';
+
+export function Chip({ tone = 'muted', title, className, children }: { tone?: ChipTone; title?: string; className?: string; children: React.ReactNode }) {
+  return <span className={`chip chip-${tone}${className ? ` ${className}` : ''}`} title={title}>{children}</span>;
+}
+
+// A chat's status as a tone: Needs you red, with a person blue, with the AI light blue, Closed grey.
+export const statusTone = (status: string): ChipTone =>
+  status === 'human_needed' ? 'danger' : status === 'agent_handling' ? 'primary' : status === 'ai_handling' ? 'info' : 'muted';
+
+// A subject label by kind of concern, so the team can tell at a glance: money (amber),
+// a change the customer asks for (blue), something that went wrong (red), anything else (grey).
+export function subjectTone(label: string): ChipTone {
+  if (SUBJECT_MONEY.includes(label)) return 'warn';
+  if (SUBJECT_CHANGE.includes(label)) return 'info';
+  if (SUBJECT_PROBLEM.includes(label)) return 'danger';
+  return 'muted';
+}
+
+// The customer's frustration level as a tone: Calm green, Uneasy amber, Frustrated / Critical red.
+export const healthTone = (score: number): ChipTone => {
+  const k = healthLevel(score).key;
+  return k === 'calm' ? 'ok' : k === 'uneasy' ? 'warn' : 'danger';
+};
+
+// "Waiting 40m": grey under an hour, amber up to 2 hours, red from then on.
+const WAITING_TONE: Record<WaitingLevel, ChipTone> = { fresh: 'muted', soon: 'warn', overdue: 'danger' };
 
 // A visitor whose number is a customer's: not verified (the AI still asks for
 // order ID + phone), but the team can place them.
 export function PhoneMatchBadge({ orderId, compact = false }: { orderId?: string | null; compact?: boolean }) {
   return (
-    <span title={`The number this person typed or saved is on order ${orderId || ''}. Not verified: the AI shares no order details until they give the order ID and the phone number.`} style={{
-      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
-      display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
-      background: '#dbeafe', color: '#1d4ed8', whiteSpace: 'nowrap',
-    }}>
-      <PhoneCall size={10} /> Phone match{orderId && !compact ? ` · ${orderId}` : ''}
-    </span>
+    <Chip tone="info" title={`The number this person typed or saved is on order ${orderId || ''}. Not verified: the AI shares no order details until they give the order ID and the phone number.`}>
+      <PhoneCall /> Phone match{orderId && !compact ? ` ${orderId}` : ''}
+    </Chip>
   );
 }
 
-export function WaitingChip({ since, big = false }: { since: string; big?: boolean }) {
+// A chat that has not proved an order (no verified order, no phone match).
+export function VisitorChip() {
+  return (
+    <Chip tone="muted" title="Has not proved an order: no order ID + phone, and the number is on no order">
+      <User /> Visitor
+    </Chip>
+  );
+}
+
+export function WaitingChip({ since }: { since: string }) {
   const ms = msSince(since);
   if (Number.isNaN(ms)) return null;
-  const st = WAITING_STYLE[waitingLevel(ms)];
   return (
-    <span title={`The customer has waited ${formatWaiting(ms)} for an answer (their last message is unanswered)`} style={{
-      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
-      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4,
-      fontWeight: 700, background: st.bg, color: st.fg,
-    }}>
-      <Clock size={big ? 11 : 10} /> Waiting {formatWaiting(ms)}
-    </span>
+    <Chip tone={WAITING_TONE[waitingLevel(ms)]} title={`The customer has waited ${formatWaiting(ms)} for an answer (their last message is unanswered)`}>
+      <Clock /> Waiting {waitingText(ms)}
+    </Chip>
   );
 }
 
 // A chat the system closed after 4 quiet days that the customer has since written
 // in again (it opened by itself): sits near the top until a person closes it or
 // takes it over, so it is seen and closed fast. The team's own Close is not tagged.
-export function CameBackChip({ closedAt, big = false }: { closedAt?: string | null; big?: boolean }) {
+export function CameBackChip({ closedAt }: { closedAt?: string | null }) {
   const when = closedAt ? new Date(closedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : '';
   return (
-    <span title={`Closed by AI${when ? ` on ${when}` : ''} after 4 quiet days. The customer has written again, so it opened itself. Close it or take it over.`} style={{
-      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
-      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4,
-      fontWeight: 700, background: '#dbeafe', color: '#1d4ed8',
-    }}>
-      <RotateCw size={big ? 11 : 10} /> Came back
-    </span>
+    <Chip tone="info" title={`Closed by AI${when ? ` on ${when}` : ''} after 4 quiet days. The customer has written again, so it opened itself. Close it or take it over.`}>
+      <RotateCw /> Came back
+    </Chip>
   );
 }
 
+// The Refund / Ship again mark. `big` (the thread header) adds who marked it and when as
+// plain text after the chip, so the chip itself stays short.
 export function CaseChip({ kind, by, at, status, role, big = false }: { kind: string; by?: string | null; at?: string | null; status?: string | null; role?: string | null; big?: boolean }) {
-  const when = at ? new Date(at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '';
+  const when = at ? new Date(at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '';
   const refund = kind === 'refund';
   // Chikki's own Ship again mark (owner 2026-10-02): a live mark came with the new-link promise; a chat
   // moved in the one-time move of 2 Oct (actor_role 'backfill') got no message, its customer hears of
@@ -75,61 +104,38 @@ export function CaseChip({ kind, by, at, status, role, big = false }: { kind: st
     ? `${who} ${autoRefund ? refundPromise : moved ? movedNote : auto ? 'The customer was promised a new tracking link.' : 'Customer wrote again.'} A person must reply now.`
     : `${who} ${autoRefund ? refundPromise : moved ? `${movedNote} Their next question about the link gets the 24-48 hour line.` : auto ? 'The customer was told: new tracking link here within 24-48 hours.' : 'Internal only: the customer is not told.'}`;
   return (
-    <span title={title} style={{
-      display: 'inline-flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, whiteSpace: 'nowrap',
-      fontSize: big ? '0.6875rem' : '0.625rem', padding: big ? '2px 8px' : '1px 6px', borderRadius: big ? 9999 : 4, fontWeight: 700,
-      background: red ? '#fee2e2' : refund ? '#fef3c7' : '#e0e7ff', color: red ? '#b91c1c' : refund ? '#92400e' : '#3730a3',
-    }}>
-      {refund ? <Undo2 size={big ? 11 : 10} /> : <Truck size={big ? 11 : 10} />} {red ? `${CASE_LABELS[kind] || kind} · needs you` : CASE_LABELS[kind] || kind}
+    <>
+      <Chip tone={red ? 'danger' : refund ? 'warn' : 'info'} title={title}>
+        {refund ? <Undo2 /> : <Truck />} {red ? `${CASE_LABELS[kind] || kind} · needs you` : CASE_LABELS[kind] || kind}
+      </Chip>
       {big && by ? <span style={{ fontWeight: 500 }}>· {by}{when ? `, ${when}` : ''}</span> : null}
-    </span>
+    </>
   );
 }
 
-// The customer's frustration on a list row: a small % pill from "Uneasy" up,
+// The customer's frustration on a list row: a small % chip from "Uneasy" up,
 // coloured by level, with the reason on hover. Calm customers show nothing.
 export function HealthBadge({ score, reason }: { score?: number | null; reason?: string | null }) {
   if (score == null || score < 25) return null;
   const lvl = healthLevel(score);
   return (
-    <span title={`${lvl.label} · ${score}%${reason ? ` — ${reason}` : ''}`} style={{
-      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 700, flexShrink: 0,
-      background: lvl.bg, color: lvl.fg,
-    }}>
+    <Chip tone={healthTone(score)} title={`${lvl.label} · ${score}%${reason ? ` — ${reason}` : ''}`}>
       {score}%
-    </span>
+    </Chip>
   );
 }
 
-// The customer's frustration across the header: a bar, the level, and why.
-export function HealthBar({ score, reason, updatedAt }: { score: number; reason?: string | null; updatedAt?: string | null }) {
+// The customer's frustration in the thread header: "Critical 77%", the reason on hover.
+export function HealthChip({ score, reason, updatedAt }: { score: number; reason?: string | null; updatedAt?: string | null }) {
   const lvl = healthLevel(score);
   return (
-    <div title={reason || undefined} style={{
-      flexBasis: '100%', minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.625rem', flexWrap: 'wrap',
-      padding: '0.375rem 0.625rem', borderRadius: 8, background: lvl.bg, color: lvl.fg,
-    }}>
-      <span style={{ fontSize: '0.6875rem', fontWeight: 700, whiteSpace: 'nowrap' }}>Frustration</span>
-      <span style={{ fontSize: '0.9375rem', fontWeight: 800, lineHeight: 1 }}>{score}%</span>
-      <span style={{ fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>{lvl.label}</span>
-      <div aria-hidden style={{ flex: '0 0 96px', height: 6, borderRadius: 3, background: 'rgba(0,0,0,0.1)' }}>
-        <div style={{ width: `${score}%`, height: '100%', borderRadius: 3, background: lvl.bar }} />
-      </div>
-      {reason && (
-        <span style={{ flex: 1, minWidth: 0, fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {reason}
-        </span>
-      )}
-      {updatedAt && (
-        <span style={{ marginLeft: 'auto', fontSize: '0.625rem', opacity: 0.75, whiteSpace: 'nowrap' }}>
-          updated {timeAgo(updatedAt)}
-        </span>
-      )}
-    </div>
+    <Chip tone={healthTone(score)} title={`${lvl.label} ${score}%${reason ? ` — ${reason}` : ''}${updatedAt ? ` · updated ${timeAgo(updatedAt)}` : ''}`}>
+      {lvl.label} {score}%
+    </Chip>
   );
 }
 
-// Green "Verified" tag for a customer who proved their order. A 'legacy' tag
+// Green "✓ #5115" for a customer who proved their order. A 'legacy' tag
 // (chat-verified-legacy.sql) gets an amber "Old check" instead: that order was
 // found by an older phone/email lookup in this chat. Since 2026-09-30 the AI
 // treats it as verified in this chat too (the owner: never ask a verified
@@ -137,23 +143,15 @@ export function HealthBar({ score, reason, updatedAt }: { score: number; reason?
 export function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?: string | null }) {
   if (via === 'legacy') {
     return (
-      <span title="Found by an older phone/email lookup in this chat, not with order ID + phone. The AI still treats this chat as verified for this order." style={{
-        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
-        display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
-        background: '#fef3c7', color: '#b45309',
-      }}>
-        <Info size={10} /> Old check{orderId ? ` · ${orderId}` : ''}
-      </span>
+      <Chip tone="warn" title="Found by an older phone/email lookup in this chat, not with order ID + phone. The AI still treats this chat as verified for this order.">
+        <Info /> Old check{orderId ? ` ${orderId}` : ''}
+      </Chip>
     );
   }
   return (
-    <span title={orderId ? `Verified order ${orderId}` : 'Verified customer'} style={{
-      fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600, flexShrink: 0,
-      display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
-      background: '#dcfce7', color: '#15803d',
-    }}>
-      <UserCheck size={10} /> Verified{orderId ? ` · ${orderId}` : ''}
-    </span>
+    <Chip tone="ok" title={orderId ? `Verified order ${orderId}` : 'Verified customer'}>
+      <Check /> {orderId || 'Verified'}
+    </Chip>
   );
 }
 

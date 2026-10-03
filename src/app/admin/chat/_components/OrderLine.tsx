@@ -1,38 +1,30 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Check, AlertCircle, X, Pencil, Info, MapPin, CalendarDays, Truck, CalendarCheck } from 'lucide-react';
+import { Loader2, Check, AlertCircle, X, Pencil, Info, MapPin } from 'lucide-react';
 import { INDIAN_STATES, addressText, type OrderAddress } from '@/lib/chat/order-address';
 import type { OrderFacts, StaffAddress } from '../_lib/types';
 import { orderDay, stampIST } from '../_lib/inbox';
+import { Chip } from './chips';
 
-export function OrderLine({ facts }: { facts: OrderFacts }) {
+// One line of order facts, short labels: "#8554 · Placed 2 Oct · Out for Delivery · ETA 15 Oct ·
+// Hoshiarpur 146001". Inline, so the header's facts row can truncate it on a phone.
+export function OrderLine({ facts, place }: { facts: OrderFacts; place?: string | null }) {
   const placed = orderDay(facts.placed_on);
   // A delivered, cancelled or returning order has no delivery still to come.
   const eta = facts.delivered || facts.mode === 'cancelled' || facts.mode === 'rto' ? null : orderDay(facts.eta);
-  const tone = facts.mode === 'cancelled' || facts.mode === 'rto' ? { bg: 'var(--danger-light)', fg: 'var(--danger)' }
-    : facts.mode === 'failed' ? { bg: 'var(--warning-light)', fg: 'var(--warning)' }
-    : facts.delivered ? { bg: 'var(--success-light)', fg: 'var(--success)' }
-    : { bg: 'var(--primary-light)', fg: 'var(--primary)' };
-  const item = { display: 'inline-flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' } as const;
+  const tone = facts.mode === 'cancelled' || facts.mode === 'rto' ? 't-danger'
+    : facts.mode === 'failed' ? 't-warn'
+    : facts.delivered ? 't-ok'
+    : 't-primary';
   return (
-    <div title={`Order ${facts.order_id}${facts.source === 'phone_match' ? ' (matched by phone number, not verified)' : ''}`} style={{
-      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.25rem 0.75rem',
-      fontSize: '0.75rem', marginTop: '0.375rem', color: 'var(--fg-muted)',
-    }}>
-      {placed && (
-        <span style={item}><CalendarDays size={12} /> Ordered <b style={{ color: 'var(--fg)', fontWeight: 600 }}>{placed}</b></span>
-      )}
-      <span style={item}>
-        <Truck size={12} /> Now
-        <b style={{ background: tone.bg, color: tone.fg, padding: '1px 7px', borderRadius: 9999, fontWeight: 700, fontSize: '0.6875rem' }}>{facts.status}</b>
-      </span>
-      {eta && (
-        <span style={item}>
-          <CalendarCheck size={12} /> Est. delivery <b style={{ color: 'var(--fg)', fontWeight: 600 }}>{eta}</b>
-        </span>
-      )}
-    </div>
+    <span title={`Order ${facts.order_id}${facts.source === 'phone_match' ? ' (matched by phone number, not verified)' : ''}`}>
+      <b>{facts.order_id}</b>
+      {placed && <> · Placed <b>{placed}</b></>}
+      {' · '}<span className={tone}>{facts.status}</span>
+      {eta && <> · ETA <b>{eta}</b></>}
+      {place && <> · {place}</>}
+    </span>
   );
 }
 
@@ -40,20 +32,20 @@ export function AddressLine({ address, editable, onEdit }: { address: StaffAddre
   const text = addressText(address);
   // Inline, so a long address wraps like text and the chip and Edit follow it.
   return (
-    <div style={{ fontSize: '0.75rem', marginTop: '0.25rem', color: 'var(--fg)', lineHeight: 1.6, wordBreak: 'break-word' }}>
+    <div style={{ color: 'var(--fg)', lineHeight: 1.6 }}>
       <MapPin size={12} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '0.375rem', color: 'var(--fg-muted)' }} />
       {text || <span style={{ color: 'var(--fg-muted)' }}>No address on this order</span>}
       {address.edited_at && (
-        <span title={`Changed in ShipTrack by ${address.edited_by || 'the team'} on ${stampIST(address.edited_at)}. Shopify and CSV updates keep this address.`} style={{
-          display: 'inline-block', verticalAlign: 'middle', marginLeft: '0.375rem', whiteSpace: 'nowrap', lineHeight: 1.4,
-          fontSize: '0.625rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'var(--success-light)', color: 'var(--success)',
-        }}>
-          Changed{address.edited_by ? ` · ${address.edited_by}` : ''}
-        </span>
+        <>
+          {' '}
+          <Chip tone="ok" title={`Changed in ShipTrack by ${address.edited_by || 'the team'} on ${stampIST(address.edited_at)}. Shopify and CSV updates keep this address.`}>
+            Changed{address.edited_by ? ` · ${address.edited_by}` : ''}
+          </Chip>
+        </>
       )}
       {editable && (
         <button type="button" onClick={onEdit} title="Change the delivery address" className="btn btn-outline btn-sm"
-          style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: '0.375rem', padding: '1px 8px', fontSize: '0.6875rem', gap: '0.25rem', minHeight: 0, lineHeight: 1.4 }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', marginLeft: '0.375rem' }}>
           <Pencil size={11} /> Edit
         </button>
       )}

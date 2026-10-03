@@ -1,15 +1,24 @@
 'use client';
 
+import { useState } from 'react';
 import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand } from 'lucide-react';
 import { isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffBlock, TeamLogEntry } from '../_lib/types';
-import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, STATUS_STYLE, subjectStyle, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
-import { PhoneMatchBadge, WaitingChip, CameBackChip, CaseChip, HealthBar, VerifiedBadge } from './chips';
+import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
+import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, VerifiedBadge, statusTone, subjectTone } from './chips';
 import { OrderLine, AddressLine } from './OrderLine';
+import { MoreMenu } from './MoreMenu';
 
+// The open chat's header (owner, 2026-10-03: compact, the same on a laptop and a phone).
+//   Row 1  name · two chips (verified / phone match / visitor; who has it) · the actions
+//   Row 2  the order in one line, the panel, the phone · Details (the address and Edit)
+//   then   the Refund / Ship again mark with its form, why a button is off, the subject
+//          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
+// On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
+// bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
 export default function ThreadHeader({ activeAddress, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
   activeAddress: StaffAddress | null;
   activeConv: Conversation | null;
@@ -45,242 +54,221 @@ export default function ThreadHeader({ activeAddress, activeConv, activeHealth, 
   user: AuthUser | null;
   withText: string;
 }) {
+  // The full address and Edit sit behind "Details": open on a laptop, closed on a phone. The
+  // header only mounts in the browser once a thread has loaded, so the width is known here.
+  const [detailsOpen, setDetailsOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches);
+
+  const closed = closedInfo(activeConv);
+  // Who has it, or the status: "With Rahul" / "Needs you" / "With AI" / "Closed · support";
+  // "· For Rahul" when it is theirs but not with them right now.
+  const statusText = activeConv.status === 'agent_handling' ? withText
+    : activeConv.status === 'ai_handling' ? 'With AI'
+    : closed ? closed.short
+    : STATUS_LABELS[activeConv.status];
+  const statusTitle = [
+    staff?.holder && holderAway ? `${staff.holder.name} has not been in ShipTrack for ${minutesText(staff.holder.away_min ?? 0)}` : null,
+    closed ? closed.title : null,
+    forText && activeConv.status === 'resolved' ? (staff?.holder?.key === 'owner' ? 'If the customer writes again, it goes to the open pool' : 'If the customer writes again, it goes to them') : null,
+  ].filter(Boolean).join(' · ') || undefined;
+  const cameBack = !!activeConv.auto_closed_at && activeConv.status !== 'resolved';
+  const place = activeAddress ? [activeAddress.city, activeAddress.pincode].filter(Boolean).join(' ') : '';
+  const subjectTitle = activeSubject
+    ? `${activeSubject.summary ? `${activeSubject.label}: ${activeSubject.summary}` : activeSubject.label}${activeSubject.updatedAt ? ` · updated ${timeAgo(activeSubject.updatedAt)}` : ''}`
+    : undefined;
+
   return (
-                <div style={{ padding: '0.875rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <button type="button" className="btn-icon chat-back" aria-label="Back to conversations" onClick={closeConversation}>
-                    <ChevronLeft size={20} />
-                  </button>
-                  {/* Counts as 7rem when the header decides what fits on its first line: on a phone a
-                      wide actions group (the read-only label, Take / Transfer) then wraps to its own
-                      line instead of squeezing the customer's name to a few pixels. */}
-                  <div style={{ minWidth: 0, flex: '1 1 7rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <span title={nameNote(activeConv)} style={{ fontWeight: 700, fontStyle: nameFromOrder(activeConv) ? 'italic' : undefined }}>{convName(activeConv)}</span>
-                      {nameFromOrder(activeConv) && (
-                        <span style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>(from order)</span>
-                      )}
-                      <span style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
-                        display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
-                        background: 'var(--primary-light)', color: 'var(--primary)',
-                      }}>
-                        {activeConv.source === 'email' ? <><Mail size={10} /> Email</> : <><MessageCircle size={10} /> Chat</>}
-                      </span>
-                      <span title={staff?.holder && holderAway ? `${staff.holder.name} has not been in ShipTrack for ${minutesText(staff.holder.away_min ?? 0)}` : undefined} style={{
-                        fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
-                        background: STATUS_STYLE[activeConv.status]?.bg, color: STATUS_STYLE[activeConv.status]?.fg,
-                      }}>
-                        {activeConv.status === 'agent_handling' ? withText : STATUS_LABELS[activeConv.status]}
-                      </span>
-                      {forText && (
-                        <span title={activeConv.status === 'resolved' ? (staff?.holder?.key === 'owner' ? 'If the customer writes again, it goes to the open pool' : 'If the customer writes again, it goes to them') : undefined} style={{
-                          fontSize: '0.625rem', padding: '1px 6px', borderRadius: 4, fontWeight: 600,
-                          background: holderIsMe ? 'var(--primary-light)' : 'var(--bg-subtle, rgba(0,0,0,0.05))', color: holderIsMe ? 'var(--primary)' : 'var(--fg-muted)',
-                        }}>
-                          {forText}
-                        </span>
-                      )}
-                      {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
-                        : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : null}
-                      {activeWaiting && <WaitingChip since={activeWaiting} big />}
-                      {activeConv.auto_closed_at && activeConv.status !== 'resolved' && <CameBackChip closedAt={activeConv.auto_closed_at} big />}
-                      {closedInfo(activeConv) && (
-                        <span title={closedInfo(activeConv)!.title} style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)' }}>
-                          {closedInfo(activeConv)!.long}
-                        </span>
-                      )}
-                    </div>
-                    {activeOrder && <OrderLine facts={activeOrder} />}
-                    {activeAddress && activeConv && (
-                      <AddressLine address={activeAddress} editable={addressEditable}
-                        onEdit={() => setAddrEdit({ convId: activeConv.id, busy: false, error: '' })} />
-                    )}
-                    <div style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.125rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
-                      <span>{activeConv.panel_name || activeConv.site_name}</span>
-                      {activeConv.visitor_phone && (
-                        <>
-                          <span>·</span>
-                          <a href={`tel:${activeConv.visitor_phone}`} style={{ color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                            <Phone size={10} /> {activeConv.visitor_phone}
-                          </a>
-                        </>
-                      )}
-                    </div>
-                  </div>
+    <div className="th">
+      <button type="button" className="btn-icon chat-back" aria-label="Back to conversations" onClick={closeConversation}>
+        <ChevronLeft size={20} />
+      </button>
 
-                  {canReply && (
-                    // May shrink (minWidth 0) so that, with Take from X and Transfer added, a narrow
-                    // thread wraps the buttons onto a second row instead of pushing them off screen.
-                    <div style={{ display: 'flex', gap: '0.375rem', flexShrink: 1, minWidth: 0, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
-                      {/* Refund / Ship again: verified customers only; internal, the customer is told nothing */}
-                      {canCases && !isVisitorChat(activeConv) && (activeConv.case_kind ? (
-                        <>
-                          <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
-                          <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>
-                          {activeConv.case_kind === 'refund' && isSuperAdmin(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
-                            <RefundFormControl token={token} conversationId={activeConv.id} state={threadRefund.state} onChanged={() => fetchThread(activeConv.id, true)} onAlert={showAlert}
-                              label={supportLabel(activeConv.site_name || activeConv.panel_name)} />
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          {/* Who may mark is the server's call (staff.can_mark_case: a senior or Super Admin;
-                              a junior only while every senior is away). Off: the reason on hover. */}
-                          {staff?.mark_override && staff.mark_note && (
-                            <span style={{ fontSize: '0.6875rem', fontWeight: 600, padding: '2px 8px', borderRadius: 9999, background: '#fef3c7', color: '#b45309' }}>
-                              {staff.mark_note}
-                            </span>
-                          )}
-                          <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
-                            title={staff?.can_mark_case ? 'Mark this customer for a refund. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
-                            onClick={() => markCase('refund')}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Undo2 size={13} /> Refund</button>
-                          <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
-                            title={staff?.can_mark_case ? 'Mark this order to be shipped again. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
-                            onClick={() => markCase('reship')}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Truck size={13} /> Ship again</button>
-                        </>
-                      ))}
-                      {/* Take over, Take from X, Transfer, Hand to AI, Close: only what the server says this
-                          login may do on this chat (staff). Someone else's chat: read only, with their name. */}
-                      {staff && (staff.can_act || staff.take) ? (
-                        <>
-                          {activeConv.status !== 'agent_handling' && staff.can_act && (
-                            <button className="btn btn-primary btn-sm" onClick={() => changeStatus('agent_handling')}
-                              title={staff.claims ? 'This chat becomes yours' : undefined}>Take over</button>
-                          )}
-                          {staff.take && staff.holder && (
-                            <button className={`btn btn-sm ${staff.can_act ? 'btn-outline' : 'btn-primary'}`} onClick={() => changeStatus('agent_handling', true)}
-                              title={staff.take === 'holder_away'
-                                ? `${staff.holder.name} has not been in ShipTrack for a while and the customer is waiting: this chat becomes yours`
-                                : `This chat becomes yours (${staff.holder.name} has it now)`}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <Hand size={13} /> {takeLabel}
-                            </button>
-                          )}
-                          {staff.transfer_to.length > 0 && activeConv.status !== 'resolved' && (
-                            <button className="btn btn-outline btn-sm" onClick={() => setTransferEdit({ convId: activeConv.id, busy: false, error: '' })}
-                              title="Give this chat to someone else, with a one-line note for the team"
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><ArrowRightLeft size={13} /> Transfer</button>
-                          )}
-                          {/* Hot chat (hot_lock, owner 2026-10-02): a member sees both off; why is the line below. */}
-                          {activeConv.status === 'agent_handling' && !activeConv.case_kind && staff.can_act && (
-                            <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_hand_to_ai}
-                              title={hotLock && !hotLock.can_hand_to_ai && hotLock.lock_reason ? hotLock.lock_reason : undefined}
-                              onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
-                          )}
-                          {activeConv.status !== 'resolved' && staff.can_act && (
-                            <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_close}
-                              title={hotLock && !hotLock.can_close && hotLock.lock_reason ? hotLock.lock_reason : undefined}
-                              onClick={() => changeStatus('resolved')}>Close</button>
-                          )}
-                        </>
-                      ) : staff ? (
-                        <span title={staff.holder ? `Ask ${staff.holder.owner ? 'Super Admin' : `${staff.holder.name} or Super Admin`} to transfer it to you` : undefined}
-                          style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-                          <Lock size={12} /> {readOnlyText}
-                        </span>
-                      ) : null}
-                    </div>
-                  )}
+      {/* Row 1: who, with two chips: verified / phone match / visitor, and who has it */}
+      <div className="th-id">
+        {activeConv.source === 'email' ? <Mail className="row-icon" aria-label="Email" /> : <MessageCircle className="row-icon" aria-label="Chat" />}
+        <span className="th-name truncate" title={nameNote(activeConv)} style={{ fontStyle: nameFromOrder(activeConv) ? 'italic' : undefined }}>{convName(activeConv)}</span>
+        {nameFromOrder(activeConv) && <span className="meta">(from order)</span>}
+        <div className="th-chips">
+          {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
+            : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : <VisitorChip />}
+          <Chip tone={holderIsMe && forText ? 'primary' : statusTone(activeConv.status)} title={statusTitle}>
+            {statusText}{forText ? ` · ${forText}` : ''}
+          </Chip>
+        </div>
+      </div>
 
-                  {/* Why Refund / Ship again is off (the server's staff.mark_note), as a small line of its own on
-                      every screen size: a phone has no hover (owner answer A6, 2026-10-02). */}
-                  {canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
-                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)', textAlign: 'right', wordBreak: 'break-word' }}>
-                      Refund / Ship again: {staff.mark_note}
-                    </div>
-                  )}
+      {canReply && (
+        <div className="th-actions">
+          {/* Take over, Take from X, Transfer, Hand to AI, Close: only what the server says this
+              login may do on this chat (staff). Someone else's chat: read only, with their name. */}
+          {staff && (staff.can_act || staff.take) ? (
+            <>
+              {activeConv.status !== 'agent_handling' && staff.can_act && (
+                <button className="btn btn-primary btn-sm" onClick={() => changeStatus('agent_handling')}
+                  title={staff.claims ? 'This chat becomes yours' : undefined}>Take over</button>
+              )}
+              {staff.take && staff.holder && (
+                <button className={`btn btn-sm ${staff.can_act ? 'btn-outline' : 'btn-primary'}`} onClick={() => changeStatus('agent_handling', true)}
+                  title={staff.take === 'holder_away'
+                    ? `${staff.holder.name} has not been in ShipTrack for a while and the customer is waiting: this chat becomes yours`
+                    : `This chat becomes yours (${staff.holder.name} has it now)`}>
+                  <Hand size={13} /> {takeLabel}
+                </button>
+              )}
+              {staff.transfer_to.length > 0 && activeConv.status !== 'resolved' && (
+                <button className="btn btn-outline btn-sm" onClick={() => setTransferEdit({ convId: activeConv.id, busy: false, error: '' })}
+                  title="Give this chat to someone else, with a one-line note for the team"><ArrowRightLeft size={13} /> Transfer</button>
+              )}
+            </>
+          ) : staff ? (
+            <span className="meta" title={staff.holder ? `Ask ${staff.holder.owner ? 'Super Admin' : `${staff.holder.name} or Super Admin`} to transfer it to you` : undefined}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+              <Lock size={12} /> {readOnlyText}
+            </span>
+          ) : null}
+          {/* The rest: inline on a laptop, behind ⋯ on a phone. */}
+          <MoreMenu>
+            {staff && (staff.can_act || staff.take) && (
+              <>
+                {/* Hot chat (hot_lock, owner 2026-10-02): a member sees both off; why is the line below. */}
+                {activeConv.status === 'agent_handling' && !activeConv.case_kind && staff.can_act && (
+                  <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_hand_to_ai}
+                    title={hotLock && !hotLock.can_hand_to_ai && hotLock.lock_reason ? hotLock.lock_reason : undefined}
+                    onClick={() => changeStatus('ai_handling')}>Hand to AI</button>
+                )}
+                {activeConv.status !== 'resolved' && staff.can_act && (
+                  <button className="btn btn-outline btn-sm" disabled={!!hotLock && !hotLock.can_close}
+                    title={hotLock && !hotLock.can_close && hotLock.lock_reason ? hotLock.lock_reason : undefined}
+                    onClick={() => changeStatus('resolved')}>Close</button>
+                )}
+              </>
+            )}
+            {/* Refund / Ship again: verified customers only; internal, the customer is told nothing.
+                One group. Who may mark is the server's call (staff.can_mark_case: a senior or Super
+                Admin; a junior only while every senior is away). Off: the reason on hover. */}
+            {canCases && !isVisitorChat(activeConv) && (
+              <div className="th-group">
+                {activeConv.case_kind ? (
+                  <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>
+                ) : (
+                  <>
+                    {staff?.mark_override && staff.mark_note && <Chip tone="warn">{staff.mark_note}</Chip>}
+                    <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
+                      title={staff?.can_mark_case ? 'Mark this customer for a refund. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
+                      onClick={() => markCase('refund')}><Undo2 size={13} /> Refund</button>
+                    <button className="btn btn-outline btn-sm" disabled={!staff?.can_mark_case}
+                      title={staff?.can_mark_case ? 'Mark this order to be shipped again. Internal only: the customer is not told.' : (staff?.mark_note || undefined)}
+                      onClick={() => markCase('reship')}><Truck size={13} /> Ship again</button>
+                  </>
+                )}
+              </div>
+            )}
+          </MoreMenu>
+        </div>
+      )}
 
-                  {/* Why Close / Hand to AI are off on a hot chat (the server's hot_lock.lock_reason), the same
-                      kind of line, on every screen size: a phone has no hover (owner 2026-10-02). */}
-                  {canReply && staff?.can_act && activeConv.status !== 'resolved' && hotLock?.lock_reason && (
-                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', color: 'var(--fg-muted)', textAlign: 'right', wordBreak: 'break-word' }}>
-                      <Lock size={10} style={{ verticalAlign: '-1px', marginRight: 3 }} />Close / Hand to AI: {hotLock.lock_reason}
-                    </div>
-                  )}
+      {/* Row 2: the order in one line, the panel and the phone; Details opens the address */}
+      <div className="th-row th-facts meta">
+        <span className="truncate">
+          {activeOrder && <><OrderLine facts={activeOrder} place={place} /> · </>}
+          {activeConv.panel_name || activeConv.site_name}
+          {activeConv.visitor_phone && (
+            <> · <a href={`tel:${activeConv.visitor_phone}`}><Phone size={10} style={{ verticalAlign: '-1px' }} /> {activeConv.visitor_phone}</a></>
+          )}
+        </span>
+        {activeAddress && activeConv && (
+          <button type="button" className="meta-btn" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(o => !o)}
+            title="The delivery address on this order">
+            Details <ChevronDown />
+          </button>
+        )}
+      </div>
+      {activeAddress && activeConv && detailsOpen && (
+        <div className="th-details meta">
+          <AddressLine address={activeAddress} editable={addressEditable}
+            onEdit={() => setAddrEdit({ convId: activeConv.id, busy: false, error: '' })} />
+        </div>
+      )}
 
-                  {/* Chikki's own Refund mark (owner 2026-10-02): the customer was told a refund form will come
-                      in this chat, and only the Super Admin sends it. Until a form link or a request exists. */}
-                  {canReply && canCases && isSuperAdmin(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
-                    && threadRefund?.id === activeConv.id && threadRefund.state && !threadRefund.state.link && !threadRefund.state.request && (
-                    <div style={{ flexBasis: '100%', minWidth: 0, marginTop: '-0.5rem', fontSize: '0.6875rem', fontWeight: 600, color: '#b45309', textAlign: 'right', wordBreak: 'break-word' }}>
-                      Chikki promised a refund form - press Send refund form
-                    </div>
-                  )}
+      {/* The Refund / Ship again mark: who, when, and (Super Admin, Refund) where the form stands */}
+      {canReply && canCases && !isVisitorChat(activeConv) && activeConv.case_kind && (
+        <div className="th-row th-case meta">
+          <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
+          {activeConv.case_kind === 'refund' && isSuperAdmin(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
+            <RefundFormControl token={token} conversationId={activeConv.id} state={threadRefund.state} onChanged={() => fetchThread(activeConv.id, true)} onAlert={showAlert}
+              label={supportLabel(activeConv.site_name || activeConv.panel_name)} />
+          )}
+        </div>
+      )}
 
-                  {/* Subject: the customer's current concern, on its own line across the header */}
-                  {activeSubject && (
-                    <div title={activeSubject.summary ? `${activeSubject.label}: ${activeSubject.summary}` : activeSubject.label} style={{
-                      flexBasis: '100%', minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.5rem',
-                      padding: '0.375rem 0.625rem', borderRadius: 8,
-                      background: 'var(--bg-subtle, rgba(0,0,0,0.04))', border: '1px solid var(--border)',
-                    }}>
-                      <span style={{
-                        fontSize: '0.6875rem', padding: '2px 8px', borderRadius: 9999, fontWeight: 700,
-                        flexShrink: 0, whiteSpace: 'nowrap',
-                        background: subjectStyle(activeSubject.label).bg, color: subjectStyle(activeSubject.label).fg,
-                      }}>
-                        {displaySubjectLabel(activeSubject.label)}
-                      </span>
-                      {activeSubject.summary && (
-                        <span style={{
-                          flex: 1, minWidth: 0, fontSize: '0.8125rem', fontWeight: 500, color: 'var(--fg)',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
-                          {activeSubject.summary}
-                        </span>
-                      )}
-                      {activeSubject.updatedAt && (
-                        <span style={{ marginLeft: 'auto', fontSize: '0.625rem', color: 'var(--fg-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                          updated {timeAgo(activeSubject.updatedAt)}
-                        </span>
-                      )}
-                    </div>
-                  )}
+      {/* Why Refund / Ship again is off (the server's staff.mark_note), as a small line of its own on
+          every screen size: a phone has no hover (owner answer A6, 2026-10-02). */}
+      {canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
+        <div className="meta" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
+          Refund / Ship again: {staff.mark_note}
+        </div>
+      )}
 
-                  {/* Team only: the last transfer (who to whom, when, the note) and the History of who held
-                      the chat. STAFF ONLY and outside the message list, and it cannot be selected, so a
-                      note never ends up pasted into a reply: the customer and the AI never see it. */}
-                  {(() => {
-                    const lastTransfer = teamLog.find(e => e.kind === 'transfer');
-                    if (!lastTransfer) return null;
-                    const me = staff?.me ?? null;
-                    const side = (key: string | null, name: string | null) => (!key ? 'open pool' : me && key === me ? 'You' : name || 'a former member');
-                    const line = `${side(lastTransfer.from_owner, lastTransfer.from_name)} → ${side(lastTransfer.to_owner, lastTransfer.to_name)} · ${logTime(lastTransfer.created_at)}${lastTransfer.note ? ` · ${lastTransfer.note}` : ''}`;
-                    return (
-                      <div style={{
-                        flexBasis: '100%', minWidth: 0, fontSize: '0.75rem', padding: '0.375rem 0.625rem', borderRadius: 8,
-                        background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', userSelect: 'none', WebkitUserSelect: 'none',
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', minWidth: 0 }}>
-                          <Lock size={12} style={{ flexShrink: 0 }} />
-                          <span title={`Team only: ${line}`} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <b>Team only</b> · {line}
-                          </span>
-                          <button type="button" onClick={() => setTeamLogOpen(o => !o)} aria-expanded={teamLogOpen}
-                            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 2, border: 'none', background: 'none', padding: 0, cursor: 'pointer', font: 'inherit', fontWeight: 600, color: 'inherit' }}>
-                            History <ChevronDown size={12} style={{ transition: 'transform .15s', transform: teamLogOpen ? 'rotate(180deg)' : 'none' }} />
-                          </button>
-                        </div>
-                        {teamLogOpen && (
-                          <ol style={{ listStyle: 'none', margin: '0.375rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            {teamLog.map(e => (
-                              <li key={e.id} style={{ wordBreak: 'break-word' }}>
-                                <span style={{ fontVariantNumeric: 'tabular-nums', marginRight: '0.375rem', opacity: 0.8 }}>{logTime(e.created_at)}</span>
-                                {teamLogLine(e, me)}{e.note ? ` · “${e.note}”` : ''}
-                              </li>
-                            ))}
-                          </ol>
-                        )}
-                      </div>
-                    );
-                  })()}
+      {/* Why Close / Hand to AI are off on a hot chat (the server's hot_lock.lock_reason), the same
+          kind of line, on every screen size: a phone has no hover (owner 2026-10-02). */}
+      {canReply && staff?.can_act && activeConv.status !== 'resolved' && hotLock?.lock_reason && (
+        <div className="meta" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
+          <Lock size={10} style={{ verticalAlign: '-1px', marginRight: 3 }} />Close / Hand to AI: {hotLock.lock_reason}
+        </div>
+      )}
 
-                  {/* How upset the customer is, right beside Take over / Close */}
-                  {activeHealth && (
-                    <HealthBar score={activeHealth.score} reason={activeHealth.reason} updatedAt={activeHealth.updatedAt} />
-                  )}
-                </div>
+      {/* Chikki's own Refund mark (owner 2026-10-02): the customer was told a refund form will come
+          in this chat, and only the Super Admin sends it. Until a form link or a request exists. */}
+      {canReply && canCases && isSuperAdmin(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
+        && threadRefund?.id === activeConv.id && threadRefund.state && !threadRefund.state.link && !threadRefund.state.request && (
+        <div className="meta t-warn" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
+          Chikki promised a refund form - press Send refund form
+        </div>
+      )}
+
+      {/* The customer's current concern, with how urgent it is: Waiting, Came back, Critical 77% */}
+      {(activeSubject || activeHealth || activeWaiting || cameBack) && (
+        <div className="th-row th-subject" title={subjectTitle}>
+          {activeSubject && <Chip tone={subjectTone(activeSubject.label)}>{displaySubjectLabel(activeSubject.label)}</Chip>}
+          <span className="summary truncate">{activeSubject?.summary || ''}</span>
+          {activeWaiting && <WaitingChip since={activeWaiting} />}
+          {cameBack && <CameBackChip closedAt={activeConv.auto_closed_at} />}
+          {activeHealth && <HealthChip score={activeHealth.score} reason={activeHealth.reason} updatedAt={activeHealth.updatedAt} />}
+        </div>
+      )}
+
+      {/* Team only: the last transfer (who to whom, when, the note) and the History of who held
+          the chat. STAFF ONLY and outside the message list, and it cannot be selected, so a
+          note never ends up pasted into a reply: the customer and the AI never see it. */}
+      {(() => {
+        const lastTransfer = teamLog.find(e => e.kind === 'transfer');
+        if (!lastTransfer) return null;
+        const me = staff?.me ?? null;
+        const side = (key: string | null, name: string | null) => (!key ? 'open pool' : me && key === me ? 'You' : name || 'a former member');
+        const line = `${side(lastTransfer.from_owner, lastTransfer.from_name)} → ${side(lastTransfer.to_owner, lastTransfer.to_name)} · ${logTime(lastTransfer.created_at)}${lastTransfer.note ? ` · ${lastTransfer.note}` : ''}`;
+        return (
+          <div className="th-team">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', minWidth: 0 }}>
+              <Lock size={12} style={{ flexShrink: 0 }} />
+              <span className="truncate" title={`Team only: ${line}`} style={{ flex: 1 }}>
+                <b>Team only</b> · {line}
+              </span>
+              <button type="button" className="meta-btn" onClick={() => setTeamLogOpen(o => !o)} aria-expanded={teamLogOpen}>
+                History <ChevronDown />
+              </button>
+            </div>
+            {teamLogOpen && (
+              <ol>
+                {teamLog.map(e => (
+                  <li key={e.id}>
+                    <time>{logTime(e.created_at)}</time>
+                    {teamLogLine(e, me)}{e.note ? ` · “${e.note}”` : ''}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        );
+      })()}
+    </div>
   );
 }

@@ -60,13 +60,6 @@ export const STATUS_LABELS: Record<string, string> = {
   human_needed: 'Needs you',
 };
 
-export const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
-  ai_handling: { bg: 'var(--primary-light)', fg: 'var(--primary)' },
-  agent_handling: { bg: 'var(--primary)', fg: '#fff' },
-  resolved: { bg: 'var(--bg-subtle, rgba(0,0,0,0.05))', fg: 'var(--fg-muted)' },
-  human_needed: { bg: '#fee2e2', fg: '#b91c1c' },
-};
-
 export const CATEGORY_LABELS: Record<string, string> = {
   wrong_tracking: 'Wrong tracking',
   refund: 'Refund',
@@ -74,19 +67,12 @@ export const CATEGORY_LABELS: Record<string, string> = {
   others: '',
 };
 
-// Colour of a subject label, by kind of concern, so the team can tell at a
-// glance: money (amber), a change the customer asks for (blue), something
-// that went wrong (red), anything else (grey).
+// Kind of concern behind a subject label, so the team can tell at a glance
+// (chips.tsx subjectTone): money (amber), a change the customer asks for
+// (blue), something that went wrong (red), anything else (grey).
 export const SUBJECT_MONEY = ['Refund / Cancellation', 'Refund', 'Cancellation', 'Payment issue', 'Payment method / COD'];
 export const SUBJECT_CHANGE = ['Address change', 'Wrong address', 'Size exchange', 'Product exchange', 'Return', 'Cancellation'];
 export const SUBJECT_PROBLEM = ['Not received', 'Damaged item', 'Wrong item', 'Missing item', 'Wrong tracking link', 'Delivery delay', 'Complaint'];
-
-export function subjectStyle(label: string): { bg: string; fg: string } {
-  if (SUBJECT_MONEY.includes(label)) return { bg: '#fef3c7', fg: '#b45309' };
-  if (SUBJECT_CHANGE.includes(label)) return { bg: '#dbeafe', fg: '#1d4ed8' };
-  if (SUBJECT_PROBLEM.includes(label)) return { bg: '#fee2e2', fg: '#b91c1c' };
-  return { bg: 'var(--bg-subtle, rgba(0,0,0,0.05))', fg: 'var(--fg-muted)' };
-}
 
 // An AI reply that was written but never sent — escalated to a person, or the
 // send itself failed. The customer has not seen it.
@@ -108,7 +94,7 @@ export const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; statu
   { v: 'human_needed', label: 'Needs you', icon: AlertCircle, status: 'human_needed', segment: '' },
   { v: 'mine', label: 'My chats', icon: UserRoundCheck, status: '', segment: '' },
   { v: 'agent_handling', label: 'With team', icon: User, status: 'agent_handling', segment: '' },
-  { v: 'ai_handling', label: 'AI handling', icon: Bot, status: 'ai_handling', segment: '' },
+  { v: 'ai_handling', label: 'With AI', icon: Bot, status: 'ai_handling', segment: '' },
   // Refund / Ship again (owner, 2026-10-01): a marked chat shows only here; no status of its own.
   { v: 'case:refund', label: 'Refund', icon: Undo2, status: '', segment: '' },
   { v: 'case:reship', label: 'Ship again', icon: Truck, status: '', segment: '' },
@@ -121,13 +107,16 @@ export function chatStatusLabel(status: string): string {
   return INBOX_TABS.find(t => t.status === status)?.label || '';
 }
 
-// "Waiting 3h 20m": how long the customer has been waiting for an answer. Grey
-// under an hour, amber up to 2 hours, red from then on.
-export const WAITING_STYLE = {
-  fresh: { bg: 'var(--bg-subtle, rgba(0,0,0,0.05))', fg: 'var(--fg-muted)' },
-  soon: { bg: '#fef3c7', fg: '#b45309' },
-  overdue: { bg: '#fee2e2', fg: '#b91c1c' },
-} as const;
+// "Waiting 3h": how long the customer has been waiting for an answer, short enough
+// for a chip ("now", "40m", "3h", "2d"; the hover has waiting.ts's fuller text).
+export function waitingText(ms: number): string {
+  const min = Math.max(0, Math.floor(ms / 60_000));
+  if (min < 1) return 'now';
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
 export const msSince = (iso: string) => Date.now() - Date.parse(iso);
 
 // The name to print for a chat, and a hover note when it is not the chat's own
@@ -141,12 +130,17 @@ export const nameNote = (c: NameSrc) => !c.name_from_order ? undefined
   : `Name from order ${c.phone_match_order_id ?? ''}, matched by phone number (not verified)`;
 
 // India is where the stores ship, so dates are read in India time whatever the
-// staff member's own clock says.
+// staff member's own clock says. "26 Sep" (en-IN would say "Sept"); the year only
+// when it is not this year.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export function orderDay(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  const ist = (x: Date) => x.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).split('-').map(Number); // [y, m, d]
+  const [y, m, day] = ist(d);
+  const [thisYear] = ist(new Date());
+  return `${day} ${SHORT_MONTHS[m - 1] ?? ''}${y !== thisYear ? ` ${y}` : ''}`;
 }
 
 export const stampIST = (iso: string) => new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
