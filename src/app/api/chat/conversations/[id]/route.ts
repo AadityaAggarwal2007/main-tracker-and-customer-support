@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
+import { loadOrderItems } from '@/lib/chat/order-items-db';
 import { can, isSuperAdmin } from '@/lib/permissions';
 import { maskRefundLinks } from '@/lib/refund/link-mask';
 import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
@@ -53,6 +54,13 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   // .../address) only on a verified order by logins that may change orders. Staff only.
   const orderAddress = can(user, 'orders.view')
     ? await loadOrderAddress(conversation.verified_order_id || conversation.phone_match_order_id, conversation.tracker_business_id)
+    : null;
+
+  // The same order's items (product / colour lines, owner 2026-10-03), for logins that may see
+  // orders; changeable (PATCH .../items) only on a verified order by logins that may change orders.
+  // Staff only.
+  const orderItems = can(user, 'orders.view')
+    ? await loadOrderItems(conversation.verified_order_id || conversation.phone_match_order_id, conversation.tracker_business_id)
     : null;
 
   // Opening a thread clears its unread badge, and the grouped inbox row
@@ -107,6 +115,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     order_facts: orderFacts,
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
+    order_items: orderItems,
+    items_editable: !!orderItems && !!conversation.verified_order_id && can(user, 'orders.update'),
     team_log: teamLog,
     staff: await staffBlock(conversation, user),
     hot_lock: hotLockBlock(conversation, user),

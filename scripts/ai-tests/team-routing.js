@@ -51,6 +51,7 @@ const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body
 stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.__emails.push(a); } };');
 stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
+stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');
