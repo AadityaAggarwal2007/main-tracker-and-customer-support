@@ -210,10 +210,14 @@ export async function GET(request: NextRequest) {
   // marked (red Waiting timer, overdue colour, Fraud / Threat and At risk chips, the
   // Needs you tab and its counts), just not lifted out of date order. A search: best
   // matches first.
+  // The Ship again list (owner 2026-10-03): chats whose new parcel is not sent yet come first,
+  // the reshipped ones last; inside each part the usual activity order.
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
-    : `g.last_message_at DESC NULLS LAST, g.created_at DESC`;
+    : caseKind === 'reship'
+      ? `(g.reshipped_at IS NOT NULL), g.last_message_at DESC NULLS LAST, g.created_at DESC`
+      : `g.last_message_at DESC NULLS LAST, g.created_at DESC`;
 
   // How many open customers (one per grouped row) each problem tab holds.
   const countsSql = `SELECT ${INBOX_TOPICS.map((t) => `count(DISTINCT x.gk) FILTER (WHERE ${
@@ -283,6 +287,7 @@ export async function GET(request: NextRequest) {
               c.health_score, c.health_reason, c.health_updated_at, c.health_signals,
               c.auto_closed_at, c.closed_by_name, c.closed_at,
               c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id,
+              c.reshipped_at, c.reshipped_by, c.reship_awb, c.reship_link,
               CASE WHEN c.case_kind IS NOT NULL THEN
                 (SELECT e.actor_role FROM chat_case_events e
                   WHERE e.conversation_id = c.id AND e.kind = c.case_kind AND e.action = 'mark'
@@ -342,6 +347,7 @@ export async function GET(request: NextRequest) {
             g.is_pinned AS health_pinned,
             g.returned, g.auto_closed_at, g.closed_by_name, g.closed_at,
             g.case_kind, g.case_marked_by, g.case_marked_at, g.case_order_id, g.case_mark_role,
+            g.reshipped_at, g.reshipped_by, g.reship_awb, g.reship_link,
             g.assigned_to, g.assigned_at,
             g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
             (g.group_waiting_since IS NOT NULL) AS group_waiting,

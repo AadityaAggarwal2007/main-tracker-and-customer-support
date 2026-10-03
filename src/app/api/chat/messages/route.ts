@@ -6,6 +6,7 @@ import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import { hasFormLink } from '@/lib/refund/link-mask';
 import { can } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
+import { reshipInReply } from '@/lib/chat/reship';
 import {
   STARTING_MESSAGE, actionError, actionsReady, heldMessage, holderOf, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,
 } from '@/lib/chat/team-routing';
@@ -182,6 +183,26 @@ export async function POST(request: NextRequest) {
         conversationId: chat.id, siteId: chat.site_id, kind: 'reply', messageId: row.id, reason: 'reply',
         fromStatus: chat.status, toStatus: 'agent_handling', toOwner: claim ? actor.key : chat.assigned_to,
       });
+      // Ship again (owner 2026-10-03): a reply that carries the new tracking link or AWB means the new
+      // parcel was sent, so the chat is marked Reshipped by itself (reship.ts; chat-reship-done.sql).
+      // Only the first such reply counts; the Mark reshipped button does the same by hand.
+      if (chat.case_kind === 'reship' && hasText) {
+        const ref = reshipInReply(text);
+        if (ref) {
+          const marked = await client.query(
+            `UPDATE conversations
+                SET reshipped_at = now(), reshipped_by = $2, reship_awb = $3, reship_link = $4, updated_at = now()
+              WHERE id = $1 AND case_kind = 'reship' AND reshipped_at IS NULL`,
+            [conversationId, actor.name, ref.awb, ref.link]
+          ).catch(() => ({ rowCount: 0 }));   // before chat-reship-done.sql: nothing to mark
+          if (marked.rowCount) {
+            await logChatEvent(client, actor, {
+              conversationId: chat.id, siteId: chat.site_id, kind: 'reshipped', messageId: row.id, reason: 'reply',
+              fromStatus: chat.status, toStatus: 'agent_handling', meta: { awb: ref.awb, link: ref.link, auto: true },
+            });
+          }
+        }
+      }
       return row;
     });
 

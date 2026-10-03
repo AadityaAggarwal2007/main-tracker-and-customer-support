@@ -36,6 +36,7 @@ export function teamLogLine(e: TeamLogEntry, me: string | null): string {
       ? `Needs a person: given to ${to} (had this customer's last chat)`
       : `Came back: given to ${to} (had this customer's last chat)`;
     case 'merge': return `Merged chats: given to ${to}`;
+    case 'reshipped': return `${actor} marked it reshipped (${e.reason === 'reply' ? 'the reply had the new tracking link' : 'Mark reshipped'})`;
     default: return `${actor}: ${e.kind}`;
   }
 }

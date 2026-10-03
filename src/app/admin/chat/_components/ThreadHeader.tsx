@@ -1,14 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand } from 'lucide-react';
+import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink } from 'lucide-react';
 import { isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffOrderItems, StaffBlock, TeamLogEntry } from '../_lib/types';
 import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
-import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, VerifiedBadge, statusTone, subjectTone } from './chips';
+import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, ReshipChip, VerifiedBadge, statusTone, subjectTone } from './chips';
 import { OrderLine, AddressLine, ItemsLine } from './OrderLine';
 import { MoreMenu } from './MoreMenu';
 
@@ -19,11 +19,12 @@ import { MoreMenu } from './MoreMenu';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
   setItemsEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
+  setReshipEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
   activeConv: Conversation | null;
   activeHealth: { score: number; reason: string | null; updatedAt: string | null } | null;
   activeOrder: OrderFacts | null;
@@ -194,6 +195,23 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
           {activeItems && (
             <ItemsLine items={activeItems} editable={itemsEditable}
               onEdit={() => setItemsEdit({ convId: activeConv.id, busy: false, error: '' })} />
+          )}
+        </div>
+      )}
+
+      {/* Ship again's second state (owner 2026-10-03): was the new parcel sent? "To ship" until a reply
+          carries the new tracking link / AWB or someone presses Mark reshipped; then Reshipped + AWB. */}
+      {canReply && activeConv.case_kind === 'reship' && (
+        <div className="th-row th-case meta">
+          <ReshipChip c={activeConv} big />
+          {activeConv.reship_link && (
+            <a className="meta-btn" href={activeConv.reship_link} target="_blank" rel="noopener noreferrer" title="Open the new tracking link">
+              <ExternalLink size={12} /> Open tracking
+            </a>
+          )}
+          {!activeConv.reshipped_at && (
+            <button type="button" className="btn btn-outline btn-sm" title="The new parcel was sent: note its tracking link or AWB here"
+              onClick={() => setReshipEdit({ convId: activeConv.id, busy: false, error: '' })}><PackageCheck size={13} /> Mark reshipped</button>
           )}
         </div>
       )}

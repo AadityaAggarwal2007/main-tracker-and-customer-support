@@ -6,7 +6,7 @@ import { waitingLevel } from '@/lib/chat/waiting';
 import type { Conversation, TeamMember } from '../_lib/types';
 import { STATUS_LABELS, CATEGORY_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo, matchedText, msSince } from '../_lib/inbox';
 import { highlightText } from '../_lib/text';
-import { Chip, WaitingChip, CameBackChip, CaseChip, HealthBadge, statusTone, type ChipTone } from './chips';
+import { Chip, WaitingChip, CameBackChip, CaseChip, HealthBadge, ReshipChip, statusTone, type ChipTone } from './chips';
 
 export default function ConversationRow({ c, meKey, rowUnread, rowWaiting, searchActive, searchTerm, showPanelName, team }: {
   c: Conversation;
@@ -60,7 +60,9 @@ export default function ConversationRow({ c, meKey, rowUnread, rowWaiting, searc
   // 50%, the Refund / Ship again mark, a threat or fraud claim, a chat that came back.
   const waitMs = customer && c.waiting_since ? msSince(c.waiting_since) : NaN;
   const overdue = !Number.isNaN(waitMs) && waitingLevel(waitMs) === 'overdue';
-  const priority = overdue && c.waiting_since ? <WaitingChip since={c.waiting_since} />
+  // A Ship again chat shows whether the new parcel went (owner 2026-10-03) before anything else.
+  const priority = c.case_kind === 'reship' ? <ReshipChip c={c} />
+    : overdue && c.waiting_since ? <WaitingChip since={c.waiting_since} />
     : upset ? <HealthBadge score={c.health_score} reason={c.health_reason} />
     : c.case_kind ? <CaseChip kind={c.case_kind} by={c.case_marked_by} at={c.case_marked_at} status={c.status} role={c.case_mark_role} />
     : threat ? <Chip tone="danger" title="This customer has threatened a chargeback, police, court or bad reviews">Threat</Chip>

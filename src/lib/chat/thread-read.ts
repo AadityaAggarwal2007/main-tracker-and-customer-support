@@ -20,6 +20,8 @@ export interface ConversationRow {
   auto_closed_at: string | null;
   closed_by_name: string | null; closed_at: string | null;
   case_kind: string | null; case_marked_by: string | null; case_marked_at: string | null; case_order_id: string | null; case_prev_status: string | null;
+  // Ship again: the new parcel was sent (chat-reship-done.sql, owner 2026-10-03).
+  reshipped_at: string | null; reshipped_by: string | null; reship_awb: string | null; reship_link: string | null;
   // The latest mark's chat_case_events.actor_role: 'system' (Chikki's live mark) or 'backfill' (the one-time move).
   case_mark_role?: string | null;
   // Who holds the chat (chat-team.sql): team_users.id, 'owner' (Super Admin) or null (nobody).
@@ -36,6 +38,7 @@ export async function loadForUser(id: string, user: AuthUser): Promise<Conversat
             c.subject_label, c.subject_summary, c.subject_updated_at,
             c.health_score, c.health_reason, c.health_updated_at, c.health_signals, c.auto_closed_at, c.closed_by_name, c.closed_at,
             c.case_kind, c.case_marked_by, c.case_marked_at, c.case_order_id, c.case_prev_status,
+            c.reshipped_at, c.reshipped_by, c.reship_awb, c.reship_link,
             CASE WHEN c.case_kind IS NOT NULL THEN
               (SELECT e.actor_role FROM chat_case_events e
                 WHERE e.conversation_id = c.id AND e.kind = c.case_kind AND e.action = 'mark'

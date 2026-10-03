@@ -369,6 +369,7 @@ async function setCase(
       `UPDATE conversations
           SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END,
               case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4,
+              reshipped_at = NULL, reshipped_by = NULL, reship_awb = NULL, reship_link = NULL,
               status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END,
               auto_closed_at = NULL,
               updated_at = now()
@@ -403,6 +404,7 @@ async function setCase(
         SET status = CASE WHEN status = 'resolved' THEN status
                           ELSE COALESCE(case_prev_status, 'agent_handling') END,
             case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL,
+            reshipped_at = NULL, reshipped_by = NULL, reship_awb = NULL, reship_link = NULL,
             updated_at = now()
       WHERE id = $1
       RETURNING status`,

@@ -29,6 +29,11 @@ export interface Conversation {
   // Who made the latest mark (chat_case_events.actor_role): 'system' = Chikki's live Ship again mark (the
   // customer was promised a new tracking link), 'backfill' = the one-time move of 2 Oct (no message sent).
   case_mark_role?: string | null;
+  // Ship again: the new parcel was sent (chat-reship-done.sql, owner 2026-10-03): when, by whom, the AWB and link.
+  reshipped_at?: string | null;
+  reshipped_by?: string | null;
+  reship_awb?: string | null;
+  reship_link?: string | null;
   // Who holds the chat (chat-team.sql): a team member's key, 'owner' (the Super Admin) or null
   // (nobody). The list's `team` gives the names; on a grouped row it is the latest chat's holder.
   assigned_to?: string | null;

@@ -24,6 +24,7 @@ import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisit
 import { TransferDialog } from './_components/TransferDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
+import { ReshipDialog } from './_components/ReshipDialog';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import ListHeader from './_components/ListHeader';
@@ -101,6 +102,7 @@ export default function ChatSupportPage() {
   const [orderInfo, setOrderInfo] = useState<{ id: string; facts: OrderFacts | null; address: StaffAddress | null; editable: boolean; items: StaffOrderItems | null; itemsEditable: boolean } | null>(null);
   const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [itemsEdit, setItemsEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  const [reshipEdit, setReshipEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
   // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -288,7 +290,7 @@ export default function ChatSupportPage() {
 
   // The team history and the transfer dialog belong to the chat they were opened on; the release
   // question to the tab it was asked on.
-  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); setItemsEdit(null); }, [activeId]);
+  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); setItemsEdit(null); setReshipEdit(null); }, [activeId]);
   useEffect(() => { setRelease(null); }, [tab]);
 
   /* ═══ POLLING ═══ */
@@ -894,6 +896,26 @@ export default function ChatSupportPage() {
   const addressEditable = !!activeAddress && !!orderInfo?.editable && can(user, 'orders.update');
   const activeItems = orderInfo && activeConv && orderInfo.id === activeConv.id ? orderInfo.items : null;
   const itemsEditable = !!activeItems && !!orderInfo?.itemsEditable && can(user, 'orders.update');
+  // Ship again: the new parcel was sent (owner 2026-10-03): PATCH .../reship with the link or AWB.
+  const saveReship = async (value: string) => {
+    if (!reshipEdit || !token) return;
+    const convId = reshipEdit.convId;
+    setReshipEdit({ ...reshipEdit, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}/reship`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ awb_or_link: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setReshipEdit({ convId, busy: false, error: data.error || 'Could not save' }); return; }
+      setReshipEdit(null);
+      showAlert('success', 'Marked reshipped');
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch {
+      setReshipEdit({ convId, busy: false, error: 'Could not save' });
+    }
+  };
   // The order's items, like the address: PATCH .../items, ShipTrack only (owner 2026-10-03).
   const saveItems = async (items: { product_name: string; quantity: number; price: number | null }[]) => {
     if (!itemsEdit || !token) return;
@@ -1110,7 +1132,7 @@ export default function ChatSupportPage() {
             {activeConv && (
               <>
                 {/* Thread header */}
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">
@@ -1195,6 +1217,10 @@ export default function ChatSupportPage() {
         {addrEdit && activeAddress && activeConv?.id === addrEdit.convId && (
           <AddressDialog initial={activeAddress} orderId={activeAddress.order_id} busy={addrEdit.busy} error={addrEdit.error}
             onCancel={() => setAddrEdit(null)} onSave={saveAddress} />
+        )}
+        {reshipEdit && activeConv?.id === reshipEdit.convId && (
+          <ReshipDialog orderId={activeConv.case_order_id || activeConv.verified_order_id || null} busy={reshipEdit.busy} error={reshipEdit.error}
+            onCancel={() => setReshipEdit(null)} onSave={saveReship} />
         )}
         {itemsEdit && activeItems && activeConv?.id === itemsEdit.convId && (
           <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}

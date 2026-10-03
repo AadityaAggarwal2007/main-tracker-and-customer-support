@@ -276,7 +276,7 @@ export async function setSystemActor(client: PoolClient, name: string, reason: s
   );
 }
 
-export type ChatEventKind = 'claim' | 'take' | 'transfer' | 'merge' | 'reply' | 'case_mark' | 'case_remove';
+export type ChatEventKind = 'claim' | 'take' | 'transfer' | 'merge' | 'reply' | 'case_mark' | 'case_remove' | 'reshipped';
 export interface ChatEventInput {
   conversationId: string; siteId: string | null; kind: ChatEventKind;
   fromOwner?: string | null; toOwner?: string | null; fromStatus?: string | null; toStatus?: string | null;

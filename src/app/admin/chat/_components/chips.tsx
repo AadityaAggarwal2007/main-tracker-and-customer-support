@@ -168,3 +168,19 @@ export function ThreadDivider({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+// Ship again's second state (owner 2026-10-03, "humne kisko bhej diya kisko nahi"): until the team
+// sends the new parcel the chat says "To ship"; a staff reply with the new tracking link / AWB, or the
+// Mark reshipped button, turns it into "Reshipped · AWB … · by · when" (chat-reship-done.sql).
+export function ReshipChip({ c, big = false }: { c: { reshipped_at?: string | null; reshipped_by?: string | null; reship_awb?: string | null; reship_link?: string | null }; big?: boolean }) {
+  if (c.reshipped_at) {
+    const when = new Date(c.reshipped_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+    const detail = `${c.reship_awb ? ` · AWB ${c.reship_awb}` : ''}${c.reshipped_by ? ` · ${c.reshipped_by}` : ''} · ${when}`;
+    return <Chip tone="ok" title={`New parcel sent${detail}`}>Reshipped{big ? detail : ''}</Chip>;
+  }
+  return (
+    <Chip tone="warn" title="New parcel not sent yet: ship it again (fship), paste the new tracking link in the chat, or press Mark reshipped">
+      {big ? 'New parcel not sent yet' : 'To ship'}
+    </Chip>
+  );
+}

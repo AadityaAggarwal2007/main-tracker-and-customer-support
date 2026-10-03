@@ -1046,4 +1046,20 @@ t('itemsLine: "Jhumka box - Silver ×2 · Earrings Set"; ×N only above 1; about
   assert.strictEqual(exact.length, 80); assert.ok(!exact.endsWith('…'));
   assert.strictEqual(oi.itemsLine([{ product_name: 'x'.repeat(81), quantity: 1, price: 0 }]), 'x'.repeat(79) + '…');
 });
+// ── Ship again: the new parcel's AWB / link (reship.ts, owner 2026-10-03) ──
+const rs = load('reship');
+t('reship: fship links with utm junk, bare AWBs, and the dialog input are read; phones and order numbers are not', () => {
+  assert.deepStrictEqual(rs.reshipInReply('Please find your updated tracking link below:\n[Track Your Order](https://app.fship.in/shipment/tracking?awbno=143449611008922&utm_source=chatgpt.com)\nThanks'),
+    { awb: '143449611008922', link: 'https://app.fship.in/shipment/tracking?awbno=143449611008922' });
+  assert.deepStrictEqual(rs.reshipInReply('143449611096485 XpressBees tracking: https://www.xpressbees.com/shipment/tracking?awbNo=143449611096485.'),
+    { awb: '143449611096485', link: 'https://www.xpressbees.com/shipment/tracking?awbNo=143449611096485' });
+  assert.deepStrictEqual(rs.reshipInReply('New AWB 143449611096485, it moves tomorrow'), { awb: '143449611096485', link: null });
+  for (const s of ['Call us on 9876543210', '+919876543210 is the number', 'Order #4715 total 499', 'ETA 3 Oct', 'https://shiptrack.store/track/35ecb8cb-c000-4b1e-9f3a-82302749ffcd', 'ok done'])
+    assert.strictEqual(rs.reshipInReply(s), null, s);
+  assert.deepStrictEqual(rs.parseReship('  143449611008922 '), { awb: '143449611008922', link: null });
+  assert.deepStrictEqual(rs.parseReship('vl0012345678'), { awb: 'VL0012345678', link: null });
+  assert.ok('error' in rs.parseReship(''), 'empty');
+  assert.ok('error' in rs.parseReship('https://app.fship.in/'), 'link without awb');
+  assert.ok('error' in rs.parseReship('abc'), 'too short');
+});
 console.log(`UNIT: ${n} groups passed`);

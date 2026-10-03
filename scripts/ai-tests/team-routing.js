@@ -94,7 +94,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'reship']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
@@ -236,8 +236,8 @@ const LOCK_COLS = ['id', 'site_id', 'status', 'assigned_to', 'case_kind', 'case_
 const WAITING_Q = norm(`SELECT (${wsql.WAITING_SINCE_SQL}) IS NOT NULL AS w FROM conversations c ${wsql.WAITING_LATERAL} WHERE c.id = $1`);
 // The Refund / Ship again SQL exactly as it was before the chat team (cb29348): byte-identical.
 const OLD_CASE_SQL = {
-  mark: "UPDATE conversations SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END, case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4, status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END, auto_closed_at = NULL, updated_at = now() WHERE id = $1 RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status",
-  remove: "UPDATE conversations SET status = CASE WHEN status = 'resolved' THEN status ELSE COALESCE(case_prev_status, 'agent_handling') END, case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL, updated_at = now() WHERE id = $1 RETURNING status",
+  mark: "UPDATE conversations SET case_prev_status = CASE WHEN case_kind IS NULL THEN status ELSE case_prev_status END, case_kind = $2, case_marked_by = $3, case_marked_at = now(), case_order_id = $4, reshipped_at = NULL, reshipped_by = NULL, reship_awb = NULL, reship_link = NULL, status = CASE WHEN status = 'resolved' THEN status ELSE 'agent_handling' END, auto_closed_at = NULL, updated_at = now() WHERE id = $1 RETURNING case_kind, case_marked_by, case_marked_at, case_order_id, status",
+  remove: "UPDATE conversations SET status = CASE WHEN status = 'resolved' THEN status ELSE COALESCE(case_prev_status, 'agent_handling') END, case_kind = NULL, case_marked_by = NULL, case_marked_at = NULL, case_order_id = NULL, case_prev_status = NULL, reshipped_at = NULL, reshipped_by = NULL, reship_awb = NULL, reship_link = NULL, updated_at = now() WHERE id = $1 RETURNING status",
   eventMark: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'mark', $5, $6, $7)",
   eventRemove: "INSERT INTO chat_case_events (id, conversation_id, site_id, kind, action, order_id, actor, actor_role) VALUES ($1, $2, $3, $4, 'remove', $5, $6, $7)",
 };
