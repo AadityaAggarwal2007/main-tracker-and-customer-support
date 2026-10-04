@@ -1189,6 +1189,15 @@ t('suggest: the instruction speaks as the team, in the chosen language, with the
   assert.ok(sg.suggestInstruction({ ...base, orderJson: null }).includes('No verified order facts'));
   for (const s of [day, night]) assert.ok(/never mention Karry, Chikki, an AI/.test(s));
 });
+t('suggest: the sender is the team, so "our team will" becomes "we will" (seen live 4 Oct)', () => {
+  assert.strictEqual(sg.asTeam("You're most welcome, Kiran! Our team will get back to you here tomorrow morning after 10 AM."), "You're most welcome, Kiran! We will get back to you here tomorrow morning after 10 AM.");
+  assert.strictEqual(sg.asTeam('Happy to help! The team will review your request and reply here.'), 'Happy to help! We will review your request and reply here.');
+  assert.strictEqual(sg.asTeam('The support team is looking into it; our team has noted it.'), 'We are looking into it; we have noted it.');
+  assert.strictEqual(sg.asTeam('Team Vastora thanks you.'), 'Team Vastora thanks you.');
+  const out = sg.guardOptions(['Our team will update you here tomorrow morning after 10 AM.'], { customerTexts: ['thanks'], courierNames: [] });
+  assert.deepStrictEqual(out, ['We will update you here tomorrow morning after 10 AM.']);
+  assert.ok(/the team is "we"/.test(sg.suggestInstruction({ lang: 'auto', after: null, caseKind: null, orderJson: null })));
+});
 t('sudharo: the corrected text is taken only when it is a plain correction of the draft', () => {
   const d = 'aapka order dispatch ho gya h, link: https://shiptrack.store/track/abc';
   assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');

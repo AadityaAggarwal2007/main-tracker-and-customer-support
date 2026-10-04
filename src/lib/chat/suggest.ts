@@ -67,7 +67,7 @@ You are not replying yourself. A member of the Vastora support team has this cha
 - Each option is a complete reply, 1 to 3 short sentences, the way a person texts: no greeting block, no sign-off, no markdown, no bullet points, at most one emoji. Perfect spelling, grammar and punctuation: nobody will correct it.
 - ${LANG_LINE[ctx.lang]}
 - The three take different approaches, never three wordings of one sentence: option 1 short and direct (the fact and the next step); option 2 warmer, with an apology where the customer had trouble, and the next step; option 3 a different angle (a clarifying question, a reassurance, or the alternative the team can offer).
-- The sender IS the team: write as "I" / "we" / "hum". Never "our team will reply", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated.
+- The sender IS the team, so the team is "we", never a third party: "we will get back to you", "I'll check and update you here", "hum dekh ke batate hain". Never "our team will reply", "the team will review", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated. (A reply already sent in this chat may say "our team will reply": your options do not repeat that; they are the team's own answer.)
 - Facts only from ORDER FACTS below and from what the customer wrote. Give the status, the estimated date (call it estimated) and the tracking link when they help. Never invent a scan, a city, a reason, a courier name or a date. If ORDER FACTS says the date is being confirmed, give no date.
 - Never: a day of arrival (today, tonight, tomorrow, aaj, kal); a refund amount, date or method, or "approved" / "processed"; any form or link other than the tracking link in ORDER FACTS; a courier's name (say "our courier partner"); advice to raise a chargeback, a bank or UPI dispute, a police or consumer complaint; asking the customer for anything except the order ID and the phone number on the order; a payment link or "pay again"; a customer-care number.
 - ${when}
@@ -119,6 +119,20 @@ export interface GuardContext {
   courierNames: string[];
 }
 
+// The sender is the team (seen live 4 Oct: all three drafts said "Our team will get back to you"
+// although a team member sends them): "our team / the team will ..." becomes "we will ...", with
+// the verb kept. English only; Hinglish verb endings would need rewriting, so the prompt carries it.
+const TEAM_THIRD = /\b(?:our|the) (?:support )?team (will|can|is going to|is|are|has|have)\b/gi;
+export function asTeam(text: string): string {
+  const out = text.replace(TEAM_THIRD, (_m, verb: string) => {
+    const v = verb.toLowerCase();
+    const w = v === 'is' ? 'are' : v === 'has' ? 'have' : v === 'is going to' ? 'are going to' : v;
+    return `we ${w}`;
+  });
+  // A sentence now starting with "we": capitalised.
+  return out.replace(/(^|[.!?]\s+)we\b/g, (_m, pre: string) => `${pre}We`);
+}
+
 // Every option goes through Chikki's own reply guards; one that is left empty, or still carries a
 // form link, is dropped. The same text never appears twice.
 export function guardOptions(options: string[], ctx: GuardContext): string[] {
@@ -138,7 +152,7 @@ export function guardOptions(options: string[], ctx: GuardContext): string[] {
     if (!text) continue;
     text = dropAddressEcho(text, ctx.customerTexts.slice(-8)).text;
     text = withoutUnaskedCourier(text, latest, ctx.courierNames, 0).text;
-    text = text.replace(/\s+/g, ' ').trim();
+    text = asTeam(text).replace(/\s+/g, ' ').trim();
     if (!text || hasFormLink(text)) continue;
     if (out.some((o) => o.toLowerCase() === text.toLowerCase())) continue;
     out.push(text);
