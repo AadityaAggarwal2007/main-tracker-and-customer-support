@@ -1,11 +1,11 @@
 'use client';
 
-import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw } from 'lucide-react';
+import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck } from 'lucide-react';
 import { ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, formatFileSize } from '@/lib/chat/attachment-rules';
 import type { Conversation, PendingFile } from '../_lib/types';
 import { draggingFiles } from '../_lib/inbox';
 
-export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver }: {
+export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver }: {
   activeConv: Conversation | null;
   addFiles: (files: File[]) => void;
   composerHint: string;
@@ -17,6 +17,10 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
   fileInputRef: React.RefObject<HTMLInputElement>;
   othersChat: boolean;
   pendingFiles: PendingFile[];
+  // "Sudharo" (owner 2026-10-04): the typed draft comes back with its spelling and grammar fixed.
+  // Chat conversations only; absent = the button is not drawn.
+  polishDraft?: () => Promise<void>;
+  polishing?: boolean;
   readOnlyReply: string;
   removeFile: (key: string) => void;
   replyOpen: boolean;
@@ -160,13 +164,27 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                           ? (activeConv.source === 'email' ? 'Type your reply — it goes out by email…' : 'Type your reply…')
                           : readOnlyReply || 'Take over to reply…'}
                         value={draft}
-                        disabled={!replyOpen || sending}
+                        disabled={!replyOpen || sending || !!polishing}
                         onChange={e => setDraft(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
                         }}
                         style={{ flex: 1, height: 'auto', resize: 'vertical', minHeight: 44 }}
                       />
+                      {polishDraft && activeConv.source !== 'email' && (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Sudharo: fix the spelling and grammar of what you typed (the meaning stays)"
+                          aria-label="Fix spelling and grammar"
+                          disabled={!replyOpen || sending || !!polishing || !draft.trim()}
+                          onClick={() => { void polishDraft(); }}
+                          style={{ padding: '0 0.625rem', flexShrink: 0, gap: '0.25rem' }}
+                        >
+                          {polishing ? <Loader2 size={15} style={{ animation: 'spin 0.6s linear infinite' }} /> : <SpellCheck size={15} />}
+                          <span className="chat-polish-label">Sudharo</span>
+                        </button>
+                      )}
                       <button
                         className="btn btn-primary"
                         disabled={

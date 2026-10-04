@@ -52,6 +52,8 @@ stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.
 stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
+// The reply route records which suggested draft a reply came from (suggest-run.ts): a record only.
+stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');

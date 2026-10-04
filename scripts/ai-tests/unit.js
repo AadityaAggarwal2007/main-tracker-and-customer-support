@@ -1137,6 +1137,73 @@ t('late order: never for Delivered, cancelled or returned orders, nor before Out
   const noDate = jn.buildJourney({ ...LATE_ORDER, estimated_delivery: null }, now);
   assert.strictEqual(noDate.late.daysPast, 2); assert.ok(noDate.etaOriginal.startsWith('2026-10-02'));
 });
+// ── Suggested replies + "Sudharo" for the team (owner 2026-10-04; suggest.ts) ────────────
+// suggest.ts imports the pure refund guard by its alias; loaded next to it like the harness does.
+const sg = (() => {
+  const lm = fs.readFileSync(path.resolve(__dirname, '../../src/lib/refund/link-mask.ts'), 'utf8');
+  fs.writeFileSync(path.join(dir, 'refund-link-mask.js'), ts.transpileModule(lm, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
+  load('dispute-advice');
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/suggest.ts'), 'utf8').replace("from '@/lib/refund/link-mask'", "from './refund-link-mask'");
+  fs.writeFileSync(path.join(dir, 'suggest.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
+  return require(path.join(dir, 'suggest.js'));
+})();
+t('suggest: the model answer is read as JSON, fenced JSON, a numbered list or one text; 3 distinct at most', () => {
+  assert.deepStrictEqual(sg.parseOptions('{"options":["A one.","B two.","C three.","D four."]}'), ['A one.', 'B two.', 'C three.']);
+  assert.deepStrictEqual(sg.parseOptions('```json\n{"options": ["Aap ka order aa raha hai.", "aap KA order aa raha hai.", "Dusra."]}\n```'), ['Aap ka order aa raha hai.', 'Dusra.']);
+  assert.deepStrictEqual(sg.parseOptions('1. First one.\n2) Second one.\n- Third one.'), ['First one.', 'Second one.', 'Third one.']);
+  assert.deepStrictEqual(sg.parseOptions('Just one plain reply.'), ['Just one plain reply.']);
+  assert.deepStrictEqual(sg.parseOptions(''), []);
+  assert.ok(sg.parseOptions(`{"options":["${'x'.repeat(900)}"]}`)[0].length <= sg.SUGGEST_MAX_CHARS);
+});
+t('suggest: every option goes through Chikki\'s guards; the bad ones are dropped, the courier is never named', () => {
+  const ctx = { customerTexts: ['order kab aayega', 'mera order #1564 abhi tak nahi aaya'], courierNames: ['Valmo'] };
+  const out = sg.guardOptions([
+    'Aapka order aaj shaam tak aa jayega.',                                   // today promise: the sentence goes, nothing is left
+    'Please fill this form https://forms.gle/abc123 for the refund.',       // form link: dropped
+    'You can raise a chargeback with your bank for this.',                   // dispute advice: dropped
+    'Aapka order Valmo ke paas hai, estimated date 7 Oct hai.',              // courier name -> courier partner
+    'Aapka order Valmo ke paas hai, estimated date 7 Oct hai.',              // duplicate
+    'I have checked: the parcel is at the local hub and we are following it up with the courier.',
+  ], ctx);
+  assert.strictEqual(out.length, 2, JSON.stringify(out));
+  assert.ok(/courier partner/i.test(out[0]) && !/valmo/i.test(out[0]), out[0]);
+  assert.ok(out[1].startsWith('I have checked'));
+  for (const o of out) assert.ok(!tp.promisesToday(o), o);
+  // A clean option keeps its text; the limit holds.
+  assert.deepStrictEqual(sg.guardOptions(['Order dispatched hai, tracking link: https://shiptrack.store/track/abc'], ctx), ['Order dispatched hai, tracking link: https://shiptrack.store/track/abc']);
+  assert.strictEqual(sg.guardOptions(['a', 'b', 'c', 'd'], ctx).length, 3);
+});
+t('suggest: the instruction speaks as the team, in the chosen language, with the night line and the case line', () => {
+  const base = { lang: 'auto', after: null, caseKind: null, orderJson: '{"status":"Out for Delivery"}' };
+  const day = sg.suggestInstruction(base);
+  assert.ok(day.includes('exactly 3 options') && day.includes('The sender IS the team') && day.includes('"status":"Out for Delivery"'));
+  assert.ok(day.includes('within 24 hours') && !day.includes('tomorrow morning, after 10 AM'));
+  assert.ok(/language the customer wrote/.test(day));
+  const night = sg.suggestInstruction({ ...base, after: 'tomorrow' });
+  assert.ok(night.includes('tomorrow morning, after 10 AM') && night.includes('never "within 1 hour" or "within 24 hours"'));
+  assert.ok(sg.suggestInstruction({ ...base, after: 'this_morning' }).includes('this morning, after 10 AM'));
+  assert.ok(sg.suggestInstruction({ ...base, lang: 'en' }).includes('plain, simple English'));
+  assert.ok(sg.suggestInstruction({ ...base, lang: 'hi' }).includes('Hinglish'));
+  assert.ok(sg.suggestInstruction({ ...base, caseKind: 'refund' }).includes('Refund section'));
+  assert.ok(sg.suggestInstruction({ ...base, caseKind: 'reship' }).includes('24-48 hours'));
+  assert.ok(sg.suggestInstruction({ ...base, orderJson: null }).includes('No verified order facts'));
+  for (const s of [day, night]) assert.ok(/never mention Karry, Chikki, an AI/.test(s));
+});
+t('sudharo: the corrected text is taken only when it is a plain correction of the draft', () => {
+  const d = 'aapka order dispatch ho gya h, link: https://shiptrack.store/track/abc';
+  assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');
+  assert.strictEqual(sg.acceptPolish(d, '"Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc"'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');
+  assert.strictEqual(sg.acceptPolish(d, 'Corrected reply: Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');
+  assert.strictEqual(sg.acceptPolish(d, ''), d);
+  assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/xyz'), d, 'a changed link: the draft stays');
+  assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai. ' + 'Bahut lamba jawab. '.repeat(20)), d, 'far longer: the draft stays');
+  assert.strictEqual(sg.acceptPolish('thanks', 'Thanks.'), 'Thanks.');
+  assert.ok(sg.POLISH_INSTRUCTION.includes('Keep everything else exactly as it is') && sg.polishUserMessage('hi', 'kab aayega').includes('do not answer it'));
+});
+t('rulebook: 7.10 (owner 4 Oct) is a code rule at the end of section 7', () => {
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  assert.ok(rb.RULE_IDS.has('7.10') && rule('7.10').how === 'code' && /Sudharo/.test(rule('7.10').text));
+});
 t('rulebook: 4.11 (owner 4 Oct) is a code rule at the end of section 4', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   assert.ok(rb.RULE_IDS.has('4.11') && rule('4.11').how === 'code');

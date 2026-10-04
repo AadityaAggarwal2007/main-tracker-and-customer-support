@@ -163,6 +163,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'The person holding a chat (or Super Admin) can transfer it to a senior, a junior or Super Admin, with a one-line note only the team sees (never the customer or Chikki). Super Admin can also put it back in the open pool.' },
       { id: '7.9', how: 'auto', from: YOU_01, title: 'Senior and junior',
         text: 'A senior or Super Admin can take a junior\'s chat; others only read it. If the person holding a chat has not been in ShipTrack for 30 minutes (10:00-19:30) and the customer is waiting, anyone can take it. Super Admin\'s chats are never taken: only he transfers them.' },
+      { id: '7.10', how: 'code', from: '4 Oct', title: 'Suggested replies and "Sudharo" for your team',
+        text: 'When a team member opens a verified customer\'s chat, Chikki drafts 3 replies they could send (short and direct, warmer, a different angle) in the customer\'s language, from the same knowledge Chikki answers with: your notes, approved team examples, saved answers and the locked rules. Every draft goes through Chikki\'s own guards (no "today / tomorrow", no refund promise, no form link, no courier name, no dispute advice). A click puts it in the reply box; the team member sends it or edits it first, and stays the sender. "Sudharo" fixes the spelling and grammar of what they typed, nothing else. Not for visitors or email. Which draft was used, and whether it was edited, is recorded for you.' },
     ],
   },
   {

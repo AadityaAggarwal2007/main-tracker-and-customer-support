@@ -30,6 +30,8 @@ import InboxSidebar from './_components/InboxSidebar';
 import ListHeader from './_components/ListHeader';
 import ThreadHeader from './_components/ThreadHeader';
 import Composer from './_components/Composer';
+import Suggestions, { type SuggestState } from './_components/Suggestions';
+import type { SuggestLang } from '@/lib/chat/suggest';
 import MessageRow from './_components/MessageRow';
 import ConversationRow from './_components/ConversationRow';
 
@@ -126,6 +128,13 @@ export default function ChatSupportPage() {
   const [newerChat, setNewerChat] = useState<NewerChat | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  // Suggested replies + "Sudharo" (owner 2026-10-04; suggest-run.ts): the 3 drafts for the open
+  // chat, the language they are asked in, and which draft the reply box was filled from (sent
+  // with the reply so the server records whether it was edited).
+  const [sugg, setSugg] = useState<SuggestState | null>(null);
+  const [suggLang, setSuggLang] = useState<SuggestLang>('auto');
+  const [polishing, setPolishing] = useState(false);
+  const pickedRef = useRef<{ id: string; index: number } | null>(null);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -663,6 +672,72 @@ export default function ChatSupportPage() {
     };
   }, []);
 
+  /* ═══ SUGGESTED REPLIES + SUDHARO (owner 2026-10-04) ═══ */
+  // Shown for a verified customer's chat box that this login could reply in (never a visitor,
+  // never email, never a Closed chat). Drafted when the chat opens and again when the customer
+  // writes; the server caches per customer message, so reopening a chat costs nothing.
+  const knownCustomer = !!activeConv && !!(activeConv.verified_order_id || activeConv.phone_match_order_id);
+  const suggestShown = !!activeConv && activeConv.source === 'chat' && knownCustomer && activeConv.status !== 'resolved' && can(user, 'chat.reply');
+  const lastCustomerId = [...messages].reverse().find(m => m.sender === 'visitor' && !m.deleted_at)?.id ?? null;
+
+  const fetchSuggestions = useCallback(async (id: string, lang: SuggestLang, refresh: boolean) => {
+    if (!token) return;
+    setSugg(s => ({ convId: id, lang, loading: true, error: '', id: s?.convId === id && !refresh ? s.id : null, options: s?.convId === id && !refresh ? s.options : [] }));
+    try {
+      const res = await fetch(`/api/chat/conversations/${id}/suggest?lang=${lang}${refresh ? '&refresh=1' : ''}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (activeIdRef.current !== id) return;
+      if (!res.ok || !data.suggestion) {
+        setSugg({ convId: id, lang, loading: false, error: data.error || 'Could not draft replies', id: null, options: [] });
+        return;
+      }
+      setSugg({ convId: id, lang, loading: false, error: '', id: data.suggestion.id ?? null, options: data.suggestion.options || [] });
+    } catch {
+      if (activeIdRef.current === id) setSugg({ convId: id, lang, loading: false, error: 'Could not draft replies', id: null, options: [] });
+    }
+  }, [token]);
+
+  useEffect(() => {
+    pickedRef.current = null;
+    if (!suggestShown || !activeId) { setSugg(null); return; }
+    fetchSuggestions(activeId, suggLang, false);
+  }, [activeId, lastCustomerId, suggLang, suggestShown, fetchSuggestions]);
+
+  const pickSuggestion = (index: number) => {
+    if (!sugg || !sugg.options[index]) return;
+    setDraft(sugg.options[index]);
+    pickedRef.current = sugg.id ? { id: sugg.id, index } : null;
+    if (sugg.id && activeId) {
+      fetch(`/api/chat/conversations/${activeId}/suggest`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ suggestion_id: sugg.id, picked: index }),
+      }).catch(() => { /* a record only */ });
+    }
+  };
+
+  const polishDraft = async () => {
+    if (!activeId || polishing || sending) return;
+    const text = draft.trim();
+    if (!text) return;
+    setPolishing(true);
+    try {
+      const res = await fetch('/api/chat/polish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ conversationId: activeId, text }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showAlert('error', data.error || 'Could not fix that right now'); return; }
+      if (activeIdRef.current !== activeId) return;
+      if (typeof data.text === 'string' && data.text.trim()) setDraft(data.text);
+      if (data.changed === false) showAlert('success', 'Already correct');
+    } catch { showAlert('error', 'Could not fix that right now'); }
+    finally { setPolishing(false); }
+  };
+
   const sendReply = async () => {
     if (!activeId || sending) return;
     const text = draft.trim();
@@ -673,6 +748,7 @@ export default function ChatSupportPage() {
 
     setSending(true);
     try {
+      const picked = pickedRef.current;
       const res = await fetch('/api/chat/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -680,6 +756,7 @@ export default function ChatSupportPage() {
           conversationId: activeId,
           content: text,
           ...(files.length > 0 ? { attachmentIds: files.map(p => p.id) } : {}),
+          ...(picked && text ? { suggestionId: picked.id, suggestionIndex: picked.index } : {}),
         }),
       });
       const data = await res.json();
@@ -693,6 +770,7 @@ export default function ChatSupportPage() {
       }
 
       setDraft('');
+      pickedRef.current = null;
       const sentKeys = new Set(files.map(p => p.key));
       files.forEach(p => forgetFile(p, false));
       setPendingFiles(list => list.filter(p => !sentKeys.has(p.key)));
@@ -1182,9 +1260,13 @@ export default function ChatSupportPage() {
                   </div>
                 )}
 
-                {/* Composer */}
+                {/* Suggested replies (owner 2026-10-04), then the composer */}
+                {suggestShown && sugg?.convId === activeConv.id && (
+                  <Suggestions state={sugg} replyOpen={replyOpen} onPick={pickSuggestion}
+                    onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} />
+                )}
                 {activeConv.status !== 'resolved' && canReply && (
-                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} />
+                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} />
                 )}
               </>
             )}

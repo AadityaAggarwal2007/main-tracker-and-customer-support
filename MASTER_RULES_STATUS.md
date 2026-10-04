@@ -346,3 +346,26 @@ source for the page and the chat). Built and DEPLOYED 2026-10-04 (824dba1); chec
 - Rules 24, 28, 36: nothing stored, no SQL, no cron change; the page is computed on every load, so every order
   already late today shows it at once (owner answer 9). Rule 39: this section.
 - Rulebook 4.11. Not done (owner's answers): no email, no manual team line yet (answer 12: later).
+
+## Owner change 2026-10-04: suggested replies and "Sudharo" for the team
+
+Owner (4 Oct afternoon: "ladkon ke saath dikkat hai, bahut spelling mistake, dhang se baat nahi karte ... pre-filled
+message, 3-4 option, chun lo ya khud type karo"). His 14 answers are the consent for THIS change only: on opening (A),
+3 options, the customer's language with a switch, Chikki's own knowledge, Chikki's guards, click fills the box (B),
+"Sudharo" is part of it, no visitors, Refund / Ship again included, no email, record it, no learner, night line, one
+model call per customer message. Built 2026-10-04; `chat-reply-suggestions.sql` to apply before the deploy.
+
+- Rules 40 / 41 (identity, quality): the drafts speak as the team ("I" / "hum"), never name Karry, Chikki, an AI or a
+  model, and the team member stays the sender (they press Send). Correct spelling and grammar is the point. PASS.
+- Rules 4.3 / 15 / 17 / 18 / 19 / 21 / 43 (no "today", no refund promise, no form link, no courier name, no dispute
+  advice, no invented facts): every option goes through the same guards as Chikki's replies and is dropped when
+  emptied; the facts come from the same lookup as Chikki's (the tracking-page stage, the revised date). PASS, by code.
+- Rule 8.1 / 9 (verified only, no data to anyone new): drafts only for a chat with a verified order or an old phone
+  match, inside the login's panels, for a login that may reply; a visitor's chat gets none (owner answer 8). PASS.
+- Rules 11 / 14 / 24 (hand-overs, waiting, auto-close): untouched; a draft is not a message until a person sends it,
+  and then it is an ordinary team reply (holder, claim, waiting timer, events all as before).
+- Rule 28 / 29 / 36: one additive table, GRANTed to tracker_user, never deleted; no secret; the rows are staff-only
+  records (never read by the widget, the AI reply path, the learner or search).
+- Rule 39: this section. Rulebook 7.10. Cost: one DeepSeek call per customer message per language (cached), one per
+  "Sudharo" click; recorded with tokens and time in `reply_suggestions`.
+- Not done (owner's answers): email threads (10), learning from edited drafts (12), team score (11: record only).

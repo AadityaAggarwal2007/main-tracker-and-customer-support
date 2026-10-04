@@ -1,0 +1,174 @@
+// ── Suggested replies for the team (owner 2026-10-04) ──────────────────────────────
+// "Ladkon ke saath dikkat hai: bahut spelling mistake, dhang se baat nahi karte. Pre-filled
+// message bana de, 3-4 option, chun lo ya khud type karo." When a team member opens a verified
+// customer's chat, Chikki drafts SUGGEST_COUNT replies the team member could send, in the
+// team's own manner (the same prompt Chikki answers with: the panel prompt, saved answers,
+// Brain notes, team examples and the locked rules) and in the customer's language; a click
+// puts one in the reply box, the team member sends it as it is or edits it first. "Sudharo"
+// fixes the spelling and grammar of whatever they typed themselves. The team member stays
+// the sender: the drafts speak as the team ("I" / "hum"), never as Chikki.
+//
+// This file is pure: the instruction blocks, the parser for the model's answer and the guards
+// every option goes through (the same guards as Chikki's own replies: no "today / tomorrow",
+// no form link, no chargeback advice, no address echo, no courier name). suggest-run.ts does
+// the database and the model call.
+import type { AfterHours } from '@/lib/office-hours';
+import { dropFormMentions, hasFormLink } from '@/lib/refund/link-mask';
+import { dropDisputeAdvice } from './dispute-advice';
+import { looksHinglish } from './escalation';
+import { dropAddressEcho, withoutUnaskedCourier } from './reply-guards';
+import { dropTodayPromise } from './today-promise';
+
+export type SuggestLang = 'auto' | 'en' | 'hi';
+export const SUGGEST_LANGS: SuggestLang[] = ['auto', 'en', 'hi'];
+export const SUGGEST_COUNT = 3;
+export const SUGGEST_MAX_CHARS = 600;
+// How much of the chat the drafts see.
+export const SUGGEST_HISTORY = 30;
+export const SUGGEST_MAX_TOKENS = 900;
+export const SUGGEST_TIMEOUT_MS = 25_000;
+export const POLISH_MAX_CHARS = 2000;
+export const POLISH_TIMEOUT_MS = 15_000;
+
+const LANG_LINE: Record<SuggestLang, string> = {
+  auto: 'Write every option in the language the customer wrote their latest messages in: Hinglish stays Hinglish (Roman letters), Hindi script stays Hindi, English stays English.',
+  en: 'Write every option in plain, simple English, whatever language the customer used.',
+  hi: 'Write every option in Hinglish (Hindi in Roman letters, the way people text), whatever language the customer used.',
+};
+
+const TEAM_TIME: Record<'day' | 'tomorrow' | 'this_morning', string> = {
+  day: 'If an option says when the team comes back to the customer: "shortly, here in this chat"; for a refund or cancellation decision "within 24 hours, here in this chat". Never "within 1 hour".',
+  tomorrow: 'It is after office hours now (the team works 10:00 to 19:30 IST). If an option says when the team comes back to the customer, it is "tomorrow morning, after 10 AM, here in this chat" ("kal subah 10 baje ke baad isi chat mein"); never "within 1 hour" or "within 24 hours".',
+  this_morning: 'It is before office hours now (the team works 10:00 to 19:30 IST). If an option says when the team comes back to the customer, it is "this morning, after 10 AM, here in this chat" ("aaj subah 10 baje ke baad isi chat mein"); never "within 1 hour" or "within 24 hours".',
+};
+
+export interface SuggestContext {
+  lang: SuggestLang;
+  after: AfterHours;
+  caseKind: 'refund' | 'reship' | null;
+  // The verified order as Chikki's lookup shows it (orders.ts toFoundOrder), as JSON text; null = none.
+  orderJson: string | null;
+}
+
+// Appended to Chikki's full system prompt (rules, saved answers, Brain, team examples): what to
+// draft and how. It overrides the chat-box persona lines above it, because here Chikki is not the
+// one replying.
+export function suggestInstruction(ctx: SuggestContext): string {
+  const when = ctx.after ? TEAM_TIME[ctx.after] : TEAM_TIME.day;
+  const caseLine = ctx.caseKind === 'refund'
+    ? 'This chat is in the Refund section: the team is handling the refund. Options may say the team is on it and that the refund form / the next step comes here in this chat from the team; never an amount, a date, a payment method, "approved" / "processed", and never a form link.'
+    : ctx.caseKind === 'reship'
+      ? 'This chat is in the Ship again section: the team sends a new parcel. Options may say the new tracking link comes here in this chat within 24-48 hours; never a day of arrival.'
+      : '';
+  return `
+
+DRAFTING FOR A TEAM MEMBER (this overrides the lines above about who you are and how you reply)
+You are not replying yourself. A member of the Vastora support team has this chat open and will send ONE of the replies you draft, as themselves, under the team's name. Draft exactly ${SUGGEST_COUNT} options for their next reply to the customer's latest message.
+- Each option is a complete reply, 1 to 3 short sentences, the way a person texts: no greeting block, no sign-off, no markdown, no bullet points, at most one emoji. Perfect spelling, grammar and punctuation: nobody will correct it.
+- ${LANG_LINE[ctx.lang]}
+- The three take different approaches, never three wordings of one sentence: option 1 short and direct (the fact and the next step); option 2 warmer, with an apology where the customer had trouble, and the next step; option 3 a different angle (a clarifying question, a reassurance, or the alternative the team can offer).
+- The sender IS the team: write as "I" / "we" / "hum". Never "our team will reply", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated.
+- Facts only from ORDER FACTS below and from what the customer wrote. Give the status, the estimated date (call it estimated) and the tracking link when they help. Never invent a scan, a city, a reason, a courier name or a date. If ORDER FACTS says the date is being confirmed, give no date.
+- Never: a day of arrival (today, tonight, tomorrow, aaj, kal); a refund amount, date or method, or "approved" / "processed"; any form or link other than the tracking link in ORDER FACTS; a courier's name (say "our courier partner"); advice to raise a chargeback, a bank or UPI dispute, a police or consumer complaint; asking the customer for anything except the order ID and the phone number on the order; a payment link or "pay again"; a customer-care number.
+- ${when}
+${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this chat.
+
+ORDER FACTS
+${ctx.orderJson || 'No verified order facts are available: give no status or date.'}
+
+Output ONLY this JSON, nothing before or after it:
+{"options": ["option 1", "option 2", "option 3"]}`;
+}
+
+// The model's answer -> up to SUGGEST_COUNT distinct texts. JSON first (also inside a code fence),
+// else numbered / dashed lines, else the whole text as one option.
+export function parseOptions(raw: string | null | undefined): string[] {
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  const clean = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, SUGGEST_MAX_CHARS);
+  const unique = (list: string[]) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of list.map(clean).filter(Boolean)) {
+      const k = s.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+      if (out.length >= SUGGEST_COUNT) break;
+    }
+    return out;
+  };
+  const body = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(body.slice(start, end + 1)) as { options?: unknown };
+      if (Array.isArray(parsed.options)) return unique(parsed.options.map((o) => (typeof o === 'string' ? o : '')));
+    } catch { /* not JSON: fall through */ }
+  }
+  const lines = body.split(/\n+/).map((l) => l.replace(/^\s*(?:\d+[.)]|[-*•]|option\s*\d+\s*[:.)-])\s*/i, '').trim()).filter(Boolean);
+  if (lines.length >= 2) return unique(lines);
+  return unique([body]);
+}
+
+export interface GuardContext {
+  // The customer's own messages in this chat, oldest first (the address-echo guard reads the last 8).
+  customerTexts: string[];
+  // The courier(s) the lookup named: never in an option.
+  courierNames: string[];
+}
+
+// Every option goes through Chikki's own reply guards; one that is left empty, or still carries a
+// form link, is dropped. The same text never appears twice.
+export function guardOptions(options: string[], ctx: GuardContext): string[] {
+  const latest = ctx.customerTexts[ctx.customerTexts.length - 1] || '';
+  const hinglish = looksHinglish(ctx.customerTexts.slice(-2).join('\n'));
+  const out: string[] = [];
+  for (const raw of options) {
+    let text = String(raw || '').trim();
+    if (!text) continue;
+    const form = dropFormMentions(text, hinglish);
+    if (form.emptied) continue;
+    text = form.text;
+    const dispute = dropDisputeAdvice(text);
+    if (dispute.emptied) continue;
+    text = dispute.text;
+    text = dropTodayPromise(text, '').trim();
+    if (!text) continue;
+    text = dropAddressEcho(text, ctx.customerTexts.slice(-8)).text;
+    text = withoutUnaskedCourier(text, latest, ctx.courierNames, 0).text;
+    text = text.replace(/\s+/g, ' ').trim();
+    if (!text || hasFormLink(text)) continue;
+    if (out.some((o) => o.toLowerCase() === text.toLowerCase())) continue;
+    out.push(text);
+  }
+  return out.slice(0, SUGGEST_COUNT);
+}
+
+// "Sudharo": the team member's own draft, spelling and grammar fixed, nothing else.
+export const POLISH_INSTRUCTION = `You fix the spelling, grammar and punctuation of a short reply that a Vastora support team member is about to send to a customer in live chat.
+Keep everything else exactly as it is: the meaning, the language (Hinglish stays Hinglish in Roman letters, Hindi stays Hindi, English stays English), the tone, every fact, number, date, amount, name, order ID and link, the line breaks and any emoji. Do not add a greeting, a sign-off, an apology, a promise or any sentence that is not there; do not remove or soften anything; do not answer the customer yourself. If the draft is already correct, return it unchanged.
+Output the corrected reply text only: no quotes, no explanation, no labels.`;
+
+export function polishUserMessage(draft: string, customerLatest: string | null): string {
+  const ctx = customerLatest ? `The customer's latest message, for context only (do not answer it):\n${customerLatest.slice(0, 600)}\n\n` : '';
+  return `${ctx}The team member's draft:\n${draft}`;
+}
+
+// The model's corrected text, or the draft itself when the answer is not a plain correction
+// (empty, wrapped in quotes and labels, far longer or shorter, or carrying a link that was not
+// there: the team member's words go out, not the model's).
+export function acceptPolish(draft: string, raw: string | null | undefined): string {
+  const d = draft.trim();
+  let out = String(raw || '').trim();
+  out = out.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
+  out = out.replace(/^(?:corrected(?: reply| text)?|reply|output)\s*:\s*/i, '').trim();
+  if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) out = out.slice(1, -1).trim();
+  if (!out) return d;
+  if (out.length > d.length * 1.6 + 40 || out.length < d.length * 0.5 - 10) return d;
+  const links = (s: string) => (s.match(/https?:\/\/\S+/g) || []).map((l) => l.replace(/[.,;:!?)]+$/, ''));
+  const before = links(d), after = links(out);
+  if (after.length !== before.length || after.some((l) => !before.includes(l))) return d;
+  return out;
+}

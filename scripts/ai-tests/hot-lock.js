@@ -57,6 +57,7 @@ const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body
 stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
+stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: true, block: null, block_text: null, link: null, request: null }), refundMarkLocked: async () => false };');
 
 const compile = (from, to) => {

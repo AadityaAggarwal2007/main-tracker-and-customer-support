@@ -7,6 +7,7 @@ import { hasFormLink } from '@/lib/refund/link-mask';
 import { can } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
 import { reshipInReply } from '@/lib/chat/reship';
+import { recordSent } from '@/lib/chat/suggest-run';
 import {
   STARTING_MESSAGE, actionError, actionsReady, heldMessage, holderOf, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,
 } from '@/lib/chat/team-routing';
@@ -47,7 +48,9 @@ export async function POST(request: NextRequest) {
   if (!actor) return NextResponse.json({ error: STARTING_MESSAGE }, { status: 503 });
 
   try {
-    const { conversationId, content, attachmentIds } = await request.json();
+    // suggestionId + suggestionIndex (optional): the reply started from a suggested draft
+    // (suggest-run.ts); recorded after the save, never a reason to refuse the reply.
+    const { conversationId, content, attachmentIds, suggestionId, suggestionIndex } = await request.json();
     // Pasted **bold** would reach the customer as literal asterisks.
     const text = stripMarkdownEmphasis(content == null ? '' : String(content));
     // No Google Form (any: owner answer Q7) and no refund-form link in a team reply, chat or email, for
@@ -205,6 +208,11 @@ export async function POST(request: NextRequest) {
       }
       return row;
     });
+
+    if (hasText && typeof suggestionId === 'string' && /^[0-9a-f-]{36}$/i.test(suggestionId)
+        && Number.isInteger(suggestionIndex) && suggestionIndex >= 0 && suggestionIndex <= 9) {
+      void recordSent(conversationId, suggestionId, suggestionIndex, message.id, text);
+    }
 
     // The message is already saved, so a failing mail server must not lose the
     // agent's reply — it is reported instead.
