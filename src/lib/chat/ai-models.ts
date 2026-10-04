@@ -102,6 +102,22 @@ export function attemptOrder(): string[] {
   return [activeModel, ...FALLBACK_CHAIN.filter((m) => m !== activeModel)];
 }
 
+// The side tasks (owner 2026-10-04, after the OpenRouter bill went from ~$1 to ~$4 a day when the
+// customer replies moved to V4 Pro on 1 Oct): the health score, the subject line, the team score
+// AI check, the Brain learner and the team's suggested replies / "Sudharo" are short, fixed-format
+// jobs that V4 Flash does fine, so they try the cheap model FIRST and only then the customer
+// chain. Customer replies (ai.ts) keep attemptOrder(): V4 Flash failed them on 1 Oct.
+// AI_SIDE_MODEL in /etc/tracker/.env overrides the cheap model (must be a key of AI_MODELS).
+export const SIDE_MODEL_DEFAULT = 'deepseek/deepseek-v4-flash';
+export function sideModel(): string {
+  const env = process.env.AI_SIDE_MODEL;
+  return env && AI_MODELS[env] ? env : SIDE_MODEL_DEFAULT;
+}
+export function sideAttemptOrder(): string[] {
+  const cheap = sideModel();
+  return [cheap, ...attemptOrder().filter((m) => m !== cheap)];
+}
+
 export function getClient(): OpenAI {
   return new OpenAI({
     baseURL: `${process.env.CODEX_URL || 'https://openrouter.ai/api'}/v1`,

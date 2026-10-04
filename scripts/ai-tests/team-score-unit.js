@@ -352,7 +352,7 @@ t('W6 the owner\'s numbers (Q11) and limits', () => {
     [24 * H, 24 * H, 72 * H, 72 * H, 24 * H, 49 * H, 96 * H]);
   assert.deepStrictEqual([rules.JUDGE_MAX_PER_RUN, rules.JUDGE_MAX_PER_DAY, rules.JUDGE_FAIL_LIMIT, rules.JUDGE_WINDOW_DAYS], [40, 300, 3, 4]);
   assert.strictEqual(rules.OWNER_RANKED, false);
-  assert.ok(!('JUDGE_MODELS' in rules));   // lead override: judge.ts uses attemptOrder() from @/lib/chat/ai
+  assert.ok(!('JUDGE_MODELS' in rules));   // lead override: judge.ts uses sideAttemptOrder() from @/lib/chat/ai
 });
 t('W6 DEFAULT_WEIGHTS equal the SQL seed; keys and labels line up', () => {
   const j = JSON.parse(read('team-score.sql').match(/'(\{"thanks"[^']+\})'::jsonb/)[1]);
@@ -538,11 +538,11 @@ t('W8 the AI, learner, search and widget never see it; only judge.ts imports the
     const imports = /from\s+'@\/lib\/chat\/ai'|import\(\s*'@\/lib\/chat\/ai'\s*\)|require\(\s*'@\/lib\/chat\/ai'\s*\)/.test(s);
     if (f !== 'judge.ts') assert.ok(!imports, `${f} imports @/lib/chat/ai`);
   }
-  // judge.ts takes only the client, the retry test and the model order (lead override: attemptOrder, like health.ts).
+  // judge.ts takes only the client, the retry test and the model order (lead override: sideAttemptOrder (the cheap model first, owner 4 Oct), like health.ts).
   const judge = read('src/lib/team-score/judge.ts');
   const names = [...judge.matchAll(/import\s*\{([^}]*)\}\s*from\s*'@\/lib\/chat\/ai'/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()).filter(Boolean));
   assert.ok(names.length >= 1, 'judge.ts imports nothing from @/lib/chat/ai');
-  for (const x of names) assert.ok(['attemptOrder', 'getClient', 'isRetryable'].includes(x), `judge.ts imports ${x}`);
+  for (const x of names) assert.ok(['sideAttemptOrder', 'getClient', 'isRetryable'].includes(x), `judge.ts imports ${x}`);
   assert.ok(!/JUDGE_MODELS|deepseek\/deepseek-/.test(judge), 'judge.ts hard-codes a model');
 });
 t('W8 the pure modules import only each other and the three import-free rule files', () => {

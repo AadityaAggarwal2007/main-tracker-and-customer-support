@@ -7,7 +7,7 @@
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { afterHours } from '@/lib/office-hours';
-import { attemptOrder, getClient, isRetryable, withoutThinking } from './ai-models';
+import { getClient, isRetryable, sideAttemptOrder, withoutThinking } from './ai-models';
 import { buildSystemPrompt, type SavedAnswer } from './ai-prompt';
 import { brainSection, selectNotes, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
@@ -55,7 +55,7 @@ const lastCustomer = (rows: Row[]) => [...rows].reverse().find((r) => r.sender =
 // that answered. Returns null when every model failed.
 async function ask(messages: ChatCompletionCreateParamsNonStreaming['messages'], maxTokens: number, temperature: number, timeout: number) {
   let lastErr: unknown = null;
-  for (const model of attemptOrder()) {
+  for (const model of sideAttemptOrder()) {
     try {
       const t0 = Date.now();
       const res = await getClient().chat.completions.create(

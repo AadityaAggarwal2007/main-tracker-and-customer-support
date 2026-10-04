@@ -22,7 +22,7 @@ export const SETTLE_AFTER_MS = 49 * 3_600_000; // from the day's 00:00 IST: D+2 
 export const AI_GRACE_MS = 96 * 3_600_000;     // D+4 00:00: freeze even if AI checks are still pending
 export const MAX_RANGE_DAYS = 31;
 export const OWNER_RANKED = false;             // Q3
-// The AI check's models come from attemptOrder() in @/lib/chat/ai (judge.ts), like health.ts.
+// The AI check's models come from sideAttemptOrder() in @/lib/chat/ai (judge.ts), like health.ts: the cheap model first.
 export const JUDGE_MAX_PER_RUN = 40, JUDGE_MAX_PER_DAY = 300, JUDGE_FAIL_LIMIT = 3, JUDGE_WINDOW_DAYS = 4;
 // Owner answers 2026-10-02 (A2): convinced +2 (was 0), closed while the customer waited -2 (was a red
 // flag only). A settings row saved before a key existed takes that key from here.

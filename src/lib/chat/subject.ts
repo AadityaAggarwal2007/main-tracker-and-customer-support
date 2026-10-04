@@ -1,6 +1,6 @@
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
-import { attemptOrder, getClient, isRetryable } from './ai';
+import { getClient, isRetryable, sideAttemptOrder } from './ai';
 import { VISIBLE_MESSAGE_SQL } from './widget-api';
 
 // ── The subject line of a chat ─────────────────────────────────
@@ -144,7 +144,7 @@ class BlankSubjectError extends Error {
 
 async function askModel(transcript: string): Promise<ParsedSubject> {
   let lastErr: unknown = null;
-  for (const model of attemptOrder()) {
+  for (const model of sideAttemptOrder()) {
     try {
       const body = {
         model,

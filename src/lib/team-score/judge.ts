@@ -10,7 +10,7 @@
 // attemptOrder, the same chain as health.ts askModel). Spec: phase 4, section 4.4.
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query } from '@/lib/db';
-import { attemptOrder, getClient, isRetryable } from '@/lib/chat/ai';
+import { getClient, isRetryable, sideAttemptOrder } from '@/lib/chat/ai';
 import type { JudgeCandidate } from './types';
 import { addDays, istDayStart, todayIst } from './clock';
 import { JUDGE_FAIL_LIMIT, JUDGE_MAX_PER_DAY, JUDGE_WINDOW_DAYS } from './rules';
@@ -51,7 +51,7 @@ class UnreadableVerdict extends Error {
 type Asked = { kind: 'verdict'; thanks: boolean; convinced: boolean; model: string } | { kind: 'unclear'; model: string | null };
 
 async function askModel(c: JudgeCandidate): Promise<Asked> {
-  const models = attemptOrder();
+  const models = sideAttemptOrder();
   let lastErr: unknown = null, answered = 0, lastModel: string | null = null;
   for (const model of models) {
     try {

@@ -1200,6 +1200,20 @@ t('sudharo: the corrected text is taken only when it is a plain correction of th
   assert.strictEqual(sg.acceptPolish('thanks', 'Thanks.'), 'Thanks.');
   assert.ok(sg.POLISH_INSTRUCTION.includes('Keep everything else exactly as it is') && sg.polishUserMessage('hi', 'kab aayega').includes('do not answer it'));
 });
+t('side tasks use the cheap model first (owner 4 Oct): health, subject, judge, learner, suggestions; customer replies do not', () => {
+  const read = (f) => fs.readFileSync(path.resolve(__dirname, '../../', f), 'utf8');
+  for (const f of ['src/lib/chat/health.ts', 'src/lib/chat/subject.ts', 'src/lib/' + ['team', 'score'].join('-') + '/judge.ts', 'src/lib/chat/suggest-run.ts']) {
+    const s = read(f);
+    assert.ok(/sideAttemptOrder\(\)/.test(s) && !/\battemptOrder\(\)/.test(s), f);
+  }
+  const learner = read('src/lib/chat/brain-suggest.ts');
+  assert.ok(/sideModel\(\)/.test(learner) && !/getActiveModel\(\)/.test(learner), 'learner');
+  const ai = read('src/lib/chat/ai.ts');
+  assert.ok(!/sideAttemptOrder\(\)|sideModel\(\)/.test(ai), 'customer replies stay on the main chain');
+  const models = read('src/lib/chat/ai-models.ts');
+  assert.ok(/SIDE_MODEL_DEFAULT = 'deepseek\/deepseek-v4-flash'/.test(models) && /AI_SIDE_MODEL/.test(models));
+  assert.ok(/AI_SIDE_MODEL=/.test(read('.env.example')), '.env.example lists the variable');
+});
 t('rulebook: 7.10 (owner 4 Oct) is a code rule at the end of section 7', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   assert.ok(rb.RULE_IDS.has('7.10') && rule('7.10').how === 'code' && /Sudharo/.test(rule('7.10').text));

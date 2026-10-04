@@ -256,7 +256,7 @@ export const RULEBOOK: RuleSection[] = [
   {
     key: 'engine', title: 'Engine and changes', rules: [
       { id: '12.1', how: 'auto', from: YOU_01, title: 'The model',
-        text: 'Chikki runs on DeepSeek V4 Pro; if it fails, the next model in line answers.' },
+        text: 'Chikki answers customers on DeepSeek V4 Pro; if it fails, the next model in line answers. The side jobs (frustration score, subject line, team score check, learner, suggested replies / Sudharo) run on the cheaper DeepSeek V4 Flash first (your decision, 4 Oct, after the bill went up on 1 Oct), then the same line.' },
       { id: '12.2', how: 'auto', from: M('34'), title: 'Tested before it goes live',
         text: 'Every change to Chikki is run through the AI tests (real conversations) before it goes live.' },
       { id: '12.3', how: 'auto', from: M('2, 45'), title: 'Rules change only with your OK',

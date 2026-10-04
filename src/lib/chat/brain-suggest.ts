@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
-import { getActiveModel, getClient } from './ai';
+import { getClient, sideModel } from './ai';
 import { BRAIN_TOPICS, BRAIN_TOPIC_KEYS, similarity } from './brain';
 import { LEARN_INSTRUCTION, SUGGEST_MAX_PER_RUN, maskPersonal, parseDraft } from './brain-learn';
 import { QUIET_OK, SITUATIONS, customerCalmedAfter, detectSituations, parseExample, sameReply } from './brain-examples';
@@ -164,7 +164,7 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
         if (transcript.includes('Team') || corrections) {
           const allowed = Array.from(situationsSeen);
           const body = {
-            model: getActiveModel(),
+            model: sideModel(),
             messages: [
               { role: 'system', content: LEARN_INSTRUCTION },
               { role: 'user', content: `Situations: ${allowed.length ? allowed.join(', ') : '(none: return "example": null)'}\nAll situations: ${SITUATIONS.map((s) => s.key).join(', ')}\nTopics for a lesson: ${BRAIN_TOPICS.map((t) => t.key).join(', ')}\n${settings ? `Store settings set by the owner (they always win): ${settings}\n` : ''}Existing notes: ${existing.join(' | ') || '(none)'}\n\nChat:\n${transcript}${corrections ? `\n\nCorrections by the team (the strongest lesson):\n${corrections}` : ''}` },
@@ -172,7 +172,7 @@ async function runSuggest(opts: { siteId?: string; max?: number; days?: number }
             max_tokens: 900,
             temperature: 0,
             // An OpenRouter field the SDK does not type; thinking only eats the answer here.
-            ...(getActiveModel().startsWith('deepseek/deepseek-v4') ? { reasoning: { enabled: false } } : {}),
+            ...(sideModel().startsWith('deepseek/deepseek-v4') ? { reasoning: { enabled: false } } : {}),
           };
           const res = await getClient().chat.completions.create(body as unknown as ChatCompletionCreateParamsNonStreaming, { timeout: 60000, maxRetries: 1 });
           const raw = res.choices?.[0]?.message?.content;

@@ -33,7 +33,7 @@ import { CATEGORIZE_TOOL, ESCALATE_TOOL, ORDER_LOOKUP_TOOL } from './ai-tools';
 import { UNPROVEN_LOOKUP, VERIFICATION_DEPLOYED_AT, courierAsksSoFar, couriersInLookups, dropOrphanedToolCalls, isProvenLookup, type StoredMessage } from './ai-history';
 
 // Moved out of this file on 2026-10-02 (pure move); re-exported so no importer changes.
-export { AI_MODELS, attemptOrder, getActiveModel, getChain, getClient, getModelList, isRetryable, loadActiveModelFromDb, persistActiveModel, setActiveModel } from './ai-models';
+export { AI_MODELS, attemptOrder, getActiveModel, getChain, getClient, getModelList, isRetryable, loadActiveModelFromDb, persistActiveModel, setActiveModel, sideAttemptOrder, sideModel } from './ai-models';
 export { DEFAULT_SYSTEM_PROMPT, SAVED_ANSWERS_BUDGET, buildSystemPrompt, getLockedRules } from './ai-prompt';
 export type { Channel, SavedAnswer } from './ai-prompt';
 

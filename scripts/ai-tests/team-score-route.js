@@ -51,6 +51,7 @@ module.exports = { NextResponse, NextRequest };`);
 fs.writeFileSync(path.join(dir, 'ai.js'), `
 module.exports = {
   attemptOrder: () => global.__fakeAi.order.slice(),
+  sideAttemptOrder: () => global.__fakeAi.order.slice(),
   getClient: () => ({ chat: { completions: { create: (body, opts) => global.__fakeAi.create(body, opts) } } }),
   isRetryable: (err) => { const s = err && err.status; return s !== 401 && s !== 403; },
 };`);

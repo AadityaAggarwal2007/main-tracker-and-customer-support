@@ -369,3 +369,12 @@ model call per customer message. Built and DEPLOYED 2026-10-04 (e7d078b; `chat-r
 - Rule 39: this section. Rulebook 7.10. Cost: one DeepSeek call per customer message per language (cached), one per
   "Sudharo" click; recorded with tokens and time in `reply_suggestions`.
 - Not done (owner's answers): email threads (10), learning from edited drafts (12), team score (11: record only).
+
+## Owner change 2026-10-04 (evening): side tasks on the cheap model
+
+Owner (OpenRouter screenshot: ~$4 a day on DeepSeek V4 Pro since 1 Oct, ~$1 before on Flash / V3): "ha karke de".
+`ai-models.ts` `sideModel()` / `sideAttemptOrder()`: the health score, the subject line, the team score AI check, the
+Brain learner and the team's suggested replies / "Sudharo" now try DeepSeek V4 Flash first (env `AI_SIDE_MODEL`
+overrides), then the customer chain. Customer replies (`ai.ts`) stay on V4 Pro: Flash failed them on 1 Oct. No rule
+changes: the same instructions, guards and tests; only which model answers the side jobs. Rulebook 12.1. Built and
+pushed 2026-10-04; deploy = code only, no SQL, no new env value needed.
