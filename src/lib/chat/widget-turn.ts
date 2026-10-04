@@ -35,7 +35,17 @@ export async function handOverToPerson(conversationId: string, why: string): Pro
       }
 }
 
-export function saveAiMessageTo(conversationId: string, text: string) {
+// `metadata`: only the closed-hours note marker today ({ closed_note: 'full' | 'short' },
+// closed-hours.ts), which the widget returns to the customer like any metadata: nothing private.
+export function saveAiMessageTo(conversationId: string, text: string, metadata?: Record<string, string> | null) {
+  if (metadata) {
+    return queryOne<StoredMessage>(
+      `INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at)
+       VALUES (gen_random_uuid()::text, $1, 'ai', $2, $3::jsonb, now())
+       RETURNING id, conversation_id, sender, content, metadata, created_at`,
+      [conversationId, text, JSON.stringify(metadata)]
+    );
+  }
   return queryOne<StoredMessage>(
       `INSERT INTO messages (id, conversation_id, sender, content, created_at)
        VALUES (gen_random_uuid()::text, $1, 'ai', $2, now())

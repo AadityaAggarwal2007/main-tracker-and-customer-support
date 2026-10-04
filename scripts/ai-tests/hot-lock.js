@@ -70,7 +70,7 @@ const compile = (from, to) => {
 };
 for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
-for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
 

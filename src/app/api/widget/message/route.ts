@@ -8,7 +8,10 @@ import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
 import { handoffReply, isCourtesyOnly, looksHinglish, isRepeatedReply, routineHandOverKind, urgentAck, urgentKind, withHandOverLine } from '@/lib/chat/escalation';
-import { afterHours } from '@/lib/office-hours';
+import { afterHours, closedWhy } from '@/lib/office-hours';
+import { loadHolidays } from '@/lib/chat/holidays';
+import { CLOSED_NOTE_KEY } from '@/lib/chat/closed-hours';
+import { closedHoursTurn, withClosedNote } from '@/lib/chat/closed-hours-run';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
@@ -95,14 +98,39 @@ export async function POST(request: NextRequest) {
     // Night (19:30-10:00 IST, owner 2026-10-01): the 1-hour and 24-hour lines say the
     // team replies in the morning instead (escalation.ts AfterHours). Read once, when
     // the customer's message came in, so one reply never mixes day and night lines.
-    const after = afterHours(Date.now());
+    // Since 2026-10-05 the week counts too (office-hours.ts: Saturday to 14:00, Sunday and the
+    // listed holidays off): "on Monday morning, after 10 AM". `why` = why the office is closed
+    // now (closed-hours.ts: the note for an upset customer), null while it is open.
+    const nowMs = Date.now();
+    const holidays = await loadHolidays(nowMs);
+    const after = afterHours(nowMs, holidays);
+    const why = closedWhy(nowMs, holidays);
 
     // Needs you. Only from AI handling: a chat a team member already took
     // keeps its owner. Tried twice: the customer is about to be told a person
     // has the chat, so a failed update must not go unnoticed.
     const handOver = (why: string) => handOverToPerson(conversationId, why);
-    const saveAiMessage = (text: string) => saveAiMessageTo(conversationId, text);
+    const saveAiMessage = (text: string, metadata?: Record<string, string> | null) => saveAiMessageTo(conversationId, text, metadata);
     let aiMessage: StoredMessage | null = null;
+    // Owner 2026-10-05: while the office is closed, an upset VERIFIED customer's reply ends in the
+    // closed-hours note (why nobody can confirm anything now, the team sits down with their case first
+    // thing when it opens) instead of the 1-hour / 24-hour / morning line, and the chat goes to the
+    // team (closed-hours.ts, closed-hours-run.ts). Only the FULL note is possible here (the chat is
+    // still in AI handling); the short line and the silence belong to the block below. The note's
+    // marker on the message is what counts the notes and what the inbox reads for the "Promised" chip.
+    let closedMeta: Record<string, string> | null = null;
+    const closedWrap = async (text: string, said: string, verified: boolean): Promise<string> => {
+      if (!verified || !why || !after || closedMeta) return text;
+      try {
+        const ct = await closedHoursTurn({ convId: conversationId, said, now: nowMs, holidays, after });
+        if (!ct || ct.step !== 'full' || !ct.text) return text;
+        closedMeta = { [CLOSED_NOTE_KEY]: 'full' };
+        return withClosedNote(text, said, after, ct.text);
+      } catch (err) {
+        console.error(`[widget] closed-hours note failed on conv ${conversationId}:`, (err as Error).message);
+        return text;
+      }
+    };
 
     // Owner 2026-10-02 (answers 4 and 8): a Ship again chat. The AI stays off; code may remind
     // the customer once or flag the chat red (case-auto.ts reshipFollowUp). The red flag is
@@ -153,6 +181,30 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Owner 2026-10-05: an upset VERIFIED customer who writes again while the office is closed, into a
+    // chat the team already holds (Needs you, or taken over) with no Refund / Ship again mark (those have
+    // their own one reminder above): the full closed-hours note once per closed stretch, a short line on
+    // the next message, then nothing (the team owes the answer; the chat stays waiting and the inbox
+    // shows the promise). A calmer customer, a "thanks", or a team member active in the chat in the
+    // last 30 minutes: nothing is sent, as before (closed-hours.ts closedNoteStep).
+    if ((status === 'human_needed' || status === 'agent_handling') && !updated?.case_kind && site.ai_enabled && why && after) {
+      try {
+        if (await chatIsVerified(conversationId)) {
+          const ct = await closedHoursTurn({ convId: conversationId, said: String(masked.text), now: nowMs, holidays, after });
+          if (ct?.text) {
+            aiMessage = await saveAiMessage(aiReply(ct.text), { [CLOSED_NOTE_KEY]: ct.step });
+            await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
+            console.log(`[widget] conv ${conversationId}: closed-hours note (${ct.step})`);
+          } else if (ct?.step === 'silent') {
+            console.log(`[widget] conv ${conversationId}: closed hours, nothing more to say (the team has it)`);
+          }
+        }
+      } catch (err) {
+        // The customer's message is saved and the chat is unread in its section, as today.
+        console.error('[widget] closed-hours follow-up failed:', (err as Error).message);
+      }
+    }
+
     // AI response if in ai_handling mode
     if (status === 'ai_handling' && site.ai_enabled) {
       const said = String(masked.text);
@@ -194,7 +246,7 @@ export async function POST(request: NextRequest) {
             aiMessage = await saveAiMessage(aiReply(t.text));
           } else {
             await handOver('threat');
-            aiMessage = await saveAiMessage(aiReply(urgentAck(said, after)));
+            aiMessage = await saveAiMessage(aiReply(await closedWrap(urgentAck(said, after), said, true)), closedMeta);
           }
         } else {
           const brainUsage: { brain: { id: string; title: string }[]; effort?: EffortUsage } = { brain: [] };
@@ -350,11 +402,22 @@ export async function POST(request: NextRequest) {
             text = withHandOverLine(text, said, 'escalated', after);
           }
 
+          // Owner 2026-10-05: the office is closed and this verified customer is upset enough (closed-hours.ts):
+          // the reply ends in the closed-hours note and the chat goes to the team. Not over a Refund / Ship
+          // again text or a tracking-claim text (each carries its own promise), never for a visitor.
+          if (text !== null && verified && !toRefund && !shipAgain && !refundChat && !claim) {
+            const wrapped = await closedWrap(text, said, true);
+            if (closedMeta) {
+              text = wrapped;
+              await handOver('closed hours, upset customer');
+            }
+          }
+
           // Save the visible reply. When the customer sent payment details, the
           // "please do not share these" line goes first (added here, not left
           // to the model). null: a Ship again chat that sends nothing for this message.
           if (text !== null) {
-            aiMessage = await saveAiMessage(aiReply(text));
+            aiMessage = await saveAiMessage(aiReply(text), closedMeta);
             await recordBrainUsage(aiMessage?.id, brainUsage.brain);
             await recordChikkiRun(aiMessage?.id, conversationId, site.id, brainUsage.effort);
           }

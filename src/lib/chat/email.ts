@@ -14,6 +14,7 @@ import { addressConflict } from './address-conflict';
 import { recentVisitorMessages } from './chat-history';
 import { dropReplyTimes, insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 import { afterHours } from '@/lib/office-hours';
+import { loadHolidays } from './holidays';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -397,7 +398,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
               // in the morning, after 10 AM, and an hour promise the AI wrote itself
               // ("within 24 hours") is taken out first so the email does not say both.
               // At night the refund line always goes in, as it carries the morning time.
-              const after = afterHours(Date.now());
+              const after = afterHours(Date.now(), await loadHolidays());
               if (after) aiResult.content = dropReplyTimes(aiResult.content).text;
               const line = urgent === 'accusation' ? teamWillReplyLine(masked.text, after) : routineLine(routine!, masked.text, after);
               if (urgent === 'accusation' || routine !== 'refund' || !!after || !saysRefundTime(aiResult.content)) {

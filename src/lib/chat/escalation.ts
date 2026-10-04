@@ -76,11 +76,30 @@ export const URGENT_SLA_HOURS = 1;
 // afterHours() in src/lib/office-hours.ts; the type is repeated here so this file
 // keeps no imports. Lines that promise no time (handoffReply, the payment line)
 // are the same day and night.
-export type AfterHours = 'tomorrow' | 'this_morning' | null;
-const MORNING = {
+// The week (owner 2026-10-05): Saturday is a half day (to 14:00), Sunday and the listed
+// holidays are off, so the team may be back only "on Monday morning" (or Tuesday after a
+// Monday holiday): afterHours then gives the weekday's name, and the line says that day.
+export type AfterHours = 'tomorrow' | 'this_morning' | 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | null;
+const DAY_EN = { sunday: 'Sunday', monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday' } as const;
+const MORNING: Record<Exclude<AfterHours, null>, { en: string; hi: string }> = {
   tomorrow: { en: 'tomorrow morning, after 10 AM', hi: 'kal subah 10 baje ke baad' },
   this_morning: { en: 'this morning, after 10 AM', hi: 'aaj subah 10 baje ke baad' },
-} as const;
+  sunday: { en: 'on Sunday morning, after 10 AM', hi: 'Sunday subah 10 baje ke baad' },
+  monday: { en: 'on Monday morning, after 10 AM', hi: 'Monday subah 10 baje ke baad' },
+  tuesday: { en: 'on Tuesday morning, after 10 AM', hi: 'Tuesday subah 10 baje ke baad' },
+  wednesday: { en: 'on Wednesday morning, after 10 AM', hi: 'Wednesday subah 10 baje ke baad' },
+  thursday: { en: 'on Thursday morning, after 10 AM', hi: 'Thursday subah 10 baje ke baad' },
+  friday: { en: 'on Friday morning, after 10 AM', hi: 'Friday subah 10 baje ke baad' },
+  saturday: { en: 'on Saturday morning, after 10 AM', hi: 'Saturday subah 10 baje ke baad' },
+};
+// "tomorrow morning, after 10 AM" / "on Monday morning, after 10 AM" (and the Hinglish one), for
+// other fixed texts that name when the team is back (closed-hours.ts).
+export function teamBackWhen(after: Exclude<AfterHours, null>, hinglish: boolean): string {
+  return hinglish ? MORNING[after].hi : MORNING[after].en;
+}
+export function weekdayLabel(after: AfterHours): string | null {
+  return after && after in DAY_EN ? DAY_EN[after as keyof typeof DAY_EN] : null;
+}
 
 // The one line that says a person has it and when they answer.
 export function teamWillReplyLine(customerText: string, after: AfterHours = null): string {

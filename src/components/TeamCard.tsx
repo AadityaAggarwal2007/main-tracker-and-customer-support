@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, Copy, KeyRound, MessageCircle, Pencil, Power, Trash2, UserPlus, X } from 'lucide-react';
 import OwnerLoginDialog, { PasswordInput, since } from './OwnerLogin';
+import OfficeHoursCard from './OfficeHoursCard';
 import { PERMISSION_GROUPS, ROLE_INFO, TEAM_ROLES, type Permission, type Role } from '@/lib/permissions';
 
 // Team (owner, 2026-10-01): the owner (super admin) gives each person their own login: a role,
@@ -189,6 +190,9 @@ export default function TeamCard({ token, panels, onAlert, onLoginChanged }: {
           </div>
         ))}
       </div>
+
+      {/* The week and the holidays (owner 2026-10-05): what "the team is back" means to a customer */}
+      <OfficeHoursCard token={token} onAlert={onAlert} />
 
       {/* Members */}
       <div className="tf-card" style={{ padding: 0, overflow: 'hidden' }}>

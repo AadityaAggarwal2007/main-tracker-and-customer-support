@@ -1,5 +1,6 @@
 import { AuthUser } from '@/lib/auth';
 import { isOfficeHours } from '@/lib/office-hours';
+import { cachedHolidays } from './holidays';
 import { canAct, claimsOnAct, type TakeKind } from './team-rules';
 import { caseMarkState, holderOf, holderView, shownAway, staffActor, takeFor, transferList } from './team-routing';
 import type { ConversationRow } from './thread-read';
@@ -29,6 +30,6 @@ export async function staffBlock(conv: ConversationRow, user: AuthUser) {
     can_mark_case: mark.allowed,
     mark_override: mark.override,
     mark_note: mark.note,
-    office_open: isOfficeHours(now),
+    office_open: isOfficeHours(now, cachedHolidays()),
   };
 }

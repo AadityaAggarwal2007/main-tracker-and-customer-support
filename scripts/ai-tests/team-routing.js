@@ -94,9 +94,10 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 // Refund form (owner 2026-10-02): the pure link mask is the real one; the refund server (its own suite,
 // refund-route.js) is a stub here: no refund data, so the Refund mark is never locked.
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
-for (const f of ['team-rules', 'waiting', 'waiting-sql', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'reship']) compile(`lib/chat/${f}.ts`, f);
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'reship',
+  'effort', 'closed-hours', 'closed-hours-run']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
@@ -746,6 +747,18 @@ async function handle(q, p, tx) {
     db.messages.push(msg);
     return rows([clone(msg)]);
   }
+  // ── The closed-hours note (closed-hours-run.ts, owner 2026-10-05) ──
+  if (q === "INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at) VALUES (gen_random_uuid()::text, $1, 'ai', $2, $3::jsonb, now()) RETURNING id, conversation_id, sender, content, metadata, created_at") {
+    const msg = { id: 'msg-' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: JSON.parse(p[2]), created_at: nowIso() };
+    db.messages.push(msg);
+    return rows([clone(msg)]);
+  }
+  if (q === "SELECT sender, content, created_at, metadata->>'closed_note' AS note FROM messages WHERE conversation_id = $1 AND sender IN ('visitor', 'ai', 'agent') AND deleted_at IS NULL AND COALESCE(metadata->>'hidden', 'false') <> 'true' AND COALESCE(metadata->>'withheld', '') = '' AND content IS NOT NULL AND btrim(content) <> '' ORDER BY created_at DESC, id DESC LIMIT 40") {
+    return rows(db.messages.filter((x) => x.conversation_id === p[0] && ['visitor', 'ai', 'agent'].includes(x.sender) && !x.deleted_at && x.content && x.content.trim())
+      .slice().reverse().slice(0, 40).map((x) => ({ sender: x.sender, content: x.content, created_at: x.created_at, note: x.metadata && x.metadata.closed_note ? x.metadata.closed_note : null })));
+  }
+  if (q === 'SELECT health_score FROM conversations WHERE id = $1') { const c = conv(p[0]); return rows(c ? [{ health_score: c.health_score }] : []); }
+  if (q === 'SELECT value FROM chat_settings WHERE key = $1') { return rows(db.settings && db.settings[p[0]] != null ? [{ value: db.settings[p[0]] }] : []); }
   if (q === 'UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1') { const c = conv(p[0]); if (c) c.last_message_at = nowIso(); return rows([]); }
 
   // ── Merging two chats of one customer (merge-chats.ts) ──
@@ -1546,7 +1559,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     known({ id: 'r13p', status: 'agent_handling', assigned_to: RAHUL });
     known({ id: 'r13q', status: 'human_needed' });
     db.waiting.r13p = true;
-    at(ist(15, 0, 4));
+    at(ist(15, 0, 5));   // Monday 5 Oct, 15:00 IST: office hours (4 Oct is a Sunday: the office is closed, nobody is away)
     const fail = { re: /^SELECT actor, last_seen_at FROM staff_presence$/, code: 'XX000', message: 'server closed the connection' };
     db.fail.push(fail);
     try {
@@ -1638,7 +1651,8 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(mineCond, 'My chats condition');
     eq(L.params[Number(mineCond[1]) - 1], ANURAG);
     ok(L.sql.includes(OUTSIDE_SECTION) && L.sql.includes('c.merged_into IS NULL'));
-    ok(/ORDER BY g\.last_message_at DESC NULLS LAST, g\.created_at DESC LIMIT \$\d+$/.test(L.sql), 'newest activity first, as before');
+    // Owner 2026-10-05: a chat Chikki promised a Monday-morning answer (the closed-hours note) comes first; then newest activity, as before.
+    ok(/ORDER BY \(g\.promise_note_at IS NOT NULL\) DESC, g\.last_message_at DESC NULLS LAST, g\.created_at DESC LIMIT \$\d+$/.test(L.sql), 'promised chats first, then newest activity');
     ok(L.sql.includes('WINDOW w AS (PARTITION BY f.site_id, f.group_key ORDER BY f.last_message_at DESC NULLS LAST, f.created_at DESC, f.id)'));
     ok(L.sql.includes('g.assigned_to, g.assigned_at'));
     eq((L.unansweredSql.match(/count\(DISTINCT x\.gk\) FILTER \(WHERE/g) || []).length, 3);
@@ -1799,6 +1813,9 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
   await t('R20 the widget\'s hand-over lines: day exactly as before, night says the morning, visitors and guard texts untouched', async () => {
     known({ id: 'r20' });
     newConv({ id: 'r20v' });
+    // Since 2026-10-05 an upset verified customer's SECOND message of a night gets the closed-hours note
+    // (R66): the night sends below each go to a fresh chat, so this test keeps checking the lines alone.
+    let k = 0; const fresh = () => { const id = 'r20_' + (++k); known({ id }); return id; };
     const send = async (id, said, ai, ms) => {
       at(ms);
       C(id).status = 'ai_handling';
@@ -1814,28 +1831,29 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(out, 'I understand your concern. Your order is In Transit, track it here: https://shiptrack.store/track/abc.\n\nOur team will reply to you here in this chat tomorrow morning, after 10 AM.');
     ok(!/1 hour/.test(out));
     eq(C('r20').status, 'human_needed');
+    // (Day 2 is Friday 2 Oct 2026, day 5 Monday 5 Oct: 3 Oct is a Saturday, closed from 14:00 since 2026-10-05.)
     // 14:00: exactly what the widget sent before the night line.
     out = await send('r20', fraud, { content: aiFraud }, ist(14, 0, 2));
     eq(out, `${aiFraud}\n\n${esc.teamWillReplyLine(fraud)}`);
     eq(out, `${aiFraud}\n\nOur team will reply to you here in this chat within 1 hour.`);
     // 08:00 refund: "this morning", the line always added, never next to a 24-hour promise.
     const refund = 'I want a refund for my order';
-    out = await send('r20', refund, { content: 'Sure, I can help with that.' }, ist(8, 0, 3));
+    out = await send(fresh(), refund, { content: 'Sure, I can help with that.' }, ist(8, 0, 5));
     eq(out, "Sure, I can help with that.\n\nI've noted your refund or cancellation request. Our team will reply to you here in this chat this morning, after 10 AM.");
-    out = await send('r20', refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(8, 0, 3));
+    out = await send(fresh(), refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(8, 0, 5));
     eq(out, "I've noted your refund or cancellation request. Our team will reply to you here in this chat this morning, after 10 AM.");
     // By day a reply that already says 24 hours stays as it was (before: no line added).
-    out = await send('r20', refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(14, 0, 3));
+    out = await send('r20', refund, { content: 'Your refund request is with our team, they will reply within 24 hours.' }, ist(14, 0, 5));
     eq(out, 'Your refund request is with our team, they will reply within 24 hours.');
-    out = await send('r20', 'mujhe refund chahiye', { content: 'Theek hai.' }, ist(23, 0, 3));
+    out = await send(fresh(), 'mujhe refund chahiye', { content: 'Theek hai.' }, ist(23, 0, 5));
     eq(out, 'Theek hai.\n\nAapki refund ya cancellation ki request maine note kar li hai. Hamari team kal subah 10 baje ke baad isi chat mein aapko jawab degi.');
     // A threat at night: the fixed reply, no AI text, the morning line.
     const calls = global.__ai.calls.length;
-    out = await send('r20', 'I will file a police complaint against you', { content: 'should not be used' }, ist(22, 30, 3));
+    out = await send(fresh(), 'I will file a police complaint against you', { content: 'should not be used' }, ist(22, 30, 5));
     eq(out, "I'm really sorry for the trouble, and this matters to us. I've passed it to our team right now. Our team will reply to you here in this chat tomorrow morning, after 10 AM.");
     eq(global.__ai.calls.length, calls);
     // A visitor at night: the AI's own words, no team line, nobody moves the chat.
-    out = await send('r20v', fraud, { content: aiFraud }, ist(22, 0, 3));
+    out = await send('r20v', fraud, { content: aiFraud }, ist(22, 0, 5));
     eq(out, aiFraud);
     eq(C('r20v').status, 'ai_handling');
     // The guard's fixed hand-over texts come back exactly as written, day and night.
@@ -1843,11 +1861,11 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const handOver = Object.values(Function('return ' + guard.match(/const HAND_OVER = (\{[\s\S]*?\n\});/)[1])());
     const oldHandOver = Function('return ' + guard.match(/const OLD_HAND_OVER = (\[[\s\S]*?\n\]);/)[1])();
     for (const text of [...handOver, ...oldHandOver]) {
-      eq(await send('r20', 'where is my order', { content: text, escalated: true }, ist(22, 0, 3)), text);
-      eq(await send('r20', 'where is my order', { content: text, escalated: true }, ist(14, 0, 3)), text);
+      eq(await send(fresh(), 'where is my order', { content: text, escalated: true }, ist(22, 0, 5)), text);
+      eq(await send('r20', 'where is my order', { content: text, escalated: true }, ist(14, 0, 5)), text);
     }
     // An AI hand-over that promised an hour, at night: the morning line instead.
-    out = await send('r20', 'where is my order', { content: 'I have passed this to our team, they will reply within 1 hour.', escalated: true }, ist(22, 0, 3));
+    out = await send(fresh(), 'where is my order', { content: 'I have passed this to our team, they will reply within 1 hour.', escalated: true }, ist(22, 0, 5));
     eq(out, 'Our team will reply to you here in this chat tomorrow morning, after 10 AM.');
   });
 
@@ -3087,9 +3105,9 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
   });
 
   await t('R55 a threat that is not for Refund (estimated date not passed or today, delivered, cancelled, returned, failed, not loadable, old proof, phone match, another order): the 1-hour line, Needs you, no mark', async () => {
-    at(ist(11, 0, 18));
+    at(ist(11, 0, 16));   // Friday 16 Oct (18 Oct is a Sunday: the office is closed, R66 would add the closed-hours note)
     for (const [id, stage, extra] of [
-      ['r55a', 'In Transit', NOT_LATE], ['r55b', 'Out for Delivery', { estimated_delivery: '2026-10-18' }],
+      ['r55a', 'In Transit', NOT_LATE], ['r55b', 'Out for Delivery', { estimated_delivery: '2026-10-16' }],
       ['r55c', 'Delivered', {}], ['r55d', 'In Transit', { cancelled: true }], ['r55e', 'Return to Origin', {}], ['r55f', 'Delivery Exception', {}],
     ]) { known({ id }); order('#' + id, stage, extra); }
     known({ id: 'r55x' });                                                          // the order cannot be loaded
@@ -3108,7 +3126,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
   });
 
   await t('R56 a social-media threat, a fraud claim or anger alone on a late order: today\'s paths, no Refund (owner)', async () => {
-    at(ist(12, 0, 18));
+    at(ist(12, 0, 16));   // Friday (a weekday: the hand-over lines alone, R20)
     known({ id: 'r56a' }); order('#r56a', 'In Transit');
     let s0 = db.stmts.length;
     let r = await say('r56a', 'I will post about your company on instagram');
@@ -3546,6 +3564,113 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     } finally { delete process.env.REFUND_FORMS; }
     known({ id: 'r65n' }); order('#r65n', 'In Transit');
     eq(textOf(await say('r65n', 'I will go to consumer court')), RPROMISE.en, 'switched on again');
+  });
+
+  // ── R66: the closed-hours note for an upset customer (owner 2026-10-05) ─
+  const chRun = require(path.join(dir, 'closed-hours-run.js'));
+  // On a Sunday the team is back "tomorrow morning" (as the night line says); on a Saturday afternoon "on Monday morning".
+  const WEEKEND = (when) => `I understand how frustrating this has been, and I'm sorry. Our office is closed over the weekend, and courier coordination is limited on weekends too, so I can't get you a confirmed update right now. ${when}, our team will sit down with your case first thing, take it up with the shipping partner, and update you here in this chat.`;
+  const WEEKEND_EN = WEEKEND('Tomorrow morning, after 10 AM');
+  const SHORT_EN = 'Our team will take up your case first thing tomorrow morning, after 10 AM, and update you here in this chat. Thank you for your patience.';
+  await t('R66 Sunday, a Critical verified customer in AI handling: the AI text + the full note (no 1-hour line), Needs you, the marker; then the short line; then silence; a team reply ends it', async () => {
+    known({ id: 'r66', health_score: 82 }); order('#r66', 'In Transit');
+    const send = async (id, said, ai, ms, status0) => {
+      at(ms);
+      if (status0) C(id).status = status0;
+      global.__ai.next = ai;
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    const sun = (h, m = 0) => ist(h, m, 4);   // Sunday 4 Oct 2026
+    // 1. Sunday 12:00, a fraud claim: the AI's proof stays, the 1-hour line is replaced by the note.
+    const aiFraud = 'I understand your concern. Your order is In Transit, track it here: https://shiptrack.store/track/abc. Our team will look into this and reply within 1 hour.';
+    let out = await send('r66', 'This is a fraud site, where is my order??', { content: aiFraud }, sun(12, 0), 'ai_handling');
+    eq(out, `I understand your concern. Your order is In Transit, track it here: https://shiptrack.store/track/abc.\n\n${WEEKEND_EN}`);
+    ok(!/1 hour|tomorrow/.test(out));
+    eq(C('r66').status, 'human_needed');
+    const notes = () => db.messages.filter((x) => x.conversation_id === 'r66' && x.sender === 'ai' && x.metadata && x.metadata.closed_note).map((x) => x.metadata.closed_note);
+    deq(notes(), ['full']);
+    // 2. Writes again at 12:30 (the chat is with the team): the short line.
+    out = await send('r66', 'Nobody is answering me, this is ridiculous', { content: 'should not be used' }, sun(12, 30));
+    eq(out, SHORT_EN);
+    deq(notes(), ['full', 'short']);
+    eq(C('r66').status, 'human_needed');
+    // 3. A third time: nothing is sent (the team has it); "ok" too.
+    eq(await send('r66', 'Reply!!', { content: 'should not be used' }, sun(13, 0)), null);
+    eq(await send('r66', 'ok', { content: 'x' }, sun(13, 5)), null);
+    deq(notes(), ['full', 'short']);
+    // 4. A team member writes (Super Admin at 15:00 on Sunday), the customer writes again: no note (a person is active).
+    at(sun(15, 0));
+    status(await reply('owner', 'r66', 'Checked with the courier, your parcel is at the city hub.'), 200);
+    eq(await send('r66', 'When will it reach?', { content: 'x' }, sun(15, 10)), null);
+    deq(notes(), ['full', 'short']);
+    // 5. Monday 10:30 (office open): the ordinary reply, no note at all (the chat is still with the team: nothing from the AI).
+    eq(await send('r66', 'Any update?', { content: 'x' }, ist(10, 30, 5)), null);
+    deq(notes(), ['full', 'short']);
+  });
+  await t('R66 who gets it: Frustrated on the 3rd message, Critical at night on the 2nd, Calm never, a visitor never, "thanks" never; the hand-over lines alone otherwise', async () => {
+    const send = async (id, said, ai, ms) => {
+      at(ms); global.__ai.next = ai;
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    const sat = (h, m = 0) => ist(h, m, 3);   // Saturday 3 Oct 2026: closed from 14:00
+    // Frustrated (55), verified, Saturday 15:00, in Needs you: nothing on the 1st and 2nd message, the note on the 3rd.
+    known({ id: 'r66f', health_score: 55, status: 'human_needed' }); order('#r66f', 'In Transit');
+    eq(await send('r66f', 'where is my order', { content: 'x' }, sat(15, 0)), null);
+    eq(await send('r66f', 'hello?? where is my order', { content: 'x' }, sat(15, 20)), null);
+    eq(await send('r66f', 'I have been asking for hours', { content: 'x' }, sat(15, 40)), WEEKEND('On Monday morning, after 10 AM'));
+    // Critical, Monday night 22:00 (the office opens tomorrow): the 1st message gets the morning line as before, the 2nd the night note.
+    known({ id: 'r66n', health_score: 80 }); order('#r66n', 'In Transit');
+    let out = await send('r66n', 'This is a fraud, you people are scammers', { content: 'Your order is In Transit. Our team will reply within 1 hour.' }, ist(22, 0, 5));
+    eq(out, 'Your order is In Transit.\n\nOur team will reply to you here in this chat tomorrow morning, after 10 AM.');
+    eq(C('r66n').status, 'human_needed');
+    out = await send('r66n', 'Answer me now', { content: 'x' }, ist(22, 20, 5));
+    eq(out, "I understand how frustrating this has been, and I'm sorry. Our team is not in the office right now (we're here from 10 AM to 7:30 PM), so I can't get you a confirmed update at this hour. Tomorrow morning, after 10 AM, our team will sit down with your case first thing, take it up with the shipping partner, and update you here in this chat.");
+    // Calm (20) on Sunday: nothing beyond the ordinary lines.
+    known({ id: 'r66c', health_score: 20, status: 'human_needed' }); order('#r66c', 'In Transit');
+    for (const m of [0, 10, 20, 30]) eq(await send('r66c', 'where is my order please', { content: 'x' }, ist(12, m, 4)), null);
+    // A visitor, however upset, on Sunday: the AI's own words, nobody moves the chat, no note.
+    newConv({ id: 'r66v', health_score: 90 });
+    eq(await send('r66v', 'this is a fraud site, answer me', { content: 'Please share your order ID and phone number.' }, ist(12, 0, 4)), 'Please share your order ID and phone number.');
+    eq(C('r66v').status, 'ai_handling');
+    ok(!db.messages.some((x) => x.conversation_id === 'r66v' && x.metadata && x.metadata.closed_note));
+    // Hinglish, Critical, Sunday, in Needs you: the Hinglish note; "thanks" afterwards gets nothing.
+    known({ id: 'r66h', health_score: 85, status: 'human_needed' }); order('#r66h', 'In Transit');
+    eq(await send('r66h', 'bhai mera order kahan hai, koi jawab nahi de raha', { content: 'x' }, ist(12, 0, 4)),
+      'Aapki pareshani samajh aati hai, aur iske liye hamein afsos hai. Weekend pe hamara office band rehta hai, aur courier ke saath coordination bhi weekend pe limited rehti hai, isliye abhi pakka update dena mushkil hai. Kal subah 10 baje ke baad hamari team sabse pehle aapka case lekar baithegi, shipping partner se baat karegi, aur isi chat mein aapko update degi.');
+    eq(await send('r66h', 'theek hai', { content: 'x' }, ist(12, 5, 4)), null);
+    // A Refund / Ship again chat keeps its own one reminder (nothing from here).
+    known({ id: 'r66r', health_score: 85, status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Rahul' }); order('#r66r', 'In Transit');
+    eq(await send('r66r', 'where is my refund??', { content: 'x' }, ist(12, 0, 4)), null);
+    ok(!db.messages.some((x) => x.conversation_id === 'r66r' && x.metadata && x.metadata.closed_note));
+  });
+  await t('R66 the list: a promised chat carries promise_due_at (Monday 10:00 IST after a weekend note) and office_open follows the week; the holidays row is read once a minute', async () => {
+    at(ist(12, 0, 4));
+    let r = await list('anurag');
+    status(r, 200);
+    ok(r.body.office_open === false, 'Sunday: office closed');
+    ok(db.list.sql.includes("AND m.metadata->>'closed_note' = 'full') AS closed_note_at"), 'the note time in the lateral');
+    ok(db.list.sql.includes('(w.last_agent_at IS NULL OR w.last_agent_at < w.closed_note_at) THEN w.closed_note_at END AS promise_note_at'), 'until a team member writes');
+    at(ist(11, 0, 5));
+    r = await list('anurag'); ok(r.body.office_open === true, 'Monday 11:00: open');
+    at(ist(15, 0, 3));
+    r = await list('anurag'); ok(r.body.office_open === false, 'Saturday 15:00: closed (half day)');
+    // The next opening after a Sunday note is Monday 10:00 IST (04:30Z).
+    const oh = require(path.join(dir, 'office-hours.js'));
+    eq(new Date(oh.nextOpenMs(ist(12, 0, 4))).toISOString(), '2026-10-05T04:30:00.000Z');
+    // A listed holiday: Monday 5 Oct closed, the note says Tuesday; the list reads chat_settings.
+    db.settings = { office_holidays: '2026-10-05' };
+    const hol = require(path.join(dir, 'holidays.js'));
+    deq(await hol.loadHolidays(ist(12, 0, 26)), ['2026-10-05']);   // read with a clock past every earlier read in this suite (R65 ran on 24 Oct): the minute's cache has expired
+    eq(oh.afterHours(ist(12, 0, 4), hol.cachedHolidays()), 'tuesday');
+    at(ist(11, 0, 5));
+    r = await list('anurag'); ok(r.body.office_open === false, 'a holiday Monday: closed');
+    eq((await thread('anurag', 'r66')).body.staff.office_open, false, 'the thread says so too (the cached list)');
+    db.settings = {};
+    deq(await hol.loadHolidays(ist(12, 0, 27)), []);
   });
 
   Object.assign(console, realConsole);

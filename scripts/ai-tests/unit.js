@@ -1235,7 +1235,14 @@ t('H7: a message that is only a phone number (lookup-guard.ts isBarePhone)', () 
   assert.ok(/order ID/.test(en) && /confirmation/.test(en) && !tp.promisesToday(en));
   assert.ok(/order ID/.test(lg.orderIdAfterPhoneReply([{ sender: 'visitor', content: 'mera order kahan hai' }])) && /Kripya/.test(lg.orderIdAfterPhoneReply([{ sender: 'visitor', content: 'mera order kahan hai' }])));
 });
-t('rulebook: 7.10 (owner 4 Oct) is a code rule at the end of section 7', () => {
+t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that names the closed-hours note; 7.6 names the week', () => {
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
+  assert.strictEqual(sec.rules[sec.rules.length - 1].id, '7.11');
+  assert.ok(rule('7.11').how === 'code' && /Promised Mon 10 AM/.test(rule('7.11').text) && /never says the courier is closed/.test(rule('7.11').text));
+  assert.ok(/Saturday is a half day/.test(rule('7.6').text) && /on Monday morning, after 10 AM/.test(rule('7.6').text));
+});
+t('rulebook: 7.10 (owner 4 Oct) is a code rule in section 7', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   assert.ok(rb.RULE_IDS.has('7.10') && rule('7.10').how === 'code' && /Sudharo/.test(rule('7.10').text));
 });
@@ -1244,4 +1251,91 @@ t('rulebook: 4.11 (owner 4 Oct) is a code rule at the end of section 4', () => {
   assert.ok(rb.RULE_IDS.has('4.11') && rule('4.11').how === 'code');
   assert.ok(/revised date/.test(rule('4.11').text) && /5 days/.test(rule('4.11').text));
 });
+
+// ── The closed-hours note for an upset customer (owner 2026-10-05, closed-hours.ts) ──
+const ch = load('closed-hours');
+t('closed-hours: who gets the note and when (Critical: weekend 1st / night 2nd message; Frustrated: 3rd; calm never; full, short, then silent; a team member active: never)', () => {
+  const step = (o) => ch.closedNoteStep({ why: 'weekend', score: 80, asks: 1, sent: 0, teamActiveMin: null, ...o });
+  assert.strictEqual(step({}), 'full');
+  assert.strictEqual(step({ sent: 1 }), 'short');
+  assert.strictEqual(step({ sent: 2 }), 'silent');
+  assert.strictEqual(step({ why: 'night' }), null);                       // Critical at night: not on the 1st message
+  assert.strictEqual(step({ why: 'night', asks: 2 }), 'full');
+  assert.strictEqual(step({ why: 'holiday' }), 'full');
+  assert.strictEqual(step({ score: 74 }), null);                          // Frustrated: the 3rd message
+  assert.strictEqual(step({ score: 74, asks: 2 }), null);
+  assert.strictEqual(step({ score: 50, asks: 3 }), 'full');
+  assert.strictEqual(step({ score: 49, asks: 9 }), null);                 // calmer: never
+  assert.strictEqual(step({ why: null }), null);                          // the office is open
+  assert.strictEqual(step({ teamActiveMin: 10 }), null);                  // a person is in the chat
+  assert.strictEqual(step({ teamActiveMin: 30 }), 'full');
+  assert.deepStrictEqual([ch.CLOSED_NOTE_CRITICAL_MIN, ch.CLOSED_NOTE_UPSET_MIN, ch.TEAM_ACTIVE_MIN, ch.CLOSED_NOTE_KEY], [75, 50, 30, 'closed_note']);
+});
+t('closed-hours: the notes are fixed text in English and Hinglish, honest about OUR hours, never "the courier is closed", never a day of arrival, and the waiting rule matches every one', () => {
+  const EN = 'where is my order, nobody answers', HI = 'bhai mera order kahan hai';
+  const all = [];
+  for (const why of ['night', 'weekend', 'holiday']) {
+    for (const after of ['tomorrow', 'this_morning', 'monday', 'tuesday']) {
+      for (const [said, hi] of [[EN, false], [HI, true]]) {
+        const full = ch.closedNote(said, why, after, 'full'), short = ch.closedNote(said, why, after, 'short');
+        assert.strictEqual(ch.closedNote(said, why, after, 'silent'), null);
+        all.push(full);   // the short line names only when the team is back, so it is the same for every `why`
+        for (const x of [full, short]) {
+          assert.ok(x && x.length > 40, `${why} ${after}`);
+          assert.strictEqual(tp.promisesToday(x), false, x);
+          assert.ok(!/1 hour|24 hours|ghante|courier (is|are) (closed|off)|courier band|courier ka off/i.test(x), x);
+          assert.ok(new RegExp(waiting.AI_NOT_AN_ANSWER_REGEX, 'i').test(x), 'still waiting: ' + x);
+          assert.ok(new RegExp(ch.CLOSED_NOTE_REGEX, 'i').test(x), x);
+          assert.strictEqual(esc.looksHinglish(x), hi || /subah/.test(x), x);
+          assert.ok(!x.includes("'") || !hi, 'no apostrophes in the Hinglish line');
+        }
+        assert.ok(full.includes(esc.teamBackWhen(after, hi).charAt(0).toUpperCase() + esc.teamBackWhen(after, hi).slice(1)), full);
+        assert.ok(short.includes(esc.teamBackWhen(after, hi)), short);
+      }
+    }
+  }
+  assert.strictEqual(new Set(all).size, all.length, 'every full note is different');
+  assert.ok(ch.closedNote(EN, 'weekend', 'monday', 'full').includes('closed over the weekend') && ch.closedNote(EN, 'weekend', 'monday', 'full').includes('On Monday morning, after 10 AM, our team will sit down with your case first thing'));
+  assert.ok(ch.closedNote(EN, 'holiday', 'tuesday', 'full').includes('closed for the holiday'));
+  assert.ok(ch.closedNote(EN, 'night', 'tomorrow', 'full').includes('10 AM to 7:30 PM'));
+  assert.ok(ch.closedNote(HI, 'weekend', 'monday', 'full').includes('Monday subah 10 baje ke baad hamari team sabse pehle aapka case lekar baithegi'));
+  // waiting.ts carries the same phrase (the SQL regex): a change to one must change the other.
+  assert.ok(waiting.AI_NOT_AN_ANSWER_REGEX.endsWith('|' + ch.CLOSED_NOTE_REGEX));
+  // The reply with the note as its only promise: the fixed team lines and hour promises go, the AI's facts stay.
+  const note = ch.closedNote(EN, 'weekend', 'monday', 'full');
+  assert.strictEqual(ch.withoutTeamLines(`Your order is In Transit.\n\n${esc.teamWillReplyLine(EN, 'monday')}`, [esc.teamWillReplyLine(EN, 'monday')]), 'Your order is In Transit.');
+  assert.strictEqual(ch.withoutTeamLines(esc.teamWillReplyLine(EN, null), [esc.teamWillReplyLine(EN, null)]), '');
+  assert.ok(note.length > 0);
+});
+t('escalation: the week\'s lines name the day ("on Monday morning, after 10 AM"), promise no hours and no "today"', () => {
+  for (const after of ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']) {
+    const Day = after.charAt(0).toUpperCase() + after.slice(1);
+    assert.strictEqual(esc.teamWillReplyLine(EN, after), `Our team will reply to you here in this chat on ${Day} morning, after 10 AM.`);
+    assert.strictEqual(esc.teamWillReplyLine(HI, after), `Hamari team ${Day} subah 10 baje ke baad isi chat mein aapko jawab degi.`);
+    assert.strictEqual(esc.routineLine('refund', EN, after), `I've noted your refund or cancellation request. Our team will reply to you here in this chat on ${Day} morning, after 10 AM.`);
+    assert.strictEqual(esc.weekdayLabel(after), Day);
+    for (const x of [esc.teamWillReplyLine(EN, after), esc.urgentAck(HI, after), esc.routineLine('refund', HI, after)]) {
+      assert.strictEqual(tp.promisesToday(x), false, x);
+      assert.ok(!/1 hour|24 hours|ghante|tomorrow|\bkal\b/.test(x), x);
+    }
+  }
+  assert.strictEqual(esc.weekdayLabel('tomorrow'), null);
+  assert.strictEqual(esc.weekdayLabel(null), null);
+  assert.strictEqual(esc.teamBackWhen('tomorrow', false), 'tomorrow morning, after 10 AM');
+  assert.strictEqual(esc.teamBackWhen('monday', true), 'Monday subah 10 baje ke baad');
+  // The day and night lines are exactly what they were (the 12 night lines above still hold).
+  assert.strictEqual(esc.teamWillReplyLine(EN, null), 'Our team will reply to you here in this chat within 1 hour.');
+});
+t('suggest: outside the week the instruction names the day; an upset customer while the office is closed gets the honest closed-hours option (rulebook 7.11)', () => {
+  const base = { lang: 'auto', after: 'monday', caseKind: null, orderJson: '{"status":"Out for Delivery"}' };
+  const mon = sg.suggestInstruction(base);
+  assert.ok(mon.includes('"on Monday morning, after 10 AM, here in this chat" ("Monday subah 10 baje ke baad isi chat mein")') && mon.includes('Saturday to 14:00') && mon.includes('never "tomorrow"'), mon);
+  assert.ok(!mon.includes('This customer is very upset'));
+  const upset = sg.suggestInstruction({ ...base, upsetClosed: 'weekend' });
+  assert.ok(upset.includes('This customer is very upset and the office is closed') && upset.includes('closed over the weekend') && upset.includes('on Monday morning, after 10 AM we sit down with their case') && upset.includes('Never say the courier is closed'), upset);
+  assert.ok(sg.suggestInstruction({ ...base, after: 'tomorrow', upsetClosed: 'night' }).includes('not in the office right now') && sg.suggestInstruction({ ...base, after: 'tomorrow', upsetClosed: 'night' }).includes('tomorrow morning, after 10 AM we sit down'));
+  assert.ok(sg.suggestInstruction({ ...base, after: 'tuesday', upsetClosed: 'holiday' }).includes('closed for the holiday'));
+  assert.ok(!sg.suggestInstruction({ ...base, after: null, upsetClosed: 'weekend' }).includes('very upset'), 'the office is open: no such line');
+});
+
 console.log(`UNIT: ${n} groups passed`);

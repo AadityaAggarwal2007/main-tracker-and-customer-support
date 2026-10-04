@@ -6,6 +6,7 @@ import {
 import { query } from '@/lib/db';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
 import { AWAY_AFTER_MIN, awayMinutes, isAway, isOfficeHours } from '@/lib/office-hours';
+import { cachedHolidays } from './holidays';
 import {
   OWNER_KEY, actorTier, caseMarkGate, takeKind, transferTargets,
   type Actor, type Holder, type Member, type TakeKind,
@@ -84,7 +85,8 @@ export function staffActor(user: AuthUser | null | undefined): Actor | null {
 // right after a restart everyone would otherwise look unseen since 10:00, and a junior could mark
 // Refund / Ship again or take a waiting chat from a senior who was here a minute ago (fail closed:
 // a restart never gives extra rights).
-const awayOf = (key: string, now: number) => (presenceRead() ? awayMinutes(lastSeenMs(key), now) : null);
+// The holiday list is the last one read (holidays.ts): on a holiday nobody is away, as on Sunday.
+const awayOf = (key: string, now: number) => (presenceRead() ? awayMinutes(lastSeenMs(key), now, cachedHolidays()) : null);
 
 // conversations.assigned_to as a holder the rules can use. A stored member who was removed, switched
 // off, lost chat.reply or lost the chat's panel holds nothing (the chat is free; the next claim logs
@@ -135,8 +137,8 @@ function activeSeniors(now: number) {
 export function seniorsAwayNow(now = Date.now()): 'none' | boolean {
   const seniors = activeSeniors(now);
   if (seniors.length === 0) return 'none';
-  if (!isOfficeHours(now) || !presenceRead()) return false;
-  return seniors.every((s) => isAway(s.lastSeen, now));
+  if (!isOfficeHours(now, cachedHolidays()) || !presenceRead()) return false;
+  return seniors.every((s) => isAway(s.lastSeen, now, cachedHolidays()));
 }
 
 // The Refund / Ship again gate for this person now, with the line the inbox shows under the buttons.

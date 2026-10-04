@@ -1,6 +1,6 @@
 'use client';
 
-import { RotateCw, Info, Check, Undo2, Clock, PhoneCall, Truck, User } from 'lucide-react';
+import { RotateCw, Info, Check, Undo2, Clock, PhoneCall, Truck, User, CalendarClock } from 'lucide-react';
 import { healthLevel } from '@/lib/chat/health-rules';
 import { formatWaiting, waitingLevel, type WaitingLevel } from '@/lib/chat/waiting';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
@@ -62,6 +62,23 @@ export function WaitingChip({ since }: { since: string }) {
   return (
     <Chip tone={WAITING_TONE[waitingLevel(ms)]} title={`The customer has waited ${formatWaiting(ms)} for an answer (their last message is unanswered)`}>
       <Clock /> Waiting {waitingText(ms)}
+    </Chip>
+  );
+}
+
+// Chikki told this upset customer, while the office was closed (night, weekend, holiday), that the
+// team sits down with their case first thing when it opens (closed-hours.ts, owner 2026-10-05).
+// "Promised Mon 10 AM" until then, red "Promise due" once that time has come; gone as soon as a
+// team member writes in the chat.
+export function PromiseChip({ dueAt }: { dueAt: string }) {
+  const due = Date.parse(dueAt);
+  if (Number.isNaN(due)) return null;
+  const when = new Date(due).toLocaleString('en-IN', { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  const now = Date.now();
+  const late = now >= due;
+  return (
+    <Chip tone={late ? 'danger' : 'warn'} title={`While the office was closed, Chikki told this customer the team will take up their case first thing ${when}. ${late ? 'That time has come: reply now.' : 'Reply by then.'} The chip goes once a team member writes.`}>
+      <CalendarClock /> {late ? `Promise due · ${when}` : `Promised ${when}`}
     </Chip>
   );
 }

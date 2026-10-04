@@ -387,3 +387,48 @@ reply (`isBarePhone`, `asksForPhone`, `orderIdAfterPhoneReply` in lookup-guard.t
 the order ID is what is missing, with where to find it, in the customer's language. Rules 5.1 / 10 (never re-ask
 what was given): PASS by code for this case; 8.1 unchanged (order ID + phone both still needed). Rulebook 2.10.
 Also: the suggested replies now speak as the team ("we will", never "our team will"; `asTeam` guard, aa44577).
+
+## Owner change 2026-10-05: the week, and the closed-hours note for a very upset customer
+
+Owner (5 Oct, voice note): "Saturday Sunday koi bhi courier ki taraf se jawab nahi aata ... jab customer critical level se
+paar ho, kuch aisa reasoning bhi bana sakte hain ki Saturday Sunday off hai ji hamara, aur shaam saadhe saat se subah dus
+tak team active nahi rehti; subah dus baje team ke saath baith ke aapka case discuss karke batayenge." His 13 answers are
+the consent for THIS change only: Saturday half day (1), office hours change in the system too (2), Critical or Frustrated
+on the 3rd ask (3), verified only (4), any problem not only delay (5), only when really closed (6), at night after 1-2 asks
+(7), an inbox chip and the chat on top (8), the 3rd time silent (9), holidays count (10), chat only, no email (11), the
+suggested replies too (12), the wording left to me (13). Built and pushed 2026-10-05; deploy = code only, NO SQL (the
+holidays live in the existing `chat_settings` table), no new env value.
+
+- **The week** (`office-hours.ts`): Monday to Friday 10:00-19:30, Saturday 10:00-14:00 (I took 14:00 for "half day";
+  one constant, `SATURDAY_CLOSE_MIN`), Sunday off, plus the holidays the Super Admin lists in Team > "Office hours &
+  holidays". Every "the team replies ..." line now names the day the team is back ("on Monday morning, after 10 AM",
+  "on Tuesday morning" after a Monday holiday), in the chat box AND in email hand-overs; nobody is "away" (no away take,
+  no junior mark) on Sunday, a holiday or a Saturday afternoon. The team score keeps counting 10:00-19:30 every day for
+  its office minutes (unchanged), but a reply on Sunday now counts as "outside 10:00-19:30" in its chat line.
+- **Rule 15 / 16 / 17 (the 1-hour and 24-hour promises):** on a Saturday afternoon or Sunday the customer is now told
+  "Monday morning, after 10 AM" instead of "within 1 hour / 24 hours". That is the night line's logic (owner 1 Oct) applied
+  to the week; the owner asked for it in plain words (answers 1, 2). The SLA in the file is unchanged; the customer is
+  told the truth about when a person is there. PASS as the owner's decision; flagged here because the locked lines' text
+  changes on those days.
+- **The note** (`closed-hours.ts`, `closed-hours-run.ts`, the widget route): only a VERIFIED customer (8.1, 9: a visitor
+  never hears of the team), only while the office is closed, Critical (75+) on the 1st message of a weekend / holiday or
+  the 2nd of a night, Frustrated (50-74) on the 3rd message since the office closed; the full note once per closed
+  stretch, then one short line, then silence; never in a Refund / Ship again chat (their own reminders), never over the
+  Refund / tracking-claim texts, never while a team member wrote in the last 30 minutes, never on "ok / thanks". The chat
+  goes to Needs You (11) and stays waiting (14, 24: the note counts as "not an answer", so it is never auto-closed) and the
+  inbox lists it first with a "Promised Mon 10 AM" chip, red once that time has come, until a team member writes (26).
+- **Rule 19 (never invent a delay reason) and 40 (truthful):** the note says OUR office is closed and that courier
+  coordination / movement is "limited" on weekends and holidays; it never says the courier is closed (Valmo delivers on
+  Saturdays), never names a reason for this order's delay and never a day of arrival (4.3: every note passes the
+  today-promise guard; "take it up with the shipping partner" is worded so). PASS. My call, to be confirmed by the owner:
+  the exact wording is in `closed-hours.ts` (English + Hinglish).
+- **Rules 40 / 41:** fixed text, "our team", never a name, model or AI word. PASS. **12:** at most two lines per closed
+  stretch, never the same one twice. PASS. **28 / 29 / 36:** nothing stored but a marker on the AI message
+  (`metadata.closed_note`), no SQL, no secret, old chats untouched. PASS.
+- Suggested replies (7.10): the drafts name the day too, and for an upset customer while closed one option may say the
+  same honest thing (answer 12). Rulebook 7.6 (updated), 7.11 (new).
+- Tests: `unit.js` (78 groups), `team-unit.js` (16), `team-routing.js` (87: R66 the widget route on a Sunday, a Saturday
+  afternoon, a Monday night; R13 / R20 / R55 / R56 moved to weekdays because 3, 4 and 18 Oct 2026 fall on a weekend),
+  the full `npm run test:ai` green, `npx tsc --noEmit` 0, `npm run build` ok. Not run: the live suite (`run-on-vps.sh`,
+  the owner's Mac); the note is fixed text, not the model's.
+- Not done (owner's answers): email (11); the manual team line for the late-order page (still open from 4 Oct).

@@ -12,10 +12,10 @@
 // every option goes through (the same guards as Chikki's own replies: no "today / tomorrow",
 // no form link, no chargeback advice, no address echo, no courier name). suggest-run.ts does
 // the database and the model call.
-import type { AfterHours } from '@/lib/office-hours';
+import type { AfterHours, ClosedWhy } from '@/lib/office-hours';
 import { dropFormMentions, hasFormLink } from '@/lib/refund/link-mask';
 import { dropDisputeAdvice } from './dispute-advice';
-import { looksHinglish } from './escalation';
+import { looksHinglish, teamBackWhen, weekdayLabel } from './escalation';
 import { dropAddressEcho, withoutUnaskedCourier } from './reply-guards';
 import { dropTodayPromise } from './today-promise';
 
@@ -41,6 +41,29 @@ const TEAM_TIME: Record<'day' | 'tomorrow' | 'this_morning', string> = {
   tomorrow: 'It is after office hours now (the team works 10:00 to 19:30 IST). If an option says when the team comes back to the customer, it is "tomorrow morning, after 10 AM, here in this chat" ("kal subah 10 baje ke baad isi chat mein"); never "within 1 hour" or "within 24 hours".',
   this_morning: 'It is before office hours now (the team works 10:00 to 19:30 IST). If an option says when the team comes back to the customer, it is "this morning, after 10 AM, here in this chat" ("aaj subah 10 baje ke baad isi chat mein"); never "within 1 hour" or "within 24 hours".',
 };
+// The week (owner 2026-10-05): the office is closed until a named day (Saturday is a half day,
+// Sunday and the listed holidays are off), so the time line names it: "on Monday morning".
+function teamTimeLine(after: AfterHours): string {
+  if (!after) return TEAM_TIME.day;
+  if (after === 'tomorrow' || after === 'this_morning') return TEAM_TIME[after];
+  return `It is outside office hours now (the team works Monday to Friday 10:00 to 19:30 IST and Saturday to 14:00; Sunday and holidays off). If an option says when the team comes back to the customer, it is "${teamBackWhen(after, false)}, here in this chat" ("${teamBackWhen(after, true)} isi chat mein"); never "within 1 hour" or "within 24 hours", never "tomorrow".`;
+}
+// An upset customer while the office is closed (closed-hours.ts, owner 2026-10-05): one option may
+// say honestly why nobody can confirm anything right now and that we sit down with their case first
+// thing when the office opens. The same limits as Chikki's note: never that the courier is closed,
+// never a reason for THIS order's delay.
+const CLOSED_WHY_LINE: Record<Exclude<ClosedWhy, null>, string> = {
+  weekend: 'our office is closed over the weekend and courier coordination is limited on weekends too',
+  holiday: 'our office is closed for the holiday and courier movement is limited too',
+  night: 'our team is not in the office right now (we are here from 10 AM to 7:30 PM)',
+};
+function upsetClosedLine(why: ClosedWhy, after: AfterHours): string {
+  if (!why || !after) return '';
+  const day = weekdayLabel(after);
+  const when = day ? `on ${day} morning, after 10 AM` : after === 'tomorrow' ? 'tomorrow morning, after 10 AM' : 'this morning, after 10 AM';
+  return `
+- This customer is very upset and the office is closed. One option may say, honestly, that ${CLOSED_WHY_LINE[why]}, so we cannot confirm anything right now, and that ${when} we sit down with their case first thing, take it up with the shipping partner and update them here. Never say the courier is closed or off, never give a reason for this order's delay, never a day of arrival.`;
+}
 
 export interface SuggestContext {
   lang: SuggestLang;
@@ -48,13 +71,16 @@ export interface SuggestContext {
   caseKind: 'refund' | 'reship' | null;
   // The verified order as Chikki's lookup shows it (orders.ts toFoundOrder), as JSON text; null = none.
   orderJson: string | null;
+  // Why the office is closed now (office-hours.ts closedWhy) when the customer is upset enough for the
+  // closed-hours note (closed-hours.ts CLOSED_NOTE_UPSET_MIN); null or missing = the usual lines.
+  upsetClosed?: ClosedWhy;
 }
 
 // Appended to Chikki's full system prompt (rules, saved answers, Brain, team examples): what to
 // draft and how. It overrides the chat-box persona lines above it, because here Chikki is not the
 // one replying.
 export function suggestInstruction(ctx: SuggestContext): string {
-  const when = ctx.after ? TEAM_TIME[ctx.after] : TEAM_TIME.day;
+  const when = teamTimeLine(ctx.after);
   const caseLine = ctx.caseKind === 'refund'
     ? 'This chat is in the Refund section: the team is handling the refund. Options may say the team is on it and that the refund form / the next step comes here in this chat from the team; never an amount, a date, a payment method, "approved" / "processed", and never a form link.'
     : ctx.caseKind === 'reship'
@@ -70,7 +96,7 @@ You are not replying yourself. A member of the Vastora support team has this cha
 - The sender IS the team, so the team is "we", never a third party: "we will get back to you", "I'll check and update you here", "hum dekh ke batate hain". Never "our team will reply", "the team will review", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated. (A reply already sent in this chat may say "our team will reply": your options do not repeat that; they are the team's own answer.)
 - Facts only from ORDER FACTS below and from what the customer wrote. Give the status, the estimated date (call it estimated) and the tracking link when they help. Never invent a scan, a city, a reason, a courier name or a date. If ORDER FACTS says the date is being confirmed, give no date.
 - Never: a day of arrival (today, tonight, tomorrow, aaj, kal); a refund amount, date or method, or "approved" / "processed"; any form or link other than the tracking link in ORDER FACTS; a courier's name (say "our courier partner"); advice to raise a chargeback, a bank or UPI dispute, a police or consumer complaint; asking the customer for anything except the order ID and the phone number on the order; a payment link or "pay again"; a customer-care number.
-- ${when}
+- ${when}${upsetClosedLine(ctx.upsetClosed ?? null, ctx.after)}
 ${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this chat.
 
 ORDER FACTS

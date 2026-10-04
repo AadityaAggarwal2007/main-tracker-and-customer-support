@@ -102,6 +102,9 @@ export interface Conversation {
   urgent_waiting?: boolean;
   // Any of the row's chats (one customer's group) waits for an answer.
   group_waiting?: boolean;
+  // Chikki told this customer, while the office was closed, that the team sits down with their case
+  // first thing when it opens (closed-hours.ts): when that is (ISO), until a team member writes.
+  promise_due_at?: string | null;
 }
 
 // One of the customer's older chats, shown read-only above the latest one.

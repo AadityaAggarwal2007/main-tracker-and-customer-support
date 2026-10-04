@@ -1036,6 +1036,7 @@ export default function ChatSupportPage() {
   // The Waiting timer is for customers only (owner, 2026-09-30): a visitor shows none.
   const activeWaitingRow = activeConv ? conversations.find(c => c.id === activeConv.id) : null;
   const activeWaiting = activeWaitingRow && !isVisitorChat(activeWaitingRow) ? (activeWaitingRow.waiting_since ?? null) : null;
+  const activePromise = activeWaitingRow && !isVisitorChat(activeWaitingRow) && activeWaitingRow.status !== 'resolved' ? (activeWaitingRow.promise_due_at ?? null) : null;
   // Worked out from the files each time, so it goes away as soon as they are ready.
   const sendHint = !sendBlocked ? ''
     : pendingFiles.some(p => p.status === 'uploading') ? 'Wait for the files to finish uploading.'
@@ -1210,7 +1211,7 @@ export default function ChatSupportPage() {
             {activeConv && (
               <>
                 {/* Thread header */}
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">

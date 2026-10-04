@@ -61,6 +61,50 @@ t('U1 todayOpenMs: 10:00 IST of the India day, whatever the seconds', () => {
 const ist = (hhmm, day = '2026-10-01') => at(`${day}T${hhmm}:00+05:30`);
 const YESTERDAY = ist('18:00', '2026-09-30');
 
+// Owner 2026-10-05: the week. 3 Oct 2026 is a Saturday (half day, to 14:00), 4 Oct a Sunday (off), 5 Oct a Monday.
+t('U1 the week: Saturday closes at 14:00, Sunday is off, a holiday is off; afterHours names the day the team is back', () => {
+  const H = ['2026-10-05'];                                                  // a holiday Monday
+  const rows = [
+    // IST wall time              afterHours      office   closedWhy    closedSince (IST)      nextOpen (IST)
+    ['2026-10-02T20:00', 'tomorrow', false, 'night', '2026-10-02T19:30', '2026-10-03T10:00'],   // Friday night -> Saturday morning
+    ['2026-10-03T09:00', 'this_morning', false, 'night', '2026-10-02T19:30', '2026-10-03T10:00'],
+    ['2026-10-03T11:00', null, true, null, null, null],                                          // Saturday half day
+    ['2026-10-03T13:59', null, true, null, null, null],
+    ['2026-10-03T14:00', 'monday', false, 'weekend', '2026-10-03T14:00', '2026-10-05T10:00'],
+    ['2026-10-04T12:00', 'tomorrow', false, 'weekend', '2026-10-03T14:00', '2026-10-05T10:00'],   // Sunday: back tomorrow
+    ['2026-10-05T01:00', 'this_morning', false, 'night', '2026-10-03T14:00', '2026-10-05T10:00'],
+    ['2026-10-05T11:00', null, true, null, null, null],
+    ['2026-10-05T20:00', 'tomorrow', false, 'night', '2026-10-05T19:30', '2026-10-06T10:00'],
+  ];
+  for (const [when, after, office, why, sinceIst, nextIst] of rows) {
+    const ms = ist(when.slice(11), when.slice(0, 10));
+    assert.strictEqual(oh.afterHours(ms), after, when);
+    assert.strictEqual(oh.isOfficeHours(ms), office, when);
+    assert.strictEqual(oh.closedWhy(ms), why, when);
+    assert.strictEqual(oh.closedSinceMs(ms), sinceIst ? ist(sinceIst.slice(11), sinceIst.slice(0, 10)) : null, when + ' since');
+    assert.strictEqual(oh.nextOpenMs(ms), nextIst ? ist(nextIst.slice(11), nextIst.slice(0, 10)) : null, when + ' next');
+  }
+  // A holiday Monday: Sunday says Tuesday, the Monday itself is a holiday (closed all day), Tuesday is a working day.
+  assert.strictEqual(oh.afterHours(ist('12:00', '2026-10-04'), H), 'tuesday');
+  assert.strictEqual(oh.closedWhy(ist('12:00', '2026-10-05'), H), 'holiday');
+  assert.strictEqual(oh.isOfficeHours(ist('12:00', '2026-10-05'), H), false);
+  assert.strictEqual(oh.afterHours(ist('12:00', '2026-10-05'), H), 'tomorrow');
+  assert.strictEqual(oh.closedSinceMs(ist('12:00', '2026-10-05'), H), ist('14:00', '2026-10-03'));
+  assert.strictEqual(oh.nextOpenMs(ist('12:00', '2026-10-05'), H), ist('10:00', '2026-10-06'));
+  assert.strictEqual(oh.afterHours(ist('12:00', '2026-10-06'), H), null);
+  // Two holidays in a row and a weekend: the next working day is named.
+  assert.strictEqual(oh.afterHours(ist('15:00', '2026-10-03'), ['2026-10-05', '2026-10-06']), 'wednesday');
+  // Nobody is away on Sunday, on a holiday, or on Saturday afternoon.
+  assert.strictEqual(oh.awayMinutes(null, ist('12:00', '2026-10-04')), null);
+  assert.strictEqual(oh.awayMinutes(null, ist('12:00', '2026-10-05'), H), null);
+  assert.strictEqual(oh.awayMinutes(null, ist('14:30', '2026-10-03')), null);
+  assert.strictEqual(oh.awayMinutes(null, ist('12:00', '2026-10-03')), 120);
+  // The holiday list as typed: real dates only, each once, sorted.
+  assert.deepStrictEqual(oh.parseHolidays('2026-11-08\n 2026-10-20, junk 2026-02-31\n2026-10-20'), ['2026-10-20', '2026-11-08']);
+  assert.deepStrictEqual(oh.parseHolidays(null), []);
+  assert.deepStrictEqual([oh.SATURDAY_CLOSE_MIN, oh.WEEKDAY_NAMES.length], [840, 7]);
+});
+
 t('U1 awayMinutes / isAway: each day starts fresh at 10:00; nobody is away at night', () => {
   assert.strictEqual(oh.awayMinutes(YESTERDAY, ist('10:20')), 20);
   assert.strictEqual(oh.isAway(YESTERDAY, ist('10:20')), false);

@@ -8,7 +8,7 @@ import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffOrderItems, StaffBlock, TeamLogEntry } from '../_lib/types';
 import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
-import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, ReshipChip, VerifiedBadge, statusTone, subjectTone } from './chips';
+import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, PromiseChip, ReshipChip, VerifiedBadge, statusTone, subjectTone } from './chips';
 import { OrderLine, AddressLine, ItemsLine } from './OrderLine';
 import { MoreMenu } from './MoreMenu';
 
@@ -19,7 +19,7 @@ import { MoreMenu } from './MoreMenu';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
@@ -33,6 +33,8 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   activeVerifiedOrder: string | null;
   activeVerifiedVia: string | null;
   activeWaiting: string | null;
+  // When Chikki said the team is back for this customer's case (closed-hours.ts), or null.
+  activePromise: string | null;
   addressEditable: boolean;
   canCases: boolean;
   canReply: boolean;
@@ -253,10 +255,11 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       )}
 
       {/* The customer's current concern, with how urgent it is: Waiting, Came back, Critical 77% */}
-      {(activeSubject || activeHealth || activeWaiting || cameBack) && (
+      {(activeSubject || activeHealth || activeWaiting || activePromise || cameBack) && (
         <div className="th-row th-subject" title={subjectTitle}>
           {activeSubject && <Chip tone={subjectTone(activeSubject.label)}>{displaySubjectLabel(activeSubject.label)}</Chip>}
           <span className="summary truncate">{activeSubject?.summary || ''}</span>
+          {activePromise && <PromiseChip dueAt={activePromise} />}
           {activeWaiting && <WaitingChip since={activeWaiting} />}
           {cameBack && <CameBackChip closedAt={activeConv.auto_closed_at} />}
           {activeHealth && <HealthChip score={activeHealth.score} reason={activeHealth.reason} updatedAt={activeHealth.updatedAt} />}

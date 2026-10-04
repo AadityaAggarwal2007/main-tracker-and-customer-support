@@ -6,7 +6,9 @@
 // widget or the AI reply path. Nothing here is ever sent to the customer by itself.
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
-import { afterHours } from '@/lib/office-hours';
+import { afterHours, closedWhy } from '@/lib/office-hours';
+import { CLOSED_NOTE_UPSET_MIN } from './closed-hours';
+import { loadHolidays } from './holidays';
 import { getClient, isRetryable, sideAttemptOrder, withoutThinking } from './ai-models';
 import { buildSystemPrompt, type SavedAnswer } from './ai-prompt';
 import { brainSection, selectNotes, type BrainNote } from './brain';
@@ -144,9 +146,21 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
     }
   } catch (err) { console.error('[suggest] order lookup failed:', (err as Error)?.message); }
 
+  // The week and the holidays (office-hours.ts, holidays.ts); an upset customer while the office is
+  // closed may get the honest closed-hours option (suggest.ts upsetClosedLine; the stored frustration score).
+  const nowMs = Date.now();
+  const holidays = await loadHolidays(nowMs);
+  let upsetClosed: ReturnType<typeof closedWhy> = null;
+  try {
+    const why = closedWhy(nowMs, holidays);
+    if (why) {
+      const h = await queryOne<{ health_score: number | null }>(`SELECT health_score FROM conversations WHERE id = $1`, [conv.id]);
+      if ((h?.health_score ?? 0) >= CLOSED_NOTE_UPSET_MIN) upsetClosed = why;
+    }
+  } catch (err) { console.error('[suggest] health read failed:', (err as Error)?.message); }
   const system = buildSystemPrompt(site?.system_prompt || null, site?.cod_available, 'chat', faqs, site?.cod_states?.trim() || null, asked)
     + brain + examples
-    + suggestInstruction({ lang, after: afterHours(Date.now()), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson });
+    + suggestInstruction({ lang, after: afterHours(nowMs, holidays), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson, upsetClosed });
   const history: ChatCompletionCreateParamsNonStreaming['messages'] = rows.map((r) => (
     r.sender === 'visitor'
       ? { role: 'user' as const, content: r.content || '' }

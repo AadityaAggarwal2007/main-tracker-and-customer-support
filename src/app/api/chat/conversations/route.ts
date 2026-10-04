@@ -8,7 +8,8 @@ import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can } from '@/lib/permissions';
-import { isOfficeHours } from '@/lib/office-hours';
+import { isOfficeHours, nextOpenMs } from '@/lib/office-hours';
+import { loadHolidays } from '@/lib/chat/holidays';
 import { staffActor, teamDirectory } from '@/lib/chat/team-routing';
 import { OWNER_KEY } from '@/lib/chat/team-rules';
 import { REFUND_LINK_SQL } from '@/lib/refund/link-mask';
@@ -212,12 +213,15 @@ export async function GET(request: NextRequest) {
   // matches first.
   // The Ship again list (owner 2026-10-03): chats whose new parcel is not sent yet come first,
   // the reshipped ones last; inside each part the usual activity order.
+  // A promised chat (owner 2026-10-05, answer 8): a customer Chikki told, while the office was closed,
+  // that the team sits down with their case first thing when it opens (closed-hours.ts) comes first
+  // until a team member writes, so the promise is kept on Monday morning (promise_note_at below).
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
     : caseKind === 'reship'
       ? `(g.reshipped_at IS NOT NULL), g.last_message_at DESC NULLS LAST, g.created_at DESC`
-      : `g.last_message_at DESC NULLS LAST, g.created_at DESC`;
+      : `(g.promise_note_at IS NOT NULL) DESC, g.last_message_at DESC NULLS LAST, g.created_at DESC`;
 
   // How many open customers (one per grouped row) each problem tab holds.
   const countsSql = `SELECT ${INBOX_TOPICS.map((t) => `count(DISTINCT x.gk) FILTER (WHERE ${
@@ -298,6 +302,9 @@ export async function GET(request: NextRequest) {
               CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
                    THEN 'k:' || c.customer_key ELSE 'c:' || c.id END AS group_key,
               ${WAITING_SINCE_SQL} AS waiting_since,
+              CASE WHEN c.status <> 'resolved' AND w.closed_note_at IS NOT NULL
+                    AND (w.last_agent_at IS NULL OR w.last_agent_at < w.closed_note_at) THEN w.closed_note_at
+              END AS promise_note_at,
               CASE WHEN c.status = 'resolved' OR w.last_urgent_at IS NULL THEN NULL
                    WHEN w.last_agent_at IS NOT NULL AND w.last_agent_at > w.last_urgent_at THEN NULL
                    ELSE w.last_urgent_at
@@ -350,6 +357,7 @@ export async function GET(request: NextRequest) {
             g.reshipped_at, g.reshipped_by, g.reship_awb, g.reship_link,
             g.assigned_to, g.assigned_at,
             g.waiting_since, g.waiting_overdue, (g.group_urgent_since IS NOT NULL) AS urgent_waiting,
+            g.promise_note_at,
             (g.group_waiting_since IS NOT NULL) AS group_waiting,
             g.hit_order, g.hit_phone, g.hit_name, g.hit_text,
             count(*) OVER ()::int AS total_rows,
@@ -373,7 +381,18 @@ export async function GET(request: NextRequest) {
   const counts = (await countsPromise).rows[0] || {};
   // How many rows there are in all (the page shows 200 at a time, "Show more" for the rest).
   const total = (result.rows[0] as { total_rows?: number } | undefined)?.total_rows ?? 0;
-  for (const r of result.rows as Record<string, unknown>[]) delete r.total_rows;
+  // promise_due_at: when the team said it would be back for a promised chat (the office opening after
+  // the note: Monday 10:00 after a weekend note). Worked out here from the note's time and the holiday
+  // list, nothing stored; the chip reads "Promised Mon 10 AM" and turns red once that time has come.
+  const holidays = await loadHolidays();
+  for (const r of result.rows as Record<string, unknown>[]) {
+    delete r.total_rows;
+    const raw = r.promise_note_at;
+    const noteAt = raw instanceof Date ? raw.getTime() : typeof raw === 'string' ? Date.parse(raw) : NaN;
+    const due = Number.isFinite(noteAt) ? nextOpenMs(noteAt, holidays) : null;
+    r.promise_due_at = due ? new Date(due).toISOString() : null;
+    delete r.promise_note_at;
+  }
 
   const unanswered = await unansweredPromise;
   const held = await heldPromise;
@@ -416,7 +435,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     conversations: result.rows, total, unanswered_total: unansweredTotal,
     topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary,
-    me, team: teamDirectory(now), office_open: isOfficeHours(now),
+    me, team: teamDirectory(now), office_open: isOfficeHours(now, holidays),
     mine: { open: unanswered?.mine_open ?? 0, waiting: unanswered?.mine_waiting ?? 0, held },
   });
 }
