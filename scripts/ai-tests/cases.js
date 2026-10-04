@@ -123,7 +123,10 @@ module.exports = [
   { id: 'refund-form-ask-hinglish', title: 'A1 "refund ka form bhejo": no link, no form promise',
     ...verifiedCtx('Delivered', null), history: [V('refund ka form bhejo')],
     mock: [{ content: 'Ji, refund form ka link abhi bhej deta hoon: https://docs.google.com/forms/d/e/1FAIpQLSc-test/viewform' }],
-    expect: { notMatch: [FORM_TALK], match: [/team/i] } },
+    // Live 4 Oct: the model's "form ki jankari nahi, lekin team tak pahuncha sakta hoon" sentence went with the
+    // form guard and only the reason question stayed; the widget route adds the team's 24-hour line after this,
+    // so asking the reason (rule 17: once) is a correct reply here too.
+    expect: { notMatch: [FORM_TALK], match: [/team|wajah|reason|kaaran|कारण|वजह/i] } },
   { id: 'refund-form-ask-en', title: 'A1 "send me the refund form link": no link, no form promise',
     ...verifiedCtx('Delivered', null), history: [V('send me the refund form link')],
     mock: [{ content: 'Sure! Here is the refund form: https://forms.gle/AbCdEf12\nOur team will check your request here in this chat.' }],
