@@ -378,3 +378,12 @@ Brain learner and the team's suggested replies / "Sudharo" now try DeepSeek V4 F
 overrides), then the customer chain. Customer replies (`ai.ts`) stay on V4 Pro: Flash failed them on 1 Oct. No rule
 changes: the same instructions, guards and tests; only which model answers the side jobs. Rulebook 12.1. Built and
 pushed 2026-10-04; deploy = code only, no SQL, no new env value needed.
+
+## 2026-10-04 (night): H7, phone alone
+
+Live test `visitor-phone-only` failed twice on V4 Pro: a visitor answered "order ID and phone?" with the phone
+alone and the model, reading the 10 digits as an order ID, asked for the phone number again. Code now replaces that
+reply (`isBarePhone`, `asksForPhone`, `orderIdAfterPhoneReply` in lookup-guard.ts; H7 in ai.ts): the phone is noted,
+the order ID is what is missing, with where to find it, in the customer's language. Rules 5.1 / 10 (never re-ask
+what was given): PASS by code for this case; 8.1 unchanged (order ID + phone both still needed). Rulebook 2.10.
+Also: the suggested replies now speak as the team ("we will", never "our team will"; `asTeam` guard, aa44577).

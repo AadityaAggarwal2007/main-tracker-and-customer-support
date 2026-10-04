@@ -12,7 +12,7 @@ import { delayAsksIn, delayNote, delayStage, isDelayAsk } from './delay-ladder';
 import { ALREADY_REPLIED_NOTE, dropRepeatedIntroduction } from './introduction';
 import {
   asksAgainAfterFailedLookups, consecutiveAsks, findPendingLookup, handOverReply, keptAskingForMissingOrderId, notFoundReply, verifyAgainReply,
-  lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, reasksForPhone, typedByVisitor,
+  lastReplyReasked, mentionsAnotherOrder, normId, normaliseDigits, reasksForOrderDetails, reasksForPhone, typedByVisitor, isBarePhone, orderIdAfterPhoneReply, asksForPhone,
   type LookupOutcome,
 } from './lookup-guard';
 import { stripMarkdownEmphasis } from './plain-text';
@@ -1051,6 +1051,15 @@ export async function getAIResponse(
           result.content = notFoundReply(guardRows, misses[misses.length - 1].order_id || '');
           return result;
         }
+      }
+      // H7 (seen live 4 Oct, test visitor-phone-only): not verified, the customer's latest message
+      // is only their phone number, and the reply asks for the phone number again without asking
+      // for the order ID (the model read the 10 digits as an order ID). Say what is missing instead.
+      if (!verifiedOrderId && !lookupOutcomes.length && isBarePhone(latestVisitor)
+          && asksForPhone(result.content) && !reasksForOrderDetails(result.content, Array.from(knownOrderIds)).orderId) {
+        console.log(`[AI] Guard H7 for conv ${conversationId}: phone typed, asked for the phone again`);
+        result.content = orderIdAfterPhoneReply(guardRows);
+        return result;
       }
       // H4: the order is verified and in view, yet the reply asks for the
       // order ID or last 4 anyway. Ask the same model once more with a note;

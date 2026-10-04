@@ -476,6 +476,14 @@ export function reasksForPhone(reply: string | null | undefined): boolean {
   return sentences.some((s) => PHONE_WORDS.some((re) => re.test(s)) && ASK_VERB.test(s) && !PHONE_NOT_AN_ASK.test(s));
 }
 
+// The looser form for H7 (a visitor, no lookup): "I'll also need the phone number on the order"
+// has no question mark and no request verb from ASK_VERB, but it is an ask all the same.
+export function asksForPhone(reply: string | null | undefined): boolean {
+  const text = normaliseDigits(reply || '').toLowerCase().slice(0, 4000);
+  const sentences = text.match(/[^.?!।\n]+[.?!।]*/g) || [];
+  return sentences.some((s) => PHONE_WORDS.some((re) => re.test(s)) && (ASK_VERB.test(s) || REQUEST.test(s)) && !PHONE_NOT_AN_ASK.test(s));
+}
+
 /**
  * Whether our last message the customer saw asked for order details in the
  * strict sense above: in a verified chat that ask was allowed (another
@@ -659,6 +667,31 @@ export function verifyAgainReply(rows: GuardRow[]): string {
     case 'hi': return 'मैं अभी इससे कोई ऑर्डर मैच नहीं कर पाया। कृपया ऑर्डर कन्फर्मेशन मैसेज से ऑर्डर आईडी और ऑर्डर वाला फ़ोन नंबर देखकर दोनों एक साथ भेजिए।';
     case 'hinglish': return 'Abhi main isse koi order match nahi kar paaya. Kripya order confirmation message se order ID aur order wala phone number dekhkar dono ek saath bhej dijiye.';
     default: return "I couldn't match that to an order yet. Please share your order ID (it's in your order confirmation message) and the phone number on the order, both together.";
+  }
+}
+
+// A message that is only a phone number: 10 digits (a leading +91 / 0 and a few words such as
+// "my number is" allowed), nothing that could be an order ID next to it. Seen live 4 Oct: a
+// visitor answered "order ID and phone?" with the phone alone and the model, reading the number
+// as an order ID, asked for the phone number again (H7 in ai.ts).
+export function isBarePhone(text: string | null | undefined): boolean {
+  const t = normaliseDigits(String(text || '')).trim();
+  if (!t) return false;
+  const letters = (t.match(/[A-Za-zऀ-ॿ]/g) || []).length;
+  if (letters > 24) return false;
+  // Two separate numbers ("1234 9876543210") are an order ID and a phone, not a phone alone.
+  if ((t.match(/\d+/g) || []).length > 1 && !/^\s*(?:\+?\s*91[\s-]?)?[\d\s-]+$/.test(t)) return false;
+  let d = t.replace(/\D/g, '').replace(/^0+/, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  return d.length === 10 && /^[6-9]/.test(d);
+}
+
+// The reply for H7: the phone is noted, the order ID is what is missing.
+export function orderIdAfterPhoneReply(rows: GuardRow[]): string {
+  switch (replyLanguage(rows)) {
+    case 'hi': return 'फ़ोन नंबर मिल गया, धन्यवाद। ऑर्डर देखने के लिए मुझे ऑर्डर आईडी भी चाहिए: वह आपके ऑर्डर कन्फर्मेशन मैसेज में है। कृपया ऑर्डर आईडी भेजिए।';
+    case 'hinglish': return 'Phone number mil gaya, shukriya. Order dekhne ke liye mujhe order ID bhi chahiye: woh aapke order confirmation message mein hai. Kripya order ID bhej dijiye.';
+    default: return "Thanks, I've got the phone number. To look up the order I also need your order ID: it's in your order confirmation message. Please share the order ID.";
   }
 }
 

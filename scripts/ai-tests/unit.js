@@ -1223,6 +1223,18 @@ t('side tasks use the cheap model first (owner 4 Oct): health, subject, judge, l
   assert.ok(/SIDE_MODEL_DEFAULT = 'deepseek\/deepseek-v4-flash'/.test(models) && /AI_SIDE_MODEL/.test(models));
   assert.ok(/AI_SIDE_MODEL=/.test(read('.env.example')), '.env.example lists the variable');
 });
+t('H7: a message that is only a phone number (lookup-guard.ts isBarePhone)', () => {
+  const lg = load('lookup-guard');
+  for (const s of ['8420844429', '+91 84208 44429', '0 8420844429', '918420844429', 'my number is 8420844429', '8420844429 hai mera number', '८४२०८४४४२९']) assert.ok(lg.isBarePhone(s), s);
+  for (const s of ['1234', '#4715 8420844429', '4715, 8420844429', 'order 4715', '1234567890', 'kab aayega', '', '842084442']) assert.ok(!lg.isBarePhone(s), s);
+  assert.ok(lg.asksForPhone("Thanks for sharing that! I'll also need the phone number on the order (all 10 digits) to look it up."));
+  assert.ok(lg.asksForPhone('Please share the phone number on the order.'));
+  assert.ok(!lg.asksForPhone('Please keep your phone number reachable for the delivery agent.'));
+  assert.ok(!lg.asksForPhone('Please share your order ID so I can look it up.'));
+  const en = lg.orderIdAfterPhoneReply([{ sender: 'visitor', content: 'track my order' }]);
+  assert.ok(/order ID/.test(en) && /confirmation/.test(en) && !tp.promisesToday(en));
+  assert.ok(/order ID/.test(lg.orderIdAfterPhoneReply([{ sender: 'visitor', content: 'mera order kahan hai' }])) && /Kripya/.test(lg.orderIdAfterPhoneReply([{ sender: 'visitor', content: 'mera order kahan hai' }])));
+});
 t('rulebook: 7.10 (owner 4 Oct) is a code rule at the end of section 7', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   assert.ok(rb.RULE_IDS.has('7.10') && rule('7.10').how === 'code' && /Sudharo/.test(rule('7.10').text));

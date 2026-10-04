@@ -61,6 +61,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Only orders of this panel can be found, and wrong tries are limited per visitor, internet address, order and phone.' },
       { id: '2.9', how: 'code', from: `${M('11')} (your note)`, title: 'Visitors are not promised the team',
         text: 'A visitor who has not verified never goes to Needs You and is never told "the team will reply": Chikki asks for the order ID and the phone number first.' },
+      { id: '2.10', how: 'code', from: '4 Oct', title: 'Phone alone: the order ID is asked for, not the phone again',
+        text: 'When a visitor answers with only their phone number and Chikki would ask for the phone number again (it read the 10 digits as an order ID, seen live 4 Oct), code replaces the reply: the phone is noted, the order ID is what is missing, with where to find it.' },
     ],
   },
   {
