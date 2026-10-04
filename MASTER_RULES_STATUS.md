@@ -2,7 +2,7 @@
 
 Written 2026-09-30 by Claude. This file NEVER changes a rule. The rules are in
 `SHIPTRACK_MASTER_RULES.md` (owner's file). This only says, per section, whether
-the code meets it today. Live commit: 824dba1 (deployed 2026-10-04); update this file after every task.
+the code meets it today. Live commit: e7d078b (deployed 2026-10-04 evening); update this file after every task.
 Every "built, not deployed" note from 2026-10-01 and 2026-10-02 below is now LIVE (deployed in the order the
 commits were made, SQL files applied before their code); the notes are kept as the record of each decision.
 
@@ -353,7 +353,7 @@ Owner (4 Oct afternoon: "ladkon ke saath dikkat hai, bahut spelling mistake, dha
 message, 3-4 option, chun lo ya khud type karo"). His 14 answers are the consent for THIS change only: on opening (A),
 3 options, the customer's language with a switch, Chikki's own knowledge, Chikki's guards, click fills the box (B),
 "Sudharo" is part of it, no visitors, Refund / Ship again included, no email, record it, no learner, night line, one
-model call per customer message. Built 2026-10-04; `chat-reply-suggestions.sql` to apply before the deploy.
+model call per customer message. Built and DEPLOYED 2026-10-04 (e7d078b; `chat-reply-suggestions.sql` applied by the owner).
 
 - Rules 40 / 41 (identity, quality): the drafts speak as the team ("I" / "hum"), never name Karry, Chikki, an AI or a
   model, and the team member stays the sender (they press Send). Correct spelling and grammar is the point. PASS.
