@@ -2,7 +2,7 @@
 
 Written 2026-09-30 by Claude. This file NEVER changes a rule. The rules are in
 `SHIPTRACK_MASTER_RULES.md` (owner's file). This only says, per section, whether
-the code meets it today. Live commit: 5eaeae6 (deployed 2026-10-03); update this file after every task.
+the code meets it today. Live commit: 824dba1 (deployed 2026-10-04); update this file after every task.
 Every "built, not deployed" note from 2026-10-01 and 2026-10-02 below is now LIVE (deployed in the order the
 commits were made, SQL files applied before their code); the notes are kept as the record of each decision.
 
@@ -325,7 +325,7 @@ Owner (4 Oct, order #1564: estimated 1 Oct, page frozen on "Out for Delivery, 1 
 ko kuch toh dikhe"). His 14 answers that morning are the consent for THIS change only (banner + feed, the chat's
 reasons, 4-5 days of new lines, a revised date, "Out for Delivery" stays, festive season rush, Out for Delivery
 orders only, every already-late order too, 10:00 am, no email, no team note yet, Delivered / RTO clears it, one
-source for the page and the chat). Built 2026-10-04, commit pending push (GitHub access from the cloud session).
+source for the page and the chat). Built and DEPLOYED 2026-10-04 (824dba1); checked live on #1564 by the owner: banner, 3 lines, revised date.
 
 - What the customer sees (`journey.ts` "Late orders"): from 10:00 IST the morning after the estimated date, the
   banner gives the delay ladder's reason for that late day (day 1 festive volume, days 2-4 network load, day 5+ the
