@@ -97,6 +97,13 @@ module.exports = [
     ...verifiedCtx('Reached City', '2026-09-27'), facts: { mode: 'normal', delivered: false, eta: '2026-09-27T00:00:00.000Z' },
     history: [V('kab aayega mera order')], mock: [{ content: 'Ok.' }],
     expect: { systemHas: [/DELAY ANSWER/, /network/i] }, offlineOnly: true },
+  // The tracking page shows the order late (journey.ts "Late orders"): the chat starts from the
+  // page's reason (day 1 = festive volume), even where the old date arithmetic said "network".
+  { id: 'code-ladder-page-step', title: 'A late order the page shows at the festive step gets the same reason in the prompt',
+    ...verifiedCtx('Out for Delivery', '2026-09-27'),
+    facts: { mode: 'normal', delivered: false, eta: '2026-09-30T00:00:00.000Z', eta_original: '2026-09-27T00:00:00.000Z', late: { daysPast: 1, stage: 1, reason: 'festive' } },
+    history: [V('kab aayega mera order')], mock: [{ content: 'Ok.' }],
+    expect: { systemHas: [/DELAY ANSWER/, /festive season/i], systemNotHas: [/heavy load/i] }, offlineOnly: true },
   { id: 'code-ladder-not-for-visitor', title: 'No delay note for a chat with no verified order',
     history: [V('kab aayega mera order')], mock: [{ content: 'Please share your order ID and phone.' }],
     expect: { systemNotHas: [/DELAY ANSWER/] }, offlineOnly: true },

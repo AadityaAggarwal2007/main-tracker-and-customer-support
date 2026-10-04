@@ -101,6 +101,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Never argue (the status can be wrong). Chikki asks once, per chat, to check with family, neighbours, the security guard or reception; if it is still missing it apologises, raises it with the team and hands over.' },
       { id: '4.10', how: 'later', from: M('19'), title: 'Telling customers about a delay first',
         text: 'A message about a known delay before the customer asks. Not built: you postponed it.' },
+      { id: '4.11', how: 'code', from: '4 Oct', title: 'Late order on the tracking page: one story',
+        text: 'From 10:00 the morning after the estimated date, an order still at Out for Delivery shows the delay reason on its tracking page (the same ladder as 4.7, by late days: 1 festive volume, 2-4 network load, 5+ the team following up), one new honest activity line a day for 5 days (never a courier scan that did not happen), and a revised date: +3 days for late days 1-2, +6 for days 3-5, then no date until your team confirms it. Chikki reads the same page data: it quotes the revised date (or says the team will confirm it) and starts from the page\'s reason. Delivered, cancelled and returned orders are left alone.' },
     ],
   },
   {

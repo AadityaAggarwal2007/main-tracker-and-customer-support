@@ -318,3 +318,31 @@ owner, not answered: a "Copy link" button for the Super Admin on the refund form
 Not recorded here: whether the one-time scripts `tracking-reship-candidates.js --apply` / `refund-threat-candidates.js
 --apply` and `chat-tracking-reship-move.sql` were run on the live data (check `chat_case_events` for actor_role
 'backfill' / 'system' before running any of them).
+
+## Owner change 2026-10-04: a late order keeps moving on the tracking page
+
+Owner (4 Oct, order #1564: estimated 1 Oct, page frozen on "Out for Delivery, 1 Oct 5:03 pm" on 4 Oct: "customer
+ko kuch toh dikhe"). His 14 answers that morning are the consent for THIS change only (banner + feed, the chat's
+reasons, 4-5 days of new lines, a revised date, "Out for Delivery" stays, festive season rush, Out for Delivery
+orders only, every already-late order too, 10:00 am, no email, no team note yet, Delivered / RTO clears it, one
+source for the page and the chat). Built 2026-10-04, commit pending push (GitHub access from the cloud session).
+
+- What the customer sees (`journey.ts` "Late orders"): from 10:00 IST the morning after the estimated date, the
+  banner gives the delay ladder's reason for that late day (day 1 festive volume, days 2-4 network load, day 5+ the
+  team following up with the courier), Recent Activities gets one new line a day at 10:00 for 5 days (rescheduled
+  slot, connecting with the courier partner, held at the hub under network load, follow-up, update), and the date
+  card shows "Revised Delivery by" +3 days (late days 1-2) then +6 days (days 3-5), with the earlier estimate under
+  it; from day 6 "Delivery date: being confirmed by our team". The stage stays Out for Delivery; Delivered is still
+  only the team's mark.
+- Rule 19 (tracking truth): the new lines are ShipTrack's own status notes (a queued slot, the team coordinating,
+  the hub load), never a courier scan or a delivery attempt that did not happen; the reason sentences are the
+  owner's own from 30 Sept. Decision I took: no "Delivery attempted" line (a chargeback dispute would compare it
+  with the courier's log). PASS, stricter than before (the frozen page said nothing).
+- Rule 4.3 / 40 (never "today / tomorrow"): no late line or reason promises a day (unit test runs them through
+  `promisesToday`); the revised date is a date, as the original one always was.
+- Rules 5.1 / 10 (one story, never contradict): the chat's ladder (`delay-ladder.ts`) and the page share the same
+  sentences (unit.js compares them) and the chat starts from the page's step; Chikki quotes the page's revised date,
+  or says the team will confirm it (`orders.ts` `date_note`). PASS.
+- Rules 24, 28, 36: nothing stored, no SQL, no cron change; the page is computed on every load, so every order
+  already late today shows it at once (owner answer 9). Rule 39: this section.
+- Rulebook 4.11. Not done (owner's answers): no email, no manual team line yet (answer 12: later).

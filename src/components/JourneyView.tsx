@@ -42,6 +42,9 @@ export interface Journey {
   deliveredEstimated: boolean;
   eta: string | null;
   etaEstimated: boolean;
+  etaOriginal?: string | null;
+  etaRevised?: boolean;
+  late?: { daysPast: number; stage: 1 | 2 | 3; reason: string } | null;
   lastCheckedISO: string;
   notice: JourneyNotice | null;
 }
@@ -77,13 +80,25 @@ export function JourneyNoticeBanner({ journey }: { journey: Journey }) {
 }
 
 export function JourneyEta({ journey }: { journey: Journey }) {
-  if (!journey.eta || journey.delivered) return null;
+  if (journey.delivered) return null;
+  // A late order whose revised dates are used up: no date, the team confirms it (journey.ts "Late orders").
+  if (!journey.eta) {
+    if (!journey.late) return null;
+    return (
+      <div className="st-card">
+        <p style={{ margin: '0 0 6px', fontSize: 13, color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Delivery Date</p>
+        <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#0F172A' }}>Being confirmed by our team</p>
+      </div>
+    );
+  }
+  const label = journey.etaRevised ? 'Revised Delivery by' : journey.etaEstimated ? 'Estimated Delivery by' : 'Expected Delivery by';
   return (
     <div className="st-card">
-      <p style={{ margin: '0 0 6px', fontSize: 13, color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-        {journey.etaEstimated ? 'Estimated Delivery by' : 'Expected Delivery by'}
-      </p>
+      <p style={{ margin: '0 0 6px', fontSize: 13, color: '#64748B', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</p>
       <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#0F172A' }}>{fmtEta(journey.eta)}</p>
+      {journey.etaRevised && journey.etaOriginal && (
+        <p style={{ margin: '6px 0 0', fontSize: 12, color: '#94A3B8' }}>Earlier estimate: {fmtEta(journey.etaOriginal)}</p>
+      )}
     </div>
   );
 }

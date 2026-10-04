@@ -27,6 +27,9 @@ export interface OrderFacts {
   // The date on the order, else the day-13 end of the delivery window (eta_estimated).
   eta: string | null;
   eta_estimated: boolean;
+  // The unrevised date, and the tracking page's late step (journey.ts "Late orders").
+  eta_original: string | null;
+  late: { daysPast: number; stage: 1 | 2 | 3; reason: string } | null;
 }
 
 interface FactsRow {
@@ -75,6 +78,10 @@ export async function loadOrderFacts(
       delivered: journey.delivered,
       eta: journey.eta,
       eta_estimated: journey.etaEstimated,
+      // The unrevised date and the page's late step, so Chikki tells the same story as the
+      // tracking page (journey.ts "Late orders").
+      eta_original: journey.etaOriginal,
+      late: journey.late,
     };
   } catch (err) {
     console.error('[chat/order-facts] loadOrderFacts error:', err);

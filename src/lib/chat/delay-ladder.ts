@@ -27,14 +27,21 @@ export type DelayStage = 0 | 1 | 2 | 3;
 // 0 = no reason needed yet (status, estimated date and tracking link only).
 // How late the order is: daysToEta is the days until the estimated delivery date
 // (negative once it has passed). How often they asked: the 2nd ask gives stage 1, the
-// 3rd stage 2, the 4th stage 3. The later of the two wins.
-export function delayStage(input: { daysToEta: number; asks: number }): DelayStage {
+// 3rd stage 2, the 4th stage 3. The later of the two wins. `pageStage` (owner 2026-10-04):
+// once the tracking page shows the order as late it has already chosen a reason for that
+// day (journey.ts "Late orders", same sentences as below); the chat then starts from that
+// one, so the customer reads one story on the page and in the chat. Asking again still
+// moves up the ladder.
+export function delayStage(input: { daysToEta: number; asks: number; pageStage?: number | null }): DelayStage {
   const { daysToEta, asks } = input;
-  const byDate: DelayStage = daysToEta > 2 ? 0 : daysToEta >= -1 ? 1 : daysToEta >= -4 ? 2 : 3;
+  const page = (input.pageStage || 0) as DelayStage;
+  const byDate: DelayStage = page > 0 ? page : daysToEta > 2 ? 0 : daysToEta >= -1 ? 1 : daysToEta >= -4 ? 2 : 3;
   const byAsks: DelayStage = asks >= 4 ? 3 : asks === 3 ? 2 : asks === 2 ? 1 : 0;
   return Math.max(byDate, byAsks) as DelayStage;
 }
 
+// Identical to LATE_REASONS in src/lib/journey.ts (the tracking page's banner); unit.js
+// compares them, so change both together.
 export const DELAY_REASONS: Record<1 | 2 | 3, string> = {
   1: 'Because of the festive season, courier volume is very high right now, so some deliveries are taking a little longer than usual.',
   2: 'The courier network is under very heavy load right now, so parcels are waiting longer at the hubs before they move on.',

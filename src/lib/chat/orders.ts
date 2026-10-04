@@ -1,6 +1,6 @@
 import { courierFor } from './courier';
 import { query, queryOne } from '@/lib/db';
-import { AUTO_DELIVER_DAY, JOURNEY, buildJourney, type JourneyOrder } from '@/lib/journey';
+import { JOURNEY, buildJourney, type JourneyOrder } from '@/lib/journey';
 
 // ── Order lookup for the support AI ────────────────────────────
 // Ported from the chat-support app's tracker-db.js. It already spoke raw SQL
@@ -57,6 +57,8 @@ export interface FoundOrder {
   tracking_link: string | null;
   courier: string | null;
   estimated_delivery: string | null;
+  /** Only for a late order: the date above is revised, or there is none while the team confirms it. */
+  date_note?: string;
   total: number;
   products: string[];
   placed_on: string;
@@ -132,18 +134,6 @@ function toFoundOrder(row: OrderRow): FoundOrder {
     ? `${trackingBase}/track/${row.tracking_token}`
     : null;
 
-  // Orders created by the Shopify webhook never get estimated_delivery
-  // written, so the agent used to say "I can't give you a delivery date".
-  // The track page already falls back to the day-13 end of the window;
-  // do the same here so there is always a date to quote.
-  let eta: string | Date | null = row.estimated_delivery || null;
-  if (!eta && row.created_at) {
-    const placed = new Date(row.created_at).getTime();
-    if (!Number.isNaN(placed)) {
-      eta = new Date(placed + AUTO_DELIVER_DAY * 24 * 60 * 60 * 1000).toISOString();
-    }
-  }
-
   const rawPay = (row.payment_method || '').toLowerCase();
   const isCOD = rawPay === 'cod' || rawPay.includes('cash on delivery');
   const paymentDisplay = isCOD ? 'Cash on Delivery (COD)' : 'Prepaid';
@@ -157,6 +147,15 @@ function toFoundOrder(row: OrderRow): FoundOrder {
   const journey = buildJourney(row as unknown as JourneyOrder);
   const stage = journey.mode === 'normal' && journey.currentIndex >= 0 ? JOURNEY[journey.currentIndex].status : row.tracking_status;
 
+  // The date is the one the tracking page shows (journey.ts): the order's own, else the
+  // day-13 end of the window (Shopify orders carry none, and the agent used to say "I can't
+  // give you a delivery date"), and for a late order the page's revised date, then none
+  // while the team confirms it (owner 2026-10-04: one story on the page and in the chat).
+  const eta: string | null = journey.eta;
+  const dateNote = journey.late && !eta
+    ? 'The delivery date is being confirmed by the team: give no date, say the team will confirm it here.'
+    : journey.etaRevised ? 'This is the revised estimated date; the earlier one has passed.' : undefined;
+
   return {
     order_id: row.order_id,
     customer_name: row.customer_name,
@@ -166,6 +165,7 @@ function toFoundOrder(row: OrderRow): FoundOrder {
     // The order's courier, else the panel's default one (owner: every Vastora order ships with Valmo).
     courier: courierFor(row.courier_partner, row.business_default_courier),
     estimated_delivery: eta,
+    ...(dateNote ? { date_note: dateNote } : {}),
     total: row.order_total,
     products: row.products || [],
     placed_on: row.created_at,

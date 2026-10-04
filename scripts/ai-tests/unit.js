@@ -485,7 +485,7 @@ t('message rules follow the permissions', () => {
 
 // ── Fake / invalid tracking claims (owner 2026-10-02; tracking-claim.ts, spec 9.1) ───────
 // tracking-claim.ts imports '@/lib/journey': loaded next to it as './journey' (escalation is above).
-load('journey', '../../src/lib');
+const jn = load('journey', '../../src/lib');
 const tcl = (() => {
   const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/tracking-claim.ts'), 'utf8').replace("from '@/lib/journey'", "from './journey'");
   fs.writeFileSync(path.join(dir, 'tracking-claim.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
@@ -1061,5 +1061,85 @@ t('reship: fship links with utm junk, bare AWBs, and the dialog input are read; 
   assert.ok('error' in rs.parseReship(''), 'empty');
   assert.ok('error' in rs.parseReship('https://app.fship.in/'), 'link without awb');
   assert.ok('error' in rs.parseReship('abc'), 'too short');
+});
+
+// ── Late orders on the tracking page (owner 2026-10-04; journey.ts "Late orders") ────────
+// Order #1564: placed 19 Sept 10:22 IST, estimated 1 Oct, at Out for Delivery, never marked
+// Delivered. Times below are IST; the engine works in UTC ms.
+const dl = load('delay-ladder');
+const IST = (y, m, d, h = 0, mi = 0) => new Date(Date.UTC(y, m - 1, d, h, mi) - 5.5 * 3600 * 1000);
+const LATE_ORDER = { tracking_status: 'Out for Delivery', created_at: IST(2026, 9, 19, 10, 22).toISOString(), estimated_delivery: '2026-10-01', city: 'Jaipur', state: 'Rajasthan' };
+const istDate = (iso) => new Date(new Date(iso).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 16);
+t('late order: the page and the chat share one wording and one day ladder', () => {
+  for (const k of [1, 2, 3]) assert.strictEqual(jn.LATE_REASONS[k], dl.DELAY_REASONS[k], `reason ${k}`);
+  assert.deepStrictEqual([1, 2, 3, 4, 5, 9].map(jn.lateStage), [1, 2, 2, 2, 3, 3]);
+  // No page line promises arrival today / tomorrow (rule 4.3).
+  for (const s of Object.values(jn.LATE_REASONS)) assert.ok(!tp.promisesToday(s), s);
+  // The chat starts from the page's step; asking again still climbs.
+  assert.strictEqual(dl.delayStage({ daysToEta: -1.5, asks: 1, pageStage: 1 }), 1);
+  assert.strictEqual(dl.delayStage({ daysToEta: -1.5, asks: 1 }), 2);
+  assert.strictEqual(dl.delayStage({ daysToEta: -1.5, asks: 1, pageStage: null }), 2);
+  assert.strictEqual(dl.delayStage({ daysToEta: -1.5, asks: 4, pageStage: 1 }), 3);
+});
+t('late order: not late on the estimated day nor before 10:00 the next morning', () => {
+  for (const now of [IST(2026, 10, 1, 18), IST(2026, 10, 2, 9, 59)]) {
+    const j = jn.buildJourney(LATE_ORDER, now);
+    assert.strictEqual(j.late, null); assert.strictEqual(j.etaRevised, false);
+    assert.strictEqual(j.eta, j.etaOriginal); assert.ok(j.eta.startsWith('2026-10-01'));
+    assert.strictEqual(j.notice.title, 'Out for delivery');
+    assert.strictEqual(j.events[j.events.length - 1].key, 'ofd');
+  }
+});
+t('late order, day 1 (2 Oct 10:00): festive reason, one new line, revised date +3', () => {
+  const j = jn.buildJourney(LATE_ORDER, IST(2026, 10, 2, 10, 0));
+  assert.deepStrictEqual(j.late, { daysPast: 1, stage: 1, reason: jn.LATE_REASONS[1] });
+  assert.strictEqual(j.currentLabel, 'Out for Delivery'); assert.strictEqual(j.stages[9].state, 'current');
+  assert.strictEqual(j.notice.level, 'warn'); assert.ok(j.notice.title.includes('festive season'));
+  assert.ok(j.notice.body.startsWith(jn.LATE_REASONS[1]) && j.notice.body.includes('revised delivery date'));
+  assert.strictEqual(j.etaRevised, true); assert.ok(j.eta.startsWith('2026-10-04')); assert.ok(j.etaOriginal.startsWith('2026-10-01'));
+  const last = j.events[j.events.length - 1];
+  assert.strictEqual(last.key, 'late1'); assert.strictEqual(last.title, 'Delivery rescheduled');
+  assert.ok(last.location.includes('Jaipur') && last.location.includes('Festive'), last.location);
+  assert.strictEqual(istDate(last.timeISO), '2026-10-02T10:00');
+});
+t('late order, day 3 (4 Oct 12:00): network reason, three lines a day apart at 10:00, revised +6, feed ascending', () => {
+  const j = jn.buildJourney(LATE_ORDER, IST(2026, 10, 4, 12, 0));
+  assert.deepStrictEqual(j.late, { daysPast: 3, stage: 2, reason: jn.LATE_REASONS[2] });
+  assert.ok(j.notice.title.includes('heavy load'));
+  assert.ok(j.eta.startsWith('2026-10-07'), j.eta);
+  const late = j.events.filter((e) => e.key.startsWith('late'));
+  assert.deepStrictEqual(late.map((e) => e.key), ['late1', 'late2', 'late3']);
+  assert.deepStrictEqual(late.map((e) => istDate(e.timeISO)), ['2026-10-02T10:00', '2026-10-03T10:00', '2026-10-04T10:00']);
+  assert.ok(late[1].title.includes('courier partner'), 'day 2 = connecting with the courier');
+  for (let i = 1; i < j.events.length; i++) assert.ok(j.events[i].timeISO > j.events[i - 1].timeISO, 'ascending');
+  for (const e of late) assert.ok(!tp.promisesToday(e.title + ' ' + e.location), e.location);
+});
+t('late order, day 9: the team-following-up reason, lines stop at 5, no date (the team confirms it)', () => {
+  const j = jn.buildJourney(LATE_ORDER, IST(2026, 10, 10, 15, 0));
+  assert.deepStrictEqual(j.late, { daysPast: 9, stage: 3, reason: jn.LATE_REASONS[3] });
+  assert.strictEqual(j.events.filter((e) => e.key.startsWith('late')).length, 5);
+  assert.strictEqual(j.eta, null); assert.strictEqual(j.etaRevised, false); assert.ok(j.etaOriginal.startsWith('2026-10-01'));
+  assert.ok(j.notice.body.includes('team will confirm'), j.notice.body);
+  // Day 5 is the last one with a revised date (+6), day 6 has none.
+  assert.ok(jn.buildJourney(LATE_ORDER, IST(2026, 10, 6, 10)).eta.startsWith('2026-10-07'));
+  assert.strictEqual(jn.buildJourney(LATE_ORDER, IST(2026, 10, 7, 10)).eta, null);
+});
+t('late order: never for Delivered, cancelled or returned orders, nor before Out for Delivery', () => {
+  const now = IST(2026, 10, 4, 12);
+  const d = jn.buildJourney({ ...LATE_ORDER, tracking_status: 'Delivered' }, now);
+  assert.strictEqual(d.late, null); assert.ok(d.delivered); assert.strictEqual(d.etaRevised, false);
+  assert.strictEqual(jn.buildJourney({ ...LATE_ORDER, tracking_status: 'Cancelled' }, now).late, null);
+  assert.strictEqual(jn.buildJourney({ ...LATE_ORDER, tracking_status: 'RTO' }, now).late, null);
+  // Placed 3 days ago with an unbelievable 1-day date: still In Transit by the schedule, so not "late".
+  const young = jn.buildJourney({ ...LATE_ORDER, tracking_status: 'In Transit', created_at: IST(2026, 10, 1, 10).toISOString(), estimated_delivery: '2026-10-02' }, now);
+  assert.ok(young.currentIndex < 9); assert.strictEqual(young.late, null); assert.strictEqual(young.events.filter((e) => e.key.startsWith('late')).length, 0);
+  // No date on the order: the day-13 end of the window counts (placed 19 Sept -> 2 Oct), late from 3 Oct 10:00.
+  const noDate = jn.buildJourney({ ...LATE_ORDER, estimated_delivery: null }, now);
+  assert.strictEqual(noDate.late.daysPast, 2); assert.ok(noDate.etaOriginal.startsWith('2026-10-02'));
+});
+t('rulebook: 4.11 (owner 4 Oct) is a code rule at the end of section 4', () => {
+  const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
+  assert.ok(rb.RULE_IDS.has('4.11') && rule('4.11').how === 'code');
+  assert.ok(/revised date/.test(rule('4.11').text) && /5 days/.test(rule('4.11').text));
 });
 console.log(`UNIT: ${n} groups passed`);

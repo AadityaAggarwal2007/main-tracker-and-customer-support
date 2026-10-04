@@ -325,10 +325,13 @@ export async function getAIResponse(
       const lastVisitor = [...recent.rows].reverse().find((r) => r.sender === 'visitor')?.content || '';
       if (isDelayAsk(lastVisitor)) {
         const facts = await loadOrderFacts(verifiedOrderId, trackerBusinessId, 'verified');
-        if (facts && facts.mode === 'normal' && !facts.delivered && facts.eta) {
-          const daysToEta = (Date.parse(facts.eta) - Date.now()) / 86_400_000;
+        // The ladder counts from the order's own date (facts.eta is the revised one once the
+        // page shows the order late) and starts at the step the page shows (journey.ts "Late orders").
+        const ladderEta = facts?.eta_original || facts?.eta;
+        if (facts && facts.mode === 'normal' && !facts.delivered && ladderEta) {
+          const daysToEta = (Date.parse(ladderEta) - Date.now()) / 86_400_000;
           if (!Number.isNaN(daysToEta)) {
-            const stage = delayStage({ daysToEta, asks: delayAsksIn(recent.rows) });
+            const stage = delayStage({ daysToEta, asks: delayAsksIn(recent.rows), pageStage: facts.late?.stage });
             if (stage > 0) {
               systemPrompt += delayNote(stage);
               console.log(`[AI] Delay ladder stage ${stage} for conv ${conversationId}`);

@@ -115,6 +115,77 @@ export function windowDaysFor(
   return days >= MIN_WINDOW_DAYS && days <= MAX_WINDOW_DAYS ? days : AUTO_DELIVER_DAY;
 }
 
+// ── Late orders (owner, 2026-10-04: "1 Oct pe hi atka hua hai, 4 aa gaya, customer ko kuch
+// toh dikhe") ──────────────────────────────────────────────────────────────────────────
+// Once the estimated date is over and the order still sits at Out for Delivery with no team
+// confirmation, the page used to freeze on the day of the estimated date. Now, for such an
+// order: (1) one new activity line a day at 10:00 IST for LATE_EVENT_DAYS days, honest lines
+// (a rescheduled slot, the team connecting with the courier, the network load), never a
+// courier scan that did not happen; (2) the banner gives the reason from the chat's delay
+// ladder (same sentences and same day steps as delay-ladder.ts, checked by unit.js, so the
+// customer reads one story on the page and in the chat); (3) the date card shows a revised
+// date, +3 days for the first two late days, +6 for days 3-5, and from day 6 no date (the
+// team confirms it). The day starts at 10:00 IST so nothing changes at midnight. Not for a
+// cancelled / returned / failed / Delivered order, and only at Out for Delivery.
+export const LATE_EVENT_DAYS = 5;
+export const LATE_REVISIONS: { untilDay: number; plusDays: number }[] = [
+  { untilDay: 2, plusDays: 3 },
+  { untilDay: 5, plusDays: 6 },
+];
+export type LateStage = 1 | 2 | 3;
+// Identical to DELAY_REASONS in src/lib/chat/delay-ladder.ts (that file has no imports and
+// the chat tests load it alone), so the two can never drift: unit.js compares them.
+export const LATE_REASONS: Record<LateStage, string> = {
+  1: 'Because of the festive season, courier volume is very high right now, so some deliveries are taking a little longer than usual.',
+  2: 'The courier network is under very heavy load right now, so parcels are waiting longer at the hubs before they move on.',
+  3: 'We have not been able to connect with the delivery agent for your area yet. Our team is following it up, and the tracking link shows any movement.',
+};
+const LATE_TITLES: Record<LateStage, string> = {
+  1: 'Delivery delayed: festive season rush',
+  2: 'Delivery delayed: courier network under heavy load',
+  3: 'Our team is following up with the courier',
+};
+// One line per late day, oldest first. {CITY} is the order's own city.
+const LATE_EVENTS: { title: string; location: string }[] = [
+  { title: 'Delivery rescheduled',             location: 'Festive season rush at the {CITY} delivery hub, queued for the next slot' },
+  { title: 'Connecting with courier partner',  location: 'Our team is coordinating your delivery with the courier partner' },
+  { title: 'Held at local delivery hub',       location: 'Heavy load on the courier network, {CITY}' },
+  { title: 'Courier follow-up in progress',    location: 'Our team is following up with the courier partner, {CITY}' },
+  { title: 'Delivery update',                  location: 'Parcel still at the local hub in {CITY}, our team is tracking it daily' },
+];
+
+/** Which reason a late order gets by its late days: day 1 festive volume, days 2-4 the
+ *  network load, day 5 and after the delivery agent / the team following up. */
+export function lateStage(daysPast: number): LateStage {
+  return daysPast <= 1 ? 1 : daysPast <= 4 ? 2 : 3;
+}
+
+/** IST calendar day index of an instant. */
+function istDayOf(ms: number): number {
+  return Math.floor((ms + IST_MS) / DAY_MS);
+}
+
+/** Late days of an order: how many 10:00 IST ticks have passed since the estimated date's
+ *  own day ended. 0 on the estimated day and until 10:00 the next morning, 1 from then. */
+export function lateDays(etaISO: string, now: Date): number {
+  const eta = new Date(etaISO).getTime();
+  if (Number.isNaN(eta)) return 0;
+  const nowDay = Math.floor((now.getTime() + IST_MS - WORK_START_MS) / DAY_MS);
+  return Math.max(0, nowDay - istDayOf(eta));
+}
+
+/** 10:00 IST on the k-th day after the estimated date, in UTC ms. */
+function lateEventTime(etaISO: string, k: number): number {
+  return (istDayOf(new Date(etaISO).getTime()) + k) * DAY_MS - IST_MS + WORK_START_MS;
+}
+
+/** The revised date shown for a late order, or null once the revisions are used up. */
+export function revisedEta(etaISO: string, daysPast: number): string | null {
+  const step = LATE_REVISIONS.find((r) => daysPast <= r.untilDay);
+  if (!step) return null;
+  return new Date(new Date(etaISO).getTime() + step.plusDays * DAY_MS).toISOString();
+}
+
 export type JourneyMode = 'normal' | 'cancelled' | 'rto' | 'failed';
 
 function classifySpecial(status: string | null | undefined, isCancelled?: boolean): JourneyMode {
@@ -188,8 +259,14 @@ export interface JourneyResult {
   delivered: boolean;
   /** true when Delivered came from the day-13 schedule (not a verified team confirmation) */
   deliveredEstimated: boolean;
-  eta: string | null; // ISO date string
+  eta: string | null; // ISO date string: the date the customer sees (revised when late); null once the revisions are used up
   etaEstimated: boolean;
+  /** The order's own date (or the day-13 end of the window), never revised. */
+  etaOriginal: string | null;
+  /** true when `eta` is a revised date shown because the original one passed. */
+  etaRevised: boolean;
+  /** Set for an order past its estimated date at Out for Delivery (see "Late orders"). */
+  late: { daysPast: number; stage: LateStage; reason: string } | null;
   lastCheckedISO: string;
   notice: JourneyNotice | null;
 }
@@ -247,6 +324,7 @@ function eventTime(base: number, i: number, windowDays: number): number {
 
 function buildEvents(
   order: JourneyOrder, currentIndex: number, delivered: boolean, now: Date, windowDays: number,
+  late: { etaISO: string; daysPast: number } | null = null,
 ): JourneyEvent[] {
   const base = new Date(order.created_at).getTime();
   if (Number.isNaN(base)) return [];
@@ -278,6 +356,25 @@ function buildEvents(
       location: fillText(copy.location, order.state, order.city, order.origin_city),
       timeISO: new Date(times[i]).toISOString(),
     });
+  }
+
+  // Late lines: one a day at 10:00 IST after the estimated date, at most LATE_EVENT_DAYS,
+  // each after the Out for Delivery line (an order whose estimated date was earlier than
+  // the schedule gets them in order all the same).
+  if (late && !delivered) {
+    let prev = times.length ? times[times.length - 1] : 0;
+    for (let k = 1; k <= Math.min(late.daysPast, LATE_EVENT_DAYS); k++) {
+      const copy = LATE_EVENTS[k - 1];
+      const at = Math.max(lateEventTime(late.etaISO, k), prev + 60_000);
+      if (at > now.getTime()) break;
+      prev = at;
+      events.push({
+        key: `late${k}`,
+        title: fillText(copy.title, order.state, order.city, order.origin_city),
+        location: fillText(copy.location, order.state, order.city, order.origin_city),
+        timeISO: new Date(at).toISOString(),
+      });
+    }
   }
   return events;
 }
@@ -343,7 +440,8 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
     }
     return {
       mode, currentIndex: -1, currentLabel: notice.title, stages, events: [], ageDays, expectedIndex,
-      delivered: false, deliveredEstimated: false, eta, etaEstimated, lastCheckedISO, notice,
+      delivered: false, deliveredEstimated: false, eta, etaEstimated, etaOriginal: eta, etaRevised: false,
+      late: null, lastCheckedISO, notice,
     };
   }
 
@@ -377,7 +475,24 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   const currentDef = JOURNEY[currentIndex];
   const currentLabel = fillLabel(currentDef, order.state, order.city);
-  const events = buildEvents(order, currentIndex, delivered, now, windowDays);
+
+  // Late: the estimated day is over (from 10:00 IST the next morning), the order is at Out
+  // for Delivery and nobody has marked it Delivered. The original date stays in
+  // `etaOriginal`; `eta` becomes the revised date the customer sees, then null.
+  const etaOriginal = eta;
+  let etaRevised = false;
+  let late: JourneyResult['late'] = null;
+  if (!delivered && eta && currentIndex === LAST_AUTO_INDEX_BEFORE_DELIVERED) {
+    const daysPast = lateDays(eta, now);
+    if (daysPast >= 1) {
+      const stage = lateStage(daysPast);
+      late = { daysPast, stage, reason: LATE_REASONS[stage] };
+      eta = revisedEta(etaOriginal, daysPast);
+      etaRevised = eta !== null;
+    }
+  }
+
+  const events = buildEvents(order, currentIndex, delivered, now, windowDays, late && etaOriginal ? { etaISO: etaOriginal, daysPast: late.daysPast } : null);
 
   // ── Customer-facing status message (confident, reads as real tracking) ──
   const destCity = order.city && order.city.trim() ? titleCase(order.city.trim()) : 'your city';
@@ -385,10 +500,11 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   if (delivered) {
     notice = { level: 'success', title: 'Delivered', body: 'Your order has been delivered. Thank you for shopping with us!' };
-  } else if (ageDays > windowDays + 1) {
-    // Past the usual window and the team has not marked it Delivered: say so plainly,
-    // never "arriving soon" and never Delivered.
-    notice = { level: 'warn', title: 'Taking longer than usual', body: 'Your order is taking a little longer than usual and is still on its way. Our team is keeping an eye on it.' };
+  } else if (late) {
+    // Past the estimated date and the team has not marked it Delivered: the reason from the
+    // delay ladder, never "arriving soon", never "today", never Delivered.
+    const tail = eta ? ' The revised delivery date is shown below.' : ' Our team will confirm your delivery date.';
+    notice = { level: 'warn', title: LATE_TITLES[late.stage], body: late.reason + tail };
   } else if (currentIndex >= 9) {
     // Not "will reach you today": the order can sit at this stage for days, and the stage
     // is a schedule, not a courier scan.
@@ -401,6 +517,6 @@ export function buildJourney(order: JourneyOrder, now: Date = new Date()): Journ
 
   return {
     mode, currentIndex, currentLabel, stages, events, ageDays, expectedIndex,
-    delivered, deliveredEstimated, eta, etaEstimated, lastCheckedISO, notice,
+    delivered, deliveredEstimated, eta, etaEstimated, etaOriginal, etaRevised, late, lastCheckedISO, notice,
   };
 }
