@@ -443,3 +443,21 @@ Sudharo's answer; the AWB, path and other parameters stay. Rule 19 / 40 (the lin
 PASS. Owner, same morning ("team ki bas ki kuch nahi hai"): a team reply and an edit are cleaned the same way before
 they are saved (the words, the AWB and every other parameter stay as typed). Tests: `unit.js` "stripLinkJunk",
 `team-routing.js` R67. No SQL, no env.
+
+## Owner change 2026-10-05 (midday): any member takes a colleague's chat; "Copy link" in the header
+
+Owner (two screenshots: Rahul and Anurag could not take or transfer each other's chats, "transfer ka button kaam
+karna chahiye tha"): answers 1 (a) sab ek doosre ka chat le sakein, 3 sab kuch kar payein, 4 Take aur Transfer dono,
+5 note not mandatory, 6 History hi; 7 tracking link copy ho, 8 header pe, 9 sirf verified, 10 reply box me bhi.
+
+- **Taking a colleague's chat** (`team-rules.ts` `MEMBER_TAKE`, `takeKind` 'member', `canTransfer`): any member who
+  may reply takes any other member's chat and may transfer it; replying still needs the take first (the chat becomes
+  the taker's, logged with its reason: senior / away cover / member); the Super Admin's chats stay his; nothing before
+  the team list is read after a restart. Rule 26 (support screen) / 11: the chat always has a person; 9 / 3 (panel
+  scoping unchanged: targets and takers must have chat.reply in the chat's panel). Rulebook 7.9 rewritten.
+- **"Copy link"** (`order-facts.ts` `tracking_link`, `OrderLine.tsx`, `page.tsx` `insertDraft`): a verified order's
+  tracking link to the clipboard and into the reply box. Rule 8.1 / 9: verified only (a phone match gets no button);
+  the link is ShipTrack's own tracking page (no courier name, rule 19 owner 2 Oct). Staff only, nothing stored.
+- Tests: `team-unit.js` U2 (takeKind / transferTargets / canTransfer rewritten for the new rule), `team-routing.js`
+  R3 / R4 / R5 / R7 / R9 / R13 / R18 updated (every "cannot be taken by you" between members is now a 200 with
+  `meta.take`), the full `npm run test:ai` green, tsc 0, build ok. No SQL, no env.

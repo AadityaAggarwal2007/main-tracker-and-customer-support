@@ -19,7 +19,7 @@ import { MoreMenu } from './MoreMenu';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
@@ -59,6 +59,8 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   token: string;
   user: AuthUser | null;
   withText: string;
+  // Puts text into the reply box (the "Copy link" button, owner 2026-10-05); undefined = this login cannot reply here.
+  insertDraft?: (text: string) => void;
 }) {
   // The full address and Edit sit behind "Details": open on a laptop, closed on a phone. The
   // header only mounts in the browser once a thread has loaded, so the width is known here.
@@ -175,7 +177,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       {/* Row 2: the order in one line, the panel and the phone; Details opens the address */}
       <div className="th-row th-facts meta">
         <span className="truncate">
-          {activeOrder && <><OrderLine facts={activeOrder} place={place} /> · </>}
+          {activeOrder && <><OrderLine facts={activeOrder} place={place} onInsert={insertDraft} /> · </>}
           {activeConv.panel_name || activeConv.site_name}
           {activeConv.visitor_phone && (
             <> · <a href={`tel:${activeConv.visitor_phone}`}><Phone size={10} style={{ verticalAlign: '-1px' }} /> {activeConv.visitor_phone}</a></>

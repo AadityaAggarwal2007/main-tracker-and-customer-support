@@ -18,6 +18,11 @@ export const AWAY_TAKE = true;
 // on a chat nobody holds makes it his, like a member's. The team can then only read it until he
 // transfers it or gives all his open chats back to the team (POST /api/chat/team/release).
 export const OWNER_ACTIONS_CLAIM = true;
+// Owner 2026-10-05 (answer (a), after Rahul and Anurag could not take or transfer each other's chats):
+// any member who may reply takes any other MEMBER's chat ("Take from X"), senior or not, waiting or
+// not, and may transfer it; only the Super Admin's chats stay his. Replying still needs the take
+// first (the chat then becomes the taker's, logged with its reason).
+export const MEMBER_TAKE = true;
 
 // The same 30 minutes as AWAY_AFTER_MIN in src/lib/office-hours.ts (this file has no imports;
 // the unit test checks they agree).
@@ -32,7 +37,7 @@ export interface Member { key: string; name: string; active: boolean; canReply: 
 export interface TransferTarget { key: string | null; name: string; senior: boolean; awayMin: number | null }
 
 export type Tier = 'owner' | 'senior' | 'junior';
-export type TakeKind = 'senior' | 'owner' | 'holder_away';
+export type TakeKind = 'senior' | 'owner' | 'holder_away' | 'member';
 
 // Logged on every chat event (meta.tier), so the report can tell a senior's work from a junior's
 // even after the ticks change.
@@ -55,23 +60,32 @@ export function claimsOnAct(a: Actor, h: Holder | null): boolean {
 // The "Take from X" button: may the actor take someone else's chat, and on what ground (logged as
 // meta.take)? 'owner': the Super Admin takes any chat. 'senior': a senior takes a junior's chat.
 // 'holder_away': the holder is a member not seen for 30 minutes during office hours and the
-// customer is waiting (awayMin is null at night, so never at night). Juniors never take a senior's
-// chat otherwise, and nobody but the Super Admin takes his.
+// customer is waiting (awayMin is null at night, so never at night). 'member' (MEMBER_TAKE, owner
+// 2026-10-05): any other member's chat, whatever the tiers; before that a junior never took a
+// senior's chat and a member only an away holder's. Nobody but the Super Admin takes his.
 export function takeKind(a: Actor, h: Holder | null, customerWaiting: boolean): TakeKind | null {
   if (!a.canReply || h === null || h.key === a.key) return null;
   if (a.superAdmin) return 'owner';
-  if (a.senior && !h.superAdmin && !h.senior) return 'senior';
-  if (AWAY_TAKE && !h.superAdmin && h.awayMin !== null && h.awayMin >= HOLDER_AWAY_MIN && customerWaiting) return 'holder_away';
-  return null;
+  if (h.superAdmin) return null;
+  if (a.senior && !h.senior) return 'senior';
+  if (AWAY_TAKE && h.awayMin !== null && h.awayMin >= HOLDER_AWAY_MIN && customerWaiting) return 'holder_away';
+  return MEMBER_TAKE ? 'member' : null;
 }
 
-// Who the actor may transfer the chat to. Only someone who may act on it transfers it (the holder,
-// anyone on an unheld chat, the Super Admin). Targets: members switched on, with chat.reply and the
-// chat's panel, never yourself or the current holder; then the Super Admin (unless he holds it);
-// then, for the Super Admin on a held chat, "Nobody" to put it back in the open pool.
+// May the actor transfer this chat? The holder, anyone on an unheld chat, the Super Admin, and
+// (MEMBER_TAKE) anyone who could take it: a member's chat may be handed on by another member.
+export function canTransfer(a: Actor, h: Holder | null): boolean {
+  return canAct(a, h) || takeKind(a, h, true) !== null;
+}
+
+// Who the actor may transfer the chat to. Only someone who may act on it, or could take it
+// (canTransfer: the holder, anyone on an unheld chat, the Super Admin, a member on another member's
+// chat), transfers it. Targets: members switched on, with chat.reply and the chat's panel, never
+// yourself or the current holder; then the Super Admin (unless he holds it); then, for the Super
+// Admin on a held chat, "Nobody" to put it back in the open pool.
 // ownerAwayMin: the Super Admin's own away minutes, shown next to his name like a member's.
 export function transferTargets(a: Actor, h: Holder | null, members: Member[], ownerAwayMin: number | null = null): TransferTarget[] {
-  if (!canAct(a, h)) return [];
+  if (!canTransfer(a, h)) return [];
   const out: TransferTarget[] = members
     .filter((m) => m.active && m.canReply && m.panelOk && m.key !== a.key && m.key !== h?.key)
     .map((m) => ({ key: m.key, name: m.name, senior: m.senior, awayMin: m.awayMin }));

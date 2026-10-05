@@ -332,9 +332,11 @@ export async function customerWaiting(client: PoolClient | null, convId: string)
 // that is what decides it (an away holder), so the usual case costs no query.
 export async function takeFor(client: PoolClient | null, actor: Actor, h: Holder | null, convId: string): Promise<TakeKind | null> {
   const k = takeKind(actor, h, false);
-  if (k) return k;
-  if (takeKind(actor, h, true) !== 'holder_away') return null;
-  return (await customerWaiting(client, convId)) ? 'holder_away' : null;
+  if (k && k !== 'member') return k;
+  // An away holder and a waiting customer is still logged as away cover (the reason matters to the
+  // team), else the plain member take (MEMBER_TAKE, owner 2026-10-05).
+  if (takeKind(actor, h, true) !== 'holder_away') return k;
+  return (await customerWaiting(client, convId)) ? 'holder_away' : k;
 }
 
 // The transfer list for the thread's staff block and the transfer check.

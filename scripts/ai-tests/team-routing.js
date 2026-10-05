@@ -1045,12 +1045,14 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
   });
 
   // ── R3-R5: someone else's chat ────────────────────────────────
-  await t('R3 a junior on a senior\'s chat: 409 with his name, nothing saved', async () => {
+  // Owner 2026-10-05 (answer (a)): any member may take any other member's chat ("Take from Rahul"),
+  // so the 409 for a reply on a colleague's chat now points at that button; nothing is saved either way.
+  await t('R3 a junior on a senior\'s chat: 409 with his name ("Take from Rahul" first), nothing saved; then the take works (owner 5 Oct)', async () => {
     known({ id: 'r3', status: 'agent_handling', assigned_to: RAHUL });
     const before = clone(C('r3')), s0 = db.stmts.length;
     const r = await reply('anurag', 'r3', 'Let me help');
     status(r, 409);
-    eq(r.body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+    eq(r.body.error, 'Rahul has this chat. Press "Take from Rahul" first.');
     deq(C('r3'), before);
     eq(agentMsgs('r3').length, 0);
     eq(evs('r3').length, 0);
@@ -1059,9 +1061,17 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     for (const body of [{ status: 'resolved' }, { status: 'ai_handling' }, { status: 'agent_handling' }]) {
       const p = await patch('anurag', 'r3', body);
       status(p, 409, JSON.stringify(body));
-      eq(p.body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+      eq(p.body.error, 'Rahul has this chat. Press "Take from Rahul" first.');
     }
     deq(C('r3'), before);
+    const g = await thread('anurag', 'r3');
+    deq([g.body.staff.take, g.body.staff.can_act, g.body.staff.holder.name], ['member', false, 'Rahul']);
+    ok(g.body.staff.transfer_to.length > 0, 'a member may transfer a colleague\'s chat too (answer 4)');
+    const tk = await takeFrom('anurag', 'r3');
+    status(tk, 200);
+    eq(C('r3').assigned_to, ANURAG);
+    deq(evs('r3', 'take')[0].meta, { tier: 'junior', take: 'member', group: [] });
+    status(await reply('anurag', 'r3', 'Let me help'), 200);
   });
 
   await t('R4 a senior on a junior\'s chat: "Take from Anurag" first, then it is his', async () => {
@@ -1093,51 +1103,53 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     status(await takeFrom('rahul', 'r4d'), 409);
   });
 
-  await t('R4 a senior cannot take another senior\'s chat', async () => {
+  await t('R4 a senior takes another senior\'s chat too, logged as a member take (owner 5 Oct; before: refused)', async () => {
     db.team.find((u) => u.id === ANURAG).permissions.push('chat.senior');
     await mod.auth.refreshTeamCache(true);
     known({ id: 'r4s', status: 'agent_handling', assigned_to: ANURAG });
+    eq((await reply('rahul', 'r4s')).body.error, 'Anurag has this chat. Press "Take from Anurag" first.');
     const r = await takeFrom('rahul', 'r4s');
-    status(r, 409);
-    eq(r.body.error, "Nothing to take: Anurag's chat cannot be taken by you.");
-    eq((await reply('rahul', 'r4s')).body.error, 'Anurag has this chat. You can read it; ask Anurag or Super Admin to transfer it to you.');
+    status(r, 200);
+    deq(evs('r4s', 'take')[0].meta, { tier: 'senior', take: 'member', group: [] });
     db.team.find((u) => u.id === ANURAG).permissions = [...CHAT_PERMS];
     await mod.auth.refreshTeamCache(true);
   });
 
-  await t('R5 away cover: a waiting customer\'s chat can be taken from a member away 30+ min in office hours only', async () => {
+  // Since 5 Oct (owner answer (a)) the take is always allowed between members; away cover only
+  // decides what the log SAYS ('holder_away' when the holder is away 30+ min in office hours and the
+  // customer waits, else 'member'), and the waiting question is asked only when it can matter.
+  await t('R5 away cover: logged as such only for a waiting customer and a member away 30+ min in office hours; the take itself always works between members (owner 5 Oct)', async () => {
     known({ id: 'r5', status: 'agent_handling', assigned_to: RAHUL });
     db.waiting.r5 = true;
     at(ist(15, 0)); touch('rahul', ist(14, 55));
     let w0 = db.waitingAsked.length;
-    let r = await takeFrom('anurag', 'r5');
-    status(r, 409);
-    eq(r.body.error, "Nothing to take: Rahul's chat cannot be taken by you.");
+    let g = await thread('anurag', 'r5');
+    deq([g.body.staff.take, g.body.staff.holder.away_min, g.body.staff.can_act], ['member', null, false]);   // 5 min: not shown as away
     eq(db.waitingAsked.length, w0, 'Rahul was around: no need to ask whether the customer waits');
     touch('rahul', ist(14, 15));                       // 45 min away at 15:00
     db.waiting.r5 = false;
     w0 = db.waitingAsked.length;
-    status(await takeFrom('anurag', 'r5'), 409);       // the customer is not waiting
+    g = await thread('anurag', 'r5');
+    deq([g.body.staff.take, g.body.staff.holder.away_min, g.body.staff.can_act], ['member', 45, false]);   // not waiting: a plain take
     eq(db.waitingAsked.length, w0 + 1);
-    let g = await thread('anurag', 'r5');
-    deq([g.body.staff.take, g.body.staff.holder.away_min, g.body.staff.can_act], [null, 45, false]);
-    eq((await reply('anurag', 'r5')).body.error, 'Rahul has this chat. You can read it; ask Rahul or Super Admin to transfer it to you.');
+    eq((await reply('anurag', 'r5')).body.error, 'Rahul has this chat. Press "Take from Rahul" first.');
     db.waiting.r5 = true;
     g = await thread('anurag', 'r5');
     eq(g.body.staff.take, 'holder_away');
     eq((await reply('anurag', 'r5')).body.error, 'Rahul has this chat. Press "Take from Rahul" first.');
-    r = await takeFrom('anurag', 'r5');
+    let r = await takeFrom('anurag', 'r5');
     status(r, 200);
     eq(C('r5').assigned_to, ANURAG);
     deq(evs('r5', 'take')[0].meta, { tier: 'junior', take: 'holder_away', group: [] });
-    // At night nobody is "away": no away cover.
+    // At night nobody is "away": the take is logged as a member take, no waiting question.
     known({ id: 'r5n', status: 'agent_handling', assigned_to: RAHUL });
     db.waiting.r5n = true;
     at(ist(21, 0));
     w0 = db.waitingAsked.length;
-    status(await takeFrom('anurag', 'r5n'), 409);
+    eq((await thread('anurag', 'r5n')).body.staff.take, 'member');
+    status(await takeFrom('anurag', 'r5n'), 200);
     eq(db.waitingAsked.length, w0);
-    eq((await thread('anurag', 'r5n')).body.staff.take, null);
+    deq(evs('r5n', 'take')[0].meta, { tier: 'junior', take: 'member', group: [] });
     // Never for the Super Admin's chats, however long he is away.
     at(ist(15, 0));
     known({ id: 'r5o', status: 'agent_handling', assigned_to: 'owner' });
@@ -1244,12 +1256,15 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       status(r, code, JSON.stringify(body));
       eq(r.body.error, msg);
     }
-    const r = await patch('rahul', 'r7x', { transferTo: 'owner', note: 'not mine to give' });
-    status(r, 409);
-    eq(r.body.error, 'Anurag has this chat. Only Anurag or Super Admin can transfer it.');
+    // Owner 5 Oct (answer 4): a colleague may transfer a member's chat too; a reader still may not.
     status(await patch('viewer', 'r7x', { transferTo: RAHUL, note: 'viewer tries' }), 403);
     deq(C('r7x'), before);
     eq(db.events.length, e0);
+    const r = await patch('rahul', 'r7x', { transferTo: 'owner', note: 'not mine, but the owner should see it' });
+    status(r, 200);
+    deq([C('r7x').assigned_to, evs('r7x', 'transfer').pop().actor, evs('r7x', 'transfer').pop().from_owner], ['owner', RAHUL, ANURAG]);
+    status(await patch('owner', 'r7x', { transferTo: ANURAG, note: 'back to Anurag' }), 200);
+    eq(C('r7x').assigned_to, ANURAG);
     // The list offered to the holder: members who can reply in the panel, then the Super Admin.
     const g = await thread('anurag', 'r7x');
     deq(g.body.staff.transfer_to, [{ key: RAHUL, name: 'Rahul', senior: true, away_min: null }, { key: 'owner', name: 'Super Admin', senior: false, away_min: null }]);
@@ -1432,9 +1447,9 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     status(await patch('anurag', 'r9', { caseKind: 'refund' }), 200);
     const g = await thread('anurag', 'r9');
     deq([g.body.staff.can_mark_case, g.body.staff.mark_override, g.body.staff.mark_note], [true, false, null]);
-    // And Rahul (no tick now) cannot take Anurag's chat.
+    // And Rahul (no tick now) takes Anurag's chat as a plain member (owner 5 Oct; before: refused); with the tick, as a senior.
     known({ id: 'r9t', status: 'agent_handling', assigned_to: ANURAG });
-    status(await takeFrom('rahul', 'r9t'), 409);
+    eq((await thread('rahul', 'r9t')).body.staff.take, 'member');
     rahul.permissions.push('chat.senior');
     await mod.auth.refreshTeamCache(true);
     eq((await thread('rahul', 'r9t')).body.staff.take, 'senior');
@@ -1568,11 +1583,9 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       let r = await patch('anurag', 'r13q', { caseKind: 'refund' });
       status(r, 403, 'junior mark');
       eq(r.body.error, 'A senior marks Refund / Ship again. You can mark it while no senior has been in ShipTrack for 30 minutes (10:00-19:30).');
-      r = await takeFrom('anurag', 'r13p');
-      status(r, 409, 'away take');
-      eq(r.body.error, "Nothing to take: Rahul's chat cannot be taken by you.");
+      // Since 5 Oct a member takes a colleague's chat anyway (logged 'member', never as away cover here).
       const g = (await thread('anurag', 'r13p')).body.staff;
-      deq([g.holder.away_min, g.take, g.can_mark_case, g.mark_override], [null, null, false, false]);
+      deq([g.holder.away_min, g.take, g.can_mark_case, g.mark_override], [null, 'member', false, false]);
       ok((await list('anurag')).body.team.every((x) => x.away_min === null), 'nobody shown away');
       deq([C('r13p').assigned_to, C('r13q').case_kind], [RAHUL, null]);
     } finally {
@@ -1743,7 +1756,8 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(g.body.conversation.assigned_at !== undefined);
     deq(g.body.staff, {
       me: RAHUL, holder: { key: ANURAG, name: 'Anurag', senior: false, owner: false, away_min: null },
-      can_act: false, claims: false, take: 'senior', transfer_to: [], can_mark_case: true, mark_override: false, mark_note: null, office_open: true,
+      // Owner 5 Oct (answer 4): Rahul may also hand Anurag's chat on (to the Super Admin here: never to himself or the holder).
+      can_act: false, claims: false, take: 'senior', transfer_to: [{ key: 'owner', name: 'Super Admin', senior: false, away_min: 295 }], can_mark_case: true, mark_override: false, mark_note: null, office_open: true,
     });
     const ga = (await thread('anurag', 'r18')).body.staff;
     deq([ga.me, ga.can_act, ga.claims, ga.take, ga.transfer_to.map((x) => x.key)], [ANURAG, true, false, null, [RAHUL, 'owner']]);

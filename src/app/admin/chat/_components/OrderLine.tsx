@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useState } from 'react';
-import { Loader2, Check, AlertCircle, X, Pencil, Info, MapPin, Package, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Check, AlertCircle, X, Pencil, Info, MapPin, Package, Plus, Trash2, Link2 } from 'lucide-react';
 import { INDIAN_STATES, addressText, type OrderAddress } from '@/lib/chat/order-address';
 import { itemsLine } from '@/lib/chat/order-items';
 import type { OrderFacts, StaffAddress, StaffOrderItem, StaffOrderItems } from '../_lib/types';
@@ -10,8 +10,19 @@ import { Chip } from './chips';
 
 // One line of order facts, short labels: "#8554 · Placed 2 Oct · Out for Delivery · ETA 15 Oct ·
 // Hoshiarpur 146001". Inline, so the header's facts row can truncate it on a phone.
-export function OrderLine({ facts, place }: { facts: OrderFacts; place?: string | null }) {
+export function OrderLine({ facts, place, onInsert }: { facts: OrderFacts; place?: string | null; onInsert?: (text: string) => void }) {
   const placed = orderDay(facts.placed_on);
+  // "Copy link" (owner 2026-10-05, answers 7-10): the customer's tracking link goes to the clipboard
+  // AND into the reply box (onInsert, when this login may reply), so the team sends it at once.
+  // Verified orders only (answer 9): an old phone match is a hint, not proof of who is typing.
+  const [copied, setCopied] = useState(false);
+  const canCopy = facts.source === 'verified' && !!facts.tracking_link;
+  const copyLink = async () => {
+    if (!canCopy || !facts.tracking_link) return;
+    try { await navigator.clipboard.writeText(facts.tracking_link); } catch { /* the reply box still gets it */ }
+    onInsert?.(facts.tracking_link);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
   // A delivered, cancelled or returning order has no delivery still to come.
   const eta = facts.delivered || facts.mode === 'cancelled' || facts.mode === 'rto' ? null : orderDay(facts.eta);
   const tone = facts.mode === 'cancelled' || facts.mode === 'rto' ? 't-danger'
@@ -21,6 +32,12 @@ export function OrderLine({ facts, place }: { facts: OrderFacts; place?: string 
   return (
     <span title={`Order ${facts.order_id}${facts.source === 'phone_match' ? ' (matched by phone number, not verified)' : ''}`}>
       <b>{facts.order_id}</b>
+      {canCopy && (
+        <button type="button" className="btn btn-outline btn-sm" onClick={copyLink} style={{ marginLeft: '0.375rem', height: '1.25rem', padding: '0 0.375rem', fontSize: '0.6875rem', verticalAlign: 'middle' }}
+          title={`Copy the customer's tracking link${onInsert ? ' and put it in the reply box' : ''}${facts.tracking_id ? ` (Tracking ID ${facts.tracking_id})` : ''}: ${facts.tracking_link}`}>
+          {copied ? <><Check size={11} /> Copied</> : <><Link2 size={11} /> Copy link</>}
+        </button>
+      )}
       {placed && <> · Placed <b>{placed}</b></>}
       {' · '}<span className={tone}>{facts.status}</span>
       {eta && <> · ETA <b>{eta}</b></>}

@@ -247,6 +247,9 @@ export interface OrderFacts {
   delivered: boolean;
   eta: string | null;
   eta_estimated: boolean;
+  // The customer's tracking link and ID (owner 2026-10-05: "Copy link" in the header).
+  tracking_link?: string | null;
+  tracking_id?: string | null;
 }
 
 // The delivery address under the order line (owner, 2026-10-01: change it here instead of a

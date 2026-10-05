@@ -1049,6 +1049,11 @@ export default function ChatSupportPage() {
   // any other status (a Closed chat goes back to them if the customer writes again).
   const holderIsMe = !!staff?.holder && staff.holder.key === staff.me;
   const withText = holderIsMe ? 'With you' : staff?.holder ? `With ${staff.holder.name}` : 'With team';
+  // "Copy link" in the header (owner 2026-10-05): the tracking link lands in the reply box too, after
+  // whatever is already typed; only for a login that may reply in this chat right now.
+  const insertDraft = canReply && staff?.can_act && activeConv?.status !== 'resolved'
+    ? (text: string) => setDraft((d) => (d.trim() ? `${d.replace(/\s+$/, '')} ${text}` : text))
+    : undefined;
   const forText = !staff?.holder || activeConv?.status === 'agent_handling' ? null
     : holderIsMe ? 'For you' : `For ${staff.holder.name}`;
   const holderAway = staff?.holder?.away_min != null ? ` · away ${minutesText(staff.holder.away_min)}` : '';
@@ -1211,7 +1216,7 @@ export default function ChatSupportPage() {
             {activeConv && (
               <>
                 {/* Thread header */}
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">

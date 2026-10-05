@@ -1,4 +1,4 @@
-import { AuthUser } from '@/lib/auth';
+import { AuthUser, teamLoaded } from '@/lib/auth';
 import { isOfficeHours } from '@/lib/office-hours';
 import { cachedHolidays } from './holidays';
 import { canAct, claimsOnAct, type TakeKind } from './team-rules';
@@ -13,7 +13,10 @@ export async function staffBlock(conv: ConversationRow, user: AuthUser) {
   const h = holderOf(conv.assigned_to, conv.tracker_business_id, now);
   // A merged shell on a stale screen: read only (the actions refuse it too).
   const live = !!actor && !conv.merged_into;
-  const take: TakeKind | null = live && actor ? await takeFor(null, actor, h, conv.id).catch(() => null) : null;
+  // Before the team list is read (right after a restart) a stored holder is a nameless "team member":
+  // no take and no transfer list until it is (fail closed; the actions answer 503 then anyway).
+  const ready = teamLoaded();
+  const take: TakeKind | null = live && actor && ready ? await takeFor(null, actor, h, conv.id).catch(() => null) : null;
   const mark = actor ? caseMarkState(actor, now) : { allowed: false, override: false, note: null };
   return {
     me: actor?.key ?? null,
@@ -21,7 +24,7 @@ export async function staffBlock(conv: ConversationRow, user: AuthUser) {
     can_act: live && !!actor && canAct(actor, h),
     claims: live && !!actor && claimsOnAct(actor, h),
     take,
-    transfer_to: live && actor && conv.status !== 'resolved'
+    transfer_to: live && actor && ready && conv.status !== 'resolved'
       ? transferList(actor, h, conv.tracker_business_id, now).map((t) => ({
         key: t.key, name: t.name, senior: t.senior,
         away_min: shownAway(t.awayMin),

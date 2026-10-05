@@ -30,6 +30,11 @@ export interface OrderFacts {
   // The unrevised date, and the tracking page's late step (journey.ts "Late orders").
   eta_original: string | null;
   late: { daysPast: number; stage: 1 | 2 | 3; reason: string } | null;
+  // The customer's tracking link and the tracking ID (owner 2026-10-05: a "Copy link" button in the
+  // thread header, so the team pastes the link into the chat at once). Built exactly as Chikki's
+  // lookup builds it (orders.ts toFoundOrder: the panel's tracking domain, else TRACKING_BASE_URL).
+  tracking_link: string | null;
+  tracking_id: string | null;
 }
 
 interface FactsRow {
@@ -37,6 +42,7 @@ interface FactsRow {
   created_at: string | Date; status_updated_at: string | Date | null;
   estimated_delivery: string | Date | null; state: string | null; city: string | null;
   delivered_at: string | Date | null; origin_city: string | null;
+  tracking_token: string | null; tracking_id: string | null; tracking_domain: string | null;
 }
 
 const iso = (v: string | Date | null | undefined): string | null => {
@@ -58,7 +64,8 @@ export async function loadOrderFacts(
   try {
     const { rows } = await query<FactsRow>(
       `SELECT o.order_id, o.tracking_status, o.is_cancelled, o.created_at, o.status_updated_at,
-              o.estimated_delivery, o.state, o.city, o.delivered_at, b.origin_city
+              o.estimated_delivery, o.state, o.city, o.delivered_at, b.origin_city,
+              o.tracking_token, o.tracking_id, b.tracking_domain
          FROM orders o
          LEFT JOIN businesses b ON b.id = o.business_id
         WHERE o.order_id = $1
@@ -69,6 +76,7 @@ export async function loadOrderFacts(
     if (rows.length !== 1) return null;
     const row = rows[0];
     const journey = buildJourney(row as unknown as JourneyOrder);
+    const trackingBase = (row.tracking_domain || process.env.TRACKING_BASE_URL || 'https://shiptrack.store').replace(/\/+$/, '');
     return {
       order_id: row.order_id,
       source,
@@ -82,6 +90,8 @@ export async function loadOrderFacts(
       // tracking page (journey.ts "Late orders").
       eta_original: journey.etaOriginal,
       late: journey.late,
+      tracking_link: row.tracking_token ? `${trackingBase}/track/${row.tracking_token}` : null,
+      tracking_id: row.tracking_id || null,
     };
   } catch (err) {
     console.error('[chat/order-facts] loadOrderFacts error:', err);

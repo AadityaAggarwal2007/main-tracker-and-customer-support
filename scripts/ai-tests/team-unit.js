@@ -194,7 +194,10 @@ t('U2 claimsOnAct: a reply / Take over on a chat nobody holds claims it, the Sup
   }
 });
 
-t('U2 takeKind: owner takes any, senior takes a junior, away cover only for a waiting customer', () => {
+// Owner 2026-10-05 (answer (a): "sab kar paye sab kuch"): any member takes any other member's chat
+// ('member'); a senior's take of a junior and away cover keep their names (the log says why); the
+// Super Admin's chats are still nobody's to take.
+t('U2 takeKind: owner takes any, senior takes a junior, away cover for a waiting customer, else any member takes any member\'s chat (owner 5 Oct)', () => {
   // nothing to take
   for (const a of [SA, RAHUL, ANURAG, READER]) {
     assert.strictEqual(tr.takeKind(a, null, true), null);
@@ -205,17 +208,18 @@ t('U2 takeKind: owner takes any, senior takes a junior, away cover only for a wa
   // senior on a junior: always, no waiting needed
   assert.strictEqual(tr.takeKind(RAHUL, H.junior, false), 'senior');
   assert.strictEqual(tr.takeKind(RAHUL, H.awayJunior, true), 'senior'); // 'senior' wins over 'holder_away'
-  // senior on another senior: only away cover
-  assert.strictEqual(tr.takeKind(RAHUL, H.senior2, true), null);
+  // senior on another senior: away cover when the customer waits, else the plain member take
+  assert.strictEqual(tr.takeKind(RAHUL, H.senior2, true), 'member');
   assert.strictEqual(tr.takeKind(RAHUL, H.awaySenior2, true), 'holder_away');
-  assert.strictEqual(tr.takeKind(RAHUL, H.awaySenior2, false), null);
-  // junior on a senior / another junior: only away cover
-  assert.strictEqual(tr.takeKind(ANURAG, H.senior, true), null);
+  assert.strictEqual(tr.takeKind(RAHUL, H.awaySenior2, false), 'member');
+  // junior on a senior / another junior: the same (before 5 Oct: null unless away cover)
+  assert.strictEqual(tr.takeKind(ANURAG, H.senior, true), 'member');
   assert.strictEqual(tr.takeKind(ANURAG, H.awaySenior, true), 'holder_away');
-  assert.strictEqual(tr.takeKind(ANURAG, H.awaySenior, false), null);
-  assert.strictEqual(tr.takeKind(ANURAG, H.nightSenior, true), null); // never at night
-  assert.strictEqual(tr.takeKind(ANURAG, H.junior2, true), null);
+  assert.strictEqual(tr.takeKind(ANURAG, H.awaySenior, false), 'member');
+  assert.strictEqual(tr.takeKind(ANURAG, H.nightSenior, true), 'member'); // at night too (away cover alone never was)
+  assert.strictEqual(tr.takeKind(ANURAG, H.junior2, true), 'member');
   assert.strictEqual(tr.takeKind(ANURAG, H.awayJunior2, true), 'holder_away');
+  assert.strictEqual(tr.MEMBER_TAKE, true);
   // the Super Admin's chats: nobody else takes them, away or not
   // (also when the holder built for him does not carry the Senior flag: superAdmin alone protects it)
   const ownerNoSenior = holder('owner', 'Super Admin', { superAdmin: true, senior: false, awayMin: 240 });
@@ -230,13 +234,13 @@ t('U2 takeKind: away means AWAY_AFTER_MIN (30) of office time, the same number a
   const at30 = holder(R, 'Rahul', { senior: true, awayMin: oh.AWAY_AFTER_MIN });
   const at29 = holder(R, 'Rahul', { senior: true, awayMin: oh.AWAY_AFTER_MIN - 1 });
   assert.strictEqual(tr.takeKind(ANURAG, at30, true), 'holder_away');
-  assert.strictEqual(tr.takeKind(ANURAG, at29, true), null);
+  assert.strictEqual(tr.takeKind(ANURAG, at29, true), 'member');   // not away yet: the plain take (owner 5 Oct)
   // end to end with the clock: Rahul last seen 14:15, customer waiting
   const rahulAt = (now) => holder(R, 'Rahul', { senior: true, awayMin: oh.awayMinutes(ist('14:15'), now) });
-  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('14:40')), true), null);        // 25 min
+  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('14:40')), true), 'member');    // 25 min: not away cover
   assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('15:00')), true), 'holder_away'); // 45 min, office hours
-  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('15:00')), false), null);       // customer not waiting
-  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('21:00')), true), null);        // night: awayMin null
+  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('15:00')), false), 'member');   // customer not waiting
+  assert.strictEqual(tr.takeKind(ANURAG, rahulAt(ist('21:00')), true), 'member');    // night: awayMin null, never away cover
 });
 
 const M = (key, name, o = {}) => ({ key, name, active: true, canReply: true, senior: false, panelOk: true, awayMin: null, ...o });
@@ -262,9 +266,12 @@ t('U2 transferTargets: never yourself or the holder; switched-off, non-repliers 
   assert.deepStrictEqual(keys(r), [A, 'owner']);
   assert.deepStrictEqual(r[0], { key: A, name: 'Anurag', senior: false, awayMin: 40 });
   // someone else's chat: no targets at all (Transfer is only for your own chat)
-  assert.deepStrictEqual(tr.transferTargets(ANURAG, H.senior, MEMBERS), []);
-  assert.deepStrictEqual(tr.transferTargets(RAHUL, H.junior, MEMBERS), []);
+  // Owner 5 Oct (answer 4): a member's chat may be handed on by another member (never the Super Admin's).
+  assert.ok(tr.transferTargets(ANURAG, H.senior, MEMBERS).length > 0 && !tr.transferTargets(ANURAG, H.senior, MEMBERS).some((t) => t.key === R || t.key === A));
+  assert.ok(tr.transferTargets(RAHUL, H.junior, MEMBERS).length > 0 && !tr.transferTargets(RAHUL, H.junior, MEMBERS).some((t) => t.key === A || t.key === R));
   assert.deepStrictEqual(tr.transferTargets(RAHUL, H.owner, MEMBERS), []);
+  assert.deepStrictEqual(tr.transferTargets(READER, H.junior, MEMBERS), []);
+  assert.deepStrictEqual([tr.canTransfer(ANURAG, H.senior), tr.canTransfer(ANURAG, H.owner), tr.canTransfer(READER, H.junior), tr.canTransfer(ANURAG, null)], [true, false, false, true]);
   assert.deepStrictEqual(tr.transferTargets(READER, null, MEMBERS), []);
 });
 

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withTransaction } from '@/lib/db';
-import { canAct, cleanTransferNote, transferStatus, type Actor } from './team-rules';
+import { canTransfer, cleanTransferNote, transferStatus, type Actor } from './team-rules';
 import { ChatActionError, holderOf, isKnownCustomer, lockChatGroup, logChatEvent, nameOfKey, setActor, transferList } from './team-routing';
 import type { ConversationRow } from './thread-read';
 
@@ -28,7 +28,8 @@ export async function transfer(conversation: ConversationRow, staff: Actor, rawT
       throw new ChatActionError(400, 'This chat is Closed. When the customer writes again it goes to whoever holds it.');
     }
     const h = holderOf(chat.assigned_to, panel, now);
-    if (!canAct(staff, h)) {
+    // A member's chat may be handed on by another member too (team-rules.ts canTransfer, owner 2026-10-05).
+    if (!canTransfer(staff, h)) {
       throw new ChatActionError(409, h!.superAdmin
         ? 'Super Admin has this chat. Only Super Admin can transfer it.'
         : `${h!.name} has this chat. Only ${h!.name} or Super Admin can transfer it.`);
