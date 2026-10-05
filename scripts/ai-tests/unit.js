@@ -1338,4 +1338,24 @@ t('suggest: outside the week the instruction names the day; an upset customer wh
   assert.ok(!sg.suggestInstruction({ ...base, after: null, upsetClosed: 'weekend' }).includes('very upset'), 'the office is open: no such line');
 });
 
+
+// ── Links without copy-paste junk (reply-guards.ts stripLinkJunk, owner 2026-10-05: "yeh chatgpt kyu likha aa raha hai?") ──
+t('stripLinkJunk: utm_source=chatgpt.com, fbclid, gclid go; the AWB, the path, other parameters and the punctuation after the link stay', () => {
+  const L = 'https://app.fship.in/shipment/tracking?awbno=143449611038166&utm_source=chatgpt.com';
+  assert.deepStrictEqual(rg.stripLinkJunk(`Here's your tracking link: ${L}. We're keeping an eye on it.`),
+    { text: "Here's your tracking link: https://app.fship.in/shipment/tracking?awbno=143449611038166. We're keeping an eye on it.", changed: true });
+  assert.deepStrictEqual(rg.stripLinkJunk('https://x.in/t?utm_source=chatgpt.com&awbno=12345678&fbclid=abc'), { text: 'https://x.in/t?awbno=12345678', changed: true });
+  assert.deepStrictEqual(rg.stripLinkJunk('link (https://x.in/t?a=1&utm_medium=chat)'), { text: 'link (https://x.in/t?a=1)', changed: true });
+  assert.deepStrictEqual(rg.stripLinkJunk('https://x.in/t?utm_source=chatgpt.com'), { text: 'https://x.in/t', changed: true });
+  // Untouched: no junk, a ShipTrack link, a word that merely says utm, no link at all.
+  for (const x of ['https://shiptrack.store/track/abc-123', 'https://app.fship.in/shipment/tracking?awbno=143449611038166', 'utm_source is a word', 'no link here', '']) {
+    assert.deepStrictEqual(rg.stripLinkJunk(x), { text: x, changed: false }, x);
+  }
+  // The suggested replies and Sudharo clean the link too; Sudharo's "same links" check compares clean with clean.
+  const ctx = { customerTexts: ['where is my parcel'], courierNames: [] };
+  assert.deepStrictEqual(sg.guardOptions([`Your tracking link: ${L}`], ctx), ['Your tracking link: https://app.fship.in/shipment/tracking?awbno=143449611038166']);
+  assert.strictEqual(sg.acceptPolish(`ur link ${L} pls check`, `Your link ${L}, please check.`), 'Your link https://app.fship.in/shipment/tracking?awbno=143449611038166, please check.');
+  assert.strictEqual(sg.acceptPolish(`ur link ${L} pls check`, 'Your link https://other.in/x, please check.'), 'ur link https://app.fship.in/shipment/tracking?awbno=143449611038166 pls check');
+});
+
 console.log(`UNIT: ${n} groups passed`);

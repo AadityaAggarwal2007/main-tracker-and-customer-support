@@ -16,7 +16,7 @@ import type { AfterHours, ClosedWhy } from '@/lib/office-hours';
 import { dropFormMentions, hasFormLink } from '@/lib/refund/link-mask';
 import { dropDisputeAdvice } from './dispute-advice';
 import { looksHinglish, teamBackWhen, weekdayLabel } from './escalation';
-import { dropAddressEcho, withoutUnaskedCourier } from './reply-guards';
+import { dropAddressEcho, stripLinkJunk, withoutUnaskedCourier } from './reply-guards';
 import { dropTodayPromise } from './today-promise';
 
 export type SuggestLang = 'auto' | 'en' | 'hi';
@@ -179,6 +179,8 @@ export function guardOptions(options: string[], ctx: GuardContext): string[] {
     text = dropAddressEcho(text, ctx.customerTexts.slice(-8)).text;
     text = withoutUnaskedCourier(text, latest, ctx.courierNames, 0).text;
     text = asTeam(text).replace(/\s+/g, ' ').trim();
+    // A link pasted into the chat from ChatGPT (utm_source=chatgpt.com) is copied without that tag (owner 2026-10-05).
+    text = stripLinkJunk(text).text;
     if (!text || hasFormLink(text)) continue;
     if (out.some((o) => o.toLowerCase() === text.toLowerCase())) continue;
     out.push(text);
@@ -200,7 +202,10 @@ export function polishUserMessage(draft: string, customerLatest: string | null):
 // (empty, wrapped in quotes and labels, far longer or shorter, or carrying a link that was not
 // there: the team member's words go out, not the model's).
 export function acceptPolish(draft: string, raw: string | null | undefined): string {
-  const d = draft.trim();
+  // The team member's own link loses a ChatGPT / ad tag too (owner 2026-10-05); the model's answer is
+  // cleaned the same way, so the "same links" check below compares clean with clean.
+  const d = stripLinkJunk(draft.trim()).text;
+  raw = stripLinkJunk(String(raw || '')).text;
   let out = String(raw || '').trim();
   out = out.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
   out = out.replace(/^(?:corrected(?: reply| text)?|reply|output)\s*:\s*/i, '').trim();

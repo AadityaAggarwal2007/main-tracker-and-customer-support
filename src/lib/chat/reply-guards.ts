@@ -346,6 +346,31 @@ function editDistance(a: string, b: string): number {
   }
   return prev[b.length];
 }
+// ── Links without copy-paste junk (owner 2026-10-05, "yeh chatgpt kyu likha aa raha hai?") ──
+// A link copied out of ChatGPT (or an ad) carries ?utm_source=chatgpt.com, fbclid, gclid ...; a team
+// member pasted one into a chat, and the drafts copied it word for word. Every http(s) link in a
+// reply loses those parameters (the same list as reship.ts cleanLink); the link itself, its path, its
+// AWB and any other parameter stay exactly as written. Trailing punctuation is kept outside the link.
+const JUNK_PARAM = /^(utm_|fbclid|gclid|msclkid|ref_src)/i;
+export function stripLinkJunk(text: string): { text: string; changed: boolean } {
+  const input = text || '';
+  if (!/https?:\/\/\S*[?&](utm_|fbclid|gclid|msclkid|ref_src)/i.test(input)) return { text: input, changed: false };
+  let changed = false;
+  const out = input.replace(/https?:\/\/[^\s<>"'`]+/g, (raw) => {
+    const m = /^(.*?)([.,;:!?)\]]*)$/.exec(raw)!;
+    const url = m[1], tail = m[2];
+    try {
+      const parsed = new URL(url);
+      let dropped = false;
+      for (const k of Array.from(parsed.searchParams.keys())) if (JUNK_PARAM.test(k)) { parsed.searchParams.delete(k); dropped = true; }
+      if (!dropped) return raw;
+      changed = true;
+      return parsed.toString().replace(/\?$/, '') + tail;
+    } catch { return raw; }
+  });
+  return { text: out, changed };
+}
+
 export function withExactTrackingLinks(reply: string, knownLinks: string[]): { text: string; changed: boolean; fixed: number } {
   const input = reply || '';
   const known = Array.from(new Set(knownLinks.filter((l) => typeof l === 'string' && linkParts(l)))).map((l) => ({ link: l, ...linkParts(l)! }));

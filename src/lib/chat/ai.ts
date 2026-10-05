@@ -18,7 +18,7 @@ import {
 import { stripMarkdownEmphasis } from './plain-text';
 import { dropTodayPromise, promisesToday } from './today-promise';
 import { fixOrderMentions } from './order-mention';
-import { asksAboutCourier, COURIER_NAME_FROM_ASK, dropAddressEcho, withCheckAround, withExactTrackingLinks, withoutUnaskedCourier } from './reply-guards';
+import { asksAboutCourier, COURIER_NAME_FROM_ASK, dropAddressEcho, stripLinkJunk, withCheckAround, withExactTrackingLinks, withoutUnaskedCourier } from './reply-guards';
 import { looksHinglish } from './escalation';
 import { FORM_VERIFY_ASK, dropFormMentions } from '@/lib/refund/link-mask';
 import { dropDisputeAdvice } from './dispute-advice';
@@ -796,6 +796,10 @@ export async function getAIResponse(
     if (verifiedResult) addLinks(verifiedResult);
     const links = withExactTrackingLinks(out, knownLinks);
     if (links.changed) { out = links.text; console.log(`[AI] Tracking link corrected (${links.fixed}) for conv ${conversationId}`); }
+    // A link copied from ChatGPT or an ad earlier in the chat (utm_source=chatgpt.com ...) loses that
+    // tag (reply-guards.ts stripLinkJunk, owner 2026-10-05).
+    const junk = stripLinkJunk(out);
+    if (junk.changed) { out = junk.text; console.log(`[AI] Link tracking parameters removed for conv ${conversationId}`); }
     return out;
   };
 

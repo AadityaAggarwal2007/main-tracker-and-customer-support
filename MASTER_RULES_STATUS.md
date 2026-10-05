@@ -432,3 +432,13 @@ holidays live in the existing `chat_settings` table), no new env value.
   the full `npm run test:ai` green, `npx tsc --noEmit` 0, `npm run build` ok. Not run: the live suite (`run-on-vps.sh`,
   the owner's Mac); the note is fixed text, not the model's.
 - Not done (owner's answers): email (11); the manual team line for the late-order page (still open from 4 Oct).
+- DEPLOYED 2026-10-04 22:00 IST (f33e139, pushed to `main` on the owner's "karlia"); the card showed in Team after the deploy.
+
+## 2026-10-05 (morning): "yeh chatgpt kyu likha aa raha hai?"
+
+A suggested reply carried the fship tracking link with `utm_source=chatgpt.com`: a team member had pasted a link copied
+out of ChatGPT into the chat, and the drafts copy links from the chat word for word. `reply-guards.ts` `stripLinkJunk`
+now removes utm_* / fbclid / gclid / msclkid / ref_src from every link in Chikki's replies, the suggested replies and
+Sudharo's answer; the AWB, path and other parameters stay. Rule 19 / 40 (the link is still the real one, only cleaner):
+PASS. Team replies are still sent exactly as typed (a team member who pastes such a link sends it with the tag; the
+drafts and Sudharo give them the clean one). Tests: `unit.js` "stripLinkJunk". No SQL, no env.
