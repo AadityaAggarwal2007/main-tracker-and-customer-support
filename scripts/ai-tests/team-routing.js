@@ -3673,6 +3673,21 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     deq(await hol.loadHolidays(ist(12, 0, 27)), []);
   });
 
+  // ── R67: a team reply pasted from ChatGPT loses the link's tag (owner 2026-10-05) ──
+  await t('R67 a team reply or edit with utm_source=chatgpt.com on a link is saved without the tag; the AWB and the words stay; the Ship again mark still reads the AWB', async () => {
+    at(ist(12, 0, 6));
+    known({ id: 'r67' });
+    const L = 'https://app.fship.in/shipment/tracking?awbno=143449611038166&utm_source=chatgpt.com';
+    const r = await reply('anurag', 'r67', `Your new shipment is with our courier partner. Track it here: ${L}. We will update you here.`);
+    status(r, 200);
+    const saved = agentMsgs('r67').pop();
+    eq(saved.content, 'Your new shipment is with our courier partner. Track it here: https://app.fship.in/shipment/tracking?awbno=143449611038166. We will update you here.');
+    ok(!/chatgpt/.test(saved.content));
+    // A plain reply is byte-identical.
+    status(await reply('anurag', 'r67', 'Noted, checking this for you.'), 200);
+    eq(agentMsgs('r67').pop().content, 'Noted, checking this for you.');
+  });
+
   Object.assign(console, realConsole);
   Date.now = realNow;
   console.log(`TEAM-ROUTING: ${n} groups passed`);

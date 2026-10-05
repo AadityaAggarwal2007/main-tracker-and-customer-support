@@ -4,6 +4,7 @@ import { getAuthFromRequest, AuthUser } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { MAX_MESSAGE_LENGTH, canChangeMessage, isOurMessage } from '@/lib/chat/message-rules';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
+import { stripLinkJunk } from '@/lib/chat/reply-guards';
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
 import { can } from '@/lib/permissions';
 import { hasFormLink, maskRefundLinks } from '@/lib/refund/link-mask';
@@ -108,7 +109,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
   try {
     const { content } = await request.json();
-    const text = typeof content === 'string' ? stripMarkdownEmphasis(content).trim() : '';
+    // The same cleaning as a new reply: no **bold**, no ChatGPT / ad tag on a link (owner 2026-10-05).
+    const text = typeof content === 'string' ? stripLinkJunk(stripMarkdownEmphasis(content)).text.trim() : '';
     // The same rule as a new reply (owner 2026-10-02, Q7): no Google Form or refund-form link.
     if (hasFormLink(text)) return NextResponse.json({ error: "Refund forms go only through 'Send refund form' (Super Admin, Refund section). Remove the form link." }, { status: 403 });
     if (text.length > MAX_MESSAGE_LENGTH) {

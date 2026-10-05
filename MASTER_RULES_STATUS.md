@@ -440,5 +440,6 @@ A suggested reply carried the fship tracking link with `utm_source=chatgpt.com`:
 out of ChatGPT into the chat, and the drafts copy links from the chat word for word. `reply-guards.ts` `stripLinkJunk`
 now removes utm_* / fbclid / gclid / msclkid / ref_src from every link in Chikki's replies, the suggested replies and
 Sudharo's answer; the AWB, path and other parameters stay. Rule 19 / 40 (the link is still the real one, only cleaner):
-PASS. Team replies are still sent exactly as typed (a team member who pastes such a link sends it with the tag; the
-drafts and Sudharo give them the clean one). Tests: `unit.js` "stripLinkJunk". No SQL, no env.
+PASS. Owner, same morning ("team ki bas ki kuch nahi hai"): a team reply and an edit are cleaned the same way before
+they are saved (the words, the AWB and every other parameter stay as typed). Tests: `unit.js` "stripLinkJunk",
+`team-routing.js` R67. No SQL, no env.

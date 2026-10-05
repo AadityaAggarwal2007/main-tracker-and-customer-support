@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
+import { stripLinkJunk } from '@/lib/chat/reply-guards';
 import { hasFormLink } from '@/lib/refund/link-mask';
 import { can } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
@@ -51,8 +52,10 @@ export async function POST(request: NextRequest) {
     // suggestionId + suggestionIndex (optional): the reply started from a suggested draft
     // (suggest-run.ts); recorded after the save, never a reason to refuse the reply.
     const { conversationId, content, attachmentIds, suggestionId, suggestionIndex } = await request.json();
-    // Pasted **bold** would reach the customer as literal asterisks.
-    const text = stripMarkdownEmphasis(content == null ? '' : String(content));
+    // Pasted **bold** would reach the customer as literal asterisks. A link pasted from ChatGPT or an
+    // ad (utm_source=chatgpt.com, fbclid ...) loses that tag (owner 2026-10-05: "team ki bas ki kuch
+    // nahi hai"); the link itself, its AWB and the rest of the reply are exactly as typed.
+    const text = stripLinkJunk(stripMarkdownEmphasis(content == null ? '' : String(content))).text;
     // No Google Form (any: owner answer Q7) and no refund-form link in a team reply, chat or email, for
     // every login (owner 2026-10-02): refund forms go out only through the Super Admin's Send button.
     if (hasFormLink(text)) return NextResponse.json({ error: "Refund forms go only through 'Send refund form' (Super Admin, Refund section). Remove the form link." }, { status: 403 });
