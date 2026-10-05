@@ -1150,40 +1150,44 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     status(await takeFrom('anurag', 'r5n'), 200);
     eq(db.waitingAsked.length, w0);
     deq(evs('r5n', 'take')[0].meta, { tier: 'junior', take: 'member', group: [] });
-    // Never for the Super Admin's chats, however long he is away.
+    // The Super Admin's chats (owner 5 Oct afternoon): a member takes them too, as a plain member take.
     at(ist(15, 0));
     known({ id: 'r5o', status: 'agent_handling', assigned_to: 'owner' });
     db.waiting.r5o = true;
     touch('owner', ist(11, 0));
-    for (const who of ['anurag', 'rahul']) {
-      const x = await takeFrom(who, 'r5o');
-      status(x, 409, who);
-      eq(x.body.error, "Nothing to take: Super Admin's chat cannot be taken by you.");
-    }
-    eq(C('r5o').assigned_to, 'owner');
+    eq((await thread('anurag', 'r5o')).body.staff.take, 'member');
+    status(await takeFrom('anurag', 'r5o'), 200);
+    eq(C('r5o').assigned_to, ANURAG);
+    deq(evs('r5o', 'take')[0].meta, { tier: 'junior', take: 'member', group: [] });
   });
 
   // ── R6: the Super Admin (owner answers Q2 and 3) ──────────────
-  await t('R6 the Super Admin\'s first reply on a free chat makes it his, with the customer\'s free chats', async () => {
+  // Owner 5 Oct afternoon ("yeh Super Admin jo aa raha hai yeh bhi hata"): his first reply on a free chat
+  // claims NOTHING (Q2 of 1 Oct said it did, and 12 waiting chats sat locked as "With Super Admin"): the chat
+  // stays in the open pool, the AI still stops, and any member answers it; a chat he does hold (a transfer
+  // to him) is taken like a member's.
+  await t('R6 the Super Admin\'s first reply on a free chat claims nothing: the chat stays in the pool and the team answers it; a chat transferred to him can be taken', async () => {
     at(ist(16, 0));
     const K = '9000000006';
     known({ id: 'r6a', customer_key: K, status: 'human_needed' });
     known({ id: 'r6b', customer_key: K, status: 'ai_handling' });
     status(await reply('owner', 'r6a', 'Main dekh raha hoon'), 200);
-    deq([C('r6a').assigned_to, C('r6b').assigned_to, C('r6a').status], ['owner', 'owner', 'agent_handling']);
+    deq([C('r6a').assigned_to, C('r6b').assigned_to, C('r6a').status], [null, null, 'agent_handling']);
     deq(agentMsgs('r6a').map((x) => x.metadata), [{ agent: 'Owner' }]);
-    const claim = evs('r6a', 'claim')[0];
-    deq([claim.actor, claim.actor_name, claim.to_owner, claim.reason, claim.meta], ['owner', 'Super Admin', 'owner', 'reply', { tier: 'owner', group: ['r6b'] }]);
+    eq(evs('r6a', 'claim').length, 0);
     deq([evs('r6a', 'status')[0].actor, evs('r6a', 'reply')[0].actor], ['owner', 'owner']);
-    // The team only reads his chats.
-    eq((await reply('anurag', 'r6a')).body.error, 'Super Admin has this chat. You can read it; ask Super Admin to transfer it to you.');
-    eq((await takeFrom('rahul', 'r6a')).body.error, "Nothing to take: Super Admin's chat cannot be taken by you.");
-    const tr = await patch('anurag', 'r6a', { transferTo: RAHUL, note: 'please take this one' });
-    status(tr, 409);
-    eq(tr.body.error, 'Super Admin has this chat. Only Super Admin can transfer it.');
-    status(await patch('rahul', 'r6a', { status: 'resolved' }), 409);
+    // Anurag answers next and the chat becomes hers (a chat nobody holds).
+    status(await reply('anurag', 'r6a'), 200);
+    eq(C('r6a').assigned_to, ANURAG);
+    // A chat he does hold (Anurag transferred it to him): read, take, or hand on.
+    status(await patch('anurag', 'r6a', { transferTo: 'owner', note: 'please take this one' }), 200);
+    eq(C('r6a').assigned_to, 'owner');
+    eq((await reply('rahul', 'r6a')).body.error, 'Super Admin has this chat. Press "Take from Super Admin" first.');
     const g = await thread('rahul', 'r6a');
-    deq([g.body.staff.can_act, g.body.staff.take, g.body.staff.transfer_to, g.body.staff.holder], [false, null, [], { key: 'owner', name: 'Super Admin', senior: false, owner: true, away_min: null }]);
+    deq([g.body.staff.can_act, g.body.staff.take, g.body.staff.transfer_to.map((x) => x.key), g.body.staff.holder], [false, 'member', [ANURAG], { key: 'owner', name: 'Super Admin', senior: false, owner: true, away_min: null }]);
+    status(await patch('rahul', 'r6a', { status: 'resolved' }), 409);
+    status(await takeFrom('rahul', 'r6a'), 200);
+    eq(C('r6a').assigned_to, RAHUL);
   });
 
   await t('R6 the Super Admin on a member\'s chat: acts without taking it; "Take from" and Take over claim', async () => {
@@ -1198,13 +1202,12 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(C('r6c').assigned_to, 'owner');
     deq(evs('r6c', 'take')[0].meta, { tier: 'owner', take: 'owner', group: [] });
     status(await reply('anurag', 'r6c'), 409);
-    // Take over on a chat nobody holds claims too (reason take_over), the AI stops.
+    // Take over on a chat nobody holds: the AI stops, the chat stays in the pool (no claim, owner 5 Oct).
     known({ id: 'r6d', status: 'human_needed' });
     const r = await takeOver('owner', 'r6d');
     status(r, 200);
-    deq([r.body.assigned_to, C('r6d').status], ['owner', 'agent_handling']);
-    const ev = evs('r6d', 'claim')[0];
-    deq([ev.reason, ev.meta], ['take_over', { tier: 'owner', group: [] }]);
+    deq([r.body.assigned_to, C('r6d').status], [null, 'agent_handling']);
+    eq(evs('r6d', 'claim').length, 0);
     eq(evs('r6d', 'status')[0].reason, 'take_over');
   });
 
@@ -1226,10 +1229,10 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     // Nobody is offered only on a held chat.
     ok(!(await thread('owner', 'r6e')).body.staff.transfer_to.some((x) => x.key === null));
     status(await patch('owner', 'r6e', { transferTo: null, note: 'again to nobody' }), 400);
-    // His Close keeps him as the holder.
+    // His Take over claims nothing now (owner 5 Oct); his Close keeps the holder as it is (nobody).
     status(await takeOver('owner', 'r6e'), 200);
     status(await patch('owner', 'r6e', { status: 'resolved' }), 200);
-    deq([C('r6e').assigned_to, C('r6e').status, C('r6e').closed_by_name], ['owner', 'resolved', 'Super Admin']);
+    deq([C('r6e').assigned_to, C('r6e').status, C('r6e').closed_by_name], [null, 'resolved', 'Super Admin']);
   });
 
   // ── R7: Transfer ──────────────────────────────────────────────

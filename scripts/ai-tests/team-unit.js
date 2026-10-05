@@ -159,7 +159,7 @@ const self = (a) => holder(a.key, a.name, { superAdmin: a.superAdmin, senior: a.
 
 t('U2 the owner answers are built in: away cover on, the Super Admin claims', () => {
   assert.strictEqual(tr.AWAY_TAKE, true);
-  assert.strictEqual(tr.OWNER_ACTIONS_CLAIM, true);
+  assert.strictEqual(tr.OWNER_ACTIONS_CLAIM, false);   // owner 5 Oct: his reply claims nothing (was true, Q2 of 1 Oct)
   assert.strictEqual(tr.OWNER_KEY, 'owner');
 });
 
@@ -183,8 +183,8 @@ t('U2 canAct: the holder, anyone on an unheld chat, the Super Admin on any; a re
   assert.strictEqual(tr.canAct(RAHUL, H.awaySenior2), false); // away cover is a Take, not a free reply
 });
 
-t('U2 claimsOnAct: a reply / Take over on a chat nobody holds claims it, the Super Admin too (owner Q2)', () => {
-  assert.strictEqual(tr.claimsOnAct(SA, null), true);
+t('U2 claimsOnAct: a reply / Take over on a chat nobody holds claims it for a member; the Super Admin claims nothing (owner 5 Oct; Q2 of 1 Oct said he did)', () => {
+  assert.strictEqual(tr.claimsOnAct(SA, null), false);
   assert.strictEqual(tr.claimsOnAct(RAHUL, null), true);
   assert.strictEqual(tr.claimsOnAct(ANURAG, null), true);
   assert.strictEqual(tr.claimsOnAct(READER, null), false);
@@ -220,12 +220,13 @@ t('U2 takeKind: owner takes any, senior takes a junior, away cover for a waiting
   assert.strictEqual(tr.takeKind(ANURAG, H.junior2, true), 'member');
   assert.strictEqual(tr.takeKind(ANURAG, H.awayJunior2, true), 'holder_away');
   assert.strictEqual(tr.MEMBER_TAKE, true);
-  // the Super Admin's chats: nobody else takes them, away or not
-  // (also when the holder built for him does not carry the Senior flag: superAdmin alone protects it)
+  // the Super Admin's chats (owner 5 Oct afternoon, "yeh Super Admin jo aa raha hai yeh bhi hata"): any member
+  // takes them too, logged as a plain member take whatever his flags, away or not
   const ownerNoSenior = holder('owner', 'Super Admin', { superAdmin: true, senior: false, awayMin: 240 });
   for (const a of [RAHUL, ANURAG]) {
-    for (const h of [H.owner, H.awayOwner, ownerNoSenior]) for (const w of [true, false]) assert.strictEqual(tr.takeKind(a, h, w), null, `${a.name} ${h.awayMin} ${w}`);
+    for (const h of [H.owner, H.awayOwner, ownerNoSenior]) for (const w of [true, false]) assert.strictEqual(tr.takeKind(a, h, w), 'member', `${a.name} ${h.awayMin} ${w}`);
   }
+  assert.strictEqual(tr.takeKind(READER, H.owner, true), null);
   // a member who cannot reply never takes
   for (const h of [H.junior, H.awaySenior, H.awayJunior]) assert.strictEqual(tr.takeKind(READER, h, true), null);
 });
@@ -269,9 +270,9 @@ t('U2 transferTargets: never yourself or the holder; switched-off, non-repliers 
   // Owner 5 Oct (answer 4): a member's chat may be handed on by another member (never the Super Admin's).
   assert.ok(tr.transferTargets(ANURAG, H.senior, MEMBERS).length > 0 && !tr.transferTargets(ANURAG, H.senior, MEMBERS).some((t) => t.key === R || t.key === A));
   assert.ok(tr.transferTargets(RAHUL, H.junior, MEMBERS).length > 0 && !tr.transferTargets(RAHUL, H.junior, MEMBERS).some((t) => t.key === A || t.key === R));
-  assert.deepStrictEqual(tr.transferTargets(RAHUL, H.owner, MEMBERS), []);
+  assert.ok(tr.transferTargets(RAHUL, H.owner, MEMBERS).length > 0 && !tr.transferTargets(RAHUL, H.owner, MEMBERS).some((t) => t.key === 'owner' || t.key === R), 'his chat too, never back to him or to yourself');
   assert.deepStrictEqual(tr.transferTargets(READER, H.junior, MEMBERS), []);
-  assert.deepStrictEqual([tr.canTransfer(ANURAG, H.senior), tr.canTransfer(ANURAG, H.owner), tr.canTransfer(READER, H.junior), tr.canTransfer(ANURAG, null)], [true, false, false, true]);
+  assert.deepStrictEqual([tr.canTransfer(ANURAG, H.senior), tr.canTransfer(ANURAG, H.owner), tr.canTransfer(READER, H.junior), tr.canTransfer(ANURAG, null)], [true, true, false, true]);
   assert.deepStrictEqual(tr.transferTargets(READER, null, MEMBERS), []);
 });
 

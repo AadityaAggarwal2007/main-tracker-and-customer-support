@@ -461,3 +461,14 @@ karna chahiye tha"): answers 1 (a) sab ek doosre ka chat le sakein, 3 sab kuch k
 - Tests: `team-unit.js` U2 (takeKind / transferTargets / canTransfer rewritten for the new rule), `team-routing.js`
   R3 / R4 / R5 / R7 / R9 / R13 / R18 updated (every "cannot be taken by you" between members is now a 200 with
   `meta.take`), the full `npm run test:ai` green, tsc 0, build ok. No SQL, no env.
+
+## Owner change 2026-10-05 (afternoon): the Super Admin's replies no longer lock a chat
+
+Owner (screenshot: 12 waiting At-risk chats "With Super Admin", the team read-only; "yeh Super Admin jo aa raha hai
+yeh bhi hata, yeh sab kyu aa raha hai?"). Cause: his own answer Q2 of 1 Oct (`OWNER_ACTIONS_CLAIM = true`): every chat
+he replied in became his and the team could only read it. Now: (1) his reply or Take over claims nothing, the chat
+stays in the open pool (the AI still stops), any member answers it; (2) a chat he does hold (transferred to him) can
+be taken by any member ("Take from Super Admin") or handed on, like a member's. His existing locked chats: "Give all
+N to the team" in My chats once, or the team takes them one by one. Rulebook 7.7 / 7.9 updated. Rules 11 / 14 / 26
+(a waiting customer is never locked away from the team): PASS, better than before. Tests: `team-unit.js` U2,
+`team-routing.js` R5 / R6 updated; full suite green, tsc 0, build ok. No SQL, no env.

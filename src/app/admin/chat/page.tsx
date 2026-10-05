@@ -171,8 +171,10 @@ export default function ChatSupportPage() {
   // The composer works only on a chat with the team (agent_handling) that this login may act on: its
   // own, one nobody holds, or any chat for the Super Admin.
   const replyOpen = !!activeConv && activeConv.status === 'agent_handling' && !!staff?.can_act;
-  // "Rahul's chat. Only Rahul or Super Admin can reply." (or the Super Admin's own chat).
+  // "Rahul's chat. Press "Take from Rahul" to reply." (since 5 Oct any member may take any chat, the
+  // Super Admin's too; the old "only X can reply" stays for a login that may not take).
   const readOnlyReply = !othersChat || !staff?.holder ? ''
+    : staff.take ? `${staff.holder.name}'s chat. Press "Take from ${staff.holder.name}" to reply.`
     : staff.holder.owner ? "Super Admin's chat. Only Super Admin can reply."
     : `${staff.holder.name}'s chat. Only ${staff.holder.name} or Super Admin can reply.`;
 

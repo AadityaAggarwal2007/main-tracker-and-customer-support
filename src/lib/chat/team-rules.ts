@@ -14,14 +14,17 @@ export const OWNER_KEY = 'owner';
 // During office hours, when the member holding a chat has not been seen for 30 minutes and the
 // customer is waiting, any member may take it. Never for the Super Admin's own chats.
 export const AWAY_TAKE = true;
-// Owner answer Q2 (2026-10-01, "YES, they claim"): the Super Admin's own first reply or Take over
-// on a chat nobody holds makes it his, like a member's. The team can then only read it until he
-// transfers it or gives all his open chats back to the team (POST /api/chat/team/release).
-export const OWNER_ACTIONS_CLAIM = true;
+// Owner answer Q2 (2026-10-01, "YES, they claim") made the Super Admin's own first reply or Take over
+// on a chat nobody holds make it his, like a member's, so the team could only read it. Owner
+// 2026-10-05 ("yeh Super Admin jo aa raha hai yeh bhi hata"): 12 waiting chats sat locked as "With
+// Super Admin". Since then his reply or Take over claims NOTHING: the chat stays in the open pool
+// and any member answers it. His existing chats: "Give all N to the team" (POST /api/chat/team/release)
+// or a member's "Take from Super Admin" (MEMBER_TAKE below covers his chats too).
+export const OWNER_ACTIONS_CLAIM = false;
 // Owner 2026-10-05 (answer (a), after Rahul and Anurag could not take or transfer each other's chats):
-// any member who may reply takes any other MEMBER's chat ("Take from X"), senior or not, waiting or
-// not, and may transfer it; only the Super Admin's chats stay his. Replying still needs the take
-// first (the chat then becomes the taker's, logged with its reason).
+// any member who may reply takes any other member's chat ("Take from X"), senior or not, waiting or
+// not, and may transfer it; since the same afternoon the Super Admin's chats too ("Take from Super
+// Admin"). Replying still needs the take first (the chat then becomes the taker's, logged with its reason).
 export const MEMBER_TAKE = true;
 
 // The same 30 minutes as AWAY_AFTER_MIN in src/lib/office-hours.ts (this file has no imports;
@@ -61,12 +64,13 @@ export function claimsOnAct(a: Actor, h: Holder | null): boolean {
 // meta.take)? 'owner': the Super Admin takes any chat. 'senior': a senior takes a junior's chat.
 // 'holder_away': the holder is a member not seen for 30 minutes during office hours and the
 // customer is waiting (awayMin is null at night, so never at night). 'member' (MEMBER_TAKE, owner
-// 2026-10-05): any other member's chat, whatever the tiers; before that a junior never took a
-// senior's chat and a member only an away holder's. Nobody but the Super Admin takes his.
+// 2026-10-05): any other member's chat, whatever the tiers, and the Super Admin's chat too (same
+// day, afternoon); before that a junior never took a senior's chat, a member only an away holder's,
+// and nobody took the Super Admin's.
 export function takeKind(a: Actor, h: Holder | null, customerWaiting: boolean): TakeKind | null {
   if (!a.canReply || h === null || h.key === a.key) return null;
   if (a.superAdmin) return 'owner';
-  if (h.superAdmin) return null;
+  if (h.superAdmin) return MEMBER_TAKE ? 'member' : null;
   if (a.senior && !h.senior) return 'senior';
   if (AWAY_TAKE && h.awayMin !== null && h.awayMin >= HOLDER_AWAY_MIN && customerWaiting) return 'holder_away';
   return MEMBER_TAKE ? 'member' : null;

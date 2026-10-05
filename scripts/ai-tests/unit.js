@@ -405,9 +405,10 @@ t('rulebook: numbers unique and in order, every rule complete, panel values fill
   // Night line (owner, 2026-10-01): 5.2, 6.2 and 6.3 say it, new 7.6 at the end of its section.
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   for (const id of ['5.2', '6.2', '6.3', '7.6']) assert.ok(rule(id).text.includes('after 10 AM'), id);
-  // Chat team (owner, 2026-10-01): 7.7-7.9 and 9.6; the Super Admin's own reply makes a chat his (owner Q2).
+  // Chat team (owner, 2026-10-01): 7.7-7.9 and 9.6. Owner 5 Oct: the Super Admin's own reply claims nothing (Q2 undone).
   for (const id of ['7.7', '7.8', '7.9', '9.6']) assert.ok(rb.RULE_IDS.has(id), id);
-  assert.ok(/Super Admin's first reply or Take over/.test(rule('7.7').text));
+  assert.ok(/Super Admin's reply or Take over claims nothing/.test(rule('7.7').text));
+  assert.ok(/Take from Super Admin/.test(rule('7.7').text) && /Super Admin's chats can be taken/.test(rule('7.9').text));
   // Owner answer A5 (2026-10-02, chat-team-owner-back.sql): his customers go to the open pool.
   assert.ok(/Super Admin's customers go to the team instead: if their latest chat was his, or they write again in a Closed chat he holds, it goes to the open pool \(his open chats stay his\)\./.test(rule('7.7').text));
   // Fake / invalid tracking (owner 2026-10-02): 6.5, 9.7, 9.8 at the ends of their sections.
