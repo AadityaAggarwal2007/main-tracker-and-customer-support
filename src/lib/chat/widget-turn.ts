@@ -1,4 +1,37 @@
 import { query, queryOne } from '@/lib/db';
+import { lookupVerifiedOrder } from '@/lib/chat/orders';
+import { handoffReply, looksHinglish } from '@/lib/chat/escalation';
+
+// Owner 2026-10-07: the API limit ran out, every model failed, and a verified customer who asked
+// "when will my order be delivered" got only "I've passed your message to our team". The fixed
+// hand-over text now carries the customer's own tracking link (the one the chat's lookup shows),
+// nothing else: no status, no date, no reason (master rules 13 and 19: never invent). Only the
+// order this chat PROVED (`verified_order_id`, never a phone match); any trouble reading it and
+// the plain hand-over text goes out as before. Never throws.
+export function withTrackingLink(text: string, said: string, link: string | null | undefined): string {
+  if (!link || !/^https?:\/\/\S+$/.test(link)) return text;
+  const line = looksHinglish(said)
+    ? `Aap apne order ka status yahan dekh sakte hain: ${link}`
+    : `You can check your order's current status here: ${link}`;
+  return `${text}\n\n${line}`;
+}
+
+export async function handoffReplyWithLink(conversationId: string, said: string, trackerBusinessId: string | null | undefined): Promise<string> {
+  const text = handoffReply(said);
+  try {
+    const row = await queryOne<{ verified_order_id: string | null }>(
+      `SELECT verified_order_id FROM conversations WHERE id = $1`,
+      [conversationId]
+    );
+    if (!row?.verified_order_id) return text;
+    const found = await lookupVerifiedOrder(row.verified_order_id, trackerBusinessId || null);
+    const link = found.found ? found.orders[0]?.tracking_link : null;
+    return withTrackingLink(text, said, link);
+  } catch (err) {
+    console.error('[widget] tracking link for the hand-over failed:', (err as Error).message);
+    return text;
+  }
+}
 
 export interface StoredMessage {
   id: string; conversation_id: string; sender: string; content: string;

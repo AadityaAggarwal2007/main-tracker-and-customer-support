@@ -72,7 +72,7 @@ stub('orders', `module.exports = {
 // plays what the model's tools do to the chat during the turn (verify, escalate).
 stub('ai', `module.exports = {
   AI_BUSY_REPLY: 'Sorry, that took longer than expected on my end. Could you send that again?',
-  getAIResponse: async (...a) => { global.__ai.calls.push(a); if (global.__ai.next.onCall) global.__ai.next.onCall(); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: false, toolCallMeta: global.__ai.next.toolCallMeta || null }; },
+  getAIResponse: async (...a) => { global.__ai.calls.push(a); if (global.__ai.next.onCall) global.__ai.next.onCall(); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: !!global.__ai.next.allFailed, toolCallMeta: global.__ai.next.toolCallMeta || null }; },
 };`);
 stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: false, block: "setup" }), refundMarkLocked: async () => false };');
 global.__emails = [];
@@ -728,6 +728,9 @@ async function handle(q, p, tx) {
     if (c.status === 'resolved' && c.source === 'chat') setRow(null, c, { status: c.case_kind ? 'agent_handling' : p[1] ? 'ai_handling' : 'human_needed' });
     c.unread_count = (c.unread_count || 0) + 1;
     return rows([{ status: c.status, case_kind: c.case_kind }]);
+  }
+  if (q === 'SELECT verified_order_id FROM conversations WHERE id = $1') {
+    const c = conv(p[0]); return rows(c ? [{ verified_order_id: c.verified_order_id || null }] : []);
   }
   if (q === 'SELECT (verified_order_id IS NOT NULL OR phone_match_order_id IS NOT NULL) AS v FROM conversations WHERE id = $1') {
     const c = conv(p[0]); return rows(c ? [{ v: !!(c.verified_order_id || c.phone_match_order_id) }] : []);
@@ -3703,6 +3706,29 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     // A plain reply is byte-identical.
     status(await reply('anurag', 'r67', 'Noted, checking this for you.'), 200);
     eq(agentMsgs('r67').pop().content, 'Noted, checking this for you.');
+  });
+
+  // ── R68: every model failed (API limit): the hand-over text carries the tracking link (owner 2026-10-07) ──
+  await t('R68 all models failed, a verified customer: the fixed hand-over text + the customer\'s own tracking link, Needs you; Hinglish too; no order found = the plain text; a visitor = the plain apology, no link', async () => {
+    at(ist(12, 0, 7));
+    const failed = { content: 'unused', allFailed: true };
+    known({ id: 'r68' }); order('#r68', 'In Transit');
+    let r = await say('r68', 'When the order will be delivered', failed);
+    eq(textOf(r), `${HANDOFF.en}\n\nYou can check your order's current status here: https://shiptrack.store/track/tok-r68`);
+    eq(C('r68').status, 'human_needed');
+    known({ id: 'r68h' }); order('#r68h', 'In Transit');
+    r = await say('r68h', 'mera order kab tak aayega bhai', failed);
+    eq(textOf(r), `${HANDOFF.hinglish}\n\nAap apne order ka status yahan dekh sakte hain: https://shiptrack.store/track/tok-r68h`);
+    // The verified order cannot be loaded: the plain hand-over text, as before.
+    known({ id: 'r68n' });
+    r = await say('r68n', 'When will it come?', failed);
+    eq(textOf(r), HANDOFF.en);
+    eq(C('r68n').status, 'human_needed');
+    // A visitor: nothing about a team, no link.
+    newConv({ id: 'r68v' });
+    r = await say('r68v', 'When will it come?', failed);
+    ok(!/track\//.test(textOf(r) || ''));
+    eq(C('r68v').status, 'ai_handling');
   });
 
   Object.assign(console, realConsole);
