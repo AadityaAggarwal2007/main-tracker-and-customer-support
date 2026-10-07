@@ -22,7 +22,7 @@ import {
 } from '@/lib/chat/case-auto';
 import { mentionsTracking, trackingClaimKind } from '@/lib/chat/tracking-claim';
 import { refundThreatKind } from '@/lib/chat/refund-threat';
-import { handOverToPerson, recentAiReplies, saveAiMessageTo, type StoredMessage } from '@/lib/chat/widget-turn';
+import { handOverToPerson, handoffReplyWithLink, recentAiReplies, saveAiMessageTo, type StoredMessage } from '@/lib/chat/widget-turn';
 
 export const dynamic = 'force-dynamic';
 
@@ -357,7 +357,7 @@ export async function POST(request: NextRequest) {
             if (verified) {
               // Every model is down (master rules section 13): a person takes it,
               // and the customer is told so instead of "please send that again".
-              text = handoffReply(said);
+              text = await handoffReplyWithLink(conversationId, said, site.tracker_business_id);
               await handOver('AI failure');
             } else {
               // A visitor stays a visitor: the plain apology, nobody is told a team has it.
@@ -433,7 +433,7 @@ export async function POST(request: NextRequest) {
         console.error('[widget] AI error:', (aiErr as Error).message);
         if (verified) await handOver('AI error');
         try {
-          aiMessage = await saveAiMessage(aiReply(verified ? handoffReply(said) : AI_BUSY_REPLY));
+          aiMessage = await saveAiMessage(aiReply(verified ? await handoffReplyWithLink(conversationId, said, site.tracker_business_id) : AI_BUSY_REPLY));
         } catch (saveErr) {
           console.error('[widget] fallback save failed:', (saveErr as Error).message);
         }
