@@ -1071,6 +1071,20 @@ const dl = load('delay-ladder');
 const IST = (y, m, d, h = 0, mi = 0) => new Date(Date.UTC(y, m - 1, d, h, mi) - 5.5 * 3600 * 1000);
 const LATE_ORDER = { tracking_status: 'Out for Delivery', created_at: IST(2026, 9, 19, 10, 22).toISOString(), estimated_delivery: '2026-10-01', city: 'Jaipur', state: 'Rajasthan' };
 const istDate = (iso) => new Date(new Date(iso).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 16);
+t('estimated date for the model: the India calendar day, never the UTC day before (owner 2026-10-07, 18th vs 19th)', () => {
+  // A date stored as India midnight is 18:30 UTC the day before.
+  assert.strictEqual(jn.istDateOf('2026-10-18T18:30:00.000Z'), '2026-10-19');
+  // A DATE read as UTC midnight is the same India day.
+  assert.strictEqual(jn.istDateOf('2026-10-19T00:00:00.000Z'), '2026-10-19');
+  // Late in the India evening stays on that day, just after India midnight moves on.
+  assert.strictEqual(jn.istDateOf('2026-10-19T18:29:59.000Z'), '2026-10-19');
+  assert.strictEqual(jn.istDateOf('2026-10-19T18:30:00.000Z'), '2026-10-20');
+  assert.strictEqual(jn.istDateOf(null), null);
+  assert.strictEqual(jn.istDateOf('not a date'), null);
+  // The lookup the AI and the suggested replies read uses it (orders.ts toFoundOrder).
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/orders.ts'), 'utf8');
+  assert.ok(/estimated_delivery: istDateOf\(eta\)/.test(src));
+});
 t('late order: the page and the chat share one wording and one day ladder', () => {
   for (const k of [1, 2, 3]) assert.strictEqual(jn.LATE_REASONS[k], dl.DELAY_REASONS[k], `reason ${k}`);
   assert.deepStrictEqual([1, 2, 3, 4, 5, 9].map(jn.lateStage), [1, 2, 2, 2, 3, 3]);

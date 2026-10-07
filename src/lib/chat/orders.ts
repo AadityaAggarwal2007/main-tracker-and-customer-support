@@ -1,6 +1,6 @@
 import { courierFor } from './courier';
 import { query, queryOne } from '@/lib/db';
-import { JOURNEY, buildJourney, type JourneyOrder } from '@/lib/journey';
+import { JOURNEY, buildJourney, istDateOf, type JourneyOrder } from '@/lib/journey';
 
 // ── Order lookup for the support AI ────────────────────────────
 // Ported from the chat-support app's tracker-db.js. It already spoke raw SQL
@@ -164,7 +164,8 @@ function toFoundOrder(row: OrderRow): FoundOrder {
     tracking_link: trackingLink,
     // The order's courier, else the panel's default one (owner: every Vastora order ships with Valmo).
     courier: courierFor(row.courier_partner, row.business_default_courier),
-    estimated_delivery: eta,
+    // The India calendar day ('2026-10-19'), not the raw instant: see istDateOf.
+    estimated_delivery: istDateOf(eta),
     ...(dateNote ? { date_note: dateNote } : {}),
     total: row.order_total,
     products: row.products || [],

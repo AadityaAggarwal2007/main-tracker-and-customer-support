@@ -161,6 +161,15 @@ export function lateStage(daysPast: number): LateStage {
 }
 
 /** IST calendar day index of an instant. */
+// An instant as its India calendar day, 'YYYY-MM-DD'. The chat hands this to the model instead of the
+// raw ISO instant: a date stored as India midnight is 18:30 UTC the day before, and the model read
+// the 18th for an order due on the 19th (owner 2026-10-07, suggested replies).
+export function istDateOf(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? null : new Date(t + IST_MS).toISOString().slice(0, 10);
+}
+
 function istDayOf(ms: number): number {
   return Math.floor((ms + IST_MS) / DAY_MS);
 }
