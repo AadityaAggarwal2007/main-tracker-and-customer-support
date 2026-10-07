@@ -225,7 +225,7 @@ export interface TeamLogEntry {
 // about one problem, whatever their status.
 // My chats (chat team, owner 2026-10-01): this login's own chats in Needs you and With team (?mine=1).
 // With team keeps EVERY chat a person took over, so the Super Admin still sees them all in one place.
-export type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'mine' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | `topic:${string}`;
+export type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'mine' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | 'active:open' | 'active:closed' | `topic:${string}`;
 
 // A chat tied to an order shows the customer name ON THE ORDER, never one the
 // customer typed (display-name.ts). For a verified customer that is simply their

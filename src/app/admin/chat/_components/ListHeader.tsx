@@ -10,9 +10,10 @@ import type { AuthUser, Business, Conversation, InboxTab } from '../_lib/types';
 import { CASE_LABELS } from '../_lib/inbox';
 import { Chip } from './chips';
 
-export default function ListHeader({ activePanelId, businesses, caseKey, caseSummary, conversations, listTotal, mineTab, myChats, release, releaseAll, searchActive, searchInput, setRelease, setSearchInput, setSearchQ, setUnreadOnly, tab, topicDef, unreadOnly, urgentCount, user }: {
+export default function ListHeader({ activeKey, activePanelId, businesses, caseKey, caseSummary, conversations, listTotal, mineTab, myChats, release, releaseAll, searchActive, searchInput, setRelease, setSearchInput, setSearchQ, setUnreadOnly, tab, topicDef, unreadOnly, urgentCount, user }: {
   activePanelId: string;
   businesses: Business[];
+  activeKey: string;
   caseKey: string;
   caseSummary: { marked_by: string; day: string; n: number }[];
   conversations: Conversation[];
@@ -36,7 +37,7 @@ export default function ListHeader({ activePanelId, businesses, caseKey, caseSum
   return (
     <div className="chat-list-head">
       <div className="chat-list-title">
-        <span className="truncate">{searchActive ? 'Search results' : topicDef ? topicDef.label : mineTab ? 'My chats' : 'Conversations'}</span>
+        <span className="truncate">{searchActive ? 'Search results' : topicDef ? topicDef.label : activeKey === 'open' ? 'Open case' : activeKey === 'closed' ? 'Closed case' : mineTab ? 'My chats' : 'Conversations'}</span>
         <span className="count">{listTotal ?? conversations.length}</span>
         {urgentCount > 0 && (
           <Chip tone="danger" title={`Frustrated customers (${HEALTH_PIN_MIN}%+) and customers waiting ${WAITING_OVERDUE_HOURS} hours or more for an answer, kept at the top until they are answered or Closed`}>
@@ -68,7 +69,7 @@ export default function ListHeader({ activePanelId, businesses, caseKey, caseSum
           </button>
         )}
       </div>
-      {!searchActive && tab !== 'resolved' && (
+      {!searchActive && tab !== 'resolved' && !activeKey && (
         <div className="seg" role="group" aria-label="Show chats">
           {([false, true] as const).map((only) => (
             <button

@@ -8,6 +8,7 @@ import Papa from 'papaparse';
 import type { ParseConfig } from 'papaparse';
 import crypto from 'crypto';
 import { can, canAccessPanel } from '@/lib/permissions';
+import { cleanPanelName, panelNameKey } from '@/lib/panel-name';
 
 const BATCH_SIZE = 500;
 
@@ -103,21 +104,21 @@ export async function POST(request: NextRequest) {
       }>(`SELECT id, name, logo_url, support_email, support_phone, tracking_domain, primary_color FROM businesses`);
 
       existingBiz.rows.forEach(b => {
-        bizMap.set(b.name.toLowerCase(), b.id);
+        bizMap.set(panelNameKey(b.name), b.id);
         bizBrandingMap.set(b.id, b);
       });
 
       for (const brand of brandArr) {
-        if (!bizMap.has(brand.toLowerCase())) {
+        if (!bizMap.has(panelNameKey(brand))) {
           const newBiz = await queryOne<{
             id: string; name: string; logo_url: string; support_email: string;
             support_phone: string; tracking_domain: string | null; primary_color: string | null;
           }>(
             `INSERT INTO businesses (name) VALUES ($1) RETURNING id, name, logo_url, support_email, support_phone, tracking_domain, primary_color`,
-            [brand]
+            [cleanPanelName(brand) || brand]
           );
           if (newBiz) {
-            bizMap.set(brand.toLowerCase(), newBiz.id);
+            bizMap.set(panelNameKey(brand), newBiz.id);
             bizBrandingMap.set(newBiz.id, newBiz);
           }
         }

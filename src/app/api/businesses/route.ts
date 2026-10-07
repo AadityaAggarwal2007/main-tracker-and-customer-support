@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { PANEL_NAME_KEY_SQL, cleanPanelName, panelNameKey, panelNameTakenMessage } from '@/lib/panel-name';
 
 // ── GET all businesses ─────────────────────────────────────────
 // With ?impactId=<uuid>: returns what deleting that panel would destroy,
@@ -90,8 +91,14 @@ export async function POST(request: NextRequest) {
   try {
     const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor, originCity } = await request.json();
 
-    if (!name) {
+    const cleanName = cleanPanelName(name);
+    if (!cleanName) {
       return NextResponse.json({ error: 'Business name is required' }, { status: 400 });
+    }
+    // One panel per name (owner 2026-10-07): checked before anything is changed.
+    const taken = await queryOne(`SELECT id FROM businesses WHERE ${PANEL_NAME_KEY_SQL} = $1 LIMIT 1`, [panelNameKey(cleanName)]);
+    if (taken) {
+      return NextResponse.json({ error: panelNameTakenMessage(cleanName) }, { status: 409 });
     }
 
     // If setting as default, unset other defaults
@@ -103,12 +110,16 @@ export async function POST(request: NextRequest) {
       `INSERT INTO businesses (name, logo_url, support_email, support_phone, is_default, tracking_domain, primary_color)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [name, logoUrl || null, supportEmail || null, supportPhone || null, isDefault || false,
+      [cleanName, logoUrl || null, supportEmail || null, supportPhone || null, isDefault || false,
        trackingDomain || null, primaryColor || '#4F46E5']
     );
 
     return NextResponse.json({ business: data });
-  } catch {
+  } catch (err) {
+    // Two creates at the same moment: the unique index (panel-name-unique.sql) stops the second.
+    if ((err as { code?: string })?.code === '23505') {
+      return NextResponse.json({ error: 'A panel with this name already exists.' }, { status: 409 });
+    }
     return NextResponse.json({ error: 'Failed to create business' }, { status: 500 });
   }
 }
@@ -130,6 +141,15 @@ export async function PATCH(request: NextRequest) {
     // Which panel is the default affects every panel: the super admin only.
     if (isDefault !== undefined && !isSuperAdmin(user)) return NextResponse.json({ error: 'Only the super admin can change the default panel' }, { status: 403 });
 
+    // A rename must not take another panel's name (owner 2026-10-07); checked before anything is changed.
+    let newName: string | undefined;
+    if (name !== undefined) {
+      newName = cleanPanelName(name);
+      if (!newName) return NextResponse.json({ error: 'Business name is required' }, { status: 400 });
+      const taken = await queryOne(`SELECT id FROM businesses WHERE ${PANEL_NAME_KEY_SQL} = $1 AND id::text <> $2::text LIMIT 1`, [panelNameKey(newName), String(id)]);
+      if (taken) return NextResponse.json({ error: panelNameTakenMessage(newName) }, { status: 409 });
+    }
+
     // If setting as default, unset other defaults
     if (isDefault) {
       await query(`UPDATE businesses SET is_default = false WHERE is_default = true AND id != $1`, [id]);
@@ -140,7 +160,7 @@ export async function PATCH(request: NextRequest) {
     const params: unknown[] = [];
     let pi = 1;
 
-    if (name !== undefined)           { sets.push(`name = $${pi++}`);            params.push(name); }
+    if (newName !== undefined)        { sets.push(`name = $${pi++}`);            params.push(newName); }
     if (logoUrl !== undefined && logoUrl !== null && logoUrl !== '')
                                       { sets.push(`logo_url = $${pi++}`);        params.push(logoUrl); }
     if (supportEmail !== undefined)   { sets.push(`support_email = $${pi++}`);   params.push(supportEmail); }
@@ -159,7 +179,10 @@ export async function PATCH(request: NextRequest) {
     await query(`UPDATE businesses SET ${sets.join(', ')} WHERE id = $${pi}`, params);
 
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (err) {
+    if ((err as { code?: string })?.code === '23505') {
+      return NextResponse.json({ error: 'A panel with this name already exists.' }, { status: 409 });
+    }
     return NextResponse.json({ error: 'Update failed' }, { status: 500 });
   }
 }

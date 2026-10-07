@@ -107,7 +107,10 @@ export default function BrandingCard({ activeBusiness, brandForm, fetchBusinesse
                             body: JSON.stringify(body),
                           });
                           if (res.ok) { showAlert('success', 'Panel settings saved!'); fetchBusinesses(); }
-                          else showAlert('error', 'Failed to save');
+                          else {
+                            const data = await res.json().catch(() => ({}));
+                            showAlert('error', data?.error || 'Failed to save');
+                          }
                         } catch { showAlert('error', 'Failed to save'); }
                         finally { setSavingBrand(false); }
                       }}>

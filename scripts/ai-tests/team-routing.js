@@ -687,6 +687,11 @@ async function handle(q, p, tx) {
     db.list = { ...(db.list || {}), unansweredSql: q, unansweredParams: p };
     return rows([{ ...db.unanswered }]);
   }
+  // Active cases (owner 2026-10-07): the numbers beside Open case / Closed case.
+  if (/^SELECT count\(DISTINCT x\.gk\) FILTER \(WHERE x\.waiting_since IS NOT NULL\)::int AS active_open, /.test(q)) {
+    db.list = { ...(db.list || {}), activeSql: q, activeParams: p };
+    return rows([{ active_open: 4, active_closed: 7 }]);
+  }
   if (/^WITH .*base AS \( SELECT c\.id, c\.visitor_name, /.test(q)) { db.list = { ...(db.list || {}), sql: q, params: p }; return rows([]); }
   if (/^SELECT c\.case_kind, count\(\*\)::int AS total, /.test(q)) return rows([]);
   // The Super Admin's "Give all N": exactly the release's WHERE.
@@ -3729,6 +3734,42 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     r = await say('r68v', 'When will it come?', failed);
     ok(!/track\//.test(textOf(r) || ''));
     eq(C('r68v').status, 'ai_handling');
+  });
+
+  // ── R69: Active cases: Open case / Closed case (owner 2026-10-07) ──
+  await t('R69 ?active=open|closed lists only the chats the team took over, split by the waiting rule; the numbers come in their own query; a search and the other tabs ignore it', async () => {
+    at(ist(12, 0, 7));
+    let r = await list('anurag', '?active=open');
+    status(r, 200);
+    let L = db.list;
+    ok(L.sql.includes("c.status = 'agent_handling'"), 'only chats the team took over');
+    ok(L.sql.includes(OUTSIDE_SECTION), 'a Refund / Ship again chat is never here');
+    ok(/filtered AS \([\s\S]*FROM base b\s+WHERE b\.waiting_since IS NOT NULL\s+\), grouped AS/.test(L.sql), 'Open case = the customer waits for an answer');
+    ok(!L.sql.includes('b.waiting_since IS NULL'));
+    // Same ordering as every list: newest activity first (a customer who writes again moves to the top).
+    ok(/ORDER BY \(g\.promise_note_at IS NOT NULL\) DESC, g\.last_message_at DESC NULLS LAST/.test(L.sql));
+    eq(r.body.active_counts.open, 4); eq(r.body.active_counts.closed, 7);
+    // The sidebar numbers: their own query over the same chats and the same waiting rule.
+    ok(L.activeSql.includes("c.status = 'agent_handling'") && L.activeSql.includes(OUTSIDE_SECTION));
+    ok(L.activeSql.includes('FILTER (WHERE x.waiting_since IS NULL)'));
+    // The old unanswered query is untouched (3 counts, no outer WHERE).
+    eq((L.unansweredSql.match(/count\(DISTINCT x\.gk\) FILTER \(WHERE/g) || []).length, 3);
+    db.list = {};
+    r = await list('anurag', '?active=closed');
+    status(r, 200);
+    L = db.list;
+    ok(L.sql.includes("c.status = 'agent_handling'") && /WHERE b\.waiting_since IS NULL\s+\), grouped AS/.test(L.sql), 'Closed case = a team member answered');
+    ok(!L.sql.includes('WHERE b.waiting_since IS NOT NULL'));
+    // A nonsense value, no value and the other tabs: no Active filter.
+    for (const qs of ['?active=x', '', '?status=ai_handling', '?mine=1']) {
+      db.list = {};
+      status(await list('anurag', qs), 200);
+      ok(!/WHERE b\.waiting_since IS (NOT )?NULL\s+\), grouped AS/.test(db.list.sql), 'no Active filter for ' + qs);
+    }
+    // A search looks at every chat: the Active filter does not narrow it.
+    db.list = {};
+    status(await list('anurag', '?active=open&q=1040'), 200);
+    ok(!db.list.sql.includes("c.status = 'agent_handling'") && !/WHERE b\.waiting_since IS (NOT )?NULL\s+\), grouped AS/.test(db.list.sql), 'a search ignores Active');
   });
 
   Object.assign(console, realConsole);

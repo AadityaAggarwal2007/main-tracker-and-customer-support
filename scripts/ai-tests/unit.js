@@ -1071,6 +1071,28 @@ const dl = load('delay-ladder');
 const IST = (y, m, d, h = 0, mi = 0) => new Date(Date.UTC(y, m - 1, d, h, mi) - 5.5 * 3600 * 1000);
 const LATE_ORDER = { tracking_status: 'Out for Delivery', created_at: IST(2026, 9, 19, 10, 22).toISOString(), estimated_delivery: '2026-10-01', city: 'Jaipur', state: 'Rajasthan' };
 const istDate = (iso) => new Date(new Date(iso).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 16);
+// ── Panel names: one panel per name (owner 2026-10-07; panel-name.ts, /api/businesses, panel-name-unique.sql) ──
+t('panel names: capitals and extra spaces do not make a new name; the routes and the SQL use the same key', () => {
+  const pn = load('panel-name', '../../src/lib');
+  assert.strictEqual(pn.cleanPanelName('  Vastrika \t Store \n'), 'Vastrika Store');
+  assert.strictEqual(pn.cleanPanelName(null), '');
+  assert.strictEqual(pn.cleanPanelName('   '), '');
+  assert.strictEqual(pn.cleanPanelName('x'.repeat(200)).length, pn.PANEL_NAME_MAX);
+  const k = pn.panelNameKey('VASTRIKA');
+  for (const same of ['vastrika', ' Vastrika ', 'VaStRiKa']) assert.strictEqual(pn.panelNameKey(same), k, same);
+  for (const other of ['VASTRIKA STORE', 'vastrika2', 'vastora', 'vestora']) assert.notStrictEqual(pn.panelNameKey(other), k, other);
+  // The database index is built on the very expression the routes compare with.
+  const sql = fs.readFileSync(path.resolve(__dirname, '../../panel-name-unique.sql'), 'utf8');
+  assert.ok(sql.includes(pn.PANEL_NAME_KEY_SQL.replace(/\\\\/g, '\\')), 'index expression');
+  assert.ok(/CREATE UNIQUE INDEX IF NOT EXISTS/.test(sql) && !/DROP |DELETE |TRUNCATE /i.test(sql.replace(/--.*$/gm, '')), 'additive only');
+  // Create and rename check before they change anything; the upload compares by the same key.
+  const route = fs.readFileSync(path.resolve(__dirname, '../../src/app/api/businesses/route.ts'), 'utf8');
+  assert.ok(/PANEL_NAME_KEY_SQL/.test(route) && /panelNameTakenMessage/.test(route) && /status: 409/.test(route));
+  assert.ok(route.indexOf('panelNameTakenMessage(cleanName)') < route.indexOf('UPDATE businesses SET is_default = false WHERE is_default = true`'), 'create checks first');
+  assert.ok(/name = \$\$\{pi\+\+\}`\);\s+params\.push\(newName\)/.test(route), 'rename saves the cleaned name');
+  const up = fs.readFileSync(path.resolve(__dirname, '../../src/app/api/upload/route.ts'), 'utf8');
+  assert.ok(/bizMap\.has\(panelNameKey\(brand\)\)/.test(up));
+});
 t('estimated date for the model: the India calendar day, never the UTC day before (owner 2026-10-07, 18th vs 19th)', () => {
   // A date stored as India midnight is 18:30 UTC the day before.
   assert.strictEqual(jn.istDateOf('2026-10-18T18:30:00.000Z'), '2026-10-19');
