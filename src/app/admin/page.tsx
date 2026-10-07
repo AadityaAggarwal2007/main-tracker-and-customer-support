@@ -932,7 +932,10 @@ export default function AdminDashboard() {
                       body: JSON.stringify({ name }),
                     });
                     if (res.ok) { showAlert('success', `Panel "${name}" created`); fetchBusinesses(); }
-                    else showAlert('error', 'Failed to create panel');
+                    else {
+                      const data = await res.json().catch(() => ({}));
+                      showAlert('error', data?.error || 'Failed to create panel');
+                    }
                   }}>
                     <Plus size={14} /> New Panel
                   </button>
