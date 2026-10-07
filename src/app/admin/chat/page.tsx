@@ -51,7 +51,11 @@ export default function ChatSupportPage() {
   const topicKey = tab.startsWith('topic:') ? tab.slice(6) : '';
   const topicDef = INBOX_TOPICS.find(t => t.key === topicKey) || null;
   // A problem tab has no status or segment of its own: it lists the open chats about it.
-  const tabDef = topicKey ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
+  // Active cases (owner 2026-10-07): Open case / Closed case, the chats the team took over; the server
+  // reads ?active=open|closed, so the tab has no status or segment of its own.
+  const activeKey = tab === 'active:open' ? 'open' : tab === 'active:closed' ? 'closed' : '';
+  const [activeCounts, setActiveCounts] = useState<{ open: number; closed: number }>({ open: 0, closed: 0 });
+  const tabDef = topicKey || activeKey ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
   const statusFilter = tabDef.status;
   const segment = tabDef.segment;
   // Open customers per problem tab, from the list's own answer.
@@ -246,6 +250,7 @@ export default function ChatSupportPage() {
         if (segment) params.set('segment', segment);
         if (topicKey) params.set('topic', topicKey);
         if (caseKey) params.set('case', caseKey);
+        if (activeKey) params.set('active', activeKey);
         // Closed chats never wait for an answer: Unread does not apply there.
         if (unreadOnly && statusFilter !== 'resolved') params.set('unread', '1');
         if (mineTab) params.set('mine', '1');
@@ -265,11 +270,12 @@ export default function ChatSupportPage() {
         if (typeof data.unanswered_total === 'number') setUnansweredTotal(data.unanswered_total);
         if (data.topic_counts) setTopicCounts(data.topic_counts);
         if (data.case_counts) setCaseCounts(data.case_counts);
+        if (data.active_counts) setActiveCounts({ open: data.active_counts.open ?? 0, closed: data.active_counts.closed ?? 0 });
         setCaseSummary(Array.isArray(data.case_summary) ? data.case_summary : []);
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, mineTab, unreadOnly, searchActive, searchQ, listLimit]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, activeKey, mineTab, unreadOnly, searchActive, searchQ, listLimit]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -1083,7 +1089,7 @@ export default function ChatSupportPage() {
     <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-      <InboxSidebar activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} setTopicsOpen={setTopicsOpen} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} topicsShown={topicsShown} unreadTotal={unreadTotal} user={user} />
+      <InboxSidebar activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} setTopicsOpen={setTopicsOpen} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} topicsShown={topicsShown} unreadTotal={unreadTotal} user={user} />
 
       {/* ── Main ── */}
       <main className="main-content chat-main">
@@ -1108,7 +1114,7 @@ export default function ChatSupportPage() {
         <div className={`chat-shell${activeId ? ' thread-open' : ''}`}>
           {/* Conversation list */}
           <div className="chat-list">
-            <ListHeader activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
+            <ListHeader activeKey={activeKey} activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
 
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {loadingList && conversations.length === 0 && (
@@ -1120,7 +1126,23 @@ export default function ChatSupportPage() {
               {!loadingList && conversations.length === 0 && (
                 <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.8125rem' }}>
                   <Inbox size={28} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                  {caseKey && !searchActive ? (
+                  {activeKey && !searchActive ? (
+                    activeKey === 'open' ? (
+                      <>
+                        <p>No open cases. Every customer you took over has been answered.</p>
+                        <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                          A customer who writes again comes back here by itself.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p>No closed cases yet.</p>
+                        <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                          A chat moves here as soon as a team member answers it.
+                        </p>
+                      </>
+                    )
+                  ) : caseKey && !searchActive ? (
                     <>
                       <p>No chats marked for {CASE_LABELS[caseKey]}{unreadOnly ? ' waiting for an answer' : ''}.</p>
                       <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>

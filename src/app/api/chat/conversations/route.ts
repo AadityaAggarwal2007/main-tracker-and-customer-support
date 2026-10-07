@@ -123,6 +123,12 @@ export async function GET(request: NextRequest) {
   // ?unread=1 lists only chats waiting for an answer (WAITING_SINCE_SQL; the inbox's "Unread" filter).
   const unreadOnly = searchParams.get('unread') === '1';
   const topic = topicByKey(searchParams.get('topic'));
+  // ?active=open|closed: Active cases (owner 2026-10-07). The chats the team took over (With team), in two
+  // lists: Open case = the customer wrote last and nobody has answered (waiting_since set), Closed case =
+  // a team member answered. Computed from the same waiting rule as the Waiting chip, nothing stored. A
+  // Refund / Ship again chat is never here (OUTSIDE_SECTION), the Closed tab is a different thing.
+  const activeParam = searchParams.get('active');
+  const activeKey = activeParam === 'open' || activeParam === 'closed' ? activeParam : '';
   // ?case=refund|reship: the Refund / Ship again section (chat-cases.sql). A marked chat shows ONLY
   // there (and in a search); every other list leaves it out, except a red Ship again chat
   // (OUTSIDE_SECTION above).
@@ -172,6 +178,7 @@ export async function GET(request: NextRequest) {
       conditions.push(OUTSIDE_SECTION);
     }
     if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
+    if (activeKey && !caseKind) conditions.push("c.status = 'agent_handling'");
     if (mine) {
       if (me) {
         conditions.push(`c.assigned_to = $${pi++} AND c.status IN ('human_needed', 'agent_handling')`);
@@ -264,6 +271,26 @@ export async function GET(request: NextRequest) {
     return null;
   });
 
+  // Active cases (owner 2026-10-07): the numbers beside Open case and Closed case in the sidebar, one per
+  // customer, over the chats the team took over (With team) in this login's panels. Open = the customer
+  // waits for an answer (WAITING_SINCE_SQL), Closed = a team member answered. A separate query, so the
+  // unanswered count above stays exactly as it was; a failure only leaves the numbers out.
+  const activePromise = query<{ active_open: number; active_closed: number }>(
+    `SELECT count(DISTINCT x.gk) FILTER (WHERE x.waiting_since IS NOT NULL)::int AS active_open,
+            count(DISTINCT x.gk) FILTER (WHERE x.waiting_since IS NULL)::int AS active_closed
+       FROM (SELECT CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
+                         THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END AS gk,
+                    ${WAITING_SINCE_SQL} AS waiting_since
+               FROM conversations c
+               JOIN sites s ON s.id = c.site_id
+               ${WAITING_LATERAL}
+              WHERE ${[...scopeConditions, "c.status = 'agent_handling'", OUTSIDE_SECTION].join(' AND ')}) x`,
+    scopeParams
+  ).then((u) => u.rows[0] ?? { active_open: 0, active_closed: 0 }).catch((err) => {
+    console.error('[inbox] active case counts failed:', (err as Error)?.message);
+    return null;
+  });
+
   // The Super Admin's "Give all N to the team" (My chats): N is exactly what POST
   // /api/chat/team/release frees (the same WHERE: every open chat he holds, one by one, in any panel,
   // status or Refund / Ship again section), not mine_open (customers, Needs you / With team only).
@@ -329,6 +356,8 @@ export async function GET(request: NextRequest) {
                AND (b.verified_order_id IS NOT NULL OR b.phone_match_order_id IS NOT NULL)) AS returned
          FROM base b
        ${search.q ? 'WHERE hit_order OR hit_phone OR hit_name OR hit_text'
+         : activeKey === 'open' ? 'WHERE b.waiting_since IS NOT NULL'
+         : activeKey === 'closed' ? 'WHERE b.waiting_since IS NULL'
          : unreadOnly ? 'WHERE b.waiting_since IS NOT NULL' : ''}
      ), grouped AS (
        SELECT f.*,
@@ -396,6 +425,7 @@ export async function GET(request: NextRequest) {
 
   const unanswered = await unansweredPromise;
   const held = await heldPromise;
+  const active = await activePromise;
   const unansweredTotal = unanswered ? unanswered.n : null;
 
   // How many chats each section holds (and how many wait for an answer), for the sidebar; for the section that is open,
@@ -437,5 +467,6 @@ export async function GET(request: NextRequest) {
     topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary,
     me, team: teamDirectory(now), office_open: isOfficeHours(now, holidays),
     mine: { open: unanswered?.mine_open ?? 0, waiting: unanswered?.mine_waiting ?? 0, held },
+    active_counts: { open: active?.active_open ?? 0, closed: active?.active_closed ?? 0 },
   });
 }

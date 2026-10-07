@@ -1,14 +1,15 @@
 'use client';
 
 import type { useRouter } from 'next/navigation';
-import { ShoppingBag, LogOut, MessageCircle, Inbox, UserCheck, ChevronDown } from 'lucide-react';
+import { ShoppingBag, LogOut, MessageCircle, Inbox, UserCheck, ChevronDown, MailOpen, CheckCheck } from 'lucide-react';
 import { ROLE_INFO, type Role } from '@/lib/permissions';
 import { INBOX_TOPICS } from '@/lib/chat/inbox-topics';
 import type { AuthUser, Business, InboxTab } from '../_lib/types';
 import { TOPIC_ICONS, INBOX_TABS } from '../_lib/inbox';
 import { Chip } from './chips';
 
-export default function InboxSidebar({ activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, setTopicsOpen, sidebarOpen, tab, topicCounts, topicsShown, unreadTotal, user }: {
+export default function InboxSidebar({ activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, setTopicsOpen, sidebarOpen, tab, topicCounts, topicsShown, unreadTotal, user }: {
+  activeCounts: { open: number; closed: number };
   activePanelId: string;
   businesses: Business[];
   canReply: boolean;
@@ -65,6 +66,29 @@ export default function InboxSidebar({ activePanelId, businesses, canReply, case
         {/* Status filters: they scroll inside the sidebar when the screen is short, so the
             panel picker stays on top and Back to Orders / Sign out stay at the bottom. */}
         <nav style={{ padding: '0.5rem', flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          {/* Active cases (owner 2026-10-07): the chats the team took over, in two lists. Open case = the
+              customer wrote and nobody has answered yet (it comes back here by itself when they write
+              again); Closed case = a team member answered. Not the Closed tab below (finished chats). */}
+          <div style={{ padding: '0.25rem 0.75rem 0.25rem', fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
+            Active cases
+          </div>
+          {([
+            { v: 'active:open' as InboxTab, label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger' as const, hint: 'The customer wrote and nobody has answered yet' },
+            { v: 'active:closed' as InboxTab, label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted' as const, hint: 'A team member answered; it comes back to Open case when the customer writes again' },
+          ]).map(s => (
+            <button
+              key={s.v}
+              title={s.hint}
+              onClick={() => { setTab(s.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
+              className={`nav-btn ${tab === s.v ? 'active' : ''}`}
+              style={{ width: '100%' }}
+            >
+              <s.icon size={16} />
+              <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{s.label}</span>
+              {s.n > 0 && <Chip tone={s.tone}>{s.n}</Chip>}
+            </button>
+          ))}
+          <div style={{ height: 1, background: 'var(--border)', margin: '0.5rem 0.25rem' }} />
           {INBOX_TABS.filter(s => s.v !== 'mine' || canReply).map(s => (
             <button
               key={s.v}
