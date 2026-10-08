@@ -186,6 +186,27 @@ const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.
     assert.ok(perms.can(member({ perms: ['orders.view', 'mail.view'] }), 'mail.view'));
     assert.ok(perms.PERMISSION_GROUPS.some((g) => g.items.some((i) => i.key === 'mail.view')) && perms.PERMISSION_GROUPS.some((g) => g.items.some((i) => i.key === 'mail.reply')), 'both ticks show in Team');
   });
+  await t('mail filters (owner 2026-10-08): each view, the counts, search by sender / subject / order number, order, previous / next', () => {
+    const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+    const NOW = Date.parse('2026-10-08T12:00:00');
+    const it = (uid, o = {}) => ({ uid, from: 'Name ' + uid, fromAddress: `u${uid}@x.com`, subject: 'Hello', date: '2026-10-08T09:00:00', unread: false, hasAttachment: false, answered: false, ...o });
+    const items = [it(1, { unread: true }), it(2, { hasAttachment: true, subject: 'Order #1553 problem', date: '2026-10-05T09:00:00' }), it(3, { answered: true, date: '2026-09-20T09:00:00' }), it(4, { from: 'Priya Sharma', fromAddress: 'priya@x.com' })];
+    const ver = { 'u1@x.com': [{ orderId: '#1001' }], 'priya@x.com': [{ orderId: '#1553' }] };
+    const ids = (view) => items.filter((x) => f.matchesView(x, view, ver, NOW)).map((x) => x.uid);
+    assert.deepStrictEqual(ids('all'), [1, 2, 3, 4]); assert.deepStrictEqual(ids('unread'), [1]);
+    assert.deepStrictEqual(ids('verified'), [1, 4]); assert.deepStrictEqual(ids('unverified'), [2, 3]);
+    assert.deepStrictEqual(ids('replied'), [3]); assert.deepStrictEqual(ids('notreplied'), [1, 2, 4]);
+    assert.deepStrictEqual(ids('attach'), [2]); assert.deepStrictEqual(ids('today'), [1, 4]); assert.deepStrictEqual(ids('week'), [1, 2, 4]);
+    const c = f.viewCounts(items, ver, NOW); assert.strictEqual(c.all, 4); assert.strictEqual(c.verified + c.unverified, 4);
+    const s = (q) => items.filter((x) => f.searchMatch(x, q, ver)).map((x) => x.uid);
+    assert.deepStrictEqual(s('priya'), [4]); assert.deepStrictEqual(s('PRIYA@X'), [4]); assert.deepStrictEqual(s('hello'), [1, 3, 4]);
+    assert.deepStrictEqual(s('1553'), [2, 4], 'the order number in the subject AND the verified order'); assert.deepStrictEqual(s('#1553'), [2, 4]); assert.deepStrictEqual(s('  '), [1, 2, 3, 4]);
+    assert.deepStrictEqual(f.sortItems(items, 'unreadfirst').map((x) => x.uid), [1, 4, 2, 3]);
+    assert.deepStrictEqual(f.sortItems(items, 'newest').map((x) => x.uid), [1, 4, 2, 3]); assert.deepStrictEqual(f.sortItems(items, 'oldest').map((x) => x.uid), [3, 2, 1, 4]);
+    assert.strictEqual(f.neighbour(items, 2, 1), 3); assert.strictEqual(f.neighbour(items, 2, -1), 1); assert.strictEqual(f.neighbour(items, 4, 1), null); assert.strictEqual(f.neighbour(items, 99, 1), null);
+    assert.deepStrictEqual(f.orderNumbersIn('Re: Order #1553 and # 2210, #12'), ['#1553', '#2210']);
+    assert.strictEqual(f.initials('Priya Sharma <p@x.com>'), 'PS'); assert.strictEqual(f.initials(''), '?');
+  });
   await t('mail-view: unread first then newest; uid parsing; subject; frame policy', () => {
     const l = view.sortMails([{ unread: false, date: '2026-10-08' }, { unread: true, date: '2026-10-01' }, { unread: true, date: '2026-10-07' }]);
     assert.deepStrictEqual(l.map((x) => x.date), ['2026-10-07', '2026-10-01', '2026-10-08']);

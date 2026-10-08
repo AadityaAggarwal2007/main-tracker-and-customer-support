@@ -2,71 +2,58 @@
 
 // ── Mail: the real Gmail inbox of a panel (owner 2026-10-08) ──────────────────────────────────
 // The Super Admin's tab; a team member sees it only with the Mail ticks and only for their panels (every
-// /api/mail/* route checks both again). It reads the last 30 days of the Gmail inbox LIVE over IMAP when
-// opened or refreshed and stores nothing. Opening a mail marks it read in Gmail ("Mark unread" undoes it).
-// An HTML mail is shown in an iframe with sandbox (no scripts, no same origin) and a Content-Security-Policy
-// that blocks remote pictures until "Show images" (src/lib/chat/mail-view.ts). Attachments are downloads only.
-// Chikki is not involved here: the AI only drafts in Chat Support. Words: src/lib/chat/mail-view.ts.
-
+// /api/mail/* route checks both again). It reads the last 30 days of the Gmail inbox over IMAP and stores nothing
+// on the server. Layout (owner: "ye ui ux bilkul accha nahi"): filters on the left, a tall list in the middle, the
+// open mail on the right (a phone shows one at a time). What was read stays in the browser's memory
+// (mail/cache.ts) so going to another tab and back, or a filter click, never reloads Gmail; the list refreshes
+// quietly in the background (a minute, or the Refresh button) without clearing what is on screen. Opening a mail
+// marks it read in Gmail ("Mark unread" undoes it). Filters, search and order: src/lib/chat/mail-filters.ts.
+// An HTML mail is shown in a sandboxed frame (no scripts) with remote pictures blocked until "Show images".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BadgeCheck, ChevronLeft, Download, Image as ImageIcon, Loader2, MailOpen, Mail as MailIcon, MessageCircle, Paperclip, RefreshCw, Reply, Send, ShieldQuestion } from 'lucide-react';
-import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH } from '@/lib/chat/mail-view';
+import { BadgeCheck, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
+import { VIEW_LABELS, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { mailCache, mailKey } from './mail/cache';
+import MailRows from './mail/MailRows';
+import MailReader from './mail/MailReader';
+import type { Box, Full, Item, ListEntry, Ver } from './mail/types';
 
-interface Box { id: string; email: string; siteName: string; panelId: string | null; panelName: string; status: { ok: boolean; error: string | null; checkedAt: number } | null }
-interface Item { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean }
-interface Att { index: number; filename: string; contentType: string; size: number; inline: boolean }
-interface Full {
-  uid: number; subject: string; date: string; from: string; fromAddress: string; to: string; cc: string; replyTo: string;
-  frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
-}
-
-interface Ver { orderId: string; byName: string; at: string; chatId: string | null }
-
-// initialBox / initialUid: a link from a chat thread ("Emails") opens that mail once.
 interface Props { token: string; onAlert: (type: string, message: string) => void; activePanelId?: string; initialBox?: string | null; initialUid?: number | null }
 
-const when = (iso: string) => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay ? d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-};
-const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const REFRESH_MS = 60_000;
+const FILTER_GROUPS: { title: string; icon: typeof Inbox; views: MailView[] }[] = [
+  { title: 'Inbox', icon: Inbox, views: ['all', 'unread'] },
+  { title: 'Verification', icon: BadgeCheck, views: ['unverified', 'verified'] },
+  { title: 'Reply', icon: MessageSquareReply, views: ['notreplied', 'replied'] },
+  { title: 'More', icon: Paperclip, views: ['attach', 'today', 'week'] },
+];
+const VIEW_ICON: Partial<Record<MailView, typeof Inbox>> = { all: Inbox, unread: MailIcon, unverified: ShieldQuestion, verified: BadgeCheck, notreplied: Reply, replied: MessageSquareReply, attach: Paperclip, today: Calendar, week: CalendarDays };
 
 export default function MailCard({ token, onAlert, activePanelId, initialBox, initialUid }: Props) {
   const alertRef = useRef(onAlert);
   alertRef.current = onAlert;
   const auth = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
-  const [boxes, setBoxes] = useState<Box[] | null>(null);
-  const [canReply, setCanReply] = useState(false);
+  const [boxes, setBoxes] = useState<Box[] | null>(mailCache.boxes?.list ?? null);
+  const [canReply, setCanReply] = useState(mailCache.boxes?.canReply ?? false);
   const [boxId, setBoxId] = useState<string | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
-  const [meta, setMeta] = useState<{ truncated: boolean } | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [entry, setEntry] = useState<ListEntry | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [down, setDown] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'unread' | 'all' | 'unverified'>('unread');
-  const [verified, setVerified] = useState<Record<string, Ver[]>>({});
-  const [verifyOpen, setVerifyOpen] = useState(false);
-  const [vOrder, setVOrder] = useState('');
-  const [vPhone, setVPhone] = useState('');
-  const [verifying, setVerifying] = useState(false);
-  const [vError, setVError] = useState('');
-  const initialDone = useRef(false);
+  const [view, setView] = useState<MailView>('all');
+  const [sort, setSort] = useState<MailSort>('unreadfirst');
   const [q, setQ] = useState('');
   const [openUid, setOpenUid] = useState<number | null>(null);
   const [mail, setMail] = useState<Full | null>(null);
   const [opening, setOpening] = useState(false);
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replyText, setReplyText] = useState('');
-  const [sending, setSending] = useState(false);
-  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  const [, tick] = useState(0);
+  const initialDone = useRef(false);
   const listSeq = useRef(0);
   const openSeq = useRef(0);
+  const boxRef = useRef<string | null>(null);
+  boxRef.current = boxId;
 
-  // The mailboxes this login may open.
+  // The mailboxes this login may open: shown from memory at once, checked again quietly.
   useEffect(() => {
     let live = true;
     (async () => {
@@ -74,16 +61,15 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
         const r = await fetch('/api/mail/boxes', { headers: auth, cache: 'no-store' });
         const d = await r.json().catch(() => ({}));
         if (!live) return;
-        if (!r.ok) { setBoxes([]); setDown(d.error || 'Mail could not be opened.'); return; }
-        const list: Box[] = d.boxes || [];
-        setBoxes(list); setCanReply(!!d.canReply);
-      } catch { if (live) { setBoxes([]); setDown('Mail could not be opened.'); } }
+        if (!r.ok) { if (!mailCache.boxes) { setBoxes([]); setDown(d.error || 'Mail could not be opened.'); } return; }
+        mailCache.boxes = { list: d.boxes || [], canReply: !!d.canReply };
+        setBoxes(mailCache.boxes.list); setCanReply(!!d.canReply);
+      } catch { if (live && !mailCache.boxes) { setBoxes([]); setDown('Mail could not be opened.'); } }
     })();
     return () => { live = false; };
   }, [auth]);
 
-  // The Gmail follows the panel switcher (owner 2026-10-08): only the active panel's Gmail(s) are listed. A link
-  // from a chat may name a mailbox outside it; that one is kept so the link still works.
+  // The Gmail follows the panel switcher: only the active panel's Gmail(s) (a link from a chat may name another one).
   const visibleBoxes = useMemo(
     () => (boxes ?? []).filter(b => !activePanelId || b.panelId === activePanelId || b.id === initialBox),
     [boxes, activePanelId, initialBox],
@@ -96,120 +82,101 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     });
   }, [boxes, visibleBoxes, initialBox]);
 
-  const loadList = useCallback(async (id: string) => {
+  // Read the list. A refresh is silent: the rows stay, only the Refresh button spins.
+  const refresh = useCallback(async (id: string, silent = true) => {
     const seq = ++listSeq.current;
-    setLoading(true); setDown(null);
+    setRefreshing(true);
+    if (!silent) setDown(null);
     try {
       const r = await fetch(`/api/mail/messages?box=${encodeURIComponent(id)}`, { headers: auth, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (seq !== listSeq.current) return;
-      if (!r.ok) { setItems([]); setMeta(null); setDown(d.error || 'Could not read Gmail.'); return; }
-      setItems(d.mails || []); setVerified(d.verified || {}); setMeta({ truncated: !!d.truncated }); setLoadedAt(Date.now());
-    } catch { if (seq === listSeq.current) { setItems([]); setDown('Could not reach Gmail. Try again.'); } }
-    finally { if (seq === listSeq.current) setLoading(false); }
+      if (!r.ok) { setDown(d.error || 'Could not read Gmail.'); return; }
+      const e: ListEntry = { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now() };
+      mailCache.lists.set(id, e);
+      setEntry(e); setDown(null);
+    } catch { if (seq === listSeq.current) setDown('Could not reach Gmail. It will try again.'); }
+    finally { if (seq === listSeq.current) setRefreshing(false); }
   }, [auth]);
 
+  // A box was chosen: show what is remembered at once, read again only when it is old.
   useEffect(() => {
-    setOpenUid(null); setMail(null); setReplyOpen(false); setReplyText(''); setItems([]); setMeta(null); setVerified({}); setVerifyOpen(false);
-    if (boxId) void loadList(boxId);
-  }, [boxId, loadList]);
+    setOpenUid(null); setMail(null); setDown(null);
+    if (!boxId) { setEntry(null); return; }
+    const cached = mailCache.lists.get(boxId) ?? null;
+    setEntry(cached);
+    if (!cached || Date.now() - cached.at > 30_000) void refresh(boxId);
+  }, [boxId, refresh]);
 
-  const openMail = async (uid: number, images = false) => {
-    if (!boxId) return;
+  // Quiet refresh every minute while the tab is visible, and when the window is focused again after a while.
+  useEffect(() => {
+    const t = setInterval(() => { tick(n => n + 1); if (boxRef.current && document.visibilityState === 'visible') void refresh(boxRef.current); }, REFRESH_MS);
+    const onFocus = () => { const e = boxRef.current ? mailCache.lists.get(boxRef.current) : null; if (boxRef.current && (!e || Date.now() - e.at > 30_000)) void refresh(boxRef.current); };
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [refresh]);
+
+  // Edits that must show at once and stay (the list in memory is the same object the cache holds).
+  const patchItems = useCallback((fn: (items: Item[]) => Item[], verified?: Record<string, Ver[]>) => {
+    setEntry(prev => {
+      if (!prev || !boxRef.current) return prev;
+      const next = { ...prev, items: fn(prev.items), verified: verified ?? prev.verified };
+      mailCache.lists.set(boxRef.current, next);
+      return next;
+    });
+  }, []);
+
+  const items = entry?.items ?? [];
+  const verified = entry?.verified ?? {};
+  const openMail = useCallback(async (uid: number, images = false) => {
+    const id = boxRef.current;
+    if (!id) return;
     const seq = ++openSeq.current;
-    setOpenUid(uid); setOpening(true); setReplyOpen(false); setReplyText(''); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError('');
-    if (!images) setMail(null);
+    setOpenUid(uid);
+    const cached = mailCache.mails.get(mailKey(id, uid));
+    const wasUnread = !!mailCache.lists.get(id)?.items.find(x => x.uid === uid)?.unread;
+    if (cached && !images && !wasUnread) { setMail(cached); return; }   // already read and kept: no Gmail call
+    setOpening(true);
+    if (!images && !cached) setMail(null);
     try {
-      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(boxId)}&uid=${uid}${images ? '&images=1' : ''}`, { headers: auth, cache: 'no-store' });
+      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(id)}&uid=${uid}${images ? '&images=1' : ''}`, { headers: auth, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (seq !== openSeq.current) return;
       if (!r.ok) { alertRef.current('error', d.error || 'Could not open that mail.'); setOpenUid(null); return; }
+      mailCache.mails.set(mailKey(id, uid), d.mail);
       setMail(d.mail);
-      if (Array.isArray(d.verified) && d.verified.length) setVerified(v => ({ ...v, [d.mail.fromAddress]: d.verified }));
-      setItems(prev => prev.map(x => x.uid === uid ? { ...x, unread: false } : x));
+      patchItems(list => list.map(x => x.uid === uid ? { ...x, unread: false } : x),
+        Array.isArray(d.verified) && d.verified.length ? { ...(mailCache.lists.get(id)?.verified ?? {}), [d.mail.fromAddress]: d.verified } : undefined);
     } catch { if (seq === openSeq.current) { alertRef.current('error', 'Could not open that mail.'); setOpenUid(null); } }
     finally { if (seq === openSeq.current) setOpening(false); }
-  };
+  }, [auth, patchItems]);
 
-  // Opens the mail a chat's "Emails" link pointed at, once, when its mailbox's list has loaded.
+  // Opens the mail a chat's "Emails" link pointed at, once, when its mailbox's list is there.
   useEffect(() => {
-    if (initialDone.current || !initialUid || !boxId || boxId !== initialBox || loading || items.length === 0) return;
+    if (initialDone.current || !initialUid || !boxId || boxId !== initialBox || items.length === 0) return;
     initialDone.current = true;
     void openMail(initialUid);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, loading, boxId, initialBox, initialUid]);
-
-  const verify = async () => {
-    if (!boxId || !mail || verifying) return;
-    setVerifying(true); setVError('');
-    try {
-      const r = await fetch('/api/mail/verify', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: boxId, email: mail.fromAddress, orderId: vOrder, phone: vPhone }) });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setVError(d.error || 'Could not verify.'); return; }
-      alertRef.current('success', `Verified for order ${d.orderId}${d.customerName ? ` (${d.customerName})` : ''}.`);
-      setVerifyOpen(false); setVOrder(''); setVPhone('');
-      if (boxId) await loadList(boxId);
-    } catch { setVError('Could not verify.'); }
-    finally { setVerifying(false); }
-  };
-
-  const unverify = async (orderId: string) => {
-    if (!boxId || !mail) return;
-    if (!window.confirm(`Remove the verification of ${mail.fromAddress} for order ${orderId}? Do this only if it was a wrong click.`)) return;
-    try {
-      const r = await fetch('/api/mail/verify', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: boxId, email: mail.fromAddress, orderId, remove: true }) });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); alertRef.current('error', d.error || 'Could not remove it.'); return; }
-      if (boxId) await loadList(boxId);
-    } catch { alertRef.current('error', 'Could not remove it.'); }
-  };
-
-  const askVerify = (lang: 'en' | 'hi') => { setReplyOpen(true); setReplyText(lang === 'en' ? ASK_VERIFY_EN : ASK_VERIFY_HINGLISH); };
+  }, [items.length, boxId, initialBox, initialUid, openMail]);
 
   const markUnread = async () => {
     if (!boxId || !mail) return;
     try {
       const r = await fetch('/api/mail/message', { method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: boxId, uid: mail.uid, seen: false }) });
       if (!r.ok) { const d = await r.json().catch(() => ({})); alertRef.current('error', d.error || 'Could not mark it unread.'); return; }
-      setItems(prev => prev.map(x => x.uid === mail.uid ? { ...x, unread: true } : x));
+      patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, unread: true } : x));
       setOpenUid(null); setMail(null);
     } catch { alertRef.current('error', 'Could not mark it unread.'); }
   };
 
-  const download = async (a: Att) => {
-    if (!boxId || !mail) return;
-    try {
-      const r = await fetch(`/api/mail/attachment?box=${encodeURIComponent(boxId)}&uid=${mail.uid}&index=${a.index}`, { headers: auth });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); alertRef.current('error', d.error || 'Could not download that file.'); return; }
-      const url = URL.createObjectURL(await r.blob());
-      const el = document.createElement('a'); el.href = url; el.download = a.filename; document.body.appendChild(el); el.click(); el.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    } catch { alertRef.current('error', 'Could not download that file.'); }
-  };
-
-  const send = async () => {
-    if (!boxId || !mail || sending) return;
-    setSending(true);
-    try {
-      const r = await fetch('/api/mail/send', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: boxId, uid: mail.uid, text: replyText }) });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { alertRef.current('error', d.error || 'The reply was not sent.'); return; }
-      alertRef.current('success', `Reply sent to ${d.to}.`);
-      setReplyOpen(false); setReplyText('');
-      setItems(prev => prev.map(x => x.uid === mail.uid ? { ...x, answered: true } : x));
-      setMail(m => m ? { ...m, answered: true } : m);
-    } catch { alertRef.current('error', 'The reply was not sent.'); }
-    finally { setSending(false); }
-  };
-
   const shown = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return items.filter(x => (filter === 'all' || (filter === 'unverified' ? !verified[x.fromAddress]?.length : x.unread) || x.uid === openUid)
-      && (!t || x.subject.toLowerCase().includes(t) || x.from.toLowerCase().includes(t) || x.fromAddress.includes(t)));
-  }, [items, filter, q, openUid, verified]);
-  const unreadNow = items.filter(x => x.unread).length;
-  const unverifiedNow = items.filter(x => !verified[x.fromAddress]?.length).length;
+    const now = Date.now();
+    return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now) && searchMatch(x, q, verified))), sort);
+  }, [items, view, q, sort, verified, openUid]);
+  const counts = useMemo(() => viewCounts(items, verified, Date.now()), [items, verified]);
+
   const box = visibleBoxes.find(b => b.id === boxId) ?? null;
   const panelName = (boxes ?? []).find(b => b.panelId === activePanelId)?.panelName;
+  const nextUnverified = items.find(x => !verified[x.fromAddress]?.length && x.unread) ?? items.find(x => !verified[x.fromAddress]?.length);
 
   if (boxes === null) return <div className="mail-empty"><Loader2 size={18} className="spin" /> Opening Mail…</div>;
   if (visibleBoxes.length === 0) {
@@ -223,123 +190,102 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   }
 
   return (
-    <div className={`mail-wrap${openUid ? ' mail-open' : ''}`}>
-      <section className="mail-list">
-        <div className="mail-bar">
-          {visibleBoxes.length > 1 ? (
-            <select className="form-input" value={boxId ?? ''} onChange={e => setBoxId(e.target.value)} aria-label="Gmail inbox">
-              {visibleBoxes.map(b => <option key={b.id} value={b.id}>{b.panelName} · {b.email}</option>)}
+    <div className={`mail-app${openUid ? ' mail-open' : ''}`}>
+      {/* Filters (owner 2026-10-08): what a support person sorts the day by */}
+      <nav className="mail-filters" aria-label="Mail filters">
+        {FILTER_GROUPS.map(g => (
+          <div key={g.title} className="mail-fgroup">
+            <div className="mail-ftitle">{g.title}</div>
+            {g.views.map(v => {
+              const Icon = VIEW_ICON[v] || Inbox;
+              return (
+                <button type="button" key={v} className="mail-f" aria-pressed={view === v} onClick={() => setView(v)}>
+                  <Icon size={14} /> <span>{VIEW_LABELS[v]}</span>
+                  <b className={v === 'unverified' && counts[v] > 0 ? 'warn' : ''}>{counts[v]}</b>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
+
+      <section className="mail-listpane">
+        <div className="mail-listhead">
+          <div className="mail-bar" style={{ border: 0, padding: 0 }}>
+            {visibleBoxes.length > 1 ? (
+              <select className="form-input" value={boxId ?? ''} onChange={e => setBoxId(e.target.value)} aria-label="Gmail inbox" style={{ flex: 1, minWidth: 0 }}>
+                {visibleBoxes.map(b => <option key={b.id} value={b.id}>{b.panelName} · {b.email}</option>)}
+              </select>
+            ) : <div className="mail-box-name" title={box?.email}>{box?.panelName} · {box?.email}</div>}
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => boxId && refresh(boxId, false)} disabled={refreshing} title="Read Gmail again">
+              {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
+            </button>
+          </div>
+          <div className="mail-bar" style={{ border: 0, padding: 0, flexWrap: 'nowrap' }}>
+            <div className="mail-search" style={{ flex: 1, minWidth: 0 }}>
+              <Search size={14} />
+              <input placeholder="Search sender, subject or order number" value={q} onChange={e => setQ(e.target.value)} aria-label="Search mail" />
+            </div>
+            <select className="form-input mail-sort" value={sort} onChange={e => setSort(e.target.value as MailSort)} aria-label="Order">
+              <option value="unreadfirst">Unread first</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
             </select>
-          ) : <div className="mail-box-name" title={box?.email}>{box?.panelName} · {box?.email}</div>}
-          <button type="button" className="btn btn-outline btn-sm" onClick={() => boxId && loadList(boxId)} disabled={loading} title="Read Gmail again">
-            {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
-          </button>
+          </div>
+          <div className="mail-tabs" role="tablist">
+            {(['all', 'unverified', 'verified'] as MailView[]).map(v => (
+              <button type="button" role="tab" key={v} className="seg-btn" aria-pressed={view === v} onClick={() => setView(v)}>
+                {v === 'all' ? 'All' : VIEW_LABELS[v]} <span className="mail-count">{counts[v]}</span>
+              </button>
+            ))}
+          </div>
+          {view !== 'all' && view !== 'unverified' && view !== 'verified' && (
+            <div className="meta">Showing: <b>{VIEW_LABELS[view]}</b> · <button type="button" className="meta-btn" onClick={() => setView('all')}>Show all</button></div>
+          )}
         </div>
-        <div className="mail-bar">
-          <button type="button" className="seg-btn" aria-pressed={filter === 'unread'} onClick={() => setFilter('unread')}>Unread{unreadNow ? ` (${unreadNow})` : ''}</button>
-          <button type="button" className="seg-btn" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All 30 days{items.length ? ` (${items.length})` : ''}</button>
-          <button type="button" className="seg-btn" aria-pressed={filter === 'unverified'} onClick={() => setFilter('unverified')} title="Senders nobody has verified with an Order ID and phone yet">Not verified{items.length ? ` (${unverifiedNow})` : ''}</button>
-          <input className="form-input" style={{ flex: 1, minWidth: 0 }} placeholder="Search sender or subject" value={q} onChange={e => setQ(e.target.value)} />
-        </div>
-        {box?.status && !box.status.ok && <div className="mail-warn">{box.status.error}</div>}
+        {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
         {down && <div className="mail-warn">{down}</div>}
         <div className="mail-rows">
-          {loading && items.length === 0 && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading Gmail…</div>}
-          {!loading && !down && shown.length === 0 && (
-            <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : filter === 'unread' ? 'No unread mail. Choose “All 30 days” to see the rest.' : 'Nothing matches.'}</div>
+          {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading Gmail…</div>}
+          {entry && shown.length === 0 && (
+            <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : 'Nothing matches this filter.'}{items.length > 0 && <button type="button" className="btn btn-outline btn-sm" onClick={() => { setView('all'); setQ(''); }}>Clear filters</button>}</div>
           )}
-          {shown.map(m => (
-            <button type="button" key={m.uid} className={`mail-row${m.unread ? ' unread' : ''}${openUid === m.uid ? ' active' : ''}`} onClick={() => openMail(m.uid)}>
-              <span className="mail-from truncate">{m.unread && <i className="mail-dot" aria-label="unread" />}{m.from}{verified[m.fromAddress]?.length ? <BadgeCheck size={13} className="t-ok" aria-label="verified" /> : null}</span>
-              <span className="mail-when">{when(m.date)}</span>
-              <span className="mail-subj truncate">{m.subject}</span>
-              <span className="mail-icons">{m.hasAttachment && <Paperclip size={12} />}{m.answered && <Reply size={12} />}</span>
-            </button>
-          ))}
-          {meta?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
+          <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} />
+          {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
         </div>
-        {loadedAt && <div className="meta mail-foot">Read from Gmail {agoText(loadedAt)}. Nothing is stored here.</div>}
+        <div className="meta mail-foot">
+          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {refreshing && entry ? 'refreshing…' : 'Nothing is stored on the server'}
+        </div>
       </section>
 
-      <section className="mail-reader">
-        {!openUid && <div className="mail-empty"><MailOpen size={28} /> Choose a mail to read it.</div>}
-        {openUid && (
-          <>
-            <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={() => { setOpenUid(null); setMail(null); }}><ChevronLeft size={16} /> Back to the list</button>
-            {opening && !mail && <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening…</div>}
-            {mail && (
-              <>
-                <header className="mail-head">
-                  <h2>{mail.subject}</h2>
-                  <div className="meta"><b>{mail.from}</b> · {new Date(mail.date).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</div>
-                  <div className="meta">To: {mail.to || box?.email}{mail.cc ? ` · Cc: ${mail.cc}` : ''}</div>
-                  <div className="mail-actions">
-                    {canReply && <button type="button" className="btn btn-primary btn-sm" onClick={() => setReplyOpen(o => !o)}><Reply size={14} /> Reply</button>}
-                    <button type="button" className="btn btn-outline btn-sm" onClick={markUnread}>Mark unread</button>
-                    {mail.remoteImages && !mail.imagesShown && (
-                      <button type="button" className="btn btn-outline btn-sm" title="Pictures from the internet tell the sender you opened the mail" onClick={() => openMail(mail.uid, true)}><ImageIcon size={14} /> Show images</button>
-                    )}
-                    {mail.answered && <span className="chip chip-muted">Replied</span>}
-                  </div>
-                </header>
-                {/* Verification (owner 2026-10-08): ask for the Order ID + full phone, then verify the sender */}
-                {(() => {
-                  const vs = verified[mail.fromAddress] || [];
-                  return vs.length > 0 ? (
-                    <div className="mail-verify ok">
-                      <BadgeCheck size={15} /> <span><b>Verified</b> · order {vs.map(v => v.orderId).join(', ')} · {vs[0].byName === 'Email match' || vs[0].byName === 'Email + order number' ? `automatic: ${vs[0].byName.toLowerCase()}` : `by ${vs[0].byName || 'team'}`}</span>
-                      {vs[0].chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(vs[0].chatId)}`}><MessageCircle size={13} /> Open chat</a>}
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setVerifyOpen(o => !o)}>Verify another order</button>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => unverify(vs[0].orderId)} title="Only for a wrong click">Remove</button>
-                    </div>
-                  ) : (
-                    <div className="mail-verify warn">
-                      <ShieldQuestion size={15} /> <span><b>Not verified.</b> Ask for the Order ID and the full phone number, then verify.</span>
-                      {canReply && <button type="button" className="btn btn-outline btn-sm" onClick={() => askVerify('en')}>Ask (English)</button>}
-                      {canReply && <button type="button" className="btn btn-outline btn-sm" onClick={() => askVerify('hi')}>Ask (Hinglish)</button>}
-                      <button type="button" className="btn btn-primary btn-sm" onClick={() => setVerifyOpen(o => !o)}>Verify</button>
-                    </div>
-                  );
-                })()}
-                {verifyOpen && (
-                  <div className="mail-verify-form">
-                    <div className="meta">Type what <b>{mail.fromAddress}</b> wrote back. Both must match one order of {box?.panelName}. The phone is only checked, never saved.</div>
-                    <div className="mail-bar" style={{ border: 0, padding: 0 }}>
-                      <input className="form-input" style={{ flex: 1, minWidth: 120 }} placeholder="Order ID (e.g. #1553)" value={vOrder} onChange={e => setVOrder(e.target.value)} />
-                      <input className="form-input" style={{ flex: 1, minWidth: 140 }} placeholder="Full phone (10 digits)" inputMode="tel" value={vPhone} onChange={e => setVPhone(e.target.value)} />
-                      <button type="button" className="btn btn-primary btn-sm" disabled={verifying || !vOrder.trim() || !vPhone.trim()} onClick={verify}>
-                        {verifying ? <Loader2 size={14} className="spin" /> : <BadgeCheck size={14} />} Verify
-                      </button>
-                    </div>
-                    {vError && <div className="mail-warn" style={{ margin: 0 }}>{vError}</div>}
-                  </div>
-                )}
-                {mail.attachments.filter(a => !a.inline).length > 0 && (
-                  <div className="mail-atts">
-                    {mail.attachments.filter(a => !a.inline).map(a => (
-                      <button type="button" key={a.index} className="btn btn-outline btn-sm" onClick={() => download(a)} title={a.contentType}>
-                        <Download size={13} /> {a.filename} <span className="meta">{kb(a.size)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {/* Scripts, forms and remote pictures are blocked twice: the sandbox and the policy inside the frame. */}
-                <iframe className="mail-frame" title="Mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={mail.frame} />
-                {replyOpen && (
-                  <div className="mail-reply">
-                    <div className="meta">Goes from <b>{box?.email}</b> to {mail.replyTo || mail.fromAddress}. Gmail keeps a copy in Sent.</div>
-                    <textarea className="form-input" rows={6} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
-                    <div className="mail-actions">
-                      <button type="button" className="btn btn-primary btn-sm" disabled={sending || !replyText.trim()} onClick={send}>
-                        {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send reply
-                      </button>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); }}>Cancel</button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </>
+      <section className="mail-readerpane">
+        {!openUid && (
+          <div className="mail-home">
+            <MailOpen size={34} />
+            <h3>Choose a mail to read it</h3>
+            <div className="mail-stats">
+              <button type="button" className="mail-stat warn" onClick={() => setView('unverified')}><b>{counts.unverified}</b><span>not verified</span></button>
+              <button type="button" className="mail-stat" onClick={() => setView('unread')}><b>{counts.unread}</b><span>unread</span></button>
+              <button type="button" className="mail-stat" onClick={() => setView('notreplied')}><b>{counts.notreplied}</b><span>not replied</span></button>
+              <button type="button" className="mail-stat ok" onClick={() => setView('verified')}><b>{counts.verified}</b><span>verified</span></button>
+            </div>
+            {nextUnverified && <button type="button" className="btn btn-primary btn-sm" onClick={() => void openMail(nextUnverified.uid)}><ShieldQuestion size={14} /> Open next not-verified mail</button>}
+            <p className="meta">Verified senders are matched to their order by themselves (their email is on an order and Gmail confirms it is real). The rest wait for you: ask for the Order ID and phone, then press Verify.</p>
+          </div>
+        )}
+        {openUid && opening && !mail && <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening…</div>}
+        {openUid && mail && (
+          <MailReader
+            token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
+            versions={verified[mail.fromAddress] || []}
+            onBack={() => { setOpenUid(null); setMail(null); }}
+            onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
+            onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
+            onShowImages={() => void openMail(mail.uid, true)}
+            onMarkUnread={markUnread}
+            onChanged={() => { if (boxId) void refresh(boxId); }}
+            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); }}
+          />
         )}
       </section>
     </div>

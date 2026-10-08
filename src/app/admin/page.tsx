@@ -7,6 +7,7 @@ import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
 import RefundRequestsCard from '@/components/RefundRequestsCard';
 import MailCard from '@/components/MailCard';
+import { clearMailCache } from '@/components/mail/cache';
 import ChargebacksCard from '@/components/ChargebacksCard';
 import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
@@ -937,6 +938,7 @@ export default function AdminDashboard() {
   };
 
   const logout = () => {
+    clearMailCache();   // what the Mail tab kept in memory goes with the session
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_user');
     router.push('/login');
