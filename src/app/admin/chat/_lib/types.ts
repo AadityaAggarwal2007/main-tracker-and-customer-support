@@ -93,6 +93,8 @@ export interface Conversation {
   // The customer has threatened a chargeback, police or court (health_threat),
   // or called the store a fraud (health_accuse): tags on the list row.
   health_threat?: boolean;
+  // An open chargeback alert on this customer's verified order (src/lib/chargeback): a red Chargeback tag.
+  chargeback_open?: boolean;
   health_accuse?: boolean;
   // How long the customer has waited for an answer (src/lib/chat/waiting.ts):
   // since when, and whether that is WAITING_OVERDUE_HOURS or more.

@@ -18,6 +18,7 @@ export default function SettingsJumpBar({ activeBusiness, chatSite, user }: {
                     { id: 'set-widget', label: 'Chat widget', show: !!user && can(user, 'settings.panel') },
                     { id: 'set-schedule', label: 'Tracking schedule', show: true },
                     { id: 'set-connections', label: 'Connections', show: isSuperAdmin(user) },
+                    { id: 'set-chargeback', label: 'Chargebacks', show: isSuperAdmin(user) },
                     { id: 'set-danger', label: 'Danger zone', show: isSuperAdmin(user) },
                   ].filter((x) => x.show).map((x) => (
                     <button key={x.id} type="button" className="btn btn-sm"

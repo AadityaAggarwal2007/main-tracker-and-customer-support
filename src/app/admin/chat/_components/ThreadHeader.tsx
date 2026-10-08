@@ -204,6 +204,13 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
         </div>
       )}
 
+      {/* A chargeback mail arrived for this customer's order (owner 2026-10-08): the same red warning for every login */}
+      {activeConv?.chargeback_open && (
+        <div className="th-row meta t-danger" style={{ flexBasis: '100%', minWidth: 0, fontWeight: 700 }}>
+          <Chip tone="danger">Chargeback</Chip> A chargeback mail arrived for order {activeVerifiedOrder}. Stay calm, promise nothing, and do not advise the customer on chargebacks or complaints. The Super Admin handles it.
+        </div>
+      )}
+
       {/* The Gmail addresses verified for this order (owner 2026-10-08): only with Open Mail */}
       {activeConv && activeVerifiedOrder && activeVerifiedVia !== 'legacy' && can(user, 'mail.view') && (
         <CustomerEmails token={token} conversationId={activeConv.id} orderId={activeVerifiedOrder} />

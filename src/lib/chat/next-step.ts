@@ -23,6 +23,8 @@ export interface NextStepInput {
   reshipped: boolean;
   threat: boolean;
   accuse: boolean;
+  // A chargeback mail arrived for this customer's order (src/lib/chargeback).
+  chargeback?: boolean;
   health: number | null;
   // How long the customer has waited for an answer, in ms (null = not waiting).
   waitingMs: number | null;
@@ -145,6 +147,14 @@ export function nextStep(i: NextStepInput): NextStep {
   if (i.promiseDue) add('Chikki promised the team would take this up after 10 AM: answer first.');
   else if (overdue && i.waitingMs != null) add(`Reply first: the customer has waited ${waitedText(i.waitingMs)}.`);
   else if (i.returned) add('The customer came back after the chat was closed: answer them first.');
+
+  // A chargeback mail has arrived for this order (owner 2026-10-08): calm, honest, no promises, no advice about it.
+  if (i.chargeback) {
+    add('A chargeback mail arrived for this order. The Super Admin handles it with the gateway.');
+    add('Stay calm and polite. Do not advise the customer on chargebacks or complaints, and promise nothing.');
+    add('Answer from the order facts in the header.');
+    return { tone: 'danger', wants: 'Chargeback on this order', steps };
+  }
 
   // The Refund / Ship again marks have their own routine.
   if (i.caseKind === 'refund') {

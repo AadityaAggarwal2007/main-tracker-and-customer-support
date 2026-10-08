@@ -18,6 +18,7 @@ import { dropReplyTimes, insertEmailNote, routineHandOverKind, routineLine, says
 import { afterHours } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
 import { friendlyMailError, noteMailboxCheck } from './mailbox-status';
+import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -535,6 +536,9 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
   for (const account of accounts.rows) {
     handled += await pollEmailAccount(account);
   }
+
+  // The panels' chargeback Gmails ride on this same minute (src/lib/chargeback/poll.ts); never able to stop the sweep.
+  try { await pollChargebackMailboxes(); } catch (e) { console.error('[chargeback] sweep:', (e as Error).message); }
 
   return { accounts: accounts.rowCount ?? 0, handled };
 }

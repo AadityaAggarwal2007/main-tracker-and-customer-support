@@ -6,11 +6,12 @@ import { MessageCircle, ShieldCheck, UserRound, LogOut, type LucideIcon } from '
 import PanelSwitcher from '@/components/PanelSwitcher';
 import type { AuthUser, Business, TabType } from '../_lib/types';
 
-export default function AdminSidebar({ activeBusiness, activePanelId, activeTab, businesses, emailWaiting, humanNeeded, logout, navItems, openMe, refundUnseen, router, setActiveTab, setProfileOpen, setSecurityOpen, setSidebarOpen, sidebarOpen, switchPanel, user }: {
+export default function AdminSidebar({ activeBusiness, activePanelId, activeTab, businesses, chargebackNew, emailWaiting, humanNeeded, logout, navItems, openMe, refundUnseen, router, setActiveTab, setProfileOpen, setSecurityOpen, setSidebarOpen, sidebarOpen, switchPanel, user }: {
   activeBusiness: Business | null;
   activePanelId: string;
   activeTab: TabType;
   businesses: Business[];
+  chargebackNew: number;
   emailWaiting: number;
   humanNeeded: number;
   logout: () => void;
@@ -45,6 +46,16 @@ export default function AdminSidebar({ activeBusiness, activePanelId, activeTab,
             >
               <item.icon size={18} />
               {item.label}
+              {item.id === 'chargebacks' && chargebackNew > 0 && (
+                <span title={`${chargebackNew} new chargeback ${chargebackNew === 1 ? 'mail' : 'mails'} you have not opened`}
+                  style={{
+                    marginLeft: 'auto', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 9999,
+                    background: 'var(--danger, #ef4444)', color: '#fff', fontSize: '0.6875rem', fontWeight: 700,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                  {chargebackNew}
+                </span>
+              )}
               {item.id === 'refunds' && refundUnseen > 0 && (
                 <span title={`${refundUnseen} new refund ${refundUnseen === 1 ? 'request' : 'requests'} you have not opened`}
                   style={{

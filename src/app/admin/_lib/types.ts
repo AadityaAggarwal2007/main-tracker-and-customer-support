@@ -43,4 +43,4 @@ export interface PanelImpact {
   chatSites: number; chatConversations: number; chatMessages: number;
   teamMembers: number; teamMembersLosingAccess: number;
 }
-export type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds' | 'mail';
+export type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds' | 'mail' | 'chargebacks';
