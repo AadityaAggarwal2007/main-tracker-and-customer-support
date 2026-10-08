@@ -1465,4 +1465,32 @@ t('panel names: the same store written another way ("X" / "X Store", one letter 
   assert.ok(/b\.id !== String\(id\) && panelNamesSimilar/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/businesses/route.ts'), 'utf8')), 'rename checks it (not against itself)');
 });
 
+// ── Email: Chikki writes a draft, the team sends (owner 2026-10-08, email-draft.ts) ──
+const ed = load('email-draft');
+t('email draft mode: ON by default, every AI reply is held except the fixed hand-over lines, a visitor never lands in Needs you', () => {
+  // held = not a hand-over line AND (escalated OR draft mode)
+  assert.strictEqual(ed.emailReplyHeld(false, false, true), true, 'draft mode: a routine answer is held');
+  assert.strictEqual(ed.emailReplyHeld(false, false, false), false, 'switch off: sent, as before');
+  assert.strictEqual(ed.emailReplyHeld(true, false, false), true, 'escalated is held either way, as before');
+  assert.strictEqual(ed.emailReplyHeld(true, true, true), false, 'the hand-over line (threat / fraud / refund) is always sent');
+  assert.strictEqual(ed.emailReplyHeld(false, true, true), false);
+  assert.strictEqual(ed.heldKind(true), 'escalated'); assert.strictEqual(ed.heldKind(false), 'draft');
+  assert.strictEqual(ed.heldMovesToNeedsYou(false, false), false, 'an unverified sender is not moved to Needs you by a draft');
+  assert.strictEqual(ed.heldMovesToNeedsYou(false, true), true); assert.strictEqual(ed.heldMovesToNeedsYou(true, false), true);
+  // the switch: no row, anything but '0', or a failed read = ON
+  assert.strictEqual(ed.parseDraftOnly(undefined), true); assert.strictEqual(ed.parseDraftOnly(null), true);
+  assert.strictEqual(ed.parseDraftOnly('1'), true); assert.strictEqual(ed.parseDraftOnly('0'), false);
+  assert.strictEqual(ed.draftOnlyKey('site-1'), 'email_draft_only:site-1');
+  const src = (f) => fs.readFileSync(path.resolve(__dirname, '../../src', f), 'utf8');
+  const poll = src('lib/chat/email.ts');
+  assert.ok(/emailReplyHeld\(Boolean\(aiResult\.escalated\), handOverNow, draftOnly\)/.test(poll), 'the poller uses the rule');
+  assert.ok(/withheld: heldKind\(Boolean\(aiResult\.escalated\)\)/.test(poll) && /heldMovesToNeedsYou\(Boolean\(aiResult\.escalated\), verifiedNow\)/.test(poll));
+  const mode = src('lib/chat/email-draft-mode.ts');
+  assert.ok(/return true;\s*\}\s*\}/.test(mode), 'a failed read means ON');
+  const route = src('app/api/panel-email/route.ts');
+  const patch = route.slice(route.indexOf('export async function PATCH'), route.indexOf('// ── POST /api/panel-email'));
+  assert.ok(/user\.role !== 'admin'/.test(patch) && /typeof draftOnly !== 'boolean'/.test(patch), 'only the Super Admin can change it');
+  assert.ok(/draft: 'draft for the team'/.test(src('app/admin/chat/_lib/inbox.ts')), 'the inbox names the draft');
+});
+
 console.log(`UNIT: ${n} groups passed`);

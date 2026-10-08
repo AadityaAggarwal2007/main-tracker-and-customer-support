@@ -143,6 +143,8 @@ export default function AdminDashboard() {
 
   // Email support — mailboxes the AI answers for this panel
   const [panelEmails, setPanelEmails] = useState<PanelEmailAccount[]>([]);
+  // Email replies: ON = Chikki writes a draft and the team sends (the default), OFF = she answers routine mails herself.
+  const [panelEmailDraftOnly, setPanelEmailDraftOnly] = useState(true);
   const [loadingPanelEmails, setLoadingPanelEmails] = useState(false);
   const [newPanelEmail, setNewPanelEmail] = useState({ email: '', appPassword: '' });
   const [addingPanelEmail, setAddingPanelEmail] = useState(false);
@@ -618,6 +620,7 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       setPanelEmails(res.ok ? (data.accounts || []) : []);
+      setPanelEmailDraftOnly(res.ok ? data.draftOnly !== false : true);
     } catch { setPanelEmails([]); }
     finally { setLoadingPanelEmails(false); }
   }, [token, activePanelId]);
@@ -647,6 +650,22 @@ export default function AdminDashboard() {
       }
     } catch { showAlert('error', 'Could not connect that mailbox'); }
     finally { setAddingPanelEmail(false); }
+  };
+
+  const saveEmailDraftOnly = async (on: boolean) => {
+    if (!activePanelId) return;
+    if (!on && !confirm('Let Chikki answer incoming emails by herself? Routine answers (order status, tracking) will be emailed to customers without your team seeing them first.')) return;
+    const before = panelEmailDraftOnly;
+    setPanelEmailDraftOnly(on);
+    try {
+      const res = await fetch('/api/panel-email', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: activePanelId, draftOnly: on }),
+      });
+      if (res.ok) showAlert('success', on ? 'Chikki will write drafts, your team sends them' : 'Chikki will answer routine emails by herself');
+      else { setPanelEmailDraftOnly(before); showAlert('error', 'Could not save that setting'); }
+    } catch { setPanelEmailDraftOnly(before); showAlert('error', 'Could not save that setting'); }
   };
 
   const handleRemovePanelEmail = async (acc: PanelEmailAccount) => {
@@ -1331,15 +1350,25 @@ export default function AdminDashboard() {
                       <Mail size={16} style={{ color: 'var(--primary)' }} />
                       <span style={{ fontWeight: 700 }}>Email Support</span>
                       <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontSize: '0.625rem', padding: '0.125rem 0.375rem', borderRadius: 4 }}>
-                        Answered by AI
+                        {panelEmailDraftOnly ? 'AI drafts, team sends' : 'Answered by AI'}
                       </span>
                     </div>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
-                      Connect the mailbox customers write to. Every incoming email is read and answered
-                      the same way the chat is — order status and tracking go out on their own, and
-                      anything about refunds, cancellations or store policy is held for a person instead.
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+                      Connect the mailbox customers write to. Every incoming email is read the same way the chat
+                      is. Who sends the reply is your choice below. A customer who threatens or calls the store a
+                      fraud, or asks for a refund, still gets the short &ldquo;a person has your case&rdquo; line on its own.
                       This works whether or not the panel is connected to Shopify.
                     </p>
+                    <div className="seg" role="group" aria-label="Who sends the email reply" style={{ marginTop: 0, marginBottom: '1rem' }}>
+                      <button type="button" className="seg-btn" aria-pressed={panelEmailDraftOnly} onClick={() => { if (!panelEmailDraftOnly) saveEmailDraftOnly(true); }}
+                        title="Chikki writes the reply as a draft, your team reads it and sends it">
+                        Chikki writes a draft, my team sends (recommended)
+                      </button>
+                      <button type="button" className="seg-btn" aria-pressed={!panelEmailDraftOnly} onClick={() => { if (panelEmailDraftOnly) saveEmailDraftOnly(false); }}
+                        title="Chikki emails routine answers by herself; anything about refunds or policy is held for a person">
+                        Chikki answers by herself
+                      </button>
+                    </div>
 
                     {/* Connected mailboxes */}
                     {panelEmails.length > 0 && (
