@@ -10,9 +10,9 @@
 // marks it read in Gmail ("Mark unread" undoes it). Filters, search and order: src/lib/chat/mail-filters.ts.
 // An HTML mail is shown in a sandboxed frame (no scripts) with remote pictures blocked until "Show images".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BadgeCheck, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, initials, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
@@ -135,7 +135,16 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     setOpenUid(uid);
     const cached = mailCache.mails.get(mailKey(id, uid));
     const wasUnread = !!mailCache.lists.get(id)?.items.find(x => x.uid === uid)?.unread;
-    if (cached && !images && !wasUnread) { setMail(cached); return; }   // already read and kept: no Gmail call
+    if (cached && !images) {
+      // Already read (or fetched ahead of time) and kept: it opens at once. An unread one is marked read in Gmail
+      // by a quiet call in the background, so the person never waits for it.
+      setMail(cached);
+      if (wasUnread) {
+        patchItems(list => list.map(x => x.uid === uid ? { ...x, unread: false } : x));
+        void fetch('/api/mail/message', { method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: id, uid, seen: true }) }).catch(() => undefined);
+      }
+      return;
+    }
     setOpening(true);
     if (!images && !cached) setMail(null);
     try {
@@ -158,6 +167,41 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     void openMail(initialUid);
   }, [items.length, boxId, initialBox, initialUid, openMail]);
 
+  const shown = useMemo(() => {
+    const now = Date.now();
+    return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now) && searchMatch(x, q, verified))), sort);
+  }, [items, view, q, sort, verified, openUid]);
+  const counts = useMemo(() => viewCounts(items, verified, Date.now()), [items, verified]);
+
+  // Fetch ahead (owner 2026-10-08: "sloww hai"): the first few mails of what is on screen are read in the
+  // background WITHOUT marking them read in Gmail (peek=1), one at a time, so opening them is instant. Opening
+  // one then marks it read (quietly). Nothing is stored anywhere but this page's memory.
+  const prefetching = useRef(false);
+  const topKey = shown.slice(0, 5).map(x => x.uid).join(',');
+  useEffect(() => {
+    const id = boxId;
+    if (!id || !entry || prefetching.current || document.visibilityState !== 'visible') return;
+    const todo = shown.slice(0, 5).filter(m => !mailCache.mails.has(mailKey(id, m.uid)));
+    if (todo.length === 0) return;
+    prefetching.current = true;
+    (async () => {
+      try {
+        for (const m of todo) {
+          if (boxRef.current !== id) break;
+          const r = await fetch(`/api/mail/message?box=${encodeURIComponent(id)}&uid=${m.uid}&peek=1`, { headers: auth, cache: 'no-store' });
+          if (!r.ok) break;
+          const d = await r.json();
+          if (d?.mail) mailCache.mails.set(mailKey(id, m.uid), d.mail);
+          if (Array.isArray(d?.verified) && d.verified.length && d?.mail?.fromAddress && boxRef.current === id) {
+            patchItems(list => list, { ...(mailCache.lists.get(id)?.verified ?? {}), [d.mail.fromAddress]: d.verified });
+          }
+        }
+      } catch { /* a failed look-ahead only means that mail opens the normal way */ }
+      finally { prefetching.current = false; }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxId, entry?.at, topKey]);
+
   const markUnread = async () => {
     if (!boxId || !mail) return;
     try {
@@ -167,12 +211,6 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
       setOpenUid(null); setMail(null);
     } catch { alertRef.current('error', 'Could not mark it unread.'); }
   };
-
-  const shown = useMemo(() => {
-    const now = Date.now();
-    return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now) && searchMatch(x, q, verified))), sort);
-  }, [items, view, q, sort, verified, openUid]);
-  const counts = useMemo(() => viewCounts(items, verified, Date.now()), [items, verified]);
 
   const box = visibleBoxes.find(b => b.id === boxId) ?? null;
   const panelName = (boxes ?? []).find(b => b.panelId === activePanelId)?.panelName;
@@ -273,7 +311,25 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             <p className="meta">Verified senders are matched to their order by themselves (their email is on an order and Gmail confirms it is real). The rest wait for you: ask for the Order ID and phone, then press Verify.</p>
           </div>
         )}
-        {openUid && opening && !mail && <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening…</div>}
+        {openUid && !mail && (() => {
+          // The mail's own header from the list shows at once; only the body is still coming.
+          const it = items.find(x => x.uid === openUid);
+          return (
+            <div className="mail-reader">
+              <div className="mail-readbar"><button type="button" className="btn btn-ghost btn-sm mail-back" onClick={() => { setOpenUid(null); setMail(null); }}><ChevronLeft size={16} /> List</button></div>
+              {it && (
+                <header className="mail-head">
+                  <div className="mail-avatar" aria-hidden="true">{initials(it.from)}</div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <h2>{it.subject}</h2>
+                    <div className="meta"><b>{it.from}</b> · {it.fromAddress}</div>
+                  </div>
+                </header>
+              )}
+              <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening the mail…</div>
+            </div>
+          );
+        })()}
         {openUid && mail && (
           <MailReader
             token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
