@@ -67,16 +67,31 @@ function hasAttachmentPart(node: StructNode | undefined): boolean {
 }
 
 // The last 30 days, unread first (opts.from: only mails from that address). Headers only: no body is downloaded for the list.
-export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { from?: string } = {}): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
-  return withImap(box, async (c) => {
+export type ListPhase = 'fast' | 'full';
+
+// Two phases (owner 2026-10-08: "Reading Gmail 20-25 second"): 'fast' asks Gmail only for who / subject / date / flags
+// (a few seconds even for 200 mails) so the list shows at once; 'full' also asks for each mail's structure (the
+// attachment icon) and its Authentication-Results header (the automatic verification), which is what makes Gmail slow.
+// Timing of every part is logged when a list takes long: grep "[mail-timing]" in the PM2 log.
+export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { from?: string; phase?: ListPhase } = {}): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number; phase: ListPhase }> {
+  const phase: ListPhase = opts.phase === 'fast' ? 'fast' : 'full';
+  const t0 = Date.now();
+  const lap: Record<string, number> = {};
+  const res = await withImap(box, async (c) => {
+    lap.ready = Date.now() - t0;                       // connection + sign-in (0 when the kept-open one was reused)
     const lock = await c.getMailboxLock('INBOX', { readOnly: true });
     try {
+      lap.select = Date.now() - t0;
       const seqs = await c.search(opts.from ? { since: sinceDate(now), from: opts.from } : { since: sinceDate(now) });
-      if (!seqs || seqs.length === 0) return { mails: [], unread: 0, truncated: false, days: MAIL_DAYS };
+      lap.search = Date.now() - t0;
+      if (!seqs || seqs.length === 0) return { mails: [], unread: 0, truncated: false, days: MAIL_DAYS, phase };
       const truncated = seqs.length > MAX_MAILS;
       const wanted = seqs.slice(-MAX_MAILS);
       const out: MailListItem[] = [];
-      for await (const m of c.fetch(wanted, { uid: true, flags: true, envelope: true, bodyStructure: true, headers: ['authentication-results'] })) {
+      const query = phase === 'fast'
+        ? { uid: true, flags: true, envelope: true }
+        : { uid: true, flags: true, envelope: true, bodyStructure: true, headers: ['authentication-results'] };
+      for await (const m of c.fetch(wanted, query)) {
         const from = m.envelope?.from?.[0];
         const flags = m.flags ?? new Set<string>();
         out.push({
@@ -86,15 +101,19 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
           subject: (m.envelope?.subject || '').trim() || '(no subject)',
           date: (m.envelope?.date ? new Date(m.envelope.date) : new Date(now)).toISOString(),
           unread: !flags.has('\\Seen'),
-          hasAttachment: hasAttachmentPart(m.bodyStructure as StructNode | undefined),
+          hasAttachment: phase === 'full' && hasAttachmentPart(m.bodyStructure as StructNode | undefined),
           answered: flags.has('\\Answered'),
-          authPass: gmailAuthPassed(firstAuthResults(m.headers as Buffer | undefined)),
+          authPass: phase === 'full' && gmailAuthPassed(firstAuthResults(m.headers as Buffer | undefined)),
         });
       }
+      lap.fetch = Date.now() - t0;
       const mails = sortMails(out);
-      return { mails, unread: mails.filter(x => x.unread).length, truncated, days: MAIL_DAYS };
+      return { mails, unread: mails.filter(x => x.unread).length, truncated, days: MAIL_DAYS, phase };
     } finally { lock.release(); }
   }, 'list');
+  const total = Date.now() - t0;
+  if (total > 2000) console.log(`[mail-timing] list ${phase} box=${box.id} mails=${res.mails.length} total=${total}ms ready=${lap.ready ?? '-'} select=${lap.select ?? '-'} search=${lap.search ?? '-'} fetch=${lap.fetch ?? '-'}`);
+  return res;
 }
 
 export type MailFolder = 'inbox' | 'sent';
