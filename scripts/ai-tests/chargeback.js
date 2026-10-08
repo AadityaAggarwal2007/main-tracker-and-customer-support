@@ -20,7 +20,7 @@ function reset() {
     ],
     orders: [{ order_id: '#1553', panel: 'bizVast' }, { order_id: '#7000', panel: 'bizKurt' }],
     alerts: [], convUpdates: [], notified: [], waNumber: '9876543210', waByPanel: null, gwRows: [], moved: null, lastUid: null, lastUidIds: null, imapFail: false, connects: 0, closes: 0, logouts: 0,
-    wa: 'sent', missing: false, mailboxRows: [], settings: null,
+    wa: 'sent', missing: false, mailboxRows: [], settings: null, hosts: [], deadPass: null, netFail: false,
   });
 }
 reset();
@@ -68,8 +68,13 @@ const STUBS = {
 };
 const PKG_STUBS = {
   imapflow: { ImapFlow: class {
-    constructor() { S.connects++; }
-    async connect() { if (S.imapFail) throw new Error('Invalid credentials'); }
+    constructor(opts) { S.connects++; this.pass = opts && opts.auth ? opts.auth.pass : ''; S.hosts.push(opts && opts.host); }
+    on() {}
+    async connect() {
+      if (S.imapFail) throw new Error('Invalid credentials');
+      if (S.deadPass && this.pass === S.deadPass) throw Object.assign(new Error('Command failed'), { authenticationFailed: true, responseText: 'Invalid credentials (Failure)' });
+      if (S.netFail) throw new Error('connect ETIMEDOUT');
+    }
     async getMailboxLock() { return { release() {} }; }
     async search() { return S.msgs.map((_, i) => i + 1); }
     fetch() { const l = S.msgs; return (async function* () { for (const m of l) yield { uid: m.uid, source: Buffer.from(m.source) }; })(); }
@@ -239,6 +244,23 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
       { uid: 9, source: mail('a9', 'noreply@razorpay.com', 'Dispute', 'something with no order') },
     ];
   };
+  await t('shared Gmail: a dead App Password on the first panel\'s row is skipped and the other panel\'s works; a network failure tries no second password; the SQL setup file carries every change', async () => {
+    setupShared();
+    S.boxes[1].app_password = 'GOODPASSGOODPASS'; S.deadPass = S.boxes[0].app_password;
+    const r = await poll.pollChargebackMailboxes();
+    assert.strictEqual(r.alerts, 4, 'read with the second password'); assert.strictEqual(S.connects, 2, 'the dead one, then the good one');
+    assert.strictEqual(mstat.getMailboxStatus('cb:mb1').ok, true, 'the status is OK, under the first row');
+    assert.ok(S.hosts.every((h) => typeof h === 'string' && h.length > 0), 'a host is always given');
+    setupShared(); S.boxes[1].app_password = 'GOODPASSGOODPASS'; S.deadPass = null; S.netFail = true; S.connects = 0;
+    assert.strictEqual((await poll.pollChargebackMailboxes()).alerts, 0); assert.strictEqual(S.connects, 1, 'not the password: no second try');
+    assert.ok(/did not answer in time/.test(mstat.getMailboxStatus('cb:mb1').error));
+    const fsx = require('fs'), sql = fsx.readFileSync(path.resolve(__dirname, '../../chargeback-setup.sql'), 'utf8');
+    for (const must of ['CREATE TABLE IF NOT EXISTS chargeback_mailboxes', 'CREATE TABLE IF NOT EXISTS chargeback_alerts', 'CREATE TABLE IF NOT EXISTS panel_chargeback',
+      'DROP CONSTRAINT IF EXISTS chargeback_mailboxes_email_key', 'ADD COLUMN IF NOT EXISTS routed_by', 'GRANT DELETE ON chargeback_mailboxes TO tracker_user', 'chargeback_alerts_mail_unique']) assert.ok(sql.includes(must), must);
+    assert.ok(!/\bDELETE FROM\b|\bDROP TABLE\b|\bTRUNCATE\b/i.test(sql), 'never deletes');
+    assert.ok(!/email\s+text NOT NULL UNIQUE/.test(sql), 'the fresh table has no one-panel-per-address limit');
+  });
+
   await t('shared Gmail: it is read ONCE for both panels; each mail goes to the panel by the order it names, else by its ticked gateway, else the first panel (unsure); last_uid moves on for BOTH rows', async () => {
     setupShared();
     const r = await poll.pollChargebackMailboxes();
@@ -266,7 +288,7 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.strictEqual(res.status, 200); assert.strictEqual(d.shared, true); assert.strictEqual(S.insertedUid, 5, 'nothing is read twice or skipped');
     S.emailUsed = true; assert.strictEqual((await post({ businessId: 'bizKurt', email: 'shared@gmail.com', appPassword: 'abcdabcdabcdabcd' })).status, 409);
     S.emailUsed = false; S.dupError = true; const dup = await post({ businessId: 'bizKurt', email: 'shared@gmail.com', appPassword: 'abcdabcdabcdabcd' });
-    assert.strictEqual(dup.status, 409); assert.ok(/chargeback-shared\.sql/.test((await dup.json()).error));
+    assert.strictEqual(dup.status, 409); assert.ok(/chargeback-setup\.sql/.test((await dup.json()).error));
   });
   await t('move an unsure alert to the other panel: only a panel reading the same Gmail; the order is looked up again there; Super Admin only', async () => {
     S.boxes = sharedBoxes(); S.alertRow = { business_id: 'bizVast', subject: 'Dispute for order #2200', snippet: 'Order #2200 disputed', email: 'shared@gmail.com' }; S.orders = [{ order_id: '#2200', panel: 'bizKurt' }];

@@ -19,6 +19,7 @@ import { afterHours } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
 import { friendlyMailError, mailErrorText, noteMailboxCheck } from './mailbox-status';
 import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
+import { gmailHost } from './imap-pool';
 import { autoVerifySenders } from './mail-auto-verify';
 import { gmailAuthPassed } from './mail-view';
 
@@ -158,8 +159,9 @@ interface ConversationRow {
 
 // ── Poll a single email account via IMAP ──────────────────────────────────
 export async function pollEmailAccount(account: MailboxRow): Promise<number> {
+  // Gmail's IPv4 address (imap-pool.ts): a server whose IPv6 is broken otherwise waits for that try to fail every minute.
   const client = new ImapFlow({
-    host: 'imap.gmail.com',
+    ...(await gmailHost()),
     port: 993,
     secure: true,
     auth: { user: account.email, pass: account.app_password },

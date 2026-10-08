@@ -40,7 +40,7 @@ function touch(key: string, entry: Entry): void {
 // skips that wait. If the lookup fails, the plain name is used as before.
 const HOST = 'imap.gmail.com';
 let v4: { ip: string; at: number } | null = null;   // ip '' = the lookup failed (not repeated for 10 minutes either)
-async function gmailHost(): Promise<{ host: string; servername?: string }> {
+export async function gmailHost(): Promise<{ host: string; servername?: string }> {
   if (!v4 || Date.now() - v4.at > 10 * 60_000) {
     try { v4 = { ip: (await dns.lookup(HOST, { family: 4 })).address, at: Date.now() }; }
     catch { v4 = { ip: '', at: Date.now() }; }
