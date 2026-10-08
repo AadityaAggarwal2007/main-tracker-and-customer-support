@@ -105,6 +105,8 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (e) {
     console.error('[chargeback] disconnect:', (e as Error).message);
+    // 42501 = the database user may not DELETE from chargeback_mailboxes (chargeback.sql never granted it): chargeback-disconnect.sql
+    if ((e as { code?: string })?.code === '42501') return NextResponse.json({ error: 'The database does not allow removing it yet: run chargeback-disconnect.sql on the server once.' }, { status: 500 });
     return NextResponse.json({ error: 'Could not disconnect it.' }, { status: 500 });
   }
 }

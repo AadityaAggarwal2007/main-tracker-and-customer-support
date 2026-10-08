@@ -242,6 +242,17 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
     assert.strictEqual(mstat.getMailboxStatus('nope'), null);
   });
 
+  await t('mailbox-status: ImapFlow\'s "Command failed" is read through Gmail\'s own reason (responseText / code)', () => {
+    const e = Object.assign(new Error('Command failed'), { responseText: 'Invalid credentials (Failure)', authenticationFailed: true, code: 'AUTHENTICATIONFAILED' });
+    const text = mstat.mailErrorText(e);
+    assert.ok(/Command failed/.test(text) && /Invalid credentials/.test(text));
+    assert.ok(/App Password/.test(mstat.friendlyMailError(text)));
+    assert.ok(/too many connections/.test(mstat.friendlyMailError(mstat.mailErrorText(Object.assign(new Error('Command failed'), { responseText: 'Too many simultaneous connections. (Failure)' })))));
+    assert.ok(/sign-in or an App Password/.test(mstat.friendlyMailError('Command failed | Application-specific password required')));
+    assert.ok(/Could not read this mailbox/.test(mstat.friendlyMailError(mstat.mailErrorText(new Error('Command failed')))), 'nothing known: the plain fallback');
+    assert.strictEqual(mstat.mailErrorText(null), '');
+  });
+
   // ── who may open what ───────────────────────────────────────────────────────────────────────
   await t('no login: every Mail route answers 401', async () => {
     authState.user = null;
