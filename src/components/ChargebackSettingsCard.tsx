@@ -11,6 +11,7 @@ import { agoText } from '@/app/admin/_lib/format';
 
 interface Data {
   installed: boolean;
+  sharedWith?: string[];
   mailbox: { id: string; email: string; createdAt: string; status: { ok: boolean; error: string | null; checkedAt: number; lastMailAt: number | null } | null } | null;
   whatsapp: string;
   gateways: Record<string, { done: boolean; by: string; at: string }>;
@@ -77,6 +78,11 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
           {/* 1. The chargeback Gmail */}
           <div>
             <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>1. Chargeback Gmail</div>
+            {d.mailbox && d.sharedWith && d.sharedWith.length > 0 && (
+              <div className="meta" style={{ marginBottom: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--primary-light)', borderRadius: '0.5rem' }}>
+                This Gmail is also used by <b>{d.sharedWith.join(', ')}</b>. Each chargeback mail goes to the panel that has the order it names, or else to the panel whose gateway is ticked in step 3. <b>Tick the gateway this panel uses</b> (for example PayU here and PayGlocal on the other panel), or the mail cannot be told apart and waits for you to move it.
+              </div>
+            )}
             {d.mailbox ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.5rem' }}>
                 <span style={{ color: !d.mailbox.status ? 'var(--fg-muted)' : d.mailbox.status.ok ? 'var(--success)' : 'var(--danger)', fontSize: '0.5rem' }}>●</span>
@@ -92,7 +98,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
               </div>
             ) : (
               <>
-                <div className="meta" style={{ marginBottom: '0.5rem' }}>Use a new Gmail made only for this (Google App Password, same steps as Email Support). Mail already in it is left alone; alerts start with the next mail.</div>
+                <div className="meta" style={{ marginBottom: '0.5rem' }}>Use a Gmail made only for this (Google App Password, same steps as Email Support). It may be the same Gmail another panel already uses for chargebacks: then each mail is sent to the panel by its gateway or order. Mail already in it is left alone; alerts start with the next mail.</div>
                 <div className="mail-bar" style={{ border: 0, padding: 0 }}>
                   <input className="form-input" style={{ flex: 1, minWidth: 180 }} placeholder="chargeback.panelname@gmail.com" value={email} onChange={e => setEmail(e.target.value)} />
                   <input className="form-input" style={{ flex: 1, minWidth: 180 }} placeholder="App password abcd efgh ijkl mnop" value={pass} onChange={e => setPass(e.target.value)} />

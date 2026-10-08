@@ -8,6 +8,7 @@ export const GATEWAYS = [
   { key: 'razorpay', label: 'Razorpay', words: ['razorpay'] },
   { key: 'cashfree', label: 'Cashfree', words: ['cashfree'] },
   { key: 'payu', label: 'PayU', words: ['payu'] },
+  { key: 'payglocal', label: 'PayGlocal', words: ['payglocal'] },
   { key: 'paytm', label: 'Paytm', words: ['paytm'] },
   { key: 'phonepe', label: 'PhonePe', words: ['phonepe'] },
   { key: 'stripe', label: 'Stripe', words: ['stripe'] },
@@ -22,6 +23,8 @@ export const GATEWAYS = [
 ] as const;
 export type GatewayKey = typeof GATEWAYS[number]['key'];
 export const GATEWAY_KEYS: string[] = GATEWAYS.map(g => g.key);
+// "PayU" -> 'payu' (the checklist and the routing use the key); 'Unknown' / an unlisted label -> 'other'.
+export const gatewayKeyOf = (label: string): string => GATEWAYS.find(g => g.label === label)?.key ?? 'other';
 
 // The sender's domain and name first (a real gateway mail comes from its own domain), then the subject and text.
 export function gatewayOf(fromAddress: string, fromName: string, subject: string, text: string): string {

@@ -47,16 +47,31 @@ export async function POST(request: NextRequest) {
     const cur = await panelChargeback(businessId);
     if (!cur.installed) return NextResponse.json({ error: 'Chargeback protection is not installed yet (chargeback.sql).' }, { status: 503 });
     if (cur.mailbox) return NextResponse.json({ error: `This panel already has a chargeback Gmail (${cur.mailbox.email}). Remove it first.` }, { status: 409 });
-    // One address does one job: it is not also a support mailbox and not another panel's chargeback mailbox.
-    const used = await queryOne<{ n: number }>(
-      `SELECT (SELECT count(*) FROM site_emails WHERE email = $1) + (SELECT count(*) FROM chargeback_mailboxes WHERE email = $1) AS n`, [address]);
-    if (Number(used?.n ?? 0) > 0) return NextResponse.json({ error: `${address} is already connected somewhere else in ShipTrack.` }, { status: 409 });
+    // One address does one job: it is not also a support mailbox. It MAY be another panel's chargeback Gmail
+    // (owner 2026-10-08: Vastrika and kurtiya share one; each mail goes to the panel by its gateway or order,
+    // routing.ts) once chargeback-shared.sql has been run.
+    const used = await queryOne<{ s: number; c: number }>(
+      `SELECT (SELECT count(*) FROM site_emails WHERE email = $1) AS s, (SELECT count(*) FROM chargeback_mailboxes WHERE lower(email) = $1) AS c`, [address]);
+    if (Number(used?.s ?? 0) > 0) return NextResponse.json({ error: `${address} is already connected as a support Gmail in ShipTrack. Use a different Gmail for chargebacks.` }, { status: 409 });
+    const shared = Number(used?.c ?? 0) > 0;
     const check = await checkMailbox(address, secret);
     if ('error' in check) return NextResponse.json({ error: check.error }, { status: 400 });
-    const row = await queryOne<{ id: string; email: string; created_at: string }>(
-      `INSERT INTO chargeback_mailboxes (business_id, email, app_password, last_uid) VALUES ($1, $2, $3, $4) RETURNING id, email, created_at`,
-      [businessId, address, secret, check.lastUid]);
-    return NextResponse.json({ mailbox: row });
+    // Joining a Gmail another panel already reads: start where that panel stands, so nothing is read twice or skipped.
+    let startUid = check.lastUid;
+    if (shared) {
+      const cur = await queryOne<{ last_uid: string | number }>(`SELECT max(last_uid) AS last_uid FROM chargeback_mailboxes WHERE lower(email) = $1`, [address]);
+      startUid = Number(cur?.last_uid) || check.lastUid;
+    }
+    let row: { id: string; email: string; created_at: string } | null;
+    try {
+      row = await queryOne<{ id: string; email: string; created_at: string }>(
+        `INSERT INTO chargeback_mailboxes (business_id, email, app_password, last_uid) VALUES ($1, $2, $3, $4) RETURNING id, email, created_at`,
+        [businessId, address, secret, startUid]);
+    } catch (e) {
+      if ((e as { code?: string })?.code === '23505') return NextResponse.json({ error: `${address} is already used by another panel. Run chargeback-shared.sql on the server first, then connect it again.` }, { status: 409 });
+      throw e;
+    }
+    return NextResponse.json({ mailbox: row, shared });
   } catch (e) {
     console.error('[chargeback] connect:', (e as Error).message);
     return NextResponse.json({ error: 'Could not connect that Gmail' }, { status: 500 });

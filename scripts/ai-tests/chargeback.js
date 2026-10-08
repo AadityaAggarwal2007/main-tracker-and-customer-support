@@ -19,7 +19,7 @@ function reset() {
       { uid: 8, source: mail('m8', 'cb.vastora@gmail.com', 'self', 'order #1553') },
     ],
     orders: [{ order_id: '#1553', panel: 'bizVast' }, { order_id: '#7000', panel: 'bizKurt' }],
-    alerts: [], convUpdates: [], notified: [], waNumber: '9876543210', lastUid: null, imapFail: false, connects: 0, closes: 0, logouts: 0,
+    alerts: [], convUpdates: [], notified: [], waNumber: '9876543210', waByPanel: null, gwRows: [], moved: null, lastUid: null, lastUidIds: null, imapFail: false, connects: 0, closes: 0, logouts: 0,
     wa: 'sent', missing: false, mailboxRows: [], settings: null,
   });
 }
@@ -28,27 +28,34 @@ const gone = () => Object.assign(new Error('relation does not exist'), { code: '
 const db = {
   query: async (sql, p) => {
     if (S.missing && /chargeback_|panel_chargeback/.test(sql)) throw gone();
+    if (/lower\(m\.email\) AS email/.test(sql)) { const rows = S.boxes.map((b) => ({ business_id: b.business_id, email: b.email.toLowerCase(), name: b.panel_name })); return { rows, rowCount: rows.length }; }
     if (/FROM chargeback_mailboxes m/.test(sql)) return { rows: S.boxes, rowCount: S.boxes.length };
+    if (/FROM orders\s+WHERE business_id::text = ANY/.test(sql)) { const rows = S.orders.filter((o) => p[0].includes(o.panel) && p[1].includes(o.order_id)).map((o) => ({ business_id: o.panel, order_id: o.order_id })); return { rows, rowCount: rows.length }; }
+    if (/FROM panel_chargeback WHERE business_id = ANY/.test(sql)) { const rows = S.gwRows.filter((g) => p[0].includes(g.business_id)); return { rows, rowCount: rows.length }; }
+    if (/UPDATE chargeback_alerts SET business_id = \$2/.test(sql)) { S.moved = { id: p[0], business_id: p[1], order_id: p[2] }; return { rows: [], rowCount: 1 }; }
     if (/UPDATE conversations c SET status = 'human_needed'/.test(sql)) { S.convUpdates.push(p); return { rows: [], rowCount: 1 }; }
-    if (/UPDATE chargeback_mailboxes SET last_uid/.test(sql)) { S.lastUid = p[0]; return { rows: [], rowCount: 1 }; }
+    if (/UPDATE chargeback_mailboxes SET last_uid/.test(sql)) { S.lastUid = p[0]; S.lastUidIds = p[1]; return { rows: [], rowCount: 1 }; }
     if (/UPDATE chargeback_alerts SET notify_status/.test(sql)) { S.alerts.find((a) => a.id === p[0]).notify_status = p[1]; return { rows: [], rowCount: 1 }; }
     if (/DELETE FROM chargeback_mailboxes/.test(sql)) return { rows: [], rowCount: S.boxes.length ? 1 : 0 };
     return { rows: [], rowCount: 0 };
   },
   queryOne: async (sql, p) => {
     if (S.missing && /chargeback_|panel_chargeback/.test(sql)) throw gone();
-    if (/FROM orders WHERE business_id/.test(sql)) { const o = S.orders.find((x) => x.panel === p[0] && p[1].includes(x.order_id)); return o ? { order_id: o.order_id } : null; }
+    if (/FROM orders WHERE business_id::text = \$1::text AND order_id = ANY/.test(sql)) { const o = S.orders.find((x) => x.panel === p[0] && p[1].includes(x.order_id)); return o ? { order_id: o.order_id } : null; }
+    if (/SELECT a\.business_id, a\.subject, a\.snippet/.test(sql)) return S.alertRow || null;
     if (/INSERT INTO chargeback_alerts/.test(sql)) {
       if (S.alerts.some((a) => a.mailbox === p[1] && a.uid === p[2])) return null;
-      const a = { id: 'al' + (S.alerts.length + 1), business_id: p[0], mailbox: p[1], uid: p[2], from_address: p[4], subject: p[6], snippet: p[7], gateway: p[8], order_id: p[9], notify_status: 'pending' };
+      const a = { id: 'al' + (S.alerts.length + 1), business_id: p[0], mailbox: p[1], uid: p[2], from_address: p[4], subject: p[6], snippet: p[7], gateway: p[8], order_id: p[9], routed_by: /routed_by/.test(sql) ? p[10] : undefined, notify_status: 'pending' };
       S.alerts.push(a); return { id: a.id };
     }
-    if (/SELECT whatsapp_number FROM panel_chargeback/.test(sql)) return S.waNumber == null ? null : { whatsapp_number: S.waNumber };
-    if (/FROM chargeback_mailboxes WHERE business_id/.test(sql)) return S.boxes[0] ? { id: S.boxes[0].id, email: S.boxes[0].email, created_at: '2026-10-08' } : null;
+    if (/SELECT whatsapp_number FROM panel_chargeback/.test(sql)) { const n = S.waByPanel ? S.waByPanel[p[0]] : S.waNumber; return n == null ? null : { whatsapp_number: n }; }
+    if (/FROM chargeback_mailboxes WHERE business_id/.test(sql)) { const b = S.boxes.find((x) => x.business_id === p[0]); return b ? { id: b.id, email: b.email, created_at: '2026-10-08' } : null; }
+    if (/FROM chargeback_mailboxes WHERE lower\(email\) = lower/.test(sql)) return S.boxes[0] ? { id: S.boxes[0].id } : null;
     if (/SELECT whatsapp_number, gateways FROM panel_chargeback/.test(sql)) return S.settings;
-    if (/SELECT id FROM businesses/.test(sql)) return p[0] === 'bizVast' ? { id: 'bizVast' } : null;
-    if (/count\(\*\) FROM site_emails/.test(sql)) return { n: S.emailUsed ? 1 : 0 };
-    if (/INSERT INTO chargeback_mailboxes/.test(sql)) return { id: 'mb9', email: p[1], created_at: '2026-10-08' };
+    if (/SELECT id FROM businesses/.test(sql)) return ['bizVast', 'bizKurt'].includes(p[0]) ? { id: p[0] } : null;
+    if (/count\(\*\) FROM site_emails/.test(sql)) return { s: S.emailUsed ? 1 : 0, c: S.boxes.filter((b) => b.email.toLowerCase() === p[0]).length };
+    if (/SELECT max\(last_uid\)/.test(sql)) return { last_uid: Math.max(...S.boxes.map((b) => Number(b.last_uid))) };
+    if (/INSERT INTO chargeback_mailboxes/.test(sql)) { if (S.dupError) throw Object.assign(new Error('duplicate key'), { code: '23505' }); S.insertedUid = p[3]; return { id: 'mb9', email: p[1], created_at: '2026-10-08' }; }
     return null;
   },
   getPool: () => ({}),
@@ -201,6 +208,76 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     S.missing = true; assert.strictEqual((await store.openChargebackKeys([{ business_id: 'bizVast', order_id: '#1553' }])).size, 0);
   });
 
+
+  // ── one chargeback Gmail for two panels (owner 2026-10-08: PayU on one panel, PayGlocal on the other) ──────────────────
+  const routing = require(path.join(SRC, 'lib/chargeback/routing.ts'));
+  await t('routing: one panel = that panel; the order wins over the gateway; the ticked gateway decides otherwise; nothing to go by = the first panel, marked unsure', () => {
+    const V = { businessId: 'v', gateways: { payu: { done: true } } }, K = { businessId: 'k', gateways: { payglocal: { done: true } } };
+    assert.deepStrictEqual(routing.routeToPanel([V], 'payglocal', []), { businessId: 'v', by: 'single' });
+    assert.deepStrictEqual(routing.routeToPanel([V, K], 'payu', []), { businessId: 'v', by: 'gateway' });
+    assert.deepStrictEqual(routing.routeToPanel([V, K], 'payglocal', []), { businessId: 'k', by: 'gateway' });
+    assert.deepStrictEqual(routing.routeToPanel([V, K], 'payglocal', ['v']), { businessId: 'v', by: 'order' }, 'the order proves the panel');
+    assert.deepStrictEqual(routing.routeToPanel([V, K], 'payglocal', ['v', 'k']), { businessId: 'k', by: 'gateway' }, 'an order in both: the gateway breaks the tie');
+    assert.deepStrictEqual(routing.routeToPanel([V, K], 'razorpay', []), { businessId: 'v', by: 'unsure' });
+    assert.deepStrictEqual(routing.routeToPanel([{ businessId: 'v', gateways: { payu: { done: true } } }, { businessId: 'k', gateways: { payu: { done: true } } }], 'payu', []), { businessId: 'v', by: 'unsure' }, 'both tick it: cannot tell');
+    assert.strictEqual(routing.routeToPanel([], 'payu', []), null);
+    assert.strictEqual(parse.gatewayKeyOf('PayGlocal'), 'payglocal'); assert.strictEqual(parse.gatewayKeyOf('Unknown'), 'other'); assert.strictEqual(parse.gatewayOf('alerts@payglocal.in', '', 'x', ''), 'PayGlocal');
+  });
+  const sharedBoxes = () => [
+    { id: 'mb1', business_id: 'bizVast', email: 'shared@gmail.com', app_password: 'SECRETSECRETSECR', last_uid: 5, panel_name: 'vastrika' },
+    { id: 'mb2', business_id: 'bizKurt', email: 'Shared@Gmail.com', app_password: 'SECRETSECRETSECR', last_uid: 3, panel_name: 'kurtiya' },
+  ];
+  const setupShared = () => {
+    S.boxes = sharedBoxes();
+    S.gwRows = [{ business_id: 'bizVast', gateways: { payu: { done: true } } }, { business_id: 'bizKurt', gateways: { payglocal: { done: true } } }];
+    S.waByPanel = { bizVast: '9811111111', bizKurt: '9822222222' };
+    S.orders = [{ order_id: '#1553', panel: 'bizVast' }, { order_id: '#2200', panel: 'bizKurt' }];
+    S.msgs = [
+      { uid: 6, source: mail('a6', 'alerts@payu.in', 'Chargeback raised', 'A chargeback was raised on a payment. Please respond.') },
+      { uid: 7, source: mail('a7', 'disputes@payglocal.in', 'Dispute notice', 'A dispute was opened. Please respond.') },
+      { uid: 8, source: mail('a8', 'disputes@payglocal.in', 'Dispute for order #1553', 'Order #1553 disputed.') },
+      { uid: 9, source: mail('a9', 'noreply@razorpay.com', 'Dispute', 'something with no order') },
+    ];
+  };
+  await t('shared Gmail: it is read ONCE for both panels; each mail goes to the panel by the order it names, else by its ticked gateway, else the first panel (unsure); last_uid moves on for BOTH rows', async () => {
+    setupShared();
+    const r = await poll.pollChargebackMailboxes();
+    assert.deepStrictEqual(r, { boxes: 1, alerts: 4 }); assert.strictEqual(S.connects, 1, 'one sign-in for the one Gmail');
+    assert.deepStrictEqual(S.alerts.map((a) => [a.uid, a.business_id, a.routed_by, a.order_id]), [
+      [6, 'bizVast', 'gateway', null], [7, 'bizKurt', 'gateway', null], [8, 'bizVast', 'order', '#1553'], [9, 'bizVast', 'unsure', null],
+    ]);
+    assert.ok(S.alerts.every((a) => a.mailbox === 'mb1'), 'keyed by the first-connected panel\'s row');
+    assert.strictEqual(S.lastUid, 9); assert.deepStrictEqual(S.lastUidIds, ['mb1', 'mb2']);
+    assert.deepStrictEqual(S.convUpdates.map((u) => u), [['bizVast', '#1553']], 'only the matched order\'s chat in its own panel');
+  });
+  await t('shared Gmail: the WhatsApp message goes to the number of the panel the mail was routed to, with that panel\'s name', async () => {
+    setupShared(); await poll.pollChargebackMailboxes();
+    const to = S.notified.map((n) => [JSON.parse(n.opt.body).to, JSON.parse(n.opt.body).template.components[0].parameters.map((x) => x.text)[0]]);
+    assert.deepStrictEqual(to, [['919811111111', 'vastrika'], ['919822222222', 'kurtiya'], ['919811111111', 'vastrika'], ['919811111111', 'vastrika']]);
+  });
+  await t('shared Gmail: a single-panel Gmail still uses the plain insert (works before chargeback-shared.sql); only a shared one writes routed_by', async () => {
+    await poll.pollChargebackMailboxes();
+    assert.ok(S.alerts.every((a) => a.routed_by === undefined));
+  });
+  await t('connect the SAME Gmail on a second panel: allowed (it starts where the first panel stands, App Password still checked); a support Gmail is still refused; before chargeback-shared.sql a clear message', async () => {
+    S.boxes = [sharedBoxes()[0]];
+    const post = (b) => routePanel.POST(req('POST', '/api/panel-chargeback', b));
+    const res = await post({ businessId: 'bizKurt', email: 'Shared@Gmail.com', appPassword: 'abcd abcd abcd abcd' }); const d = await res.json();
+    assert.strictEqual(res.status, 200); assert.strictEqual(d.shared, true); assert.strictEqual(S.insertedUid, 5, 'nothing is read twice or skipped');
+    S.emailUsed = true; assert.strictEqual((await post({ businessId: 'bizKurt', email: 'shared@gmail.com', appPassword: 'abcdabcdabcdabcd' })).status, 409);
+    S.emailUsed = false; S.dupError = true; const dup = await post({ businessId: 'bizKurt', email: 'shared@gmail.com', appPassword: 'abcdabcdabcdabcd' });
+    assert.strictEqual(dup.status, 409); assert.ok(/chargeback-shared\.sql/.test((await dup.json()).error));
+  });
+  await t('move an unsure alert to the other panel: only a panel reading the same Gmail; the order is looked up again there; Super Admin only', async () => {
+    S.boxes = sharedBoxes(); S.alertRow = { business_id: 'bizVast', subject: 'Dispute for order #2200', snippet: 'Order #2200 disputed', email: 'shared@gmail.com' }; S.orders = [{ order_id: '#2200', panel: 'bizKurt' }];
+    const id = '11111111-1111-1111-1111-111111111111';
+    const patch = (b) => routeCb.PATCH(req('PATCH', '/api/chargebacks', b));
+    let res = await patch({ id, businessId: 'bizKurt' }); assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(S.moved, { id, business_id: 'bizKurt', order_id: '#2200' });
+    S.moved = null; assert.strictEqual((await patch({ id, businessId: 'bizOther1' })).status, 400); assert.strictEqual(S.moved, null);
+    S.alertRow = null; assert.strictEqual((await patch({ id, businessId: 'bizKurt' })).status, 404);
+    authState.user = { role: 'panel_admin', username: 'rahul' }; assert.strictEqual((await patch({ id, businessId: 'bizKurt' })).status, 401);
+  });
   await t('the team\'s "What to do next" card for a chargeback chat: red, calm, no promises, no advice on chargebacks', () => {
     const ns = require(path.join(SRC, 'lib/chat/next-step.ts'));
     const base = { status: 'agent_handling', known: true, verified: true, subject: null, caseKind: null, caseByChikki: false, reshipped: false, threat: false, accuse: false, health: 10, waitingMs: null, returned: false, promiseDue: false, order: null, heldBy: null, heldByMe: true, canReply: true };

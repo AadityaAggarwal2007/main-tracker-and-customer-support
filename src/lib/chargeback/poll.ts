@@ -2,7 +2,8 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { friendlyMailError, noteMailboxCheck } from '@/lib/chat/mailbox-status';
-import { gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
+import { gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
+import { routeToPanel, type RoutedBy } from './routing';
 import { sendChargebackWhatsApp } from './notify';
 
 // ── Reading each panel's chargeback Gmail (owner 2026-10-08) ──────────────────────────────────
@@ -15,6 +16,10 @@ import { sendChargebackWhatsApp } from './notify';
 // alert is saved only shows on the alert; one bad mailbox never stops the others.
 
 interface Row { id: string; business_id: string; email: string; app_password: string; last_uid: string | number; panel_name: string | null }
+// One Gmail, one or more panels (owner 2026-10-08: the same chargeback Gmail on two panels): the group is read ONCE,
+// with the first-connected panel's row as the primary (its id keys the alerts, its password signs in), and every
+// mail goes to the panel routing.ts picks. last_uid is moved on for every row of the group together.
+interface Group { primary: Row; rows: Row[] }
 
 export async function pollChargebackMailboxes(): Promise<{ boxes: number; alerts: number }> {
   let rows: Row[];
@@ -26,14 +31,21 @@ export async function pollChargebackMailboxes(): Promise<{ boxes: number; alerts
     if ((e as { code?: string })?.code !== '42P01') console.error('[chargeback] mailboxes:', (e as Error).message);
     return { boxes: 0, alerts: 0 };
   }
+  const groups = new Map<string, Group>();
+  for (const r of rows) {
+    const k = r.email.toLowerCase();
+    const g = groups.get(k);
+    if (g) g.rows.push(r); else groups.set(k, { primary: r, rows: [r] });
+  }
   let alerts = 0;
-  for (const row of rows) alerts += await pollOne(row);
-  return { boxes: rows.length, alerts };
+  for (const g of Array.from(groups.values())) alerts += await pollOne(g);
+  return { boxes: groups.size, alerts };
 }
 
-async function pollOne(box: Row): Promise<number> {
+async function pollOne(group: Group): Promise<number> {
+  const box = group.primary;
   const client = new ImapFlow({ host: 'imap.gmail.com', port: 993, secure: true, auth: { user: box.email, pass: box.app_password }, logger: false });
-  const last = Number(box.last_uid) || 0;
+  const last = Math.max(...group.rows.map(r => Number(r.last_uid) || 0), 0);
   let maxUid = last, made = 0;
   try {
     await client.connect();
@@ -45,11 +57,11 @@ async function pollOne(box: Row): Promise<number> {
         for await (const msg of client.fetch(seqs, { uid: true, source: true })) {
           if (msg.uid <= last) continue;
           maxUid = Math.max(maxUid, msg.uid);
-          try { if (await record(box, msg.uid, msg.source)) made += 1; } catch (e) { console.error('[chargeback] alert failed:', (e as Error).message); }
+          try { if (await record(group, msg.uid, msg.source)) made += 1; } catch (e) { console.error('[chargeback] alert failed:', (e as Error).message); }
         }
       }
     } finally { lock.release(); }
-    if (maxUid > last) await query(`UPDATE chargeback_mailboxes SET last_uid = $1 WHERE id = $2`, [maxUid, box.id]);
+    if (maxUid > last) await query(`UPDATE chargeback_mailboxes SET last_uid = $1 WHERE id = ANY($2::uuid[])`, [maxUid, group.rows.map(r => r.id)]);
     if (made > 0) noteMailboxCheck(`cb:${box.id}`, { ok: true, handled: made });
     await client.logout();
   } catch (e) {
@@ -61,7 +73,8 @@ async function pollOne(box: Row): Promise<number> {
   return made;
 }
 
-async function record(box: Row, uid: number, source: Buffer): Promise<boolean> {
+async function record(group: Group, uid: number, source: Buffer): Promise<boolean> {
+  const box = group.primary;
   const p = await simpleParser(source);
   const from = p.from?.value?.[0];
   const fromAddress = (from?.address || '').toLowerCase();
@@ -71,21 +84,38 @@ async function record(box: Row, uid: number, source: Buffer): Promise<boolean> {
   const text = p.text || (typeof p.html === 'string' ? htmlToText(p.html) : '');
   const gateway = gatewayOf(fromAddress, fromName, subject, text);
 
-  // The order it names, confirmed against THIS panel's orders (another panel's order number never matches).
-  let orderId: string | null = null;
+  // The order it names, confirmed against the group's panels' orders (an order number can exist in several panels).
+  const panelIds = group.rows.map(r => r.business_id);
   const forms = orderForms(orderCandidates(subject, text));
-  if (forms.length > 0) {
-    const o = await queryOne<{ order_id: string }>(
-      `SELECT order_id FROM orders WHERE business_id::text = $1::text AND order_id = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`,
-      [box.business_id, forms]);
-    orderId = o?.order_id ?? null;
-  }
+  const found = forms.length > 0
+    ? (await query<{ business_id: string; order_id: string }>(
+      `SELECT business_id::text AS business_id, order_id FROM orders
+        WHERE business_id::text = ANY($1::text[]) AND order_id = ANY($2::text[]) ORDER BY created_at DESC`,
+      [panelIds, forms])).rows
+    : [];
 
-  const ins = await queryOne<{ id: string }>(
-    `INSERT INTO chargeback_alerts (business_id, mailbox_id, uid, received_at, from_address, from_name, subject, snippet, gateway, order_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (mailbox_id, uid) DO NOTHING RETURNING id`,
-    [box.business_id, box.id, uid, (p.date || new Date()).toISOString(), fromAddress, fromName.slice(0, 120), subject.slice(0, 300), shortText(text), gateway, orderId]);
+  // Which panel: the only one in the group, else by the order, else by the gateway ticked in its checklist (routing.ts).
+  let target = group.primary, routedBy: RoutedBy = 'single';
+  if (group.rows.length > 1) {
+    const gw = (await query<{ business_id: string; gateways: Record<string, { done?: boolean }> | null }>(
+      `SELECT business_id, gateways FROM panel_chargeback WHERE business_id = ANY($1::text[])`, [panelIds])).rows;
+    const routed = routeToPanel(
+      group.rows.map(r => ({ businessId: r.business_id, gateways: gw.find(x => x.business_id === r.business_id)?.gateways ?? {} })),
+      gatewayKeyOf(gateway), Array.from(new Set(found.map(f => f.business_id))));
+    if (routed) { target = group.rows.find(r => r.business_id === routed.businessId) ?? group.primary; routedBy = routed.by; }
+  }
+  const orderId = found.find(f => f.business_id === target.business_id)?.order_id ?? null;
+
+  const base = [target.business_id, box.id, uid, (p.date || new Date()).toISOString(), fromAddress, fromName.slice(0, 120), subject.slice(0, 300), shortText(text), gateway, orderId];
+  const ins = group.rows.length > 1
+    ? await queryOne<{ id: string }>(
+      `INSERT INTO chargeback_alerts (business_id, mailbox_id, uid, received_at, from_address, from_name, subject, snippet, gateway, order_id, routed_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (mailbox_id, uid) DO NOTHING RETURNING id`, [...base, routedBy])
+    : await queryOne<{ id: string }>(
+      `INSERT INTO chargeback_alerts (business_id, mailbox_id, uid, received_at, from_address, from_name, subject, snippet, gateway, order_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (mailbox_id, uid) DO NOTHING RETURNING id`, base);
   if (!ins) return false;                                          // already recorded
 
   // The customer's chat for that order: the AI hands it to the team (verified customers only: it was matched by order).
@@ -96,16 +126,16 @@ async function record(box: Row, uid: number, source: Buffer): Promise<boolean> {
            FROM sites s
           WHERE s.id = c.site_id AND s.tracker_business_id::text = $1::text AND c.verified_order_id = $2
             AND c.merged_into IS NULL AND c.status = 'ai_handling' AND c.case_kind IS NULL`,
-        [box.business_id, orderId]);
+        [target.business_id, orderId]);
     } catch (e) { console.error('[chargeback] chat tag:', (e as Error).message); }
   }
 
-  // The WhatsApp message (never blocks the alert).
+  // The WhatsApp message goes to the number of the panel it was routed to (never blocks the alert).
   let notify = 'no_number';
   try {
-    const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [box.business_id]);
+    const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [target.business_id]);
     const to = whatsappNumber(s?.whatsapp_number || '');
-    if (to) notify = await sendChargebackWhatsApp(to, { panel: box.panel_name || 'Panel', gateway, order: orderId || 'not found' });
+    if (to) notify = await sendChargebackWhatsApp(to, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' });
   } catch (e) { notify = 'failed: could not send'; console.error('[chargeback] notify:', (e as Error).message); }
   await query(`UPDATE chargeback_alerts SET notify_status = $2 WHERE id = $1`, [ins.id, notify]).catch(() => undefined);
   return true;

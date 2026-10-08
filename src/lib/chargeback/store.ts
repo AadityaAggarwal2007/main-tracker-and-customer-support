@@ -1,5 +1,5 @@
 import { query, queryOne } from '@/lib/db';
-import { GATEWAY_KEYS, whatsappNumber } from './parse';
+import { GATEWAY_KEYS, orderCandidates, orderForms, whatsappNumber } from './parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 
 // ── Chargeback data (chargeback.sql) ──────────────────────────────────────────────────────────
@@ -12,6 +12,10 @@ export interface AlertRow {
   subject: string; snippet: string; gateway: string; order_id: string | null; status: 'new' | 'seen' | 'done';
   seen_by_name: string | null; seen_at: string | null; done_by_name: string | null; done_at: string | null; note: string | null;
   notify_status: string; chat_id: string | null;
+  // How the panel was chosen when two panels share the Gmail (routing.ts); null on a single-panel mailbox or before chargeback-shared.sql.
+  routed_by?: string | null;
+  // The other panels using the same chargeback Gmail: where an alert can be moved by hand.
+  alt_panels?: { id: string; name: string }[];
 }
 
 export async function alertCounts(): Promise<{ installed: boolean; new: number; open: number }> {
@@ -25,25 +29,60 @@ export async function alertCounts(): Promise<{ installed: boolean; new: number; 
   }
 }
 
-export async function listAlerts(view: 'open' | 'done' | 'all', limit = 100): Promise<{ installed: boolean; alerts: AlertRow[] }> {
-  try {
-    const r = await query<AlertRow>(
-      `SELECT a.id, a.business_id, b.name AS panel_name, a.received_at, a.from_address, a.from_name, a.subject, a.snippet,
-              a.gateway, a.order_id, a.status, a.seen_by_name, a.seen_at, a.done_by_name, a.done_at, a.note, a.notify_status,
+const LIST_SQL = (cols: string) => `SELECT a.id, a.business_id, b.name AS panel_name, a.received_at, a.from_address, a.from_name, a.subject, a.snippet,
+              a.gateway, a.order_id, a.status, a.seen_by_name, a.seen_at, a.done_by_name, a.done_at, a.note, a.notify_status${cols},
               (SELECT c.id FROM conversations c JOIN sites s ON s.id = c.site_id
                 WHERE a.order_id IS NOT NULL AND s.tracker_business_id::text = a.business_id AND c.verified_order_id = a.order_id AND c.merged_into IS NULL
                 ORDER BY (c.source = 'chat') DESC, c.last_message_at DESC NULLS LAST LIMIT 1) AS chat_id
          FROM chargeback_alerts a LEFT JOIN businesses b ON b.id::text = a.business_id
         WHERE ($1 = 'all' OR ($1 = 'open' AND a.status <> 'done') OR ($1 = 'done' AND a.status = 'done'))
         ORDER BY (a.status = 'new') DESC, a.received_at DESC
-        LIMIT $2`,
-      [view, Math.min(Math.max(limit, 1), 200)]
-    );
-    return { installed: true, alerts: r.rows };
+        LIMIT $2`;
+
+// Panels that read the same chargeback Gmail as each panel (by address): { panelId -> the OTHER panels }.
+async function sharingMap(): Promise<Record<string, { id: string; name: string }[]>> {
+  const out: Record<string, { id: string; name: string }[]> = {};
+  try {
+    const r = await query<{ business_id: string; email: string; name: string | null }>(
+      `SELECT m.business_id, lower(m.email) AS email, b.name FROM chargeback_mailboxes m LEFT JOIN businesses b ON b.id::text = m.business_id`);
+    for (const a of r.rows) out[a.business_id] = r.rows.filter(x => x.email === a.email && x.business_id !== a.business_id).map(x => ({ id: x.business_id, name: x.name || 'Panel' }));
+  } catch { /* no table: nothing is shared */ }
+  return out;
+}
+
+export async function listAlerts(view: 'open' | 'done' | 'all', limit = 100): Promise<{ installed: boolean; alerts: AlertRow[] }> {
+  const args = [view, Math.min(Math.max(limit, 1), 200)];
+  try {
+    let rows: AlertRow[];
+    try { rows = (await query<AlertRow>(LIST_SQL(', a.routed_by'), args)).rows; }
+    catch (e) {
+      // routed_by exists only after chargeback-shared.sql: before it, the list is the same without it.
+      if ((e as { code?: string })?.code !== '42703') throw e;
+      rows = (await query<AlertRow>(LIST_SQL(''), args)).rows;
+    }
+    const share = await sharingMap();
+    for (const a of rows) a.alt_panels = share[a.business_id] ?? [];
+    return { installed: true, alerts: rows };
   } catch (e) {
     if (missing(e)) return { installed: false, alerts: [] };
     throw e;
   }
+}
+
+// "Move to <panel>": a Super Admin's correction when the panel was unsure. Only to a panel reading the same Gmail; the
+// order is looked up again in the new panel (an order number can exist in both).
+export async function setAlertPanel(id: string, businessId: string): Promise<{ ok: boolean; status?: number; error?: string }> {
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !businessId) return { ok: false, status: 400, error: 'id and businessId are required' };
+  const a = await queryOne<{ business_id: string; subject: string; snippet: string; email: string | null }>(
+    `SELECT a.business_id, a.subject, a.snippet, (SELECT lower(email) FROM chargeback_mailboxes WHERE id = a.mailbox_id) AS email FROM chargeback_alerts a WHERE a.id = $1`, [id]);
+  if (!a) return { ok: false, status: 404, error: 'Alert not found.' };
+  const share = await sharingMap();
+  if (a.business_id === businessId) return { ok: true };
+  if (!(share[a.business_id] ?? []).some(p => p.id === businessId)) return { ok: false, status: 400, error: 'That panel does not use this Gmail.' };
+  const forms = orderForms(orderCandidates(a.subject, a.snippet));
+  const o = forms.length ? await queryOne<{ order_id: string }>(`SELECT order_id FROM orders WHERE business_id::text = $1::text AND order_id = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`, [businessId, forms]) : null;
+  await query(`UPDATE chargeback_alerts SET business_id = $2, order_id = $3, routed_by = 'manual' WHERE id = $1`, [id, businessId, o?.order_id ?? null]);
+  return { ok: true };
 }
 
 // Opening an alert marks it seen (once); "Done" closes it with an optional note. The red tag in the chat goes with Done.
@@ -79,15 +118,23 @@ export interface GatewayMark { done: boolean; by: string; at: string }
 export interface PanelChargeback {
   installed: boolean;
   mailbox: { id: string; email: string; createdAt: string; status: ReturnType<typeof getMailboxStatus> } | null;
+  // Other panels that read this same chargeback Gmail (names).
+  sharedWith: string[];
   whatsapp: string;
   gateways: Record<string, GatewayMark>;
 }
 
 export async function panelChargeback(businessId: string): Promise<PanelChargeback> {
-  const out: PanelChargeback = { installed: true, mailbox: null, whatsapp: '', gateways: {} };
+  const out: PanelChargeback = { installed: true, mailbox: null, sharedWith: [], whatsapp: '', gateways: {} };
   try {
     const m = await queryOne<{ id: string; email: string; created_at: string }>(`SELECT id, email, created_at FROM chargeback_mailboxes WHERE business_id = $1`, [businessId]);
-    if (m) out.mailbox = { id: m.id, email: m.email, createdAt: new Date(m.created_at).toISOString(), status: getMailboxStatus(`cb:${m.id}`) };
+    if (m) {
+      out.mailbox = { id: m.id, email: m.email, createdAt: new Date(m.created_at).toISOString(), status: getMailboxStatus(`cb:${m.id}`) };
+      out.sharedWith = (await sharingMap())[businessId]?.map(p => p.name) ?? [];
+      // The sign-in status is kept under the first-connected panel's row (the group is read once).
+      const first = await queryOne<{ id: string }>(`SELECT id FROM chargeback_mailboxes WHERE lower(email) = lower($1) ORDER BY created_at LIMIT 1`, [m.email]);
+      if (first && first.id !== m.id) out.mailbox.status = getMailboxStatus(`cb:${first.id}`);
+    }
     const s = await queryOne<{ whatsapp_number: string; gateways: Record<string, GatewayMark> }>(`SELECT whatsapp_number, gateways FROM panel_chargeback WHERE business_id = $1`, [businessId]);
     if (s) { out.whatsapp = s.whatsapp_number || ''; out.gateways = s.gateways || {}; }
   } catch (e) {
