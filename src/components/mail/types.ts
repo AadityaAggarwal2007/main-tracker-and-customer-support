@@ -5,6 +5,7 @@ export interface Att { index: number; filename: string; contentType: string; siz
 export interface Ver { orderId: string; byName: string; at: string; chatId: string | null }
 export interface Full {
   uid: number; subject: string; date: string; from: string; fromAddress: string; to: string; cc: string; replyTo: string;
-  frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
+  text?: string; frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
 }
 export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number }
+export interface ThreadItem { folder: 'inbox' | 'sent'; uid: number; from: string; to: string; subject: string; date: string }

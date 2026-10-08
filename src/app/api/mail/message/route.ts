@@ -15,7 +15,10 @@ export async function GET(request: NextRequest) {
   const a = await mailAccess(request, sp.get('box'), 'view');
   if ('error' in a) return a.error;
   try {
-    const mail = await readMail(a.box, uid, { markRead: sp.get('peek') !== '1', images: sp.get('images') === '1' });
+    const folder = sp.get('folder') === 'sent' ? 'sent' as const : 'inbox' as const;
+    const mail = await readMail(a.box, uid, { markRead: sp.get('peek') !== '1', images: sp.get('images') === '1', folder });
+    // A mail we SENT (the conversation view) is only shown: nothing to verify and nobody to mark read.
+    if (mail && folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
     if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
     // Step 2: the opened mail has its text, so an order number in it can verify that order (mail-auto-verify.ts).
     await autoVerifySenders(a.box.panelId, [{ email: mail.fromAddress, authPass: mail.authPass, subject: mail.subject, text: mail.text }]);

@@ -31,6 +31,10 @@ function reset(over = {}) {
       { uid: 13, seen: false, answered: false, date: '2026-10-08T09:00:00Z', from: { name: '', address: 'cust@example.com' }, subject: 'Refund please', source: plain('m13', 'cust@example.com', 'Refund please', 'Please refund.') },
       { uid: 14, seen: false, answered: false, date: '2026-10-08T09:30:00Z', from: { name: 'Vastora', address: 'vastora@store.example' }, subject: 'Own copy', source: plain('m14', 'vastora@store.example', 'Own copy', 'x') },
     ],
+    sentbox: [
+      { uid: 501, from: { name: 'Vastora Support', address: 'vastora@store.example' }, to: { name: 'Cust', address: 'cust@example.com' }, subject: 'Re: Refund please', date: '2026-10-08T10:00:00Z', seen: true, source: plain('s501', 'Vastora Support <vastora@store.example>', 'Re: Refund please', 'We are checking your order.') },
+      { uid: 502, from: { name: 'Vastora Support', address: 'vastora@store.example' }, to: { name: 'Other', address: 'other@example.com' }, subject: 'Hello other', date: '2026-10-07T10:00:00Z', seen: true, source: plain('s502', 'x@y.z', 'Hello other', 'x') },
+    ], noSent: false,
     authFail: false, connects: [], locks: [], searches: [], fetchQueries: [], logouts: 0, closes: 0, sent: [], flagCalls: [],
     boxes: [
       { id: 'boxV', email: 'vastora@store.example', app_password: 'SECRETSECRETSECR', site_id: 'siteV', site_name: 'Vastora', panel_id: 'bizV', panel_name: 'vastora' },
@@ -118,16 +122,18 @@ const PKG_STUBS = {
       constructor(o) { this.user = o.auth.user; this.usable = false; this.handlers = {}; }
       on(ev, fn) { this.handlers[ev] = fn; return this; }
       async connect() { S.connects.push(this.user); if (S.connectDelay) await new Promise((r) => setTimeout(r, S.connectDelay)); this.usable = true; if (S.authFail) { const e = new Error('Invalid credentials (Failure)'); e.authenticationFailed = true; throw e; } }
-      async getMailboxLock(box, o) { if (S.lockFailOnce && this.reusedOnce) { S.lockFailOnce = false; throw new Error('Connection not available'); } this.reusedOnce = true; S.locks.push({ box, readOnly: !!(o && o.readOnly) }); return { release() {} }; }
-      async search(q) { S.searches.push(q); return S.msgs.map((_, i) => i + 1); }
+      async list() { return S.noSent ? [{ path: 'INBOX', specialUse: '\\Inbox' }] : [{ path: 'INBOX', specialUse: '\\Inbox' }, { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' }]; }
+      get box() { return this.path === '[Gmail]/Sent Mail' ? S.sentbox : S.msgs; }
+      async getMailboxLock(box, o) { if (S.lockFailOnce && this.reusedOnce) { S.lockFailOnce = false; throw new Error('Connection not available'); } this.reusedOnce = true; this.path = box; S.locks.push({ box, readOnly: !!(o && o.readOnly) }); return { release() {} }; }
+      async search(q) { S.searches.push(q); const l = this.box; return l.map((m, i) => i + 1).filter((i) => (!q.from || l[i - 1].from.address === q.from) && (!q.to || (l[i - 1].to && l[i - 1].to.address === q.to))); }
       fetch(seqs, q) {
         S.fetchQueries.push(q);
-        const list = seqs.map((s) => S.msgs[s - 1]);
+        const list = seqs.map((s) => this.box[s - 1]);
         return (async function* () {
           for (const m of list) {
             yield {
               uid: m.uid, flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]),
-              envelope: { from: [m.from], subject: m.subject, date: new Date(m.date) },
+              envelope: { from: [m.from], to: m.to ? [m.to] : [], subject: m.subject, date: new Date(m.date) },
               bodyStructure: m.attachment ? { childNodes: [{ disposition: 'inline' }, { disposition: 'attachment' }] } : { type: 'text/plain' },
               headers: S.pass[m.uid] ? Buffer.from('Authentication-Results: mx.google.com;\r\n dkim=pass header.i=@example.com;\r\n dmarc=pass (p=NONE) header.from=example.com\r\n') : undefined,
             };
@@ -136,7 +142,7 @@ const PKG_STUBS = {
       }
       async fetchOne(uid, q, o) {
         assert.ok(o && o.uid, 'a single mail is fetched by UID');
-        const m = S.msgs.find((x) => String(x.uid) === String(uid));
+        const m = this.box.find((x) => String(x.uid) === String(uid));
         return m ? { source: Buffer.from(S.pass[m.uid] ? 'Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n' + m.source : m.source), flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]) } : false;
       }
       async messageFlagsAdd(uid, flags) { S.flagCalls.push(['add', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; return true; }
@@ -176,7 +182,8 @@ const member = (extra = {}, role = 'agent') => ({ role, username: 'rahul', permi
 
 let n = 0;
 const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
-const t = async (name, fn) => { pool.closeAllImap(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
+const inbox = require(path.join(SRC, 'lib/chat/mail-inbox.ts'));
+const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
 
 (async () => {
   // ── pure parts ──────────────────────────────────────────────────────────────────────────────
@@ -351,9 +358,10 @@ const t = async (name, fn) => { pool.closeAllImap(); reset(); mverify.resetVerif
     const res = await send.POST(req('POST', '/api/mail/send', { box: 'boxV', uid: 12, text: 'Hi Bob, track it: https://shiptrack.store/track/abc?utm_source=chatgpt.com&x=1' }));
     assert.strictEqual(res.status, 200); assert.strictEqual((await res.json()).to, 'bob.reply@example.com');
     assert.strictEqual(S.sent.length, 1); const m = S.sent[0];
-    assert.strictEqual(m.from, '"Support" <vastora@store.example>'); assert.strictEqual(m.to, 'bob.reply@example.com'); assert.strictEqual(m.subject, 'Re: Invoice and photo');
+    assert.strictEqual(m.from, '"Vastora Support" <vastora@store.example>'); assert.strictEqual(m.to, 'bob.reply@example.com'); assert.strictEqual(m.subject, 'Re: Invoice and photo');
     assert.strictEqual(m.headers['In-Reply-To'], '<m12@mail.example>'); assert.ok(m.headers.References.includes('<m0@mail.example>') && m.headers.References.includes('<m12@mail.example>'));
     assert.ok(!/utm_source/.test(m.text) && /x=1/.test(m.text), 'copy-paste junk removed, the rest kept');
+    assert.ok(m.text.startsWith('Hi Bob, track it:'), 'the typed text first, then the quote');
     assert.ok(S.flagCalls.some((c) => c[0] === 'add' && c[1] === 12 && c[2].includes('\\Answered')));
   });
   await t('reply refused: a form link (403), empty / too long text (400), a mail from the box\'s own address (400), another panel (404); nothing is sent', async () => {
@@ -531,6 +539,80 @@ const t = async (name, fn) => { pool.closeAllImap(); reset(); mverify.resetVerif
     const out = await pool.withPooledImap({ id: 'boxV', email: 'vastora@store.example', appPassword: 'SECRETSECRETSECR' }, 'list', () => new Promise(() => {}), 40).catch((e) => e);
     assert.ok(out instanceof pool.PoolTimeout); assert.ok(S.closes >= 1);
     await messages.GET(req('GET', '/api/mail/messages?box=boxV')); assert.strictEqual(S.connects.length, 2, 'a fresh connection after the hang'); void real;
+  });
+
+  // ── replying like Gmail: quote, plain mail, files; the conversation view (owner 2026-10-08) ─────────────────
+  await t('quote helpers: Gmail\'s "On ... wrote:" header (India time), "> " on every line, an 8000-character cap, matching gmail_quote html, nothing branded', () => {
+    const v = view;
+    const h = v.quoteHeader('2026-10-08T07:26:00Z', 'Bob <b@x.com>'); assert.strictEqual(h, 'On Thu, 8 Oct 2026, 12:56, Bob <b@x.com> wrote:');
+    const t = v.replyBodyText('Thanks', { dateIso: '2026-10-08T07:26:00Z', fromLabel: 'Bob <b@x.com>', original: 'line one\nline two' });
+    assert.strictEqual(t, 'Thanks\n\nOn Thu, 8 Oct 2026, 12:56, Bob <b@x.com> wrote:\n> line one\n> line two');
+    assert.strictEqual(v.replyBodyText('Thanks', null), 'Thanks');
+    const html = v.replyBodyHtml('Thanks <b>', { dateIso: '2026-10-08T07:26:00Z', fromLabel: 'Bob <b@x.com>', original: 'see https://x.com/a\n<script>x</script>' });
+    assert.ok(/class="gmail_quote"/.test(html) && /&lt;script&gt;/.test(html) && !/<script>/.test(html) && /Thanks &lt;b&gt;/.test(html), 'escaped, quoted');
+    assert.ok(!/Customer support reply|This message was sent by/.test(html), 'a plain Gmail-style mail, not the branded box');
+    assert.ok(v.replyBodyText('r', { dateIso: '2026-10-08T07:26:00Z', fromLabel: 'x', original: 'a'.repeat(20000) }).length < 8300);
+  });
+  await t('reply: the original is quoted after the typed text (built from the mail itself), sent as a plain mail from "<site> Support" in the same conversation', async () => {
+    authState.user = member({ perms: ['mail.view', 'mail.reply'], panels: ['bizV'] });
+    const res = await send.POST(req('POST', '/api/mail/send', { box: 'boxV', uid: 12, text: 'Hello Bob' }));
+    assert.strictEqual(res.status, 200); const m = S.sent[0];
+    assert.ok(/^Hello Bob\n\nOn .* wrote:\n> /.test(m.text), 'quote after the text'); assert.ok(/Hello team/.test(m.text), 'the original text is in the quote');
+    assert.ok(/gmail_quote/.test(m.html) && !/Customer support reply/.test(m.html));
+    assert.strictEqual(m.headers['In-Reply-To'], '<m12@mail.example>');
+    assert.ok(!m.attachments, 'no files');
+  });
+  await t('reply: includeQuote false sends only the typed text; a quote can never be supplied by the browser', async () => {
+    let res = await send.POST(req('POST', '/api/mail/send', { box: 'boxV', uid: 12, text: 'Short', includeQuote: false }));
+    assert.strictEqual(res.status, 200); assert.strictEqual(S.sent[0].text, 'Short'); assert.ok(!/gmail_quote/.test(S.sent[0].html));
+    S.sent.length = 0; res = await send.POST(req('POST', '/api/mail/send', { box: 'boxV', uid: 12, text: 'Hi', quote: 'FAKE QUOTE' }));
+    assert.ok(!/FAKE QUOTE/.test(S.sent[0].text));
+  });
+  const formReq = (fields, files) => { const f = new FormData(); for (const [k, v] of Object.entries(fields)) f.append(k, v); for (const x of files) f.append('files', new Blob([x.bytes], { type: x.type || 'application/octet-stream' }), x.name); return new NextRequest('http://localhost/api/mail/send', { method: 'POST', body: f }); };
+  const PNGB = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  await t('reply with files: a real PNG and a PDF go out as attachments (judged by their bytes, names cleaned); a renamed .exe, an empty file, more than 5 files and more than 10 MB are refused and NOTHING is sent', async () => {
+    const ok = await send.POST(formReq({ box: 'boxV', uid: '12', text: 'See the files', includeQuote: '1' }, [{ name: 'photo.png', bytes: PNGB, type: 'image/png' }, { name: 'bill.pdf', bytes: Buffer.from('%PDF-1.4 x'), type: 'application/pdf' }]));
+    assert.strictEqual(ok.status, 200); assert.strictEqual((await ok.json()).files, 2);
+    assert.deepStrictEqual(S.sent[0].attachments.map((a) => [a.filename, a.contentType]), [['photo.png', 'image/png'], ['bill.pdf', 'application/pdf']]);
+    S.sent.length = 0;
+    const bad = [
+      [{ name: 'run.png', bytes: Buffer.from('MZ\x90\x00 not an image'), type: 'image/png' }, 415],
+      [{ name: 'empty.png', bytes: Buffer.alloc(0), type: 'image/png' }, 400],
+    ];
+    for (const [file, code] of bad) assert.strictEqual((await send.POST(formReq({ box: 'boxV', uid: '12', text: 'x' }, [file]))).status, code, file.name);
+    const six = Array.from({ length: 6 }, (_, i) => ({ name: `p${i}.png`, bytes: PNGB, type: 'image/png' }));
+    assert.strictEqual((await send.POST(formReq({ box: 'boxV', uid: '12', text: 'x' }, six))).status, 400);
+    const big = Buffer.concat([PNGB, Buffer.alloc(6 * 1024 * 1024)]);
+    assert.strictEqual((await send.POST(formReq({ box: 'boxV', uid: '12', text: 'x' }, [{ name: 'a.png', bytes: big, type: 'image/png' }, { name: 'b.png', bytes: big, type: 'image/png' }]))).status, 413);
+    assert.strictEqual(S.sent.length, 0);
+  });
+  await t('reply with files needs the Reply tick and the box\'s panel like any reply', async () => {
+    authState.user = member({ perms: ['mail.view'], panels: ['bizV'] });
+    assert.strictEqual((await send.POST(formReq({ box: 'boxV', uid: '12', text: 'x' }, [{ name: 'p.png', bytes: PNGB, type: 'image/png' }]))).status, 403);
+    authState.user = member({ perms: ['mail.view', 'mail.reply'], panels: ['bizV'] });
+    assert.strictEqual((await send.POST(formReq({ box: 'boxK', uid: '12', text: 'x' }, [{ name: 'p.png', bytes: PNGB, type: 'image/png' }]))).status, 404);
+    assert.strictEqual(S.sent.length, 0);
+  });
+  const thread = require(path.join(SRC, 'app/api/mail/thread/route.ts'));
+  await t('conversation view: what the address sent (INBOX, FROM) and what we sent it (Sent, TO), oldest first; only that address; our mails are opened read-only', async () => {
+    const res = await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=Cust@Example.com')); const d = await res.json();
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(d.items.map((x) => [x.folder, x.uid]).sort(), [['inbox', 13], ['sent', 501]], 'his mail and ours to him, nobody else\'s');
+    assert.ok(d.items.some((x) => x.folder === 'sent' && x.uid === 501) && !d.items.some((x) => x.uid === 502));
+    assert.ok(Date.parse(d.items[0].date) <= Date.parse(d.items[d.items.length - 1].date), 'oldest first');
+    assert.ok(S.searches.some((q) => q.from === 'cust@example.com') && S.searches.some((q) => q.to === 'cust@example.com'));
+    assert.ok(S.locks.every((l) => l.readOnly), 'reading the conversation changes no flag');
+    const sentMail = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=501&folder=sent')); const sm = await sentMail.json();
+    assert.strictEqual(sentMail.status, 200); assert.ok(sm.mail.frame.includes('We are checking your order')); assert.deepStrictEqual(sm.verified, []);
+    assert.strictEqual(S.flagCalls.length, 0, 'opening our own mail marks nothing');
+  });
+  await t('conversation view: no Sent folder = received mail only; bad address 400; no Mail tick 403; another panel\'s box 404', async () => {
+    S.noSent = true;
+    const d = await (await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).json(); assert.deepStrictEqual(d.items.map((x) => x.folder), ['inbox']);
+    assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=nope'))).status, 400);
+    authState.user = member({}); assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).status, 403);
+    authState.user = member({ perms: ['mail.view'], panels: ['bizV'] }); assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxK&address=cust@example.com'))).status, 404);
+    authState.user = null; assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).status, 401);
   });
   await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
     for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }

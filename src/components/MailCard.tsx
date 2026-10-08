@@ -13,10 +13,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
 import { VIEW_LABELS, initials, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
-import { mailCache, mailKey } from './mail/cache';
+import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
-import type { Box, Full, Item, ListEntry, Ver } from './mail/types';
+import type { Box, Full, Item, ListEntry, ThreadItem, Ver } from './mail/types';
 
 interface Props { token: string; onAlert: (type: string, message: string) => void; activePanelId?: string; initialBox?: string | null; initialUid?: number | null }
 
@@ -46,6 +46,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   const [openUid, setOpenUid] = useState<number | null>(null);
   const [mail, setMail] = useState<Full | null>(null);
   const [opening, setOpening] = useState(false);
+  const [thread, setThread] = useState<ThreadItem[] | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
   const [, tick] = useState(0);
   const initialDone = useRef(false);
   const listSeq = useRef(0);
@@ -202,6 +204,25 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boxId, entry?.at, topKey]);
 
+  // The conversation with the open mail's sender (their mails and ours): shown from memory at once, read in the background.
+  const loadThread = useCallback(async (id: string, address: string, force = false) => {
+    const k = threadKey(id, address);
+    const cached = mailCache.threads.get(k);
+    if (cached && !force) { setThread(cached); return; }
+    setThread(cached ?? null); setThreadLoading(true);
+    try {
+      const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}`, { headers: auth, cache: 'no-store' });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && Array.isArray(d.items)) { mailCache.threads.set(k, d.items); if (boxRef.current === id) setThread(d.items); }
+    } catch { /* the conversation is a bonus: the mail itself is already open */ }
+    finally { setThreadLoading(false); }
+  }, [auth]);
+  const openAddress = mail?.fromAddress;
+  useEffect(() => {
+    if (!boxId || !openAddress) { setThread(null); return; }
+    void loadThread(boxId, openAddress);
+  }, [boxId, openAddress, loadThread]);
+
   const markUnread = async () => {
     if (!boxId || !mail) return;
     try {
@@ -334,13 +355,14 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           <MailReader
             token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
             versions={verified[mail.fromAddress] || []}
+            thread={thread} threadLoading={threadLoading}
             onBack={() => { setOpenUid(null); setMail(null); }}
             onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
             onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
             onShowImages={() => void openMail(mail.uid, true)}
             onMarkUnread={markUnread}
             onChanged={() => { if (boxId) void refresh(boxId); }}
-            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); }}
+            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); if (boxId) void loadThread(boxId, mail.fromAddress, true); }}
           />
         )}
       </section>
