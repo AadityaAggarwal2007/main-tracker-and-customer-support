@@ -1456,4 +1456,13 @@ t('upload route: no panel is ever created from a CSV, an existing order updates 
   assert.ok(post.indexOf('checkOwnerPassword') < post.indexOf('INSERT INTO businesses'), 'the password is checked first');
 });
 
+t('panel names: the same store written another way ("X" / "X Store", one letter apart) is refused on create and rename (owner 2026-10-08)', () => {
+  const pn = load('panel-name', '../../src/lib');
+  const sim = (a, b) => pn.panelNamesSimilar(a, b);
+  for (const [a, b] of [['VASTRIKA', 'VASTRIKA STORE'], ['vastora', 'vestora'], ['Vastrika', ' vastrika  shop '], ['Lo-mora', 'LOMORA'], ['kurtiya', 'Kurtiya Official']]) assert.ok(sim(a, b), `${a} ~ ${b}`);
+  for (const [a, b] of [['vastora', 'VASTRIKA'], ['kurtiya', 'LOMORA'], ['RUHANI', 'Studio Nine'], ['abc', 'abd'], ['', 'x'], [null, 'x']]) assert.ok(!sim(a, b), `${a} !~ ${b}`);
+  assert.ok(/panelNamesSimilar\(b\.name, cleanName\)/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/businesses/route.ts'), 'utf8')), 'create checks it');
+  assert.ok(/b\.id !== String\(id\) && panelNamesSimilar/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/businesses/route.ts'), 'utf8')), 'rename checks it (not against itself)');
+});
+
 console.log(`UNIT: ${n} groups passed`);
