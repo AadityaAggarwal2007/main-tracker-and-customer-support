@@ -25,7 +25,11 @@ export interface Business {
 }
 // A mailbox this panel answers from. The app password is write-only — it is
 // sent when connecting and never returned.
-export interface PanelEmailAccount { id: string; email: string; created_at: string; }
+// status = the poller's last look at this Gmail (memory only: null right after a restart)
+export interface PanelEmailAccount {
+  id: string; email: string; created_at: string;
+  status?: { checkedAt: number; ok: boolean; error: string | null; lastMailAt: number | null; received: number } | null;
+}
 // The chat site behind a panel — one row, created the first time chat is used
 export interface PanelChatSite {
   id: string; widgetKey: string; aiEnabled: boolean;
@@ -39,4 +43,4 @@ export interface PanelImpact {
   chatSites: number; chatConversations: number; chatMessages: number;
   teamMembers: number; teamMembersLosingAccess: number;
 }
-export type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds';
+export type TabType = 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds' | 'mail';

@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
 import { emailDraftOnly, setEmailDraftOnly } from '@/lib/chat/email-draft-mode';
+import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 import Imap from 'imap';
 
 // ── Email support for a panel ──────────────────────────────────
@@ -132,7 +133,12 @@ export async function GET(request: NextRequest) {
   const draftOnly = site ? await emailDraftOnly(site.id) : true;
 
   // app_password is never selected — it only ever travels inwards.
-  return NextResponse.json({ accounts: accounts.rows, max: MAX_ACCOUNTS, draftOnly });
+  // Step 2 (owner 2026-10-08): per mailbox, when the poller last signed in and whether it worked (memory only).
+  return NextResponse.json({
+    accounts: accounts.rows.map(a => ({ ...a, status: getMailboxStatus(a.id) })),
+    max: MAX_ACCOUNTS,
+    draftOnly,
+  });
 }
 
 // ── PATCH /api/panel-email { businessId, draftOnly } ───────────
