@@ -18,11 +18,14 @@ import {
   Settings, Trophy, Undo2
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
-import type { Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
+import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
 import { plural } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
 import UploadTab from './_components/UploadTab';
+import UploadWarningDialog from './_components/UploadWarningDialog';
+import NewPanelDialog from './_components/NewPanelDialog';
+import { cleanCSVData } from '@/lib/csv-cleaner';
 import BrandingCard from './_components/BrandingCard';
 import ChatWidgetCard from './_components/ChatWidgetCard';
 import BulkStatusModal from './_components/BulkStatusModal';
@@ -75,6 +78,10 @@ export default function AdminDashboard() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<Record<string, unknown> | null>(null);
   const [uploadPanelId, setUploadPanelId] = useState<string>(''); // REQUIRED: panel for CSV
+  // "Is this the right panel?" (owner 2026-10-08): the answer is awaited before any chunk is sent.
+  const [uploadWarn, setUploadWarn] = useState<{ warnings: { code: string; message: string }[]; resolve: (ok: boolean) => void } | null>(null);
+  const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
+  const [newPanelOpen, setNewPanelOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, percent: 0 });
 
@@ -287,6 +294,14 @@ export default function AdminDashboard() {
 
   useEffect(() => { if (token) { fetchOrders(); fetchBrands(); fetchBusinesses(); fetchEmailStats(); } }, [token, fetchOrders, fetchBrands, fetchBusinesses, fetchEmailStats]);
   useEffect(() => { if (activeTab === 'upload' && token) fetchQueueStats(); }, [activeTab, token, fetchQueueStats]);
+  const fetchUploads = useCallback(async () => {
+    try {
+      const res = await fetch('/api/upload', { headers: { Authorization: `Bearer ${token}` } });
+      const d = await res.json();
+      if (res.ok && Array.isArray(d.uploads)) setRecentUploads(d.uploads);
+    } catch { /* the list is only a record */ }
+  }, [token]);
+  useEffect(() => { if (activeTab === 'upload' && token) fetchUploads(); }, [activeTab, token, fetchUploads]);
 
   // Sidebar badge: refresh on load, on panel switch, and every 30s. activeHeaders(): while the
   // person is really using this tab, the poll also says they are in ShipTrack (chat team presence,
@@ -423,6 +438,27 @@ export default function AdminDashboard() {
         chunks.push(Papa.unparse(chunkRows, { columns: headers }));
       }
 
+      // 3b. Is this the right panel? (owner 2026-10-08: a wrong file once put an order into Kurtiya.)
+      // The server compares the file's brand and order numbers with the panels; a warning needs a yes.
+      const uploadId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      let warningText = '';
+      try {
+        const cleaned = cleanCSVData(allRows);
+        const brands = Array.from(new Set(cleaned.orders.flatMap((o) => o.items.map((it) => it.brand)).filter(Boolean)));
+        const chk = await fetch('/api/upload/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ panelId: uploadPanelId, orderIds: cleaned.orders.map((o) => o.order_id), brands }),
+        });
+        const cd = await chk.json().catch(() => ({}));
+        if (chk.ok && Array.isArray(cd.warnings) && cd.warnings.length > 0) {
+          const ok = await new Promise<boolean>((resolve) => setUploadWarn({ warnings: cd.warnings, resolve }));
+          setUploadWarn(null);
+          if (!ok) { showAlert('error', 'Upload cancelled: nothing was imported.'); return; }
+          warningText = cd.warnings.map((w: { message: string }) => w.message).join(' | ');
+        }
+      } catch { /* a check that cannot run never blocks an upload */ }
+
       setUploadProgress({ current: 0, total: chunks.length, percent: 0 });
 
       // 4. Send chunks sequentially
@@ -438,6 +474,8 @@ export default function AdminDashboard() {
         formData.append('chunkIndex', i.toString());
         formData.append('totalChunks', chunks.length.toString());
         formData.append('businessId', uploadPanelId); // PANEL LOCK — every chunk locked to selected panel
+        formData.append('uploadId', uploadId);
+        if (warningText) formData.append('warning', warningText);
 
         const res = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData });
         const data = await res.json();
@@ -469,7 +507,7 @@ export default function AdminDashboard() {
       const hoursEst = Math.ceil(totalNew / 60);
 
       showAlert('success', `✅ ${totalNew} new orders imported! Emails sending automatically (1/min) — done in ~${hoursEst} hours.`);
-      fetchOrders(); fetchBrands(); fetchBusinesses(); fetchQueueStats();
+      fetchOrders(); fetchBrands(); fetchBusinesses(); fetchQueueStats(); fetchUploads();
     } catch { showAlert('error', 'Upload failed'); }
     finally { setUploading(false); }
   };
@@ -889,6 +927,25 @@ export default function AdminDashboard() {
           <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab}</span>
         </div>
 
+        {uploadWarn && (
+          <UploadWarningDialog panelName={businesses.find(b => b.id === uploadPanelId)?.name || 'this panel'} warnings={uploadWarn.warnings} onAnswer={uploadWarn.resolve} />
+        )}
+        {newPanelOpen && (
+          <NewPanelDialog
+            onClose={() => setNewPanelOpen(false)}
+            onCreate={async (name, password) => {
+              const res = await fetch('/api/businesses', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ name, password }),
+              });
+              if (res.ok) { showAlert('success', `Panel "${name.trim()}" created`); fetchBusinesses(); return null; }
+              const data = await res.json().catch(() => ({}));
+              return data?.error || 'Failed to create panel';
+            }}
+          />
+        )}
+
         <div className="main-inner">
           {/* Toast */}
           {alert && (
@@ -905,7 +962,7 @@ export default function AdminDashboard() {
 
           {/* ════════ UPLOAD TAB ════════ */}
           {activeTab === 'upload' && hasPermission('upload_csv') && (
-            <UploadTab businesses={businesses} dragOver={dragOver} fetchQueueStats={fetchQueueStats} handleFileUpload={handleFileUpload} loadingQueue={loadingQueue} queueStats={queueStats} setDragOver={setDragOver} setUploadPanelId={setUploadPanelId} uploadPanelId={uploadPanelId} uploadProgress={uploadProgress} uploadResult={uploadResult} uploading={uploading} />
+            <UploadTab recentUploads={recentUploads} businesses={businesses} dragOver={dragOver} fetchQueueStats={fetchQueueStats} handleFileUpload={handleFileUpload} loadingQueue={loadingQueue} queueStats={queueStats} setDragOver={setDragOver} setUploadPanelId={setUploadPanelId} uploadPanelId={uploadPanelId} uploadProgress={uploadProgress} uploadResult={uploadResult} uploading={uploading} />
           )}
 
           {/* ════════ BUSINESSES TAB ════════ */}
@@ -921,20 +978,7 @@ export default function AdminDashboard() {
                 </div>
                 {/* New Panel button */}
                 {user?.role === 'admin' && (
-                  <button className="btn btn-primary btn-sm" onClick={async () => {
-                    const name = prompt('New panel name (e.g. Store Name):');
-                    if (!name) return;
-                    const res = await fetch('/api/businesses', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                      body: JSON.stringify({ name }),
-                    });
-                    if (res.ok) { showAlert('success', `Panel "${name}" created`); fetchBusinesses(); }
-                    else {
-                      const data = await res.json().catch(() => ({}));
-                      showAlert('error', data?.error || 'Failed to create panel');
-                    }
-                  }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => setNewPanelOpen(true)}>
                     <Plus size={14} /> New Panel
                   </button>
                 )}

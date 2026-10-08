@@ -1091,7 +1091,8 @@ t('panel names: capitals and extra spaces do not make a new name; the routes and
   assert.ok(route.indexOf('panelNameTakenMessage(cleanName)') < route.indexOf('UPDATE businesses SET is_default = false WHERE is_default = true`'), 'create checks first');
   assert.ok(/name = \$\$\{pi\+\+\}`\);\s+params\.push\(newName\)/.test(route), 'rename saves the cleaned name');
   const up = fs.readFileSync(path.resolve(__dirname, '../../src/app/api/upload/route.ts'), 'utf8');
-  assert.ok(/bizMap\.has\(panelNameKey\(brand\)\)/.test(up));
+  // 2026-10-08: the upload no longer creates a panel at all (stronger than "no duplicate name"): it only reads them by the same key.
+  assert.ok(/bizMap\.set\(panelNameKey\(b\.name\), b\.id\)/.test(up) && !/INSERT INTO businesses/.test(up));
 });
 t('estimated date for the model: the India calendar day, never the UTC day before (owner 2026-10-07, 18th vs 19th)', () => {
   // A date stored as India midnight is 18:30 UTC the day before.
@@ -1424,6 +1425,35 @@ t('next-step: known customers get the rule-backed steps (refund form is the Supe
   assert.strictEqual(late.tone, 'danger'); assert.ok(late.steps.length <= 3 && /waited 3h/.test(late.steps[0]));
   assert.ok(/has this chat/.test(ns.nextStep({ ...k, heldBy: 'Rahul', heldByMe: false }).steps[0]));
   assert.strictEqual(ns.waitedText(90 * 60_000), '1h');
+});
+
+// ── CSV upload: is this the right panel? (owner 2026-10-08, upload-check.ts) ──
+const uc = load('upload-check', '../../src/lib');
+t('upload-check: a file that looks like another panel gets a warning, a normal first upload to a new panel gets none', () => {
+  const base = { panelName: 'Kurtiya', total: 10, inSelected: 0, inOthers: [], brandPanelsOther: [], brandMatchesSelected: false };
+  assert.deepStrictEqual(uc.uploadWarnings(base), [], 'nothing known: no warning');
+  // The brand in the file is another panel's name and not this one's.
+  const brand = uc.uploadWarnings({ ...base, brandPanelsOther: ['VASTRIKA'] });
+  assert.strictEqual(brand.length, 1); assert.strictEqual(brand[0].code, 'brand'); assert.ok(/VASTRIKA/.test(brand[0].message) && /Kurtiya/.test(brand[0].message));
+  assert.deepStrictEqual(uc.uploadWarnings({ ...base, brandPanelsOther: ['VASTRIKA'], brandMatchesSelected: true }), [], 'the chosen panel matches a brand too: fine');
+  // Most of the file's order numbers already sit in another panel and none in this one.
+  const other = uc.uploadWarnings({ ...base, inOthers: [{ panel: 'vastora', count: 9, sample: ['1301', '#1302', '1303'] }] });
+  assert.strictEqual(other.length, 1); assert.strictEqual(other[0].code, 'other_panel');
+  assert.ok(/9 of the 10/.test(other[0].message) && /#1301, #1302, #1303/.test(other[0].message) && /"vastora"/.test(other[0].message));
+  // A small overlap, a small share, or numbers this panel already has say nothing (numbers repeat across stores).
+  assert.deepStrictEqual(uc.uploadWarnings({ ...base, inOthers: [{ panel: 'vastora', count: 2, sample: ['1', '2'] }] }), []);
+  assert.deepStrictEqual(uc.uploadWarnings({ ...base, total: 100, inOthers: [{ panel: 'vastora', count: 40, sample: ['1'] }] }), []);
+  assert.deepStrictEqual(uc.uploadWarnings({ ...base, inSelected: 4, inOthers: [{ panel: 'vastora', count: 9, sample: ['1'] }] }), []);
+});
+t('upload route: no panel is ever created from a CSV, an existing order updates only this panel\'s row, every upload is recorded', () => {
+  const route = fs.readFileSync(path.resolve(__dirname, '../../src/app/api/upload/route.ts'), 'utf8');
+  assert.ok(!/INSERT INTO businesses/.test(route), 'no panel from a CSV');
+  assert.ok(/WHERE order_id = \$\$\{pi\} AND business_id = \$\$\{pi \+ 1\}/.test(route), 'the update is panel-scoped');
+  assert.ok(/recordUpload\(/.test(route));
+  const biz = fs.readFileSync(path.resolve(__dirname, '../../src/app/api/businesses/route.ts'), 'utf8');
+  const post = biz.slice(biz.indexOf('export async function POST'), biz.indexOf('export async function PATCH'));
+  assert.ok(/user\.role !== 'admin'/.test(post) && /checkOwnerPassword\(password\)/.test(post), 'a new panel: Super Admin + their password');
+  assert.ok(post.indexOf('checkOwnerPassword') < post.indexOf('INSERT INTO businesses'), 'the password is checked first');
 });
 
 console.log(`UNIT: ${n} groups passed`);

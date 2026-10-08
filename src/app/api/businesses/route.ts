@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { checkOwnerPassword } from '@/lib/owner-password';
 import { PANEL_NAME_KEY_SQL, cleanPanelName, panelNameKey, panelNameTakenMessage } from '@/lib/panel-name';
 
 // ── GET all businesses ─────────────────────────────────────────
@@ -89,7 +90,13 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor, originCity } = await request.json();
+    const { name, logoUrl, supportEmail, supportPhone, isDefault, trackingDomain, primaryColor, originCity, password } = await request.json();
+
+    // A new panel is the Super Admin's alone, and only with their own password again (owner 2026-10-08).
+    const pw = await checkOwnerPassword(password);
+    if (pw === 'locked') return NextResponse.json({ error: 'Too many wrong passwords. Please wait 15 minutes and try again.' }, { status: 429 });
+    if (pw === 'error') return NextResponse.json({ error: 'Could not check your password. Try again in a minute.' }, { status: 503 });
+    if (pw !== 'ok') return NextResponse.json({ error: 'Your password is not right' }, { status: 403 });
 
     const cleanName = cleanPanelName(name);
     if (!cleanName) {

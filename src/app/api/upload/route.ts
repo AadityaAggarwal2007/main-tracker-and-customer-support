@@ -7,8 +7,9 @@ import { JOURNEY, expectedIndexForAge, AUTO_DELIVER_DAY } from '@/lib/journey';
 import Papa from 'papaparse';
 import type { ParseConfig } from 'papaparse';
 import crypto from 'crypto';
-import { can, canAccessPanel } from '@/lib/permissions';
-import { cleanPanelName, panelNameKey } from '@/lib/panel-name';
+import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { panelNameKey } from '@/lib/panel-name';
+import { recordUpload } from '@/lib/upload-log';
 
 const BATCH_SIZE = 500;
 
@@ -97,7 +98,9 @@ export async function POST(request: NextRequest) {
       support_phone: string; tracking_domain: string | null; primary_color: string | null;
     }>();
 
-    if (brandArr.length > 0) {
+    // Panels are NEVER created from a CSV any more (owner 2026-10-08): only the Super Admin makes one,
+    // with their password (/api/businesses). The existing panels are read for the e-mail branding.
+    {
       const existingBiz = await query<{
         id: string; name: string; logo_url: string; support_email: string;
         support_phone: string; tracking_domain: string | null; primary_color: string | null;
@@ -107,22 +110,6 @@ export async function POST(request: NextRequest) {
         bizMap.set(panelNameKey(b.name), b.id);
         bizBrandingMap.set(b.id, b);
       });
-
-      for (const brand of brandArr) {
-        if (!bizMap.has(panelNameKey(brand))) {
-          const newBiz = await queryOne<{
-            id: string; name: string; logo_url: string; support_email: string;
-            support_phone: string; tracking_domain: string | null; primary_color: string | null;
-          }>(
-            `INSERT INTO businesses (name) VALUES ($1) RETURNING id, name, logo_url, support_email, support_phone, tracking_domain, primary_color`,
-            [cleanPanelName(brand) || brand]
-          );
-          if (newBiz) {
-            bizMap.set(panelNameKey(brand), newBiz.id);
-            bizBrandingMap.set(newBiz.id, newBiz);
-          }
-        }
-      }
     }
 
     // ── PANEL LOCK: ALL orders go to the selected panel — no auto-detection
@@ -303,14 +290,9 @@ export async function POST(request: NextRequest) {
             order.state, order.pincode, order.order_total, order.is_cancelled,
           ];
           let pi = 14;
-          if (businessId) {
-            // COALESCE: only set business_id if currently NULL (never overwrite existing panel)
-            sets.push(`business_id = COALESCE(business_id, $${pi})`);
-            params.push(businessId);
-            pi++;
-          }
-          params.push(order.order_id);
-          return query(`UPDATE orders SET ${sets.join(', ')} WHERE order_id = $${pi}`, params);
+          // Only THIS panel's row of that order number (two panels can share a number: owner 2026-10-08).
+          params.push(order.order_id, businessId);
+          return query(`UPDATE orders SET ${sets.join(', ')} WHERE order_id = $${pi} AND business_id = $${pi + 1}`, params);
         })
       );
       updatedCount += results.filter(r => (r.rowCount ?? 0) > 0).length;
@@ -448,15 +430,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ═══ STEP 8: Log (only on last chunk) ═══
-    if (isLastChunk) {
-      try {
-        await query(
-          `INSERT INTO upload_logs (filename, total_rows, new_orders, updated_orders, skipped_rows, uploaded_by)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [file.name, stats.total, newCount, updatedCount, stats.total - stats.unique, user.username]
-        );
-      } catch { /* upload_logs table might not exist */ }
+    // ═══ STEP 8: Record (one row per upload; the chunks add up) ═══
+    {
+      const panelRow = bizBrandingMap.get(forcedBusinessId);
+      await recordUpload({
+        uploadId: (formData.get('uploadId') as string) || null,
+        file: file.name,
+        businessId: forcedBusinessId,
+        panelName: panelRow?.name ?? null,
+        user: user.username,
+        total: stats.total,
+        newOrders: newCount,
+        updated: updatedCount,
+        skipped: stats.total - stats.unique,
+        firstOrder: orders[0]?.order_id ?? null,
+        lastOrder: orders[orders.length - 1]?.order_id ?? null,
+        warning: (formData.get('warning') as string) || null,
+        isLastChunk,
+      });
     }
 
     const hoursLeft = Math.ceil(emailsQueued / 60);
@@ -479,5 +470,28 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('Upload error:', err);
     return NextResponse.json({ error: 'Upload failed', detail: String(err) }, { status: 500 });
+  }
+}
+
+// ── GET: the recent uploads (owner 2026-10-08): which file went into which panel ──
+export async function GET(request: NextRequest) {
+  const user = getAuthFromRequest(request);
+  if (!user || !can(user, 'orders.upload')) {
+    return NextResponse.json({ error: 'You cannot see uploads' }, { status: 403 });
+  }
+  try {
+    const r = await query<{
+      id: string; filename: string; total_rows: number; new_orders: number; updated_orders: number; uploaded_by: string | null;
+      created_at: string; business_id: string | null; panel_name: string | null; first_order: string | null; last_order: string | null; warning_text: string | null;
+    }>(
+      `SELECT id, filename, total_rows, new_orders, updated_orders, uploaded_by, created_at, business_id, panel_name, first_order, last_order, warning_text
+         FROM upload_logs ORDER BY created_at DESC LIMIT 60`
+    );
+    // An old row has no panel: only the Super Admin sees those.
+    const rows = r.rows.filter(x => (x.business_id ? canAccessPanel(user, x.business_id) : isSuperAdmin(user))).slice(0, 25);
+    return NextResponse.json({ uploads: rows });
+  } catch {
+    // upload-logs-panel.sql not applied yet (or no table): nothing to show.
+    return NextResponse.json({ uploads: [], notInstalled: true });
   }
 }
