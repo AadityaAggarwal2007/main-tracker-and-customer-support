@@ -1,4 +1,5 @@
-import { ImapFlow } from 'imapflow';
+import type { ImapFlow } from 'imapflow';
+import { PoolTimeout, withPooledImap, type PoolSlot } from './imap-pool';
 import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { canAccessPanel, type PermissionHolder } from '@/lib/permissions';
@@ -43,28 +44,17 @@ export class MailError extends Error {
   constructor(message: string, public status = 502) { super(message); }
 }
 
-const OP_TIMEOUT_MS = 25_000;
-
-// One short IMAP session: connect, run, always log out. A session that hangs is cut after 25 s.
-async function withImap<T>(box: MailBoxSecret, fn: (c: ImapFlow) => Promise<T>): Promise<T> {
-  const client = new ImapFlow({
-    host: 'imap.gmail.com', port: 993, secure: true,
-    auth: { user: box.email, pass: box.appPassword }, logger: false,
-  });
-  let timer: ReturnType<typeof setTimeout> | undefined;
+// One IMAP session on the mailbox's kept-open connection (imap-pool.ts): 'list' for reading the list, 'read' for
+// everything else, so opening a mail never waits for a list refresh. A session that hangs is cut after 25 s.
+async function withImap<T>(box: MailBoxSecret, fn: (c: ImapFlow) => Promise<T>, slot: PoolSlot = 'read'): Promise<T> {
   try {
-    return await Promise.race([
-      (async () => { await client.connect(); return fn(client); })(),
-      new Promise<never>((_, rej) => { timer = setTimeout(() => { try { client.close(); } catch { /* gone */ } rej(new MailError('Gmail did not answer in time. Try again.', 504)); }, OP_TIMEOUT_MS); }),
-    ]);
+    return await withPooledImap(box, slot, fn);
   } catch (e) {
     if (e instanceof MailError) throw e;
+    if (e instanceof PoolTimeout) throw new MailError('Gmail did not answer in time. Try again.', 504);
     const err = e as { authenticationFailed?: boolean; message?: string };
     if (err?.authenticationFailed || /credentials|authenticat/i.test(err?.message || '')) throw new MailError('Gmail rejected the App Password for this mailbox. Connect it again in Settings → Email Support.', 502);
     throw new MailError('Could not read Gmail right now. Try again in a moment.', 502);
-  } finally {
-    if (timer) clearTimeout(timer);
-    try { await client.logout(); } catch { try { client.close(); } catch { /* gone */ } }
   }
 }
 
@@ -103,7 +93,7 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
       const mails = sortMails(out);
       return { mails, unread: mails.filter(x => x.unread).length, truncated, days: MAIL_DAYS };
     } finally { lock.release(); }
-  });
+  }, 'list');
 }
 
 export interface MailAttachmentInfo { index: number; filename: string; contentType: string; size: number; inline: boolean }

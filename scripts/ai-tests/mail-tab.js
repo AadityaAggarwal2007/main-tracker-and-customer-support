@@ -115,9 +115,10 @@ const STUBS = {
 const PKG_STUBS = {
   imapflow: {
     ImapFlow: class {
-      constructor(o) { this.user = o.auth.user; S.connects.push(o.auth.user); }
-      async connect() { if (S.authFail) { const e = new Error('Invalid credentials (Failure)'); e.authenticationFailed = true; throw e; } }
-      async getMailboxLock(box, o) { S.locks.push({ box, readOnly: !!(o && o.readOnly) }); return { release() {} }; }
+      constructor(o) { this.user = o.auth.user; this.usable = false; this.handlers = {}; }
+      on(ev, fn) { this.handlers[ev] = fn; return this; }
+      async connect() { S.connects.push(this.user); if (S.connectDelay) await new Promise((r) => setTimeout(r, S.connectDelay)); this.usable = true; if (S.authFail) { const e = new Error('Invalid credentials (Failure)'); e.authenticationFailed = true; throw e; } }
+      async getMailboxLock(box, o) { if (S.lockFailOnce && this.reusedOnce) { S.lockFailOnce = false; throw new Error('Connection not available'); } this.reusedOnce = true; S.locks.push({ box, readOnly: !!(o && o.readOnly) }); return { release() {} }; }
       async search(q) { S.searches.push(q); return S.msgs.map((_, i) => i + 1); }
       fetch(seqs, q) {
         S.fetchQueries.push(q);
@@ -140,8 +141,8 @@ const PKG_STUBS = {
       }
       async messageFlagsAdd(uid, flags) { S.flagCalls.push(['add', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; return true; }
       async messageFlagsRemove(uid, flags) { S.flagCalls.push(['remove', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = false; return true; }
-      async logout() { S.logouts++; }
-      close() { S.closes++; }
+      async logout() { S.logouts++; this.usable = false; }
+      close() { S.closes++; this.usable = false; }
     },
   },
   nodemailer: { default: { createTransport: () => ({ sendMail: async (o) => { S.sent.push(o); } }) }, createTransport: () => ({ sendMail: async (o) => { S.sent.push(o); } }) },
@@ -174,7 +175,8 @@ const OWNER = { role: 'admin', username: 'owner', permissions: perms.resolvePerm
 const member = (extra = {}, role = 'agent') => ({ role, username: 'rahul', permissions: perms.resolvePermissions(role, extra.perms), businessIds: extra.panels ?? null });
 
 let n = 0;
-const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
+const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
+const t = async (name, fn) => { pool.closeAllImap(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
 
 (async () => {
   // ── pure parts ──────────────────────────────────────────────────────────────────────────────
@@ -288,7 +290,7 @@ const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.
     const since = S.searches[0].since; assert.ok(since instanceof Date); const days = (Date.now() - since.getTime()) / 864e5; assert.ok(days > 29.9 && days < 30.1, 'SINCE is 30 days back');
     assert.ok(S.locks.every((l) => l.readOnly), 'listing never changes a flag');
     assert.ok(S.fetchQueries.every((q) => !q.source), 'no body is downloaded for the list'); assert.strictEqual(S.flagCalls.length, 0);
-    assert.strictEqual(S.logouts, 1); assert.ok(!/SECRET/.test(JSON.stringify(d)));
+    assert.strictEqual(S.connects.length, 1, 'one connection, kept open for the next call'); assert.ok(!/SECRET/.test(JSON.stringify(d)));
   });
   await t('open an unread mail: it is marked read in Gmail; peek=1 leaves it unread; a missing mail is 404', async () => {
     let res = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11')); let d = await res.json();
@@ -498,6 +500,37 @@ const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.
   await t('automatic verification before the SQL is applied: the list still opens, nothing is written', async () => {
     S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }]; S.missingTable = true;
     assert.strictEqual((await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).status, 200);
+  });
+
+  // ── kept-open connections (owner 2026-10-08: "sloww hai, load hi nahi ho rahi") ──────────────────────────
+  await t('speed: the list and opening a mail each keep ONE connection open per mailbox, so the second call does not sign in again; a list refresh never blocks opening a mail', async () => {
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1'));
+    assert.strictEqual(S.connects.length, 2, 'one for the list, one for reading');
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    await message.GET(req('GET', '/api/mail/message?box=boxV&uid=13&peek=1'));
+    await attachment.GET(req('GET', '/api/mail/attachment?box=boxV&uid=12&index=0'));
+    assert.strictEqual(S.connects.length, 2, 'reused: no new sign-in'); assert.strictEqual(S.logouts, 0);
+    // a refresh that is still signing in does not hold up an open
+    pool.closeAllImap(); S.connects.length = 0; S.connectDelay = 60;
+    const t0 = Date.now(); const slowList = messages.GET(req('GET', '/api/mail/messages?box=boxV')); const open = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1'));
+    assert.strictEqual(open.status, 200); await slowList; assert.ok(Date.now() - t0 < 400);
+    S.connectDelay = 0;
+  });
+  await t('speed: a connection Gmail closed while idle is replaced by a fresh one, once, and the call still works; a different App Password never reuses the old connection', async () => {
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    S.lockFailOnce = true;                                   // the reused connection fails on first use
+    const res = await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    assert.strictEqual(res.status, 200); assert.strictEqual(S.connects.length, 2, 'signed in again once');
+    S.boxes[0].app_password = 'ANOTHERPASSWORD16'; await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    assert.strictEqual(S.connects.length, 3, 'a changed App Password signs in again');
+  });
+  await t('speed: a hung Gmail is cut (504) and its connection is thrown away, never reused', async () => {
+    S.connectDelay = 0; await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    const real = Date.now; // nothing to wait for: the timeout path is exercised with a tiny limit
+    const out = await pool.withPooledImap({ id: 'boxV', email: 'vastora@store.example', appPassword: 'SECRETSECRETSECR' }, 'list', () => new Promise(() => {}), 40).catch((e) => e);
+    assert.ok(out instanceof pool.PoolTimeout); assert.ok(S.closes >= 1);
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV')); assert.strictEqual(S.connects.length, 2, 'a fresh connection after the hang'); void real;
   });
   await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
     for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }
