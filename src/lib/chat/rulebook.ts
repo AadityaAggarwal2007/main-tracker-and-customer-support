@@ -38,7 +38,7 @@ export const RULEBOOK: RuleSection[] = [
       { id: '1.6', how: 'code', from: M('40'), title: 'No system words to customers',
         text: 'Hand-over and failure replies are fixed lines in plain words, never "AI failed", "system", "database" or "error".' },
       { id: '1.7', how: 'auto', from: '', title: 'Chat and email, same rules',
-        text: 'The same Chikki answers the chat box and the connected email inboxes, with the same rules. In email the default (switch in Panel Settings > Email Support, per panel) is that Chikki writes a DRAFT and the team sends it; the fixed hand-over lines for a threat, a fraud claim or a refund / payment request still go out on their own.' },
+        text: 'The same Chikki answers the chat box and the connected email inboxes, with the same rules. In email the default (switch in Panel Settings > Email Support, per panel) is that Chikki writes a DRAFT and the team sends it; the fixed hand-over replies for a fraud claim or a refund / payment request still go out on their own, and a threat (chargeback, police, court) gets no automatic reply at all (it goes straight to the team, rule 15).' },
     ],
   },
   {
