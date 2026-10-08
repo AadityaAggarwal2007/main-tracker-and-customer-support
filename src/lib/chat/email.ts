@@ -19,6 +19,8 @@ import { afterHours } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
 import { friendlyMailError, noteMailboxCheck } from './mailbox-status';
 import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
+import { autoVerifySenders } from './mail-auto-verify';
+import { gmailAuthPassed } from './mail-view';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -250,6 +252,14 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
         }
 
         if (!conversation) continue;
+
+        // Automatic verification of the sender (owner 2026-10-08, mail-auto-verify.ts): the address is on one of
+        // this panel's orders and Gmail itself marked the mail dmarc=pass. Done before the chat is read below, so a
+        // verified sender is treated as verified from this very mail. Never able to stop the mail being handled.
+        try {
+          const authLine = (parsed.headerLines || []).find(h => h.key === 'authentication-results')?.line ?? null;
+          await autoVerifySenders(account.tracker_business_id, [{ email: fromAddr, authPass: gmailAuthPassed(authLine), subject, text: cleanText }]);
+        } catch (e) { console.error('[email] auto verify:', (e as Error).message); }
 
         // A reply to a Closed thread reopens it, like a widget message does
         // (/api/widget/message). Before 2026-09-30 it was stored in the Closed

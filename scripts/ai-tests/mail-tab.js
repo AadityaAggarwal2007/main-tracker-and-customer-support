@@ -37,7 +37,7 @@ function reset(over = {}) {
       { id: 'boxK', email: 'kurtiya@store.example', app_password: 'OTHERSECRETOTHER', site_id: 'siteK', site_name: 'Kurtiya', panel_id: 'bizK', panel_name: 'kurtiya' },
     ],
     orders: [{ order_id: '#1553', phone: '9876543210', panel: 'bizV', name: 'Priya' }, { order_id: '#7000', phone: '9111111111', panel: 'bizK', name: 'Other' }],
-    ver: [], convUpdates: [], missingTable: false, chatFor: 'chat-1',
+    ver: [], convUpdates: [], missingTable: false, chatFor: 'chat-1', orderEmails: [], pass: {},
     chat: { site_id: 'siteV', business_id: 'bizV', verified_order_id: '#1553', verified_via: 'form' },
     orderLookups: 0,
   }, over);
@@ -56,8 +56,17 @@ const db = {
     if (/INSERT INTO mail_verifications/.test(sql)) {
       const row = { business_id: params[0], email: params[1], order_id: params[2], verified_by: params[3], verified_by_name: params[4], removed: false };
       const old = S.ver.find((v) => v.business_id === row.business_id && v.email === row.email && v.order_id === row.order_id);
+      if (/DO NOTHING/.test(sql)) { if (old) return { rows: [], rowCount: 0 }; S.ver.push(row); return { rows: [], rowCount: 1 }; }
       if (old) Object.assign(old, row); else S.ver.push(row);
       return { rows: [], rowCount: 1 };
+    }
+    if (/SELECT lower\(customer_email\) AS email, order_id FROM orders/.test(sql)) {
+      const rows = S.orderEmails.filter((o) => (o.panel || 'bizV') === params[0] && params[1].includes(o.email));
+      return { rows, rowCount: rows.length };
+    }
+    if (/removed_at IS NOT NULL AND email = ANY/.test(sql)) {
+      const rows = S.ver.filter((v) => v.removed && v.business_id === params[0] && params[1].includes(v.email)).map((v) => ({ email: v.email }));
+      return { rows, rowCount: rows.length };
     }
     if (/FROM mail_verifications v/.test(sql)) {
       const rows = S.ver.filter((v) => !v.removed && v.business_id === params[0] && params[1].includes(v.email))
@@ -73,7 +82,7 @@ const db = {
       if (v) { v.removed = true; v.removed_by = params[3]; }
       return { rows: [], rowCount: v ? 1 : 0 };
     }
-    if (/UPDATE conversations c SET verified_order_id = \$1/.test(sql)) { S.convUpdates.push({ kind: 'verify', params }); return { rows: [], rowCount: 1 }; }
+    if (/UPDATE conversations c SET verified_order_id = \$1/.test(sql)) { S.convUpdates.push({ kind: 'verify', params, sql }); return { rows: [], rowCount: 1 }; }
     if (/UPDATE conversations c SET verified_order_id = NULL/.test(sql)) { S.convUpdates.push({ kind: 'unverify', params }); return { rows: [], rowCount: 1 }; }
     return { rows: [], rowCount: 0 };
   },
@@ -119,6 +128,7 @@ const PKG_STUBS = {
               uid: m.uid, flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]),
               envelope: { from: [m.from], subject: m.subject, date: new Date(m.date) },
               bodyStructure: m.attachment ? { childNodes: [{ disposition: 'inline' }, { disposition: 'attachment' }] } : { type: 'text/plain' },
+              headers: S.pass[m.uid] ? Buffer.from('Authentication-Results: mx.google.com;\r\n dkim=pass header.i=@example.com;\r\n dmarc=pass (p=NONE) header.from=example.com\r\n') : undefined,
             };
           }
         })();
@@ -126,7 +136,7 @@ const PKG_STUBS = {
       async fetchOne(uid, q, o) {
         assert.ok(o && o.uid, 'a single mail is fetched by UID');
         const m = S.msgs.find((x) => String(x.uid) === String(uid));
-        return m ? { source: Buffer.from(m.source), flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]) } : false;
+        return m ? { source: Buffer.from(S.pass[m.uid] ? 'Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n' + m.source : m.source), flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]) } : false;
       }
       async messageFlagsAdd(uid, flags) { S.flagCalls.push(['add', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; return true; }
       async messageFlagsRemove(uid, flags) { S.flagCalls.push(['remove', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = false; return true; }
@@ -409,6 +419,64 @@ const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.
     assert.strictEqual((await get('nope-nope')).status, 404);
     assert.strictEqual((await get('x')).status, 400);
     authState.user = null; assert.strictEqual((await get('chat-1')).status, 401);
+  });
+
+  // ── automatic verification (owner 2026-10-08: email on an order, then email + order number, then the team) ──
+  const auto = require(path.join(SRC, 'lib/chat/mail-auto-verify.ts'));
+  await t('auth: only Gmail\'s own FIRST Authentication-Results with dmarc=pass counts; a bare dkim/spf pass, a failure or a forged authserv-id does not', () => {
+    const ok = 'mx.google.com; dkim=pass header.i=@x.com; spf=pass smtp.mailfrom=x.com; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=x.com';
+    assert.strictEqual(view.gmailAuthPassed(ok), true); assert.strictEqual(view.gmailAuthPassed('Authentication-Results: ' + ok), true);
+    assert.strictEqual(view.gmailAuthPassed('mx.google.com; dkim=pass; spf=pass'), false, 'dkim / spf alone can be the attacker\'s own domain');
+    assert.strictEqual(view.gmailAuthPassed('mx.google.com; dmarc=fail header.from=x.com'), false);
+    assert.strictEqual(view.gmailAuthPassed('mail.evil.example; dmarc=pass'), false, 'not Gmail\'s line');
+    assert.strictEqual(view.gmailAuthPassed(null), false); assert.strictEqual(view.gmailAuthPassed(''), false);
+    const raw = 'Authentication-Results: mx.google.com;\r\n dmarc=pass header.from=real.com\r\nAuthentication-Results: mx.google.com; dmarc=pass header.from=forged.com\r\n';
+    assert.ok(/real\.com/.test(view.firstAuthResults(raw)) && !/forged/.test(view.firstAuthResults(raw)), 'the top line only, unfolded');
+    assert.strictEqual(view.firstAuthResults('Subject: x'), null);
+  });
+  await t('plan: step 1 = the email\'s latest order; step 2 = the order number the mail names that belongs to that email; another customer\'s number is ignored; no pass / no orders = nothing', () => {
+    const orders = { 'a@x.com': ['#1700', '#1553', '#1400'], 'b@x.com': ['#2000'] };
+    let p = auto.planAutoVerify([{ email: 'A@x.com', authPass: true, subject: 'Where is my parcel' }], orders);
+    assert.deepStrictEqual(p, [{ email: 'a@x.com', orders: ['#1700'], basis: 'Email match' }]);
+    p = auto.planAutoVerify([{ email: 'a@x.com', authPass: true, subject: 'Re: Order #1553', text: 'also order no 1400' }], orders);
+    assert.deepStrictEqual(p, [{ email: 'a@x.com', orders: ['#1553', '#1400'], basis: 'Email + order number' }]);
+    p = auto.planAutoVerify([{ email: 'a@x.com', authPass: true, text: 'my friend\'s order #2000' }], orders);
+    assert.deepStrictEqual(p, [{ email: 'a@x.com', orders: ['#1700'], basis: 'Email match' }], 'an order of another email never verifies this one');
+    assert.deepStrictEqual(auto.planAutoVerify([{ email: 'a@x.com', authPass: false }], orders), []);
+    assert.deepStrictEqual(auto.planAutoVerify([{ email: 'nobody@x.com', authPass: true }], orders), []);
+    assert.strictEqual(auto.planAutoVerify([{ email: 'a@x.com', authPass: true }, { email: 'a@x.com', authPass: true }], orders).length, 1);
+  });
+  await t('list: a sender whose address is on an order of THIS panel and whose mail passed Gmail\'s dmarc is verified by itself (latest order), the email chat becomes mail_auto; no pass / another panel\'s order / no order = not verified', async () => {
+    S.pass = { 13: true, 11: false }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }, { email: 'cust@example.com', order_id: '#1400' }, { email: 'alice@example.com', order_id: '#1001' }, { email: 'bob@example.com', order_id: '#9000', panel: 'bizK' }];
+    const d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxVast'.replace('boxVast', 'boxV')))).json();
+    assert.deepStrictEqual(Object.keys(d.verified), ['cust@example.com'], 'alice had no dmarc pass, bob\'s order is in another panel');
+    assert.deepStrictEqual(d.verified['cust@example.com'].map((v) => [v.orderId, v.byName]), [['#1553', 'Email match']]);
+    assert.strictEqual(S.ver[0].verified_by, 'auto');
+    const u = S.convUpdates[0]; assert.ok(/'mail_auto'/.test(u.sql) && u.params[0] === '#1553' && u.params[2] === 'email:cust@example.com');
+    const again = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json(); assert.strictEqual(S.ver.length, 1, 'idempotent'); assert.strictEqual(S.convUpdates.length, 1);
+    assert.ok(again.verified['cust@example.com']);
+  });
+  await t('open: the mail\'s own order number (email + order number) verifies that order, and the answer carries the sender\'s verifications', async () => {
+    S.pass = { 11: true }; S.orderEmails = [{ email: 'alice@example.com', order_id: '#1400' }, { email: 'alice@example.com', order_id: '#1001' }];
+    const d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'))).json();
+    assert.deepStrictEqual(d.verified.map((v) => [v.orderId, v.byName]), [['#1001', 'Email + order number']], 'the mail said order #1001');
+    assert.strictEqual(d.mail.authPass, true);
+  });
+  await t('team veto: a sender the team Removed is never verified again by itself; a team verification is never overwritten', async () => {
+    S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }];
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    assert.strictEqual((await post({ box: 'boxV', email: 'cust@example.com', orderId: '#1553', remove: true })).status, 200);
+    const d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.deepStrictEqual(d.verified, {}, 'removed stays removed'); assert.strictEqual(S.ver.filter((v) => !v.removed).length, 0);
+    reset(); S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }];
+    await post(V({ email: 'cust@example.com' }));
+    const n = S.ver.length; S.ver[0].verified_by = 'rahul';
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    assert.strictEqual(S.ver.length, n); assert.strictEqual(S.ver[0].verified_by, 'rahul');
+  });
+  await t('automatic verification before the SQL is applied: the list still opens, nothing is written', async () => {
+    S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }]; S.missingTable = true;
+    assert.strictEqual((await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).status, 200);
   });
   await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
     for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { readMail, setSeen } from '@/lib/chat/mail-inbox';
 import { parseUid } from '@/lib/chat/mail-view';
+import { autoVerifySenders } from '@/lib/chat/mail-auto-verify';
+import { verifiedSenders } from '@/lib/chat/mail-verify';
+import { can } from '@/lib/permissions';
 
 // GET /api/mail/message?box=&uid=[&images=1][&peek=1]: opens one mail. It is marked read in Gmail, like opening
 // it in Gmail, unless peek=1. The HTML comes back already wrapped for a sandboxed frame (mail-view.ts).
@@ -14,7 +17,11 @@ export async function GET(request: NextRequest) {
   try {
     const mail = await readMail(a.box, uid, { markRead: sp.get('peek') !== '1', images: sp.get('images') === '1' });
     if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
-    return NextResponse.json({ mail }, { headers: { 'Cache-Control': 'no-store' } });
+    // Step 2: the opened mail has its text, so an order number in it can verify that order (mail-auto-verify.ts).
+    await autoVerifySenders(a.box.panelId, [{ email: mail.fromAddress, authPass: mail.authPass, subject: mail.subject, text: mail.text }]);
+    const verified = await verifiedSenders(a.box.panelId, [mail.fromAddress]);
+    if (!can(a.user, 'chat.view')) for (const list of Object.values(verified)) for (const v of list) v.chatId = null;
+    return NextResponse.json({ mail, verified: verified[mail.fromAddress] || [] }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) { return mailFail(e); }
 }
 
