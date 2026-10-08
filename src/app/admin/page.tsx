@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import PanelCopyCard from '@/components/PanelCopyCard';
+import GmailAccountsOverview from '@/components/GmailAccountsOverview';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
@@ -706,7 +707,7 @@ export default function AdminDashboard() {
   };
 
   const handleRemovePanelEmail = async (acc: PanelEmailAccount) => {
-    if (!confirm(`Stop answering email sent to ${acc.email}?`)) return;
+    if (!confirm(`Disconnect the CUSTOMER SUPPORT Gmail ${acc.email}?\n\nCustomers' emails to it will no longer be read or answered. (The chargeback Gmail is a different account and is not touched.)`)) return;
     try {
       const res = await fetch(`/api/panel-email?businessId=${activePanelId}&id=${acc.id}`, {
         method: 'DELETE',
@@ -1181,6 +1182,14 @@ export default function AdminDashboard() {
                     />
                   )}
 
+              {/* Copy the AI setup from another panel (owner 2026-10-08): every panel gets the same setup */}
+              {isSuperAdmin(user) && businesses.length > 1 && (
+                <div id="set-copy" style={{ scrollMarginTop: 76 }}>
+                  <PanelCopyCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name}
+                    others={businesses.filter(b => b.id !== activeBusiness.id).map(b => ({ id: b.id, name: b.name }))} onAlert={showAlert} />
+                </div>
+              )}
+
                   <div id="set-branding" style={{ scrollMarginTop: 76 }} />
                   {/* Brand settings card */}
                   {user && can(user, 'settings.panel') && (
@@ -1201,12 +1210,156 @@ export default function AdminDashboard() {
                   {isSuperAdmin(user) && (
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '0.75rem 0 -0.25rem' }}>
                       <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>Connections</span>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Shopify and mailboxes, only you see these</span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>The two Gmail accounts and Shopify, only you see these</span>
                     </div>
                   )}
                   {/* Shopify, the API connection and the mailboxes: the super admin only (team logins
                       do not see them; the routes check it too). Their own content is unchanged. */}
                   {isSuperAdmin(user) && (<>
+                  {/* ── Gmail accounts (owner 2026-10-08: "support wali ya chargeback wali email, hum confuse ho rahe hain") ── */}
+                  <div id="set-gmail" style={{ scrollMarginTop: 76 }} />
+                  <GmailAccountsOverview token={token} businessId={activePanelId} panelName={activeBusiness.name} support={panelEmails.map(a => ({ email: a.email, status: a.status ?? null }))} />
+                  <div id="set-gmail-support" style={{ scrollMarginTop: 76 }} />
+                  {/* ── Email Support ── */}
+                  <div className="tf-card" style={{ padding: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <Mail size={16} style={{ color: 'var(--primary)' }} />
+                      <span style={{ fontWeight: 700 }}>Gmail 1 · Customer support</span>
+                      <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontSize: '0.625rem', padding: '0.125rem 0.375rem', borderRadius: 4 }}>
+                        {panelEmailDraftOnly ? 'AI drafts, team sends' : 'Answered by AI'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+                      Connect the mailbox customers write to. Every incoming email is read the same way the chat
+                      is. Who sends the reply is your choice below. A verified customer who calls the store a fraud or asks
+                      for a refund or payment help still gets the short &ldquo;a person has your case&rdquo; reply on its own. A
+                      threat (chargeback, police, court) gets no automatic reply at all: it goes straight to your team.
+                      This works whether or not the panel is connected to Shopify.
+                    </p>
+                    <div className="seg" role="group" aria-label="Who sends the email reply" style={{ marginTop: 0, marginBottom: '1rem' }}>
+                      <button type="button" className="seg-btn" aria-pressed={panelEmailDraftOnly} onClick={() => { if (!panelEmailDraftOnly) saveEmailDraftOnly(true); }}
+                        title="Chikki writes the reply as a draft, your team reads it and sends it">
+                        Chikki writes a draft, my team sends (recommended)
+                      </button>
+                      <button type="button" className="seg-btn" aria-pressed={!panelEmailDraftOnly} onClick={() => { if (panelEmailDraftOnly) saveEmailDraftOnly(false); }}
+                        title="Chikki emails routine answers by herself; anything about refunds or policy is held for a person">
+                        Chikki answers by herself
+                      </button>
+                    </div>
+
+                    {/* Connected mailboxes */}
+                    {panelEmails.length > 0 && (
+                      <div style={{ display: 'grid', gap: '0.5rem', marginBottom: '1rem' }}>
+                        {panelEmails.map(acc => (
+                          <div key={acc.id} style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.5rem',
+                          }}>
+                            <span title={acc.status ? (acc.status.ok ? 'Gmail is being read' : 'Gmail cannot be read') : 'Not checked since the last restart'}
+                              style={{ color: !acc.status ? 'var(--fg-muted)' : acc.status.ok ? 'var(--success)' : 'var(--danger)', fontSize: '0.5rem' }}>●</span>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{acc.email}</div>
+                              {/* Step 2 (owner 2026-10-08): is the Gmail really being read? */}
+                              <div className="meta" style={{ color: acc.status && !acc.status.ok ? 'var(--danger)' : undefined }}>
+                                {!acc.status ? 'Not checked yet. It is checked every minute.'
+                                  : !acc.status.ok ? `${acc.status.error || 'Could not read this Gmail.'} Last tried ${agoText(acc.status.checkedAt)}.`
+                                  : `Working. Checked ${agoText(acc.status.checkedAt)}.${acc.status.lastMailAt ? ` Last new mail ${agoText(acc.status.lastMailAt)}.` : ''}`}
+                              </div>
+                            </div>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              style={{ marginLeft: 'auto', color: 'var(--danger)' }}
+                              title={`Disconnect the customer support Gmail ${acc.email}`}
+                              onClick={() => handleRemovePanelEmail(acc)}
+                            >
+                              <Trash2 size={13} /> Disconnect
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {panelEmails.length === 0 && !loadingPanelEmails && (
+                      <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', marginBottom: '1rem' }}>
+                        No mailbox connected yet — email to this panel is not being answered.
+                      </p>
+                    )}
+
+                    {/* How to get an app password */}
+                    <div style={{ background: 'var(--primary-light)', borderRadius: '0.5rem', padding: '0.75rem', marginBottom: '1rem' }}>
+                      <p style={{ fontSize: '0.6875rem', fontWeight: 700, marginBottom: '0.375rem' }}>
+                        Gmail needs an App Password — your normal password will not work
+                      </p>
+                      <ol style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', paddingLeft: '1rem', lineHeight: 1.7, margin: 0 }}>
+                        <li>Turn on 2-Step Verification for that Google account</li>
+                        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)' }}>myaccount.google.com/apppasswords</a></li>
+                        <li>Create one named e.g. &ldquo;ShipTrack&rdquo; and copy the 16 characters</li>
+                        <li>Paste it below — spaces are fine</li>
+                      </ol>
+                    </div>
+
+                    {/* Add form */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.5rem', alignItems: 'end' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Email address</label>
+                        {/* Not a login form: stop browsers filling the owner's ShipTrack login in here (it did, 2026-10-01). */}
+                        <input
+                          className="form-input"
+                          type="email"
+                          name="mailbox-address"
+                          autoComplete="off"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          placeholder="support@yourstore.com"
+                          value={newPanelEmail.email}
+                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, email: e.target.value })}
+                        />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">App password</label>
+                        <input
+                          className="form-input"
+                          type="password"
+                          name="mailbox-app-password"
+                          autoComplete="new-password"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          placeholder="abcd efgh ijkl mnop"
+                          value={newPanelEmail.appPassword}
+                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, appPassword: e.target.value })}
+                        />
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        disabled={addingPanelEmail || !newPanelEmail.email.trim() || !newPanelEmail.appPassword.trim()}
+                        onClick={handleAddPanelEmail}
+                      >
+                        {addingPanelEmail
+                          ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Checking…</>
+                          : <><Plus size={14} /> Connect</>}
+                      </button>
+                    </div>
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
+                      We sign in once to check the password before saving it. Replies are sent from this
+                      same address, and the conversations appear in the chat dashboard inbox.
+                      <strong> Mail already in the inbox is left alone</strong> — answering starts with the
+                      next email that arrives.
+                    </p>
+                  </div>
+                  <div id="set-gmail-chargeback" style={{ scrollMarginTop: 76 }} />
+              {/* Chargeback protection (owner 2026-10-08): the panel's chargeback Gmail, WhatsApp number, gateway checklist */}
+              {(
+                <div>
+                  <ChargebackSettingsCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name} onAlert={showAlert} />
+                </div>
+              )}
+
+
+                  <div id="set-shopify" style={{ scrollMarginTop: 76 }} />
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '0.75rem 0 -0.25rem' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>Shopify</span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Only if this panel sells through Shopify</span>
+                  </div>
                   {/* Shopify Connect card */}
                   <div className="tf-card" style={{ padding: '1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -1399,132 +1552,6 @@ export default function AdminDashboard() {
                     </p>
                   </div>
 
-                  {/* ── Email Support ── */}
-                  <div className="tf-card" style={{ padding: '1.5rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                      <Mail size={16} style={{ color: 'var(--primary)' }} />
-                      <span style={{ fontWeight: 700 }}>Email Support</span>
-                      <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontSize: '0.625rem', padding: '0.125rem 0.375rem', borderRadius: 4 }}>
-                        {panelEmailDraftOnly ? 'AI drafts, team sends' : 'Answered by AI'}
-                      </span>
-                    </div>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
-                      Connect the mailbox customers write to. Every incoming email is read the same way the chat
-                      is. Who sends the reply is your choice below. A verified customer who calls the store a fraud or asks
-                      for a refund or payment help still gets the short &ldquo;a person has your case&rdquo; reply on its own. A
-                      threat (chargeback, police, court) gets no automatic reply at all: it goes straight to your team.
-                      This works whether or not the panel is connected to Shopify.
-                    </p>
-                    <div className="seg" role="group" aria-label="Who sends the email reply" style={{ marginTop: 0, marginBottom: '1rem' }}>
-                      <button type="button" className="seg-btn" aria-pressed={panelEmailDraftOnly} onClick={() => { if (!panelEmailDraftOnly) saveEmailDraftOnly(true); }}
-                        title="Chikki writes the reply as a draft, your team reads it and sends it">
-                        Chikki writes a draft, my team sends (recommended)
-                      </button>
-                      <button type="button" className="seg-btn" aria-pressed={!panelEmailDraftOnly} onClick={() => { if (panelEmailDraftOnly) saveEmailDraftOnly(false); }}
-                        title="Chikki emails routine answers by herself; anything about refunds or policy is held for a person">
-                        Chikki answers by herself
-                      </button>
-                    </div>
-
-                    {/* Connected mailboxes */}
-                    {panelEmails.length > 0 && (
-                      <div style={{ display: 'grid', gap: '0.5rem', marginBottom: '1rem' }}>
-                        {panelEmails.map(acc => (
-                          <div key={acc.id} style={{
-                            display: 'flex', alignItems: 'center', gap: '0.5rem',
-                            padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.5rem',
-                          }}>
-                            <span title={acc.status ? (acc.status.ok ? 'Gmail is being read' : 'Gmail cannot be read') : 'Not checked since the last restart'}
-                              style={{ color: !acc.status ? 'var(--fg-muted)' : acc.status.ok ? 'var(--success)' : 'var(--danger)', fontSize: '0.5rem' }}>●</span>
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{acc.email}</div>
-                              {/* Step 2 (owner 2026-10-08): is the Gmail really being read? */}
-                              <div className="meta" style={{ color: acc.status && !acc.status.ok ? 'var(--danger)' : undefined }}>
-                                {!acc.status ? 'Not checked yet. It is checked every minute.'
-                                  : !acc.status.ok ? `${acc.status.error || 'Could not read this Gmail.'} Last tried ${agoText(acc.status.checkedAt)}.`
-                                  : `Working. Checked ${agoText(acc.status.checkedAt)}.${acc.status.lastMailAt ? ` Last new mail ${agoText(acc.status.lastMailAt)}.` : ''}`}
-                              </div>
-                            </div>
-                            <button
-                              className="btn-icon"
-                              style={{ marginLeft: 'auto', color: 'var(--danger)' }}
-                              title={`Disconnect ${acc.email}`}
-                              onClick={() => handleRemovePanelEmail(acc)}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {panelEmails.length === 0 && !loadingPanelEmails && (
-                      <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', fontStyle: 'italic', marginBottom: '1rem' }}>
-                        No mailbox connected yet — email to this panel is not being answered.
-                      </p>
-                    )}
-
-                    {/* How to get an app password */}
-                    <div style={{ background: 'var(--primary-light)', borderRadius: '0.5rem', padding: '0.75rem', marginBottom: '1rem' }}>
-                      <p style={{ fontSize: '0.6875rem', fontWeight: 700, marginBottom: '0.375rem' }}>
-                        Gmail needs an App Password — your normal password will not work
-                      </p>
-                      <ol style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', paddingLeft: '1rem', lineHeight: 1.7, margin: 0 }}>
-                        <li>Turn on 2-Step Verification for that Google account</li>
-                        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)' }}>myaccount.google.com/apppasswords</a></li>
-                        <li>Create one named e.g. &ldquo;ShipTrack&rdquo; and copy the 16 characters</li>
-                        <li>Paste it below — spaces are fine</li>
-                      </ol>
-                    </div>
-
-                    {/* Add form */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.5rem', alignItems: 'end' }}>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label className="form-label">Email address</label>
-                        {/* Not a login form: stop browsers filling the owner's ShipTrack login in here (it did, 2026-10-01). */}
-                        <input
-                          className="form-input"
-                          type="email"
-                          name="mailbox-address"
-                          autoComplete="off"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          placeholder="support@yourstore.com"
-                          value={newPanelEmail.email}
-                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, email: e.target.value })}
-                        />
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label className="form-label">App password</label>
-                        <input
-                          className="form-input"
-                          type="password"
-                          name="mailbox-app-password"
-                          autoComplete="new-password"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          placeholder="abcd efgh ijkl mnop"
-                          value={newPanelEmail.appPassword}
-                          onChange={(e) => setNewPanelEmail({ ...newPanelEmail, appPassword: e.target.value })}
-                        />
-                      </div>
-                      <button
-                        className="btn btn-primary"
-                        disabled={addingPanelEmail || !newPanelEmail.email.trim() || !newPanelEmail.appPassword.trim()}
-                        onClick={handleAddPanelEmail}
-                      >
-                        {addingPanelEmail
-                          ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Checking…</>
-                          : <><Plus size={14} /> Connect</>}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.5rem' }}>
-                      We sign in once to check the password before saving it. Replies are sent from this
-                      same address, and the conversations appear in the chat dashboard inbox.
-                      <strong> Mail already in the inbox is left alone</strong> — answering starts with the
-                      next email that arrives.
-                    </p>
-                  </div>
                   </>)}
 
                 </>
@@ -1537,21 +1564,6 @@ export default function AdminDashboard() {
                 </div>
               )}
 
-
-              {/* Chargeback protection (owner 2026-10-08): the panel's chargeback Gmail, WhatsApp number, gateway checklist */}
-              {activeBusiness && isSuperAdmin(user) && (
-                <div id="set-chargeback" style={{ scrollMarginTop: 76 }}>
-                  <ChargebackSettingsCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name} onAlert={showAlert} />
-                </div>
-              )}
-
-              {/* Copy the AI setup from another panel (owner 2026-10-08): every panel gets the same setup */}
-              {activeBusiness && isSuperAdmin(user) && businesses.length > 1 && (
-                <div id="set-copy" style={{ scrollMarginTop: 76 }}>
-                  <PanelCopyCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name}
-                    others={businesses.filter(b => b.id !== activeBusiness.id).map(b => ({ id: b.id, name: b.name }))} onAlert={showAlert} />
-                </div>
-              )}
 
               {/* Danger Zone */}
               <div id="set-danger" style={{ scrollMarginTop: 76 }} />
