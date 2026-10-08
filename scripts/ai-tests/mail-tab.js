@@ -143,7 +143,10 @@ const PKG_STUBS = {
       async fetchOne(uid, q, o) {
         assert.ok(o && o.uid, 'a single mail is fetched by UID');
         const m = this.box.find((x) => String(x.uid) === String(uid));
-        return m ? { source: Buffer.from(S.pass[m.uid] ? 'Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n' + m.source : m.source), flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]) } : false;
+        if (!m) return false;
+        S.fetchOneOpts = (S.fetchOneOpts || []); S.fetchOneOpts.push(q.source);
+        const full = Buffer.from(S.pass[m.uid] ? 'Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n' + m.source : m.source); const max = q.source && q.source.maxLength;
+        return { source: max ? full.subarray(0, max) : full, flags: new Set([...(m.seen ? ['\\Seen'] : []), ...(m.answered ? ['\\Answered'] : [])]) };
       }
       async messageFlagsAdd(uid, flags) { S.flagCalls.push(['add', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; return true; }
       async messageFlagsRemove(uid, flags) { S.flagCalls.push(['remove', Number(uid), flags]); const m = S.msgs.find((x) => x.uid === Number(uid)); if (flags.includes('\\Seen')) m.seen = false; return true; }
@@ -514,14 +517,16 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
   await t('speed: the list and opening a mail each keep ONE connection open per mailbox, so the second call does not sign in again; a list refresh never blocks opening a mail', async () => {
     await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
     await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1'));
-    assert.strictEqual(S.connects.length, 2, 'one for the list, one for reading');
+    assert.strictEqual(S.connects.length, 2, 'one for the list, one for the read-ahead (peek)');
+    await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'));
+    assert.strictEqual(S.connects.length, 3, 'a click has its own connection: never behind a slow read-ahead');
     await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
     await message.GET(req('GET', '/api/mail/message?box=boxV&uid=13&peek=1'));
     await attachment.GET(req('GET', '/api/mail/attachment?box=boxV&uid=12&index=0'));
-    assert.strictEqual(S.connects.length, 2, 'reused: no new sign-in'); assert.strictEqual(S.logouts, 0);
+    assert.strictEqual(S.connects.length, 3, 'reused: no new sign-in'); assert.strictEqual(S.logouts, 0);
     // a refresh that is still signing in does not hold up an open
     pool.closeAllImap(); S.connects.length = 0; S.connectDelay = 60;
-    const t0 = Date.now(); const slowList = messages.GET(req('GET', '/api/mail/messages?box=boxV')); const open = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1'));
+    const t0 = Date.now(); const slowList = messages.GET(req('GET', '/api/mail/messages?box=boxV')); const open = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'));
     assert.strictEqual(open.status, 200); await slowList; assert.ok(Date.now() - t0 < 400);
     S.connectDelay = 0;
   });
@@ -625,6 +630,29 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
     const q2 = S.fetchQueries.at(-1); assert.ok(q2.bodyStructure && q2.headers);
     assert.strictEqual(full.phase, 'full'); assert.ok(full.mails.some((m) => m.hasAttachment) && full.mails.some((m) => m.authPass));
     assert.strictEqual(S.ver.length, 1, 'now the automatic verification ran');
+  });
+
+  await t('speed (every panel the same): a slow read-ahead on its own connection never holds up the mail the person clicked', async () => {
+    const hold = pool.withPooledImap({ id: 'boxV', email: 'vastora@store.example', appPassword: 'SECRETSECRETSECR' }, 'bg', () => new Promise((r) => setTimeout(r, 400)));
+    const t0 = Date.now(); const res = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11')); const took = Date.now() - t0;
+    assert.strictEqual(res.status, 200); assert.ok(took < 300, `the click waited ${took} ms behind the read-ahead`);
+    await hold;
+  });
+  await t('a very large mail: only its first 3 MB are read for the screen (marked cut); no body in those 3 MB = the whole mail is read; an ordinary mail is not cut', async () => {
+    const pad = 'x'.repeat(70);
+    const bigText = plain('big1', 'Big <big@example.com>', 'Big mail', 'Hello from a big mail\r\n' + (pad + '\r\n').repeat(60000));
+    const attachFirst = ['From: Big <big@example.com>', 'Subject: Files first', 'Message-ID: <big2@mail.example>', 'Date: Wed, 07 Oct 2026 10:00:00 +0000', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary="B"', '', '--B', 'Content-Type: application/pdf; name="a.pdf"', 'Content-Disposition: attachment; filename="a.pdf"', 'Content-Transfer-Encoding: base64', '', ('QUJD'.repeat(19) + '\r\n').repeat(50000), '--B', 'Content-Type: text/plain', '', 'The body comes last', '--B--', ''].join('\r\n');
+    S.msgs.push({ uid: 21, seen: true, answered: false, date: '2026-10-08T09:00:00Z', from: { name: 'Big', address: 'big@example.com' }, subject: 'Big mail', source: bigText });
+    S.msgs.push({ uid: 22, seen: true, answered: false, date: '2026-10-08T09:00:00Z', from: { name: 'Big', address: 'big@example.com' }, subject: 'Files first', source: attachFirst });
+    assert.ok(bigText.length > 3 * 1024 * 1024 && attachFirst.length > 3 * 1024 * 1024);
+    S.fetchOneOpts = [];
+    let d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=21&peek=1'))).json();
+    assert.strictEqual(d.mail.cut, true); assert.ok(d.mail.frame.includes('Hello from a big mail')); assert.deepStrictEqual(S.fetchOneOpts, [{ maxLength: 3 * 1024 * 1024 }]);
+    S.fetchOneOpts = [];
+    d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=22&peek=1'))).json();
+    assert.ok(d.mail.frame.includes('The body comes last'), 'the body was found after reading the whole mail'); assert.notStrictEqual(d.mail.cut, true);
+    assert.deepStrictEqual(S.fetchOneOpts.map((o) => (o && o.maxLength) || 'whole'), [3 * 1024 * 1024, 'whole']);
+    d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1'))).json(); assert.ok(!d.mail.cut);
   });
   await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
     for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }

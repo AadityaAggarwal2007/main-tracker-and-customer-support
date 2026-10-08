@@ -5,7 +5,7 @@ export interface Att { index: number; filename: string; contentType: string; siz
 export interface Ver { orderId: string; byName: string; at: string; chatId: string | null }
 export interface Full {
   uid: number; subject: string; date: string; from: string; fromAddress: string; to: string; cc: string; replyTo: string;
-  text?: string; frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
+  cut?: boolean; text?: string; frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
 }
 // partial: only the quick first list (who / subject / date / flags) has arrived; the attachment icons and the automatic sender checks follow
 export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number; partial?: boolean }

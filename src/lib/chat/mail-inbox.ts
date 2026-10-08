@@ -141,28 +141,39 @@ export interface MailFull {
   attachments: MailAttachmentInfo[]; unread: boolean; answered: boolean;
   // Gmail's own dmarc=pass on this mail (the sender's address is real): automatic verification needs it.
   authPass: boolean;
+  // A very large mail: only its first 3 MB were read for the screen (its attachments are fetched whole when downloaded).
+  cut?: boolean;
 }
 
-async function fetchSource(c: ImapFlow, uid: number): Promise<{ source: Buffer; flags: Set<string> } | null> {
-  const m = await c.fetchOne(String(uid), { source: true, flags: true }, { uid: true });
+// maxBytes: only the first part of the mail (a mail with big attachments is slow to download in full and the screen
+// does not need the attachments' bytes; they are fetched whole only when someone downloads one).
+async function fetchSource(c: ImapFlow, uid: number, maxBytes?: number): Promise<{ source: Buffer; flags: Set<string>; cut: boolean } | null> {
+  const m = await c.fetchOne(String(uid), { source: maxBytes ? { maxLength: maxBytes } : true, flags: true }, { uid: true });
   if (!m || !m.source) return null;
-  return { source: m.source, flags: m.flags ?? new Set<string>() };
+  return { source: m.source, flags: m.flags ?? new Set<string>(), cut: !!maxBytes && m.source.length >= maxBytes };
 }
+const VIEW_SOURCE_BYTES = 3 * 1024 * 1024;
 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 
 // Opens one mail. markRead (default) sets Gmail's Seen flag, like opening it in Gmail.
-export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean; folder?: MailFolder } = {}): Promise<MailFull | null> {
-  return withImap(box, async (c) => {
+export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean; folder?: MailFolder; slot?: PoolSlot } = {}): Promise<MailFull | null> {
+  const t0 = Date.now();
+  const out = await withImap(box, async (c) => {
     const path = opts.folder === 'sent' ? await sentPath(c, box.id) : 'INBOX';
     if (!path) return null;
     const lock = await c.getMailboxLock(path, { readOnly: opts.markRead === false || opts.folder === 'sent' });
     try {
-      const got = await fetchSource(c, uid);
+      let got = await fetchSource(c, uid, VIEW_SOURCE_BYTES);
       if (!got) return null;
       const wasUnread = !got.flags.has('\\Seen');
       if (opts.markRead !== false && wasUnread && opts.folder !== 'sent') { try { await c.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }); } catch { /* best effort */ } }
-      const p = await simpleParser(got.source);
+      let p = await simpleParser(got.source);
+      // The first 3 MB held no body at all (the attachments come first): read the whole mail then.
+      if (got.cut && !p.html && !p.text) {
+        const whole = await fetchSource(c, uid);
+        if (whole) { got = whole; p = await simpleParser(whole.source); }
+      }
       let html = typeof p.html === 'string' && p.html.trim() ? p.html : '';
       // Pictures that came inside the mail (cid:) are shown from the mail itself, never from the internet.
       for (const a of p.attachments || []) {
@@ -192,11 +203,14 @@ export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead
           index: i, filename: a.filename || `attachment-${i + 1}`, contentType: a.contentType || 'application/octet-stream',
           size: a.size ?? a.content?.length ?? 0, inline: !!a.cid && a.contentDisposition !== 'attachment',
         })),
-        unread: false, answered: got.flags.has('\\Answered'),
+        unread: false, answered: got.flags.has('\\Answered'), cut: got.cut,
         authPass: gmailAuthPassed((p.headerLines || []).find(h => h.key === 'authentication-results')?.line.replace(/^authentication-results:\s*/i, '') ?? null),
       };
     } finally { lock.release(); }
-  });
+  }, opts.slot ?? 'read');
+  const ms = Date.now() - t0;
+  if (ms > 2000) console.log(`[mail-timing] read box=${box.id} uid=${uid} folder=${opts.folder ?? 'inbox'} slot=${opts.slot ?? 'read'} ${ms}ms`);
+  return out;
 }
 
 // "Mark unread" / "Mark read" from the screen.
@@ -295,7 +309,7 @@ export async function listThread(box: MailBoxSecret, address: string, now = Date
     await grab(c, 'INBOX', 'inbox', { since, from: address });
     const sent = await sentPath(c, box.id);
     if (sent) await grab(c, sent, 'sent', { since, to: address });
-  });
+}, 'bg');
   return out.sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0)).slice(-40);
 }
 

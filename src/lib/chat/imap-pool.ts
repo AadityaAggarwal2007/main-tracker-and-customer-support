@@ -3,8 +3,9 @@ import { ImapFlow } from 'imapflow';
 
 // ── Kept-open Gmail connections for the Mail tab (owner 2026-10-08: "sloww hai, load hi nahi ho rahi") ──
 // Every call used to open a NEW connection to Gmail and sign in (1-3 seconds from the server) before it did its
-// work, and a list refresh and "open this mail" could not overlap. Now each mailbox keeps up to two connections
-// alive in this process (one PM2 process): slot 'list' for reading the list, slot 'read' for opening a mail, a
+// work, and a list refresh and "open this mail" could not overlap. Now each mailbox keeps up to three connections
+// alive in this process (one PM2 process): slot 'list' for reading the list, slot 'read' for opening a mail, slot 'bg'
+// for the read-ahead of the first mails and the conversation (so a slow background mail never holds up a click), a
 // download, a flag, a reply. Both close after 4 minutes without use, drop themselves when Gmail closes them
 // (the next call signs in again), and a call that fails on a REUSED connection is repeated once on a fresh one.
 // Gmail allows about 15 connections per account; this uses at most 2 per mailbox (the poller uses its own, a short
@@ -12,7 +13,8 @@ import { ImapFlow } from 'imapflow';
 
 interface Entry { client: ImapFlow; pass: string; ready: Promise<ImapFlow>; idle?: ReturnType<typeof setTimeout> }
 export interface PoolBox { id: string; email: string; appPassword: string }
-export type PoolSlot = 'list' | 'read';
+// 'list' = the list, 'read' = opening a mail the person clicked, 'bg' = read-ahead and the conversation (never in the way of a click)
+export type PoolSlot = 'list' | 'read' | 'bg';
 
 const IDLE_MS = 4 * 60_000;
 const G = globalThis as unknown as { __imapPool?: Map<string, Entry> };
