@@ -1242,9 +1242,12 @@ export default function ChatSupportPage() {
             {activeConv && (
               <>
                 {/* Thread header */}
+                {/* The top of the chat (header, address, items, what to do next) scrolls on its own, so the messages keep their room (owner 2026-10-08) */}
+                <div className="chat-top">
                 <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
 
                 <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} />
+                </div>
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">

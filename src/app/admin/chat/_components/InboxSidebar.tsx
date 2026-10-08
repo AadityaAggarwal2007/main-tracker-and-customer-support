@@ -34,7 +34,7 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
 }) {
   const base = (v: InboxTab) => INBOX_TABS.find(t => t.v === v)!;
   const caseN = (k: 'refund' | 'reship') => caseCounts[k] ?? { total: 0, unread: 0 };
-  type Item = { v: InboxTab; label: string; icon: typeof UserCheck; n: number; tone: ChipTone; text?: string; hint?: string; sub?: boolean };
+  type Item = { v: InboxTab; label: string; icon: typeof UserCheck; n: number; tone: ChipTone; text?: string; hint?: string; sub?: boolean; line?: string };
   const caseItem = (k: 'refund' | 'reship'): Item => {
     const c = caseN(k);
     return { v: `case:${k}` as InboxTab, label: base(`case:${k}` as InboxTab).label, icon: base(`case:${k}` as InboxTab).icon, n: c.total, tone: c.unread ? 'danger' : 'muted', text: c.unread ? `${c.unread} waiting` : undefined,
@@ -59,6 +59,18 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
       { v: 'resolved', label: 'Closed', icon: base('resolved').icon, n: 0, tone: 'muted' },
     ] },
   ];
+  // A team member's menu (owner 2026-10-08): their Active cases, Needs you, the Refund / Ship again
+  // cases and the customers who open chats. The rest is the Super Admin's.
+  const simpleGroups: { title: string; items: Item[] }[] = [
+    { title: 'Your chats', items: [
+      { v: 'active:open', label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger', line: 'Customer wrote. Reply to them.' },
+      { v: 'active:closed', label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted', line: 'You answered. It comes back to Open case if they write again.' },
+      { v: 'human_needed', label: 'Needs you', icon: base('human_needed').icon, n: 0, tone: 'danger', line: 'The AI stopped. A person must answer.' },
+    ] },
+    { title: 'Cases', items: [caseItem('refund'), caseItem('reship')] },
+    { title: 'Customers', items: [{ v: 'all', label: 'All customers', icon: base('all').icon, n: 0, tone: 'muted', line: 'Everyone who opened a chat.' }] },
+  ];
+  const view = simple ? simpleGroups : groups;
   return (
       <aside className={`sidebar chat-side ${sidebarOpen ? 'open' : ''}`}>
         <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
@@ -89,26 +101,7 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
             types (refund, delay, address...) are filter chips above the list (ListHeader), not menu
             items. Same tabs and same server filters as before; only the grouping changed. */}
         <nav style={{ padding: '0.5rem', flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          {simple ? (
-            // The team's menu (owner 2026-10-08): two lists, said in plain words. Everything else is the Super Admin's.
-            <div>
-              <div className="nav-group">Your chats</div>
-              {([
-                { v: 'active:open' as InboxTab, label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger' as const, line: 'Customer wrote. Reply to them.' },
-                { v: 'active:closed' as InboxTab, label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted' as const, line: 'You answered. It comes back to Open case if they write again.' },
-              ]).map(it => (
-                <button key={it.v} className={`nav-btn nav-simple${tab === it.v ? ' active' : ''}`} style={{ width: '100%' }}
-                  onClick={() => { setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}>
-                  <it.icon size={18} />
-                  <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>
-                    <span style={{ display: 'block' }}>{it.label}</span>
-                    <span className="nav-line">{it.line}</span>
-                  </span>
-                  {it.n > 0 && <Chip tone={it.tone}>{it.n}</Chip>}
-                </button>
-              ))}
-            </div>
-          ) : groups.map((g, gi) => (
+          {view.map((g, gi) => (
             <div key={g.title}>
               <div className="nav-group">{g.title}</div>
               {g.items.filter(it => it.v !== 'mine' || canReply).map(it => (
@@ -116,15 +109,18 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
                   key={it.v}
                   title={it.hint}
                   onClick={() => { setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
-                  className={`nav-btn${tab === it.v ? ' active' : ''}${it.sub ? ' nav-sub' : ''}`}
+                  className={`nav-btn${tab === it.v ? ' active' : ''}${it.sub ? ' nav-sub' : ''}${it.line ? ' nav-simple' : ''}`}
                   style={{ width: '100%' }}
                 >
-                  <it.icon size={16} style={it.v === 'topic:risk' && it.n > 0 && tab !== it.v ? { color: 'var(--danger)' } : undefined} />
-                  <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{it.label}</span>
+                  <it.icon size={it.line ? 18 : 16} style={it.v === 'topic:risk' && it.n > 0 && tab !== it.v ? { color: 'var(--danger)' } : undefined} />
+                  <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>
+                    <span style={{ display: 'block' }}>{it.label}</span>
+                    {it.line && <span className="nav-line">{it.line}</span>}
+                  </span>
                   {it.n > 0 && <Chip tone={it.tone}>{it.text ?? it.n}</Chip>}
                 </button>
               ))}
-              {gi < groups.length - 1 && <div style={{ height: 1, background: 'var(--border)', margin: '0.5rem 0.25rem' }} />}
+              {gi < view.length - 1 && <div style={{ height: 1, background: 'var(--border)', margin: '0.5rem 0.25rem' }} />}
             </div>
           ))}
         </nav>
