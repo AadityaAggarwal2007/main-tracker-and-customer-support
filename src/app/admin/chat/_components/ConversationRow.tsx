@@ -82,7 +82,7 @@ export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaitin
           {convName(c)}
         </span>
         {c.verified_order_id
-          ? <span title={`Verified${c.verified_via === 'legacy' ? ' (old check)' : ''}${c.verified_order_id ? ` · order ${c.verified_order_id}` : ''}`} className={c.verified_via === 'legacy' ? 't-warn' : 't-ok'} style={{ display: 'inline-flex', flexShrink: 0 }}><BadgeCheck size={13} /></span>
+          ? <span title={`Verified${c.verified_via === 'legacy' ? ' (old check)' : c.verified_via === 'mail_auto' ? ' (email match)' : c.verified_via === 'mail' ? ' (by the team from a mail)' : ''}${c.verified_order_id ? ` · order ${c.verified_order_id}` : ''}`} className={c.verified_via === 'legacy' ? 't-warn' : 't-ok'} style={{ display: 'inline-flex', flexShrink: 0 }}><BadgeCheck size={13} /></span>
           : c.phone_match_order_id ? <span title={`Phone match · order ${c.phone_match_order_id} (not proof)`} className="t-primary" style={{ display: 'inline-flex', flexShrink: 0 }}><Phone size={11} /></span> : null}
         {unread > 0 && (
           <span className={`dot${rowWaiting(c) ? ' dot-danger' : ''}`}

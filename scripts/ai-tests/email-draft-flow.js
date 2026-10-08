@@ -79,7 +79,7 @@ const PKG_STUBS = {
   mailparser: {
     simpleParser: async () => ({
       from: { value: [{ address: S.mail.from, name: 'Customer' }] }, subject: S.mail.subject, messageId: '<m1@example.com>',
-      inReplyTo: '', references: [], text: S.mail.text,
+      inReplyTo: '', references: [], text: S.mail.text, headerLines: S.mail.headerLines,
     }),
   },
   nodemailer: { default: { createTransport: () => ({ sendMail: async (o) => { S.sent.push(o); } }) }, createTransport: () => ({ sendMail: async (o) => { S.sent.push(o); } }) },
@@ -177,6 +177,18 @@ const toNeedsYou = () => SQL(/UPDATE conversations SET status = 'human_needed'/)
     assert.strictEqual(S.sent.length, 0, 'nothing is emailed');
     assert.strictEqual(S.aiMsgMeta.length, 0, 'the AI is not even asked');
     assert.ok(toNeedsYou());
+  });
+
+  await t('automatic verification (owner 2026-10-08): a new mail Gmail marked dmarc=pass looks the sender up in the panel\'s orders BEFORE the chat is read; without the pass nothing is looked up; the mail is handled either way', async () => {
+    reset({ mail: { from: 'cust@example.com', subject: 'Order #1553', text: 'where is it', headerLines: [{ key: 'authentication-results', line: 'Authentication-Results: mx.google.com; dmarc=pass header.from=example.com' }] } });
+    await pollEmailAccount(account);
+    const iOrders = S.sql.findIndex((x) => /FROM orders/.test(x.sql)), iMsg = S.sql.findIndex((x) => /INSERT INTO messages \(id, conversation_id, sender, content, email_message_id/.test(x.sql));
+    assert.ok(iOrders >= 0 && iMsg > iOrders, 'looked up, and before the message is stored');
+    assert.deepStrictEqual(S.aiMsgMeta, [{ emailed: false, withheld: 'draft' }], 'the mail is handled as before');
+    reset({ mail: { from: 'cust@example.com', subject: 'Order #1553', text: 'where is it', headerLines: [{ key: 'authentication-results', line: 'Authentication-Results: mx.google.com; dkim=pass; spf=pass' }] } });
+    await pollEmailAccount(account);
+    assert.strictEqual(SQL(/FROM orders/).length, 0, 'no dmarc pass = no lookup');
+    assert.strictEqual(S.aiMsgMeta.length, 1);
   });
 
   await t('our own address writing to itself is skipped (no reply loop), draft mode or not', async () => {

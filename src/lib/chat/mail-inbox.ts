@@ -3,7 +3,7 @@ import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { canAccessPanel, type PermissionHolder } from '@/lib/permissions';
 import { buildEmailHtml, sendEmailReply } from './email';
-import { MAX_MAILS, MAIL_DAYS, addressLabel, frameHtml, hasRemoteImages, replySubject, sinceDate, sortMails, textToHtml, type MailListItem } from './mail-view';
+import { MAX_MAILS, MAIL_DAYS, addressLabel, firstAuthResults, frameHtml, gmailAuthPassed, hasRemoteImages, replySubject, sinceDate, sortMails, textToHtml, type MailListItem } from './mail-view';
 
 // ── The Mail tab, server side (owner 2026-10-08) ──────────────────────────────────────────────
 // Reads a panel's real Gmail inbox over IMAP when a screen asks, and sends a reply over SMTP. Nothing is
@@ -85,7 +85,7 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
       const truncated = seqs.length > MAX_MAILS;
       const wanted = seqs.slice(-MAX_MAILS);
       const out: MailListItem[] = [];
-      for await (const m of c.fetch(wanted, { uid: true, flags: true, envelope: true, bodyStructure: true })) {
+      for await (const m of c.fetch(wanted, { uid: true, flags: true, envelope: true, bodyStructure: true, headers: ['authentication-results'] })) {
         const from = m.envelope?.from?.[0];
         const flags = m.flags ?? new Set<string>();
         out.push({
@@ -97,6 +97,7 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
           unread: !flags.has('\\Seen'),
           hasAttachment: hasAttachmentPart(m.bodyStructure as StructNode | undefined),
           answered: flags.has('\\Answered'),
+          authPass: gmailAuthPassed(firstAuthResults(m.headers as Buffer | undefined)),
         });
       }
       const mails = sortMails(out);
@@ -111,6 +112,8 @@ export interface MailFull {
   from: string; fromAddress: string; to: string; cc: string; replyTo: string;
   text: string; frame: string; remoteImages: boolean; imagesShown: boolean;
   attachments: MailAttachmentInfo[]; unread: boolean; answered: boolean;
+  // Gmail's own dmarc=pass on this mail (the sender's address is real): automatic verification needs it.
+  authPass: boolean;
 }
 
 async function fetchSource(c: ImapFlow, uid: number): Promise<{ source: Buffer; flags: Set<string> } | null> {
@@ -160,6 +163,7 @@ export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead
           size: a.size ?? a.content?.length ?? 0, inline: !!a.cid && a.contentDisposition !== 'attachment',
         })),
         unread: false, answered: got.flags.has('\\Answered'),
+        authPass: gmailAuthPassed((p.headerLines || []).find(h => h.key === 'authentication-results')?.line.replace(/^authentication-results:\s*/i, '') ?? null),
       };
     } finally { lock.release(); }
   });

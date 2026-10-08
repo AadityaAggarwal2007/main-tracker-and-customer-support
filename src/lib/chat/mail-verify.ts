@@ -123,7 +123,7 @@ export async function removeVerification(user: AuthUser, box: MailBoxSecret, ema
     `UPDATE conversations c SET verified_order_id = NULL, verified_at = NULL, verified_via = NULL
        FROM sites s
       WHERE s.id = c.site_id AND s.tracker_business_id::text = $1::text
-        AND c.source = 'email' AND c.visitor_id = $2 AND c.verified_via = 'mail' AND c.verified_order_id = $3`,
+        AND c.source = 'email' AND c.visitor_id = $2 AND c.verified_via IN ('mail', 'mail_auto') AND c.verified_order_id = $3`,
     [box.panelId, `email:${email}`, orderId]
   );
   return { ok: true };

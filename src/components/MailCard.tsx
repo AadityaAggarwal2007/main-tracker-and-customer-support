@@ -125,6 +125,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
       if (seq !== openSeq.current) return;
       if (!r.ok) { alertRef.current('error', d.error || 'Could not open that mail.'); setOpenUid(null); return; }
       setMail(d.mail);
+      if (Array.isArray(d.verified) && d.verified.length) setVerified(v => ({ ...v, [d.mail.fromAddress]: d.verified }));
       setItems(prev => prev.map(x => x.uid === uid ? { ...x, unread: false } : x));
     } catch { if (seq === openSeq.current) { alertRef.current('error', 'Could not open that mail.'); setOpenUid(null); } }
     finally { if (seq === openSeq.current) setOpening(false); }
@@ -286,7 +287,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
                   const vs = verified[mail.fromAddress] || [];
                   return vs.length > 0 ? (
                     <div className="mail-verify ok">
-                      <BadgeCheck size={15} /> <span><b>Verified</b> · order {vs.map(v => v.orderId).join(', ')} · by {vs[0].byName || 'team'}</span>
+                      <BadgeCheck size={15} /> <span><b>Verified</b> · order {vs.map(v => v.orderId).join(', ')} · {vs[0].byName === 'Email match' || vs[0].byName === 'Email + order number' ? `automatic: ${vs[0].byName.toLowerCase()}` : `by ${vs[0].byName || 'team'}`}</span>
                       {vs[0].chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(vs[0].chatId)}`}><MessageCircle size={13} /> Open chat</a>}
                       <button type="button" className="btn btn-ghost btn-sm" onClick={() => setVerifyOpen(o => !o)}>Verify another order</button>
                       <button type="button" className="btn btn-ghost btn-sm" onClick={() => unverify(vs[0].orderId)} title="Only for a wrong click">Remove</button>

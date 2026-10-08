@@ -16,6 +16,8 @@ export interface MailListItem {
   unread: boolean;
   hasAttachment: boolean;
   answered: boolean;
+  // Gmail's own dmarc=pass: the sender's address is real (automatic verification needs it).
+  authPass: boolean;
 }
 
 // The start of the window: IMAP SINCE works on whole days, so the day is what counts.
@@ -101,3 +103,21 @@ export function parseUid(v: unknown): number | null {
 // the ORDER ID and the FULL phone number on the order, written by the team member's own press of a button.
 export const ASK_VERIFY_EN = 'Hello,\n\nTo help you with this, I first need to confirm your order. Please reply to this email with your Order ID and the full phone number on the order.\n\nThank you.';
 export const ASK_VERIFY_HINGLISH = 'Namaste,\n\nAapki madad ke liye mujhe pehle aapka order confirm karna hai. Kripya is mail ke jawab mein apna Order ID aur order par likha poora phone number bhej dein.\n\nDhanyavaad.';
+
+// ── Is the sender's address real? (owner 2026-10-08: automatic verification) ────────────────────
+// Gmail writes its own "Authentication-Results: mx.google.com; ... dmarc=pass ..." at the TOP of every mail it
+// receives; a header an attacker adds sits below it. Only that first line is read, only when it names
+// mx.google.com, and only dmarc=pass counts (it ties the check to the From address; a bare dkim=pass or spf=pass
+// can belong to the attacker's own domain).
+export function gmailAuthPassed(firstAuthResults: string | null | undefined): boolean {
+  const v = (firstAuthResults || '').replace(/^\s*authentication-results:\s*/i, '');
+  return /^\s*mx\.google\.com\s*;/i.test(v) && /\bdmarc=pass\b/i.test(v);
+}
+
+// From a block of raw header lines (what IMAP returns for one named header): the first Authentication-Results,
+// unfolded onto one line; null when there is none.
+export function firstAuthResults(raw: string | Buffer | null | undefined): string | null {
+  const text = (raw ? raw.toString('utf8') : '').replace(/\r?\n[ \t]+/g, ' ');
+  const m = /^authentication-results:\s*(.*)$/im.exec(text);
+  return m ? m[1].trim() : null;
+}
