@@ -12,17 +12,17 @@ import { MAX_MAILS, MAIL_DAYS, addressLabel, frameHtml, hasRemoteImages, replySu
 // panel's Gmail, a member only the panels they are limited to, and only with the Mail ticks.
 
 export interface MailBoxInfo { id: string; email: string; siteName: string; panelId: string | null; panelName: string }
-interface MailBoxSecret extends MailBoxInfo { appPassword: string }
+export interface MailBoxSecret extends MailBoxInfo { appPassword: string; siteId: string }
 
-const ALL_BOXES_SQL = `SELECT se.id, se.email, se.app_password, s.name AS site_name,
+const ALL_BOXES_SQL = `SELECT se.id, se.email, se.app_password, s.id AS site_id, s.name AS site_name,
         s.tracker_business_id::text AS panel_id, b.name AS panel_name
    FROM site_emails se
    JOIN sites s ON s.id = se.site_id
    LEFT JOIN businesses b ON b.id::text = s.tracker_business_id::text`;
 
-interface BoxRow { id: string; email: string; app_password: string; site_name: string; panel_id: string | null; panel_name: string | null }
-const toBox = (r: BoxRow): MailBoxSecret => ({ id: r.id, email: r.email, appPassword: r.app_password, siteName: r.site_name, panelId: r.panel_id, panelName: r.panel_name || r.site_name });
-const publicBox = ({ appPassword: _p, ...rest }: MailBoxSecret): MailBoxInfo => rest;
+interface BoxRow { id: string; email: string; app_password: string; site_id: string; site_name: string; panel_id: string | null; panel_name: string | null }
+const toBox = (r: BoxRow): MailBoxSecret => ({ id: r.id, email: r.email, appPassword: r.app_password, siteId: r.site_id, siteName: r.site_name, panelId: r.panel_id, panelName: r.panel_name || r.site_name });
+const publicBox = ({ appPassword: _p, siteId: _s, ...rest }: MailBoxSecret): MailBoxInfo => rest;
 
 // The mailboxes this login may open (the panel check is the real gate).
 export async function mailboxesFor(user: PermissionHolder): Promise<MailBoxInfo[]> {
@@ -75,12 +75,12 @@ function hasAttachmentPart(node: StructNode | undefined): boolean {
   return (node.childNodes || []).some(hasAttachmentPart);
 }
 
-// The last 30 days, unread first. Headers only: no body is downloaded for the list.
-export async function listMails(box: MailBoxSecret, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
+// The last 30 days, unread first (opts.from: only mails from that address). Headers only: no body is downloaded for the list.
+export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { from?: string } = {}): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
   return withImap(box, async (c) => {
     const lock = await c.getMailboxLock('INBOX', { readOnly: true });
     try {
-      const seqs = await c.search({ since: sinceDate(now) });
+      const seqs = await c.search(opts.from ? { since: sinceDate(now), from: opts.from } : { since: sinceDate(now) });
       if (!seqs || seqs.length === 0) return { mails: [], unread: 0, truncated: false, days: MAIL_DAYS };
       const truncated = seqs.length > MAX_MAILS;
       const wanted = seqs.slice(-MAX_MAILS);
@@ -227,4 +227,11 @@ async function setAnswered(box: MailBoxSecret, uid: number): Promise<void> {
     const lock = await c.getMailboxLock('INBOX');
     try { await c.messageFlagsAdd(String(uid), ['\\Answered'], { uid: true }); } finally { lock.release(); }
   });
+}
+
+// The secrets of every mailbox of one chat site this login may open (the chat thread's "Emails" list).
+export async function mailboxesForSite(user: PermissionHolder, siteId: string): Promise<MailBoxSecret[]> {
+  if (!siteId) return [];
+  const r = await query<BoxRow>(`${ALL_BOXES_SQL} WHERE s.id = $1 ORDER BY se.created_at ASC`, [siteId]);
+  return r.rows.filter(x => canAccessPanel(user, x.panel_id)).map(toBox);
 }

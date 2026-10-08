@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink } from 'lucide-react';
-import { isSuperAdmin } from '@/lib/permissions';
+import { can, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
@@ -11,6 +11,7 @@ import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convNam
 import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, PromiseChip, ReshipChip, VerifiedBadge, statusTone, subjectTone } from './chips';
 import { OrderLine, AddressLine, ItemsLine } from './OrderLine';
 import { MoreMenu } from './MoreMenu';
+import CustomerEmails from './CustomerEmails';
 
 // The open chat's header (owner, 2026-10-03: compact, the same on a laptop and a phone).
 //   Row 1  name · two chips (verified / phone match / visitor; who has it) · the actions
@@ -201,6 +202,11 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
               onEdit={() => setItemsEdit({ convId: activeConv.id, busy: false, error: '' })} />
           )}
         </div>
+      )}
+
+      {/* The Gmail addresses verified for this order (owner 2026-10-08): only with Open Mail */}
+      {activeConv && activeVerifiedOrder && activeVerifiedVia !== 'legacy' && can(user, 'mail.view') && (
+        <CustomerEmails token={token} conversationId={activeConv.id} orderId={activeVerifiedOrder} />
       )}
 
       {/* Ship again's second state (owner 2026-10-03): was the new parcel sent? "To ship" until a reply

@@ -46,6 +46,8 @@ export default function AdminDashboard() {
   const [profileOpen, setProfileOpen] = useState(false);
   const openMe = () => (user?.role === 'admin' ? setSecurityOpen(true) : setProfileOpen(true));
   const [activeTab, setActiveTab] = useState<TabType>('orders');
+  // A chat's "Emails" link (/admin?tab=mail&box=&uid=) opens that mail once (owner 2026-10-08).
+  const [mailLink, setMailLink] = useState<{ box: string; uid: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Refund requests (owner, 2026-10-02; Super Admin only): the red pill = New requests he has not
   // opened yet, and the request a chat's "Open request" link asks to open (/admin?tab=refunds&open=<id>).
@@ -358,6 +360,16 @@ export default function AdminDashboard() {
       setActiveTab('refunds');
       const open = sp.get('open') || '';
       if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(open)) setRefundOpenId(open);
+      window.history.replaceState(window.history.state, '', '/admin');
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('tab') !== 'mail') return;
+      setActiveTab('mail');
+      const box = sp.get('box') || '', uid = Number(sp.get('uid'));
+      if (/^[\w-]{6,80}$/.test(box) && Number.isInteger(uid) && uid > 0) setMailLink({ box, uid });
       window.history.replaceState(window.history.state, '', '/admin');
     } catch { /* ignore */ }
   }, []);
@@ -1530,7 +1542,7 @@ export default function AdminDashboard() {
           )}
           {/* ════════ MAIL (Super Admin, or a member with the Mail tick) ════════ */}
           {activeTab === 'mail' && can(user, 'mail.view') && (
-            <div className="animate-fade-in-up"><MailCard token={token} onAlert={showAlert} activePanelId={activePanelId} /></div>
+            <div className="animate-fade-in-up"><MailCard token={token} onAlert={showAlert} activePanelId={activePanelId} initialBox={mailLink?.box ?? null} initialUid={mailLink?.uid ?? null} /></div>
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && isSuperAdmin(user) && (

@@ -96,3 +96,8 @@ export function parseUid(v: unknown): number | null {
   const n = typeof v === 'string' && /^\d{1,10}$/.test(v) ? Number(v) : typeof v === 'number' ? v : NaN;
   return Number.isInteger(n) && n > 0 ? n : null;
 }
+
+// The first reply to a sender nobody has verified (owner 2026-10-08): the verification the chat also asks for,
+// the ORDER ID and the FULL phone number on the order, written by the team member's own press of a button.
+export const ASK_VERIFY_EN = 'Hello,\n\nTo help you with this, I first need to confirm your order. Please reply to this email with your Order ID and the full phone number on the order.\n\nThank you.';
+export const ASK_VERIFY_HINGLISH = 'Namaste,\n\nAapki madad ke liye mujhe pehle aapka order confirm karna hai. Kripya is mail ke jawab mein apna Order ID aur order par likha poora phone number bhej dein.\n\nDhanyavaad.';
