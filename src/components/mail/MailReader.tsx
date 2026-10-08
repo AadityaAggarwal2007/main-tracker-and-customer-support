@@ -165,6 +165,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         ))}
       </div>
 
+      {mail.cut && <div className="mail-warn" style={{ margin: '0 0 0.5rem' }}>This mail is very large, so only its first part is shown here. Open it in Gmail to see everything. Its files can still be downloaded.</div>}
       <MailThread token={token} boxId={box?.id || ''} currentUid={mail.uid} items={thread} loading={threadLoading} />
 
       {/* Scripts, forms and remote pictures are blocked twice: the sandbox and the policy inside the frame. */}

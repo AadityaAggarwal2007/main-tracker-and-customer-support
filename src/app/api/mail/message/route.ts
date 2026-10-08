@@ -16,7 +16,10 @@ export async function GET(request: NextRequest) {
   if ('error' in a) return a.error;
   try {
     const folder = sp.get('folder') === 'sent' ? 'sent' as const : 'inbox' as const;
-    const mail = await readMail(a.box, uid, { markRead: sp.get('peek') !== '1', images: sp.get('images') === '1', folder });
+    // peek=1 is the read-ahead and the conversation: they use their own connection, so a slow background mail can never hold
+    // up the one the person clicked (imap-pool.ts).
+    const peek = sp.get('peek') === '1';
+    const mail = await readMail(a.box, uid, { markRead: !peek, images: sp.get('images') === '1', folder, slot: peek ? 'bg' : 'read' });
     // A mail we SENT (the conversation view) is only shown: nothing to verify and nobody to mark read.
     if (mail && folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
     if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
