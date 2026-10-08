@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
         `INSERT INTO chargeback_mailboxes (business_id, email, app_password, last_uid) VALUES ($1, $2, $3, $4) RETURNING id, email, created_at`,
         [businessId, address, secret, startUid]);
     } catch (e) {
-      if ((e as { code?: string })?.code === '23505') return NextResponse.json({ error: `${address} is already used by another panel. Run chargeback-shared.sql on the server first, then connect it again.` }, { status: 409 });
+      if ((e as { code?: string })?.code === '23505') return NextResponse.json({ error: `${address} is already the chargeback Gmail of another panel, and the database still allows one panel per address. Run chargeback-setup.sql on the server once, then connect it again.` }, { status: 409 });
       throw e;
     }
     return NextResponse.json({ mailbox: row, shared });
@@ -106,7 +106,7 @@ export async function DELETE(request: NextRequest) {
   } catch (e) {
     console.error('[chargeback] disconnect:', (e as Error).message);
     // 42501 = the database user may not DELETE from chargeback_mailboxes (chargeback.sql never granted it): chargeback-disconnect.sql
-    if ((e as { code?: string })?.code === '42501') return NextResponse.json({ error: 'The database does not allow removing it yet: run chargeback-disconnect.sql on the server once.' }, { status: 500 });
+    if ((e as { code?: string })?.code === '42501') return NextResponse.json({ error: 'The database does not allow removing it yet: run chargeback-setup.sql on the server once.' }, { status: 500 });
     return NextResponse.json({ error: 'Could not disconnect it.' }, { status: 500 });
   }
 }

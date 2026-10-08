@@ -2,6 +2,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { friendlyMailError, mailErrorText, noteMailboxCheck } from '@/lib/chat/mailbox-status';
+import { gmailHost } from '@/lib/chat/imap-pool';
 import { gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { sendChargebackWhatsApp } from './notify';
@@ -42,13 +43,41 @@ export async function pollChargebackMailboxes(): Promise<{ boxes: number; alerts
   return { boxes: groups.size, alerts };
 }
 
+// One Gmail may carry a different App Password on each panel's row (each panel connected it with the password it was
+// given then). Google keeps every App Password valid until it is deleted, but the one on the first row CAN be dead
+// (owner 2026-10-08: a shared Gmail "cannot be read" although the second panel had just signed in fine). So the sign-in
+// tries each row's password in turn, the first-connected panel's first, and stops at the first that Gmail accepts.
+async function signIn(group: Group): Promise<ImapFlow> {
+  const target = await gmailHost();
+  const tried = new Set<string>();
+  let lastErr: unknown = null;
+  for (const row of group.rows) {
+    if (tried.has(row.app_password)) continue;
+    tried.add(row.app_password);
+    const client = new ImapFlow({ ...target, port: 993, secure: true, auth: { user: row.email, pass: row.app_password }, logger: false });
+    client.on('error', () => undefined);
+    try {
+      await client.connect();
+      if (row.id !== group.primary.id) console.warn(`[chargeback] ${row.email}: the App Password on ${group.primary.panel_name || 'the first panel'} is refused; signed in with ${row.panel_name || 'another panel'}'s`);
+      return client;
+    } catch (e) {
+      try { client.close(); } catch { /* never opened */ }
+      lastErr = e;
+      const x = e as { authenticationFailed?: boolean; responseText?: string; message?: string };
+      const auth = x.authenticationFailed === true || /auth|credential/i.test(`${x.responseText || ''} ${x.message || ''}`);
+      if (!auth) break;                                           // not the password: the network, Gmail down; try no further
+    }
+  }
+  throw lastErr ?? new Error('Command failed');
+}
+
 async function pollOne(group: Group): Promise<number> {
   const box = group.primary;
-  const client = new ImapFlow({ host: 'imap.gmail.com', port: 993, secure: true, auth: { user: box.email, pass: box.app_password }, logger: false });
   const last = Math.max(...group.rows.map(r => Number(r.last_uid) || 0), 0);
   let maxUid = last, made = 0;
+  let client: ImapFlow | null = null;
   try {
-    await client.connect();
+    client = await signIn(group);
     const lock = await client.getMailboxLock('INBOX', { readOnly: true });
     try {
       const seqs = await client.search({ uid: `${last + 1}:*` });
@@ -69,7 +98,7 @@ async function pollOne(group: Group): Promise<number> {
     console.error(`[chargeback] IMAP error for ${box.email}:`, why);
     noteMailboxCheck(`cb:${box.id}`, { ok: false, error: friendlyMailError(why) });
   } finally {
-    try { client.close(); } catch { /* already closed */ }
+    try { client?.close(); } catch { /* already closed */ }
   }
   return made;
 }
