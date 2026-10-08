@@ -1,16 +1,19 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, MessageCircle, Reply, Send, ShieldQuestion, EyeOff } from 'lucide-react';
-import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH } from '@/lib/chat/mail-view';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
+import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, quotedText } from '@/lib/chat/mail-view';
+import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
 import { initials } from '@/lib/chat/mail-filters';
-import type { Att, Box, Full, Ver } from './types';
+import MailThread from './MailThread';
+import type { Att, Box, Full, ThreadItem, Ver } from './types';
 
 const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // The open mail: who, the verification bar, actions, the body in a sandboxed frame, the reply box (owner 2026-10-08).
-export default function MailReader({ token, box, mail, versions, canReply, onAlert, onBack, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, canReply, onAlert, onBack, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
+  thread: ThreadItem[] | null; threadLoading: boolean;
   onAlert: (type: string, message: string) => void;
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   onShowImages: () => void; onMarkUnread: () => void;
@@ -21,6 +24,8 @@ export default function MailReader({ token, box, mail, versions, canReply, onAle
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [sending, setSending] = useState(false);
+  const [includeQuote, setIncludeQuote] = useState(true);
+  const [attach, setAttach] = useState<File[]>([]);
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [vOrder, setVOrder] = useState('');
   const [vPhone, setVPhone] = useState('');
@@ -28,7 +33,7 @@ export default function MailReader({ token, box, mail, versions, canReply, onAle
   const [vError, setVError] = useState('');
 
   // Another mail: a clean reply box and verify form.
-  useEffect(() => { setReplyOpen(false); setReplyText(''); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); }, [mail.uid]);
+  useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); }, [mail.uid]);
 
   const download = async (a: Att) => {
     try {
@@ -40,15 +45,33 @@ export default function MailReader({ token, box, mail, versions, canReply, onAle
     } catch { onAlert('error', 'Could not download that file.'); }
   };
 
+  // Files for the reply: the chat's own rules (JPG / PNG / WEBP / GIF / PDF, 10 MB each) and at most 5, 10 MB in all;
+  // the server judges every file again from its bytes.
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    const next = [...attach];
+    for (const f of Array.from(list)) {
+      const problem = checkBrowserFile(f);
+      if (problem) { onAlert('error', `${f.name}: ${problem}`); continue; }
+      if (next.length >= MAIL_MAX_FILES) { onAlert('error', `You can attach up to ${MAIL_MAX_FILES} files.`); break; }
+      if (next.reduce((n, x) => n + x.size, 0) + f.size > MAIL_MAX_TOTAL_BYTES) { onAlert('error', 'Files on one reply can add up to 10 MB.'); break; }
+      next.push(f);
+    }
+    setAttach(next);
+  };
+
   const send = async () => {
     if (!box || sending) return;
     setSending(true);
     try {
-      const r = await fetch('/api/mail/send', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, text: replyText }) });
+      const form = new FormData();
+      form.append('box', box.id); form.append('uid', String(mail.uid)); form.append('text', replyText); form.append('includeQuote', includeQuote ? '1' : '0');
+      for (const f of attach) form.append('files', f, f.name);
+      const r = await fetch('/api/mail/send', { method: 'POST', headers: { Authorization: auth.Authorization }, body: form });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', d.error || 'The reply was not sent.'); return; }
       onAlert('success', `Reply sent to ${d.to}.`);
-      setReplyOpen(false); setReplyText(''); onSent();
+      setReplyOpen(false); setReplyText(''); setAttach([]); onSent();
     } catch { onAlert('error', 'The reply was not sent.'); }
     finally { setSending(false); }
   };
@@ -142,18 +165,42 @@ export default function MailReader({ token, box, mail, versions, canReply, onAle
         ))}
       </div>
 
+      <MailThread token={token} boxId={box?.id || ''} currentUid={mail.uid} items={thread} loading={threadLoading} />
+
       {/* Scripts, forms and remote pictures are blocked twice: the sandbox and the policy inside the frame. */}
       <iframe className="mail-frame" title="Mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={mail.frame} />
 
       {replyOpen && (
         <div className="mail-reply">
-          <div className="meta">Goes from <b>{box?.email}</b> to {mail.replyTo || mail.fromAddress}. Gmail keeps a copy in Sent.</div>
+          <div className="meta">Goes from <b>{box?.email}</b> to {mail.replyTo || mail.fromAddress}, in the same Gmail conversation. Gmail keeps a copy in Sent.</div>
           <textarea className="form-input" rows={6} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
+          <label className="mail-quote-opt">
+            <input type="checkbox" checked={includeQuote} onChange={e => setIncludeQuote(e.target.checked)} /> Quote the original message below my reply (like Gmail)
+          </label>
+          {includeQuote && (
+            <details className="mail-quote-preview">
+              <summary>See the quoted original</summary>
+              <pre>{quotedText(mail.date, mail.from, mail.text || '')}</pre>
+            </details>
+          )}
+          {attach.length > 0 && (
+            <div className="mail-files">
+              {attach.map((f, i) => (
+                <span key={`${f.name}-${i}`} className="chip chip-muted"><Paperclip size={11} /> {f.name} <span className="meta">{formatFileSize(f.size)}</span>
+                  <button type="button" className="mail-file-x" onClick={() => setAttach(attach.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><X size={11} /></button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="mail-actions" style={{ margin: 0 }}>
             <button type="button" className="btn btn-primary btn-sm" disabled={sending || !replyText.trim()} onClick={send}>
               {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send reply
             </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); }}>Cancel</button>
+            <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }} title="JPG, PNG, WEBP, GIF or PDF; up to 5 files, 10 MB in all">
+              <Paperclip size={14} /> Attach
+              <input type="file" multiple accept={ATTACHMENT_ACCEPT} style={{ display: 'none' }} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+            </label>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); setAttach([]); }}>Cancel</button>
           </div>
         </div>
       )}

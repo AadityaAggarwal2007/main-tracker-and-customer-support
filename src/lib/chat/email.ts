@@ -112,9 +112,9 @@ function stripQuotedReply(text: string): string {
 
 // ── Send via Gmail SMTP ────────────────────────────────────────────────────
 export async function sendEmailReply({
-  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments,
+  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments, fromName, cc,
 }: {
-  fromEmail: string; appPassword: string; toEmail: string; subject: string;
+  fromEmail: string; fromName?: string; cc?: string; appPassword: string; toEmail: string; subject: string;
   htmlBody: string; textBody: string; replyToMessageId?: string | null; references?: string | null;
   attachments?: { filename: string; content: Buffer; contentType: string }[];
 }): Promise<void> {
@@ -134,7 +134,8 @@ export async function sendEmailReply({
   }
 
   await transporter.sendMail({
-    from: `"Support" <${fromEmail}>`,
+    from: `"${(fromName || 'Support').replace(/["\r\n]/g, '')}" <${fromEmail}>`,
+    ...(cc ? { cc } : {}),
     to: toEmail,
     subject: replySubject,
     html: htmlBody,

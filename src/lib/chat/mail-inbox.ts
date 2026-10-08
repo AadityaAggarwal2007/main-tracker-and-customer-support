@@ -1,10 +1,11 @@
 import type { ImapFlow } from 'imapflow';
+import { htmlToText } from '@/lib/chargeback/parse';
 import { PoolTimeout, withPooledImap, type PoolSlot } from './imap-pool';
 import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { canAccessPanel, type PermissionHolder } from '@/lib/permissions';
 import { buildEmailHtml, sendEmailReply } from './email';
-import { MAX_MAILS, MAIL_DAYS, addressLabel, firstAuthResults, frameHtml, gmailAuthPassed, hasRemoteImages, replySubject, sinceDate, sortMails, textToHtml, type MailListItem } from './mail-view';
+import { MAX_MAILS, MAIL_DAYS, addressLabel, firstAuthResults, frameHtml, gmailAuthPassed, hasRemoteImages, replyBodyHtml, replyBodyText, replySubject, sinceDate, sortMails, textToHtml, type MailListItem } from './mail-view';
 
 // ── The Mail tab, server side (owner 2026-10-08) ──────────────────────────────────────────────
 // Reads a panel's real Gmail inbox over IMAP when a screen asks, and sends a reply over SMTP. Nothing is
@@ -96,6 +97,23 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
   }, 'list');
 }
 
+export type MailFolder = 'inbox' | 'sent';
+
+// Gmail's Sent folder path (it is called "[Gmail]/Sent Mail" in English and differs by language): found by its
+// special-use flag and remembered per mailbox.
+const SENT_PATHS = new Map<string, string>();
+export function forgetSentPaths(): void { SENT_PATHS.clear(); }   // for the tests
+async function sentPath(c: ImapFlow, boxId: string): Promise<string | null> {
+  const known = SENT_PATHS.get(boxId);
+  if (known) return known;
+  try {
+    const all = await c.list();
+    const sent = all.find(b => b.specialUse === '\\Sent') ?? all.find(b => /sent/i.test(b.path) && !b.flags?.has('\\Noselect'));
+    if (sent?.path) { SENT_PATHS.set(boxId, sent.path); return sent.path; }
+  } catch { /* no Sent folder readable: the thread shows received mail only */ }
+  return null;
+}
+
 export interface MailAttachmentInfo { index: number; filename: string; contentType: string; size: number; inline: boolean }
 export interface MailFull {
   uid: number; subject: string; date: string;
@@ -115,14 +133,16 @@ async function fetchSource(c: ImapFlow, uid: number): Promise<{ source: Buffer; 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 
 // Opens one mail. markRead (default) sets Gmail's Seen flag, like opening it in Gmail.
-export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean } = {}): Promise<MailFull | null> {
+export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean; folder?: MailFolder } = {}): Promise<MailFull | null> {
   return withImap(box, async (c) => {
-    const lock = await c.getMailboxLock('INBOX', { readOnly: opts.markRead === false });
+    const path = opts.folder === 'sent' ? await sentPath(c, box.id) : 'INBOX';
+    if (!path) return null;
+    const lock = await c.getMailboxLock(path, { readOnly: opts.markRead === false || opts.folder === 'sent' });
     try {
       const got = await fetchSource(c, uid);
       if (!got) return null;
       const wasUnread = !got.flags.has('\\Seen');
-      if (opts.markRead !== false && wasUnread) { try { await c.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }); } catch { /* best effort */ } }
+      if (opts.markRead !== false && wasUnread && opts.folder !== 'sent') { try { await c.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }); } catch { /* best effort */ } }
       const p = await simpleParser(got.source);
       let html = typeof p.html === 'string' && p.html.trim() ? p.html : '';
       // Pictures that came inside the mail (cid:) are shown from the mail itself, never from the internet.
@@ -132,7 +152,8 @@ export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead
           html = html.split(`cid:${cid}`).join(`data:${a.contentType};base64,${a.content.toString('base64')}`);
         }
       }
-      const text = p.text || '';
+      // An HTML-only mail has no plain part: its text is made from the HTML (the quote and the order-number check need it).
+      const text = p.text || (html ? htmlToText(html) : '');
       const from = p.from?.value?.[0];
       const list = (v: unknown) => {
         const arr = Array.isArray(v) ? v : v ? [v] : [];
@@ -187,8 +208,13 @@ export async function attachmentBytes(box: MailBoxSecret, uid: number, index: nu
   });
 }
 
-// A reply to one mail, sent from the mailbox's own Gmail address (Gmail keeps the copy in Sent).
-export async function sendMailReply(box: MailBoxSecret, uid: number, text: string): Promise<{ to: string }> {
+export interface ReplyFile { filename: string; content: Buffer; contentType: string }
+
+// A reply to one mail, sent from the mailbox's own Gmail address like a normal Gmail reply (owner 2026-10-08): the
+// typed text, then Gmail's quote of the original after it (includeQuote), optional files, In-Reply-To /
+// References so it stays in the same Gmail conversation. Gmail keeps the copy in Sent. The quote is built HERE from
+// the mail itself, never taken from the browser.
+export async function sendMailReply(box: MailBoxSecret, uid: number, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string }> {
   const orig = await withImap(box, async (c) => {
     const lock = await c.getMailboxLock('INBOX', { readOnly: true });
     try {
@@ -197,23 +223,61 @@ export async function sendMailReply(box: MailBoxSecret, uid: number, text: strin
       const p = await simpleParser(got.source);
       const refs = Array.isArray(p.references) ? p.references.join(' ') : (p.references || '');
       const target = p.replyTo?.value?.[0]?.address || p.from?.value?.[0]?.address || '';
-      return { to: target.toLowerCase(), subject: p.subject || '', messageId: p.messageId || '', references: refs };
+      return {
+        to: target.toLowerCase(), subject: p.subject || '', messageId: p.messageId || '', references: refs,
+        date: (p.date || new Date()).toISOString(), fromLabel: addressLabel(p.from?.value?.[0]) || target,
+        text: p.text || (typeof p.html === 'string' ? htmlToText(p.html) : ''),
+      };
     } finally { lock.release(); }
   });
   if (!orig) throw new MailError('That mail is no longer in the inbox.', 404);
   if (!orig.to) throw new MailError('That mail has no address to reply to.', 400);
   if (orig.to === box.email.toLowerCase()) throw new MailError('That mail came from this same Gmail address.', 400);
+  const quote = opts.includeQuote === false ? null : { dateIso: orig.date, fromLabel: orig.fromLabel, original: orig.text };
   try {
     await sendEmailReply({
-      fromEmail: box.email, appPassword: box.appPassword, toEmail: orig.to,
-      subject: replySubject(orig.subject), htmlBody: buildEmailHtml(text, box.panelName), textBody: text,
+      fromEmail: box.email, fromName: `${box.siteName} Support`, appPassword: box.appPassword, toEmail: orig.to,
+      subject: replySubject(orig.subject), htmlBody: replyBodyHtml(text, quote), textBody: replyBodyText(text, quote),
       replyToMessageId: orig.messageId || null, references: orig.references || null,
+      attachments: opts.files && opts.files.length ? opts.files : undefined,
     });
   } catch {
     throw new MailError('Gmail did not accept the reply. Nothing was sent. Try again.', 502);
   }
   try { await setAnswered(box, uid); } catch { /* the reply is out; the flag is a courtesy */ }
   return { to: orig.to };
+}
+
+export interface ThreadItem { folder: MailFolder; uid: number; from: string; to: string; subject: string; date: string }
+
+// The whole conversation with one address (owner 2026-10-08, "Gmail ki tarah conversation view"): what that address
+// sent to this Gmail (INBOX, FROM) and what this Gmail sent to it (Sent, TO), the last 30 days, oldest first.
+// Headers only; a body is read when one is opened (readMail with folder).
+export async function listThread(box: MailBoxSecret, address: string, now = Date.now()): Promise<ThreadItem[]> {
+  const since = sinceDate(now);
+  const out: ThreadItem[] = [];
+  const grab = async (c: ImapFlow, path: string, folder: MailFolder, criteria: Record<string, unknown>) => {
+    const lock = await c.getMailboxLock(path, { readOnly: true });
+    try {
+      const seqs = await c.search(criteria as never);
+      if (!seqs || seqs.length === 0) return;
+      for await (const m of c.fetch(seqs.slice(-30), { uid: true, envelope: true })) {
+        const f = m.envelope?.from?.[0], t = m.envelope?.to?.[0];
+        out.push({
+          folder, uid: m.uid,
+          from: (f?.name || f?.address || '').trim() || '(unknown)', to: (t?.name || t?.address || '').trim(),
+          subject: (m.envelope?.subject || '').trim() || '(no subject)',
+          date: (m.envelope?.date ? new Date(m.envelope.date) : new Date(now)).toISOString(),
+        });
+      }
+    } finally { lock.release(); }
+  };
+  await withImap(box, async (c) => {
+    await grab(c, 'INBOX', 'inbox', { since, from: address });
+    const sent = await sentPath(c, box.id);
+    if (sent) await grab(c, sent, 'sent', { since, to: address });
+  });
+  return out.sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0)).slice(-40);
 }
 
 async function setAnswered(box: MailBoxSecret, uid: number): Promise<void> {
