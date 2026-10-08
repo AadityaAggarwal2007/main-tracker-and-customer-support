@@ -55,17 +55,17 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
     if (await call('connect', 'POST', { businessId, email, appPassword: pass })) { setEmail(''); setPass(''); onAlert('success', 'Chargeback Gmail connected. New mail in it will raise an alert.'); await load(); }
   };
   const remove = async () => {
-    if (!window.confirm(`Disconnect the chargeback Gmail of ${panelName}? Old alerts stay. New chargeback mails will no longer be seen.`)) return;
+    if (!window.confirm(`Disconnect the CHARGEBACK Gmail of ${panelName}?\n\nOld alerts stay. New chargeback mails will no longer be seen. (The customer support Gmail is a different account and is not touched.)`)) return;
     if (await call('remove', 'DELETE', undefined, `/api/panel-chargeback?businessId=${encodeURIComponent(businessId)}`)) await load();
   };
   const saveWa = async () => { if (await call('wa', 'PATCH', { businessId, whatsapp: wa })) { onAlert('success', wa.trim() ? 'WhatsApp number saved.' : 'WhatsApp number removed.'); await load(); } };
   const tick = async (key: string, done: boolean) => { if (await call(`g-${key}`, 'PATCH', { businessId, gateway: { key, done } })) await load(); };
 
   return (
-    <div className="tf-card" style={{ padding: '1.5rem', marginTop: '1.5rem' }}>
+    <div className="tf-card" style={{ padding: '1.5rem', borderLeft: '4px solid var(--danger)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
         <ShieldAlert size={18} style={{ color: 'var(--danger)' }} />
-        <span style={{ fontWeight: 700, fontSize: '0.9375rem' }}>Chargeback protection</span>
+        <span style={{ fontWeight: 700, fontSize: '0.9375rem' }}>Gmail 2 · Chargeback protection</span>
         {d?.mailbox && <span className="chip chip-ok">On</span>}
       </div>
       <p className="meta" style={{ marginBottom: '1rem' }}>
@@ -77,10 +77,10 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
         <div style={{ display: 'grid', gap: '1.25rem' }}>
           {/* 1. The chargeback Gmail */}
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>1. Chargeback Gmail</div>
+            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Chargeback Gmail address</div>
             {d.mailbox && d.sharedWith && d.sharedWith.length > 0 && (
               <div className="meta" style={{ marginBottom: '0.5rem', padding: '0.5rem 0.625rem', background: 'var(--primary-light)', borderRadius: '0.5rem' }}>
-                This Gmail is also used by <b>{d.sharedWith.join(', ')}</b>. Each chargeback mail goes to the panel that has the order it names, or else to the panel whose gateway is ticked in step 3. <b>Tick the gateway this panel uses</b> (for example PayU here and PayGlocal on the other panel), or the mail cannot be told apart and waits for you to move it.
+                This Gmail is also used by <b>{d.sharedWith.join(', ')}</b>. Each chargeback mail goes to the panel that has the order it names, or else to the panel whose gateway is ticked in Step B below. <b>Tick the gateway this panel uses</b> (for example PayU here and PayGlocal on the other panel), or the mail cannot be told apart and waits for you to move it.
               </div>
             )}
             {d.mailbox ? (
@@ -94,7 +94,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
                       : `Working. Checked ${agoText(d.mailbox.status.checkedAt)}.${d.mailbox.status.lastMailAt ? ` Last chargeback mail ${agoText(d.mailbox.status.lastMailAt)}.` : ''}`}
                   </div>
                 </div>
-                <button className="btn-icon" style={{ marginLeft: 'auto', color: 'var(--danger)' }} title="Disconnect" disabled={busy === 'remove'} onClick={remove}><Trash2 size={14} /></button>
+                <button className="btn btn-outline btn-sm" style={{ marginLeft: 'auto', color: 'var(--danger)' }} title="Disconnect the chargeback Gmail" disabled={busy === 'remove'} onClick={remove}><Trash2 size={13} /> Disconnect</button>
               </div>
             ) : (
               <>
@@ -110,7 +110,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
 
           {/* 2. WhatsApp */}
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>2. WhatsApp number for the alert</div>
+            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Step A · WhatsApp number for the alert</div>
             <div className="mail-bar" style={{ border: 0, padding: 0 }}>
               <input className="form-input" style={{ flex: 1, minWidth: 180, maxWidth: 280 }} placeholder="919876543210" inputMode="tel" value={wa} onChange={e => setWa(e.target.value)} />
               <button className="btn btn-outline btn-sm" disabled={busy === 'wa' || wa === d.whatsapp} onClick={saveWa}>Save number</button>
@@ -122,7 +122,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
 
           {/* 3. Gateway checklist */}
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>3. Where this email has been added</div>
+            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Step B · Where this email has been added</div>
             <div className="meta" style={{ marginBottom: '0.5rem' }}>Tick a gateway after you typed the chargeback Gmail into its dashboard (Settings → Notifications / Disputes). This is only your checklist.</div>
             <div style={{ display: 'grid', gap: '0.25rem', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
               {d.gatewayList.map(g => {
