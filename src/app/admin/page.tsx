@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
+import PanelCopyCard from '@/components/PanelCopyCard';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
@@ -993,14 +994,26 @@ export default function AdminDashboard() {
         {newPanelOpen && (
           <NewPanelDialog
             onClose={() => setNewPanelOpen(false)}
-            onCreate={async (name, password) => {
+            panels={businesses.map(b => ({ id: b.id, name: b.name }))}
+            onCreate={async (name, password, startFrom) => {
               const res = await fetch('/api/businesses', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: JSON.stringify({ name, password }),
               });
-              if (res.ok) { showAlert('success', `Panel "${name.trim()}" created`); fetchBusinesses(); return null; }
               const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                // "Start from": the new panel gets the same AI setup as the chosen panel (owner 2026-10-08)
+                if (startFrom && data?.business?.id) {
+                  const cp = await fetch('/api/panel-copy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ source: startFrom, target: data.business.id }),
+                  }).catch(() => null);
+                  showAlert(cp && cp.ok ? 'success' : 'error', cp && cp.ok ? `Panel "${name.trim()}" created with the same setup` : `Panel "${name.trim()}" created, but the setup could not be copied: use Copy setup in its Settings`);
+                } else showAlert('success', `Panel "${name.trim()}" created`);
+                fetchBusinesses(); return null;
+              }
               return data?.error || 'Failed to create panel';
             }}
           />
@@ -1529,6 +1542,14 @@ export default function AdminDashboard() {
               {activeBusiness && isSuperAdmin(user) && (
                 <div id="set-chargeback" style={{ scrollMarginTop: 76 }}>
                   <ChargebackSettingsCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name} onAlert={showAlert} />
+                </div>
+              )}
+
+              {/* Copy the AI setup from another panel (owner 2026-10-08): every panel gets the same setup */}
+              {activeBusiness && isSuperAdmin(user) && businesses.length > 1 && (
+                <div id="set-copy" style={{ scrollMarginTop: 76 }}>
+                  <PanelCopyCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name}
+                    others={businesses.filter(b => b.id !== activeBusiness.id).map(b => ({ id: b.id, name: b.name }))} onAlert={showAlert} />
                 </div>
               )}
 
