@@ -12,6 +12,7 @@ interface Alert {
   id: string; business_id: string; panel_name: string | null; received_at: string; from_address: string; from_name: string;
   subject: string; snippet: string; gateway: string; order_id: string | null; status: 'new' | 'seen' | 'done';
   seen_by_name: string | null; done_by_name: string | null; done_at: string | null; note: string | null; notify_status: string; chat_id: string | null;
+  routed_by?: string | null; alt_panels?: { id: string; name: string }[];
 }
 
 const notifyText = (s: string) => s === 'sent' ? 'WhatsApp sent' : s === 'no_number' ? 'No WhatsApp number' : s === 'not_configured' ? 'WhatsApp not set up' : s === 'pending' ? 'WhatsApp pending' : s.replace(/^failed: ?/, 'WhatsApp failed: ');
@@ -46,6 +47,14 @@ export default function ChargebacksCard({ token, onAlert, onChanged }: { token: 
       await load();
     } catch { onAlert('error', 'Could not save that.'); }
   };
+  // Two panels share one chargeback Gmail and the mail could not be told apart: the Super Admin moves it by hand.
+  const move = async (a: Alert, businessId: string) => {
+    try {
+      const r = await fetch('/api/chargebacks', { method: 'PATCH', headers: auth, body: JSON.stringify({ id: a.id, businessId }) });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); onAlert('error', j.error || 'Could not move it.'); return; }
+      onAlert('success', 'Moved.'); onChanged?.(); await load();
+    } catch { onAlert('error', 'Could not move it.'); }
+  };
   const toggle = (a: Alert) => {
     const next = openId === a.id ? null : a.id;
     setOpenId(next); setNote('');
@@ -73,6 +82,7 @@ export default function ChargebacksCard({ token, onAlert, onChanged }: { token: 
                 {a.status === 'done' && <span className="chip chip-muted">Done</span>}
                 <b style={{ fontSize: '0.875rem' }}>{a.panel_name || 'Panel'}</b>
                 <span className="chip chip-muted">{a.gateway}</span>
+                {a.routed_by === 'unsure' && <span className="chip chip-warn" title="Two panels share this Gmail and the mail names no order and no ticked gateway of either. Move it to the right panel.">Panel unsure</span>}
                 {a.order_id ? <span className="chip chip-primary">Order {a.order_id}</span> : <span className="chip chip-warn" title="No order number of this panel was found in the mail">Order not found</span>}
               </span>
               <span className="meta">{agoText(Date.parse(a.received_at))} <ChevronDown size={12} style={{ verticalAlign: '-2px' }} /></span>
@@ -84,6 +94,12 @@ export default function ChargebacksCard({ token, onAlert, onChanged }: { token: 
                 <div style={{ fontSize: '0.8125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--muted)', borderRadius: '0.5rem', padding: '0.625rem' }}>{a.snippet || '(no text)'}</div>
                 <div className="meta">The full mail, with the gateway&apos;s deadline and evidence steps, is in that panel&apos;s chargeback Gmail.</div>
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  {(a.alt_panels?.length ?? 0) > 0 && a.status !== 'done' && (
+                    <select className="form-input" style={{ height: '2rem', width: 'auto' }} value="" onChange={e => { if (e.target.value) void move(a, e.target.value); }} aria-label="Move to another panel">
+                      <option value="">Move to panel…</option>
+                      {a.alt_panels!.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  )}
                   {a.chat_id && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(a.chat_id)}`}><MessageCircle size={13} /> Open chat</a>}
                   <a className="btn btn-outline btn-sm" href="https://mail.google.com/" target="_blank" rel="noopener noreferrer"><ExternalLink size={13} /> Open Gmail</a>
                   {a.status !== 'done' && (
