@@ -16,11 +16,15 @@
 --   3. deletes the copy order rows;
 --   4. deletes only item batches (rows inserted by one later upload) whose content is IDENTICAL to the
 --      earliest batch of that order number; a batch that differs is left alone and reported;
---   5. prints what is left.
--- It does NOT touch: the real orders, tracking_history, email_queue, chats, panels (the two empty panels
--- are deleted afterwards from Settings > Danger zone, which shows 0 orders), or the Shopify code.
--- Safe to run once; a second run finds nothing and stops. Undo: copy the rows back from the two backup tables
--- (INSERT INTO orders SELECT * FROM cleanup_20261008_orders; same for order_items). Nothing is dropped.
+--   5. prints what is left (the panel list at the end should be exactly vastora, VASTRIKA, kurtiya).
+-- 4b. then deletes the two duplicate PANELS (vestora, VASTRIKA STORE) if, and only if, each is now completely empty:
+--      0 orders, 0 chats, 0 team members limited to it, 0 tickets, not the default panel (the same things the
+--      Settings > Danger zone delete removes: its chat site, webhook log, support settings). A panel that is not
+--      empty is KEPT and a NOTICE says why. Result: three panels, vastora, VASTRIKA and kurtiya.
+-- It does NOT touch: the real orders, tracking_history, email_queue, chats, the other panels, or the Shopify code.
+-- Safe to run once; a second run finds nothing and stops. Undo: copy the rows back from the backup tables
+-- cleanup_20261008_orders / _order_items / _businesses / _sites (INSERT INTO orders SELECT * FROM cleanup_20261008_orders;
+-- same for the others). Nothing is dropped.
 BEGIN;
 
 -- 0. The panels this file is about must exist exactly once.
@@ -105,6 +109,10 @@ SELECT b.order_id, b.created_at, b.n
 -- 3. Backups (new tables; nothing is dropped anywhere).
 CREATE TABLE IF NOT EXISTS cleanup_20261008_orders AS SELECT * FROM orders WHERE false;
 CREATE TABLE IF NOT EXISTS cleanup_20261008_order_items AS SELECT * FROM order_items WHERE false;
+CREATE TABLE IF NOT EXISTS cleanup_20261008_businesses AS SELECT * FROM businesses WHERE false;
+CREATE TABLE IF NOT EXISTS cleanup_20261008_sites AS SELECT * FROM sites WHERE false;
+INSERT INTO cleanup_20261008_businesses SELECT b.* FROM businesses b WHERE b.name IN ('vestora', 'VASTRIKA STORE');
+INSERT INTO cleanup_20261008_sites SELECT s.* FROM sites s WHERE s.tracker_business_id::text IN (SELECT id::text FROM businesses WHERE name IN ('vestora', 'VASTRIKA STORE'));
 INSERT INTO cleanup_20261008_orders SELECT o.* FROM orders o WHERE o.id IN (SELECT dup_id FROM dup_orders);
 INSERT INTO cleanup_20261008_order_items
 SELECT i.* FROM order_items i JOIN item_dups d ON d.order_id = i.order_id AND d.created_at = i.created_at;
@@ -124,6 +132,27 @@ BEGIN
   RAISE NOTICE 'cleanup: deleted % copy orders and % duplicate item rows (% planned).', del_orders, del_items, want_items;
 END $$;
 
+-- 4b. The two duplicate panels, only when completely empty (the same cleanup the Danger zone does).
+DO $$
+DECLARE b record; ord int; chats int; team int; tix int;
+BEGIN
+  FOR b IN SELECT id, name, is_default FROM businesses WHERE name IN ('vestora', 'VASTRIKA STORE') LOOP
+    SELECT count(*) INTO ord FROM orders WHERE business_id = b.id;
+    SELECT count(*) INTO chats FROM conversations c JOIN sites s ON s.id = c.site_id WHERE s.tracker_business_id::text = b.id::text;
+    SELECT count(*) INTO team FROM team_users WHERE business_ids::text[] @> ARRAY[b.id::text];
+    SELECT count(*) INTO tix FROM support_tickets WHERE business_id::text = b.id::text;
+    IF ord = 0 AND chats = 0 AND team = 0 AND tix = 0 AND NOT b.is_default THEN
+      DELETE FROM shopify_webhook_logs WHERE business_id::text = b.id::text;
+      DELETE FROM support_settings WHERE business_id::text = b.id::text;
+      DELETE FROM sites WHERE tracker_business_id::text = b.id::text;
+      DELETE FROM businesses WHERE id = b.id;
+      RAISE NOTICE 'cleanup: panel "%" was empty and is deleted.', b.name;
+    ELSE
+      RAISE NOTICE 'cleanup: panel "%" is KEPT (not empty): orders %, chats %, team members %, tickets %, default %.', b.name, ord, chats, team, tix, b.is_default;
+    END IF;
+  END LOOP;
+END $$;
+
 -- 5. What is left for these order numbers (item_rows above distinct_items = a batch that was NOT identical,
 --    left for a person to look at).
 SELECT o.order_id, b.name AS panel, o.tracking_status,
@@ -133,7 +162,8 @@ SELECT o.order_id, b.name AS panel, o.tracking_status,
  WHERE o.order_id IN (SELECT order_id FROM dup_orders) OR o.order_id IN ('#1303', '1303')
  ORDER BY o.order_id, b.name;
 
-SELECT b.name AS panel, (SELECT count(*) FROM orders o WHERE o.business_id = b.id) AS orders
-  FROM businesses b WHERE b.name IN ('vestora', 'VASTRIKA STORE', 'kurtiya') ORDER BY b.name;
+SELECT b.name AS panel, (SELECT count(*) FROM orders o WHERE o.business_id = b.id) AS orders,
+       (SELECT count(*) FROM sites s WHERE s.tracker_business_id::text = b.id::text) AS chat_sites
+  FROM businesses b ORDER BY b.created_at;
 
 COMMIT;
