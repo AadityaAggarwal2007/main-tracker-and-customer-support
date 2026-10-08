@@ -2511,3 +2511,17 @@ a {
   .mail-back { display: inline-flex; }
   .mail-list { max-height: none; }
 }
+
+/* Emails of a verified customer, in the chat thread (owner 2026-10-08) */
+.th-emails { flex-basis: 100%; min-width: 0; }
+.th-emails-body { display: grid; gap: 0.125rem; margin-top: 0.25rem; padding-left: 0.25rem; }
+.th-email-row { display: grid; grid-template-columns: 1fr auto auto; gap: 0.5rem; align-items: center; color: var(--fg-secondary); text-decoration: none; padding: 0.125rem 0.25rem; border-radius: 0.375rem; }
+.th-email-row:hover { background: var(--primary-light); color: var(--primary); }
+.th-email-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-email-subj.unread { font-weight: 700; }
+
+.mail-verify { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.625rem; border-radius: 0.5rem; font-size: 0.8125rem; margin-bottom: 0.625rem; }
+.mail-verify > span { flex: 1 1 14rem; min-width: 0; }
+.mail-verify.ok { background: hsl(142, 60%, 94%); color: hsl(142, 64%, 24%); }
+.mail-verify.warn { background: hsl(38, 100%, 94%); color: hsl(30, 80%, 28%); }
+.mail-verify-form { display: grid; gap: 0.5rem; margin-bottom: 0.625rem; padding: 0.625rem; border: 1px solid var(--border); border-radius: 0.5rem; }

@@ -33,22 +33,60 @@ function reset(over = {}) {
     ],
     authFail: false, connects: [], locks: [], searches: [], fetchQueries: [], logouts: 0, closes: 0, sent: [], flagCalls: [],
     boxes: [
-      { id: 'boxV', email: 'vastora@store.example', app_password: 'SECRETSECRETSECR', site_name: 'Vastora', panel_id: 'bizV', panel_name: 'vastora' },
-      { id: 'boxK', email: 'kurtiya@store.example', app_password: 'OTHERSECRETOTHER', site_name: 'Kurtiya', panel_id: 'bizK', panel_name: 'kurtiya' },
+      { id: 'boxV', email: 'vastora@store.example', app_password: 'SECRETSECRETSECR', site_id: 'siteV', site_name: 'Vastora', panel_id: 'bizV', panel_name: 'vastora' },
+      { id: 'boxK', email: 'kurtiya@store.example', app_password: 'OTHERSECRETOTHER', site_id: 'siteK', site_name: 'Kurtiya', panel_id: 'bizK', panel_name: 'kurtiya' },
     ],
+    orders: [{ order_id: '#1553', phone: '9876543210', panel: 'bizV', name: 'Priya' }, { order_id: '#7000', phone: '9111111111', panel: 'bizK', name: 'Other' }],
+    ver: [], convUpdates: [], missingTable: false, chatFor: 'chat-1',
+    chat: { site_id: 'siteV', business_id: 'bizV', verified_order_id: '#1553', verified_via: 'form' },
+    orderLookups: 0,
   }, over);
 }
 reset();
 
+const gone = () => Object.assign(new Error('relation "mail_verifications" does not exist'), { code: '42P01' });
 const db = {
   query: async (sql, params) => {
     if (/FROM site_emails se/.test(sql)) {
-      const rows = /WHERE se\.id = \$1/.test(sql) ? S.boxes.filter((b) => b.id === params[0]) : S.boxes;
+      const rows = /WHERE se\.id = \$1/.test(sql) ? S.boxes.filter((b) => b.id === params[0])
+        : /WHERE s\.id = \$1/.test(sql) ? S.boxes.filter((b) => b.site_id === params[0]) : S.boxes;
       return { rows, rowCount: rows.length };
     }
+    if (/mail_verifications/.test(sql) && S.missingTable) throw gone();
+    if (/INSERT INTO mail_verifications/.test(sql)) {
+      const row = { business_id: params[0], email: params[1], order_id: params[2], verified_by: params[3], verified_by_name: params[4], removed: false };
+      const old = S.ver.find((v) => v.business_id === row.business_id && v.email === row.email && v.order_id === row.order_id);
+      if (old) Object.assign(old, row); else S.ver.push(row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (/FROM mail_verifications v/.test(sql)) {
+      const rows = S.ver.filter((v) => !v.removed && v.business_id === params[0] && params[1].includes(v.email))
+        .map((v) => ({ email: v.email, order_id: v.order_id, verified_by_name: v.verified_by_name, verified_at: '2026-10-08T12:00:00Z', chat_id: S.chatFor }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/SELECT email FROM mail_verifications/.test(sql)) {
+      const rows = S.ver.filter((v) => !v.removed && v.business_id === params[0] && v.order_id === params[1]).map((v) => ({ email: v.email }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/UPDATE mail_verifications SET removed_at/.test(sql)) {
+      const v = S.ver.find((x) => !x.removed && x.business_id === params[0] && x.email === params[1] && x.order_id === params[2]);
+      if (v) { v.removed = true; v.removed_by = params[3]; }
+      return { rows: [], rowCount: v ? 1 : 0 };
+    }
+    if (/UPDATE conversations c SET verified_order_id = \$1/.test(sql)) { S.convUpdates.push({ kind: 'verify', params }); return { rows: [], rowCount: 1 }; }
+    if (/UPDATE conversations c SET verified_order_id = NULL/.test(sql)) { S.convUpdates.push({ kind: 'unverify', params }); return { rows: [], rowCount: 1 }; }
     return { rows: [], rowCount: 0 };
   },
-  queryOne: async () => null,
+  queryOne: async (sql, params) => {
+    if (/FROM orders o/.test(sql) && /customer_mobile/.test(sql)) {
+      S.orderLookups++;
+      const id = String(params[0]).replace(/\\/g, '').replace(/[^0-9]/g, '');
+      const o = S.orders.find((x) => x.order_id.replace(/\D/g, '') === id && x.phone === params[1] && x.panel === params[2]);
+      return o ? { order_id: o.order_id, customer_name: o.name } : null;
+    }
+    if (/FROM conversations c JOIN sites s ON s\.id = c\.site_id WHERE c\.id = \$1/.test(sql)) return params[0] === 'chat-1' ? S.chat : (params[0] === 'chat-other' ? { ...S.chat, site_id: 'siteK', business_id: 'bizK' } : null);
+    return null;
+  },
   getPool: () => ({}),
 };
 const authState = { user: null };
@@ -116,6 +154,8 @@ const { NextRequest } = require('next/server');
 const R = (p) => require(path.join(SRC, 'app/api/mail', p, 'route.ts'));
 const boxes = R('boxes'), messages = R('messages'), message = R('message'), attachment = R('attachment'), send = R('send');
 const view = require(path.join(SRC, 'lib/chat/mail-view.ts'));
+const verifyRoute = R('verify'), byChat = R('by-chat');
+const mverify = require(path.join(SRC, 'lib/chat/mail-verify.ts'));
 const mstat = require(path.join(SRC, 'lib/chat/mailbox-status.ts'));
 const perms = require(path.join(SRC, 'lib/permissions.ts'));
 
@@ -124,7 +164,7 @@ const OWNER = { role: 'admin', username: 'owner', permissions: perms.resolvePerm
 const member = (extra = {}, role = 'agent') => ({ role, username: 'rahul', permissions: perms.resolvePermissions(role, extra.perms), businessIds: extra.panels ?? null });
 
 let n = 0;
-const t = async (name, fn) => { reset(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
+const t = async (name, fn) => { reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
 
 (async () => {
   // ── pure parts ──────────────────────────────────────────────────────────────────────────────
@@ -293,6 +333,86 @@ const t = async (name, fn) => { reset(); authState.user = OWNER; await fn(); n++
     authState.user = member({ perms: ['mail.view', 'mail.reply'], panels: ['bizV'] });
     assert.strictEqual((await send.POST(req('POST', '/api/mail/send', { box: 'boxK', uid: 12, text: 'hello' }))).status, 404);
     assert.strictEqual(S.sent.length, 0);
+  });
+
+
+  // ── verifying a sender (owner 2026-10-08) ──────────────────────────────────────────────────
+  const post = (body) => verifyRoute.POST(req('POST', '/api/mail/verify', body));
+  const V = (over = {}) => ({ box: 'boxV', email: 'Cust@Example.com', orderId: '1553', phone: '98765 43210', ...over });
+  await t('verify: Order ID + FULL phone matching one order of the panel verifies the sender; any member with Open Mail may; the phone is never stored or answered', async () => {
+    authState.user = member({ perms: ['mail.view'], panels: ['bizV'] });
+    const res = await post(V()); const text = await res.text(); const d = JSON.parse(text);
+    assert.strictEqual(res.status, 200); assert.strictEqual(d.orderId, '#1553'); assert.strictEqual(d.chats, 1);
+    assert.ok(!/9876543210|98765/.test(text + JSON.stringify(S.ver) + JSON.stringify(S.convUpdates)), 'no phone anywhere');
+    assert.deepStrictEqual(S.ver.map((v) => [v.business_id, v.email, v.order_id, v.verified_by]), [['bizV', 'cust@example.com', '#1553', 'rahul']]);
+    const u = S.convUpdates[0]; assert.strictEqual(u.kind, 'verify'); assert.deepStrictEqual([u.params[0], u.params[1], u.params[2]], ['#1553', 'bizV', 'email:cust@example.com']);
+    assert.ok(/verified_via = 'mail'/.test(fs.readFileSync(path.join(SRC, 'lib/chat/mail-verify.ts'), 'utf8')), 'a team check, not the strict proof');
+  });
+  await t('verify: the Super Admin is recorded as owner; verifying again for the same order does not duplicate', async () => {
+    assert.strictEqual((await post(V())).status, 200); assert.strictEqual((await post(V())).status, 200);
+    assert.strictEqual(S.ver.length, 1); assert.strictEqual(S.ver[0].verified_by, 'owner');
+  });
+  await t('verify refused: wrong phone / wrong order / an order of ANOTHER panel (422, nothing saved); a short phone and an empty order are 400 and never reach the orders table', async () => {
+    assert.strictEqual((await post(V({ phone: '9876543211' }))).status, 422);
+    assert.strictEqual((await post(V({ orderId: '9999' }))).status, 422);
+    assert.strictEqual((await post(V({ orderId: '7000', phone: '9111111111' }))).status, 422, 'kurtiya\'s order cannot verify in vastora');
+    assert.strictEqual(S.ver.length, 0); assert.strictEqual(S.convUpdates.length, 0);
+    const before = S.orderLookups;
+    assert.strictEqual((await post(V({ phone: '98765' }))).status, 400); assert.strictEqual((await post(V({ orderId: '  ' }))).status, 400);
+    assert.strictEqual((await post(V({ email: 'not-an-address' }))).status, 400);
+    assert.strictEqual(S.orderLookups, before);
+  });
+  await t('verify: 10 wrong tries in a row and the 11th is stopped (429), even with the right answer; another login is not affected', async () => {
+    for (let i = 0; i < 10; i++) assert.strictEqual((await post(V({ phone: '9000000000' }))).status, 422);
+    assert.strictEqual((await post(V())).status, 429); assert.strictEqual(S.ver.length, 0);
+    authState.user = member({ perms: ['mail.view'] });
+    assert.strictEqual((await post(V())).status, 200);
+  });
+  await t('verify: no login 401, no Mail tick 403, a mailbox of another panel 404, the table missing 503', async () => {
+    authState.user = null; assert.strictEqual((await post(V())).status, 401);
+    authState.user = member({}); assert.strictEqual((await post(V())).status, 403);
+    authState.user = member({ perms: ['mail.view'], panels: ['bizV'] }); assert.strictEqual((await post(V({ box: 'boxK' }))).status, 404);
+    authState.user = OWNER; S.missingTable = true; assert.strictEqual((await post(V())).status, 503);
+  });
+  await t('remove: a wrong click is taken back (the row stays, marked removed; the email chat goes back to unverified); a second remove is 404', async () => {
+    await post(V()); S.convUpdates.length = 0;
+    let res = await post({ box: 'boxV', email: 'cust@example.com', orderId: '#1553', remove: true });
+    assert.strictEqual(res.status, 200); assert.strictEqual(S.ver[0].removed, true); assert.strictEqual(S.convUpdates[0].kind, 'unverify');
+    assert.strictEqual((await post({ box: 'boxV', email: 'cust@example.com', orderId: '#1553', remove: true })).status, 404);
+    const list = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.deepStrictEqual(list.verified, {}, 'a removed verification does not count');
+  });
+  await t('the list says which senders are verified (with the chat to open); without Chat Support the chat link is left out', async () => {
+    await post(V());
+    let d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.deepStrictEqual(Object.keys(d.verified), ['cust@example.com']); assert.strictEqual(d.verified['cust@example.com'][0].orderId, '#1553'); assert.strictEqual(d.verified['cust@example.com'][0].chatId, 'chat-1');
+    authState.user = member({ perms: ['mail.view'], panels: ['bizV'] });
+    d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.strictEqual(d.verified['cust@example.com'][0].chatId, null);
+    S.missingTable = true; assert.strictEqual((await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).status, 200, 'before the SQL is applied the list still opens, every sender not verified');
+  });
+  await t('chat side: Emails of a verified chat = mails from the addresses verified for its order (searched by FROM); never for a login without Open Mail or Chat Support, or another panel\'s chat', async () => {
+    await post(V());
+    const get = (id) => byChat.GET(req('GET', `/api/mail/by-chat?conversationId=${id}`));
+    let res = await get('chat-1'); let d = await res.json();
+    assert.strictEqual(res.status, 200); assert.deepStrictEqual(d.emails, ['cust@example.com']); assert.strictEqual(d.orderId, '#1553');
+    assert.ok(S.searches.some((q) => q.from === 'cust@example.com'), 'Gmail was asked only for that sender');
+    assert.deepStrictEqual(S.connects, ['vastora@store.example'], 'only this panel\'s Gmail');
+    assert.ok(d.mails.length > 0 && d.mails.every((m) => m.boxId === 'boxV'));
+    S.chat = { ...S.chat, verified_order_id: null }; d = await (await get('chat-1')).json(); assert.deepStrictEqual(d.emails, []); assert.strictEqual(d.mails.length, 0);
+    S.chat = { ...S.chat, verified_order_id: '#1553', verified_via: 'legacy' }; d = await (await get('chat-1')).json(); assert.strictEqual(d.orderId, null, 'an old check is not a verification');
+    S.chat = { ...S.chat, verified_via: 'form' };
+    authState.user = member({ perms: ['chat.view'] }); assert.strictEqual((await get('chat-1')).status, 403, 'no Open Mail');
+    authState.user = member({ perms: ['mail.view'] }); assert.strictEqual((await get('chat-1')).status, 403, 'no Chat Support');
+    authState.user = member({ perms: ['mail.view', 'chat.view'], panels: ['bizV'] });
+    assert.strictEqual((await get('chat-other')).status, 404, 'another panel\'s chat');
+    assert.strictEqual((await get('nope-nope')).status, 404);
+    assert.strictEqual((await get('x')).status, 400);
+    authState.user = null; assert.strictEqual((await get('chat-1')).status, 401);
+  });
+  await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
+    for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }
+    assert.ok(/full|poora/i.test(view.ASK_VERIFY_EN + view.ASK_VERIFY_HINGLISH));
   });
 
   console.log(`MAIL-TAB: ${n} groups passed`);
