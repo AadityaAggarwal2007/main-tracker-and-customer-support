@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
+import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { loadOrderItems } from '@/lib/chat/order-items-db';
 import { can, isSuperAdmin } from '@/lib/permissions';
@@ -105,6 +106,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const earlier = thread.earlier.map((c) => ({ ...c, messages: c.messages.map((m) => unlink(withAuthor(m))) }));
 
   const teamLog = await loadTeamLog(params.id);
+  // The red Chargeback tag (owner 2026-10-08): an open chargeback alert on this customer's verified order.
+  const cbBiz = conversation.tracker_business_id == null ? null : String(conversation.tracker_business_id);
+  const chargebackOpen = (await openChargebackKeys([{ business_id: cbBiz, order_id: conversation.verified_order_id }])).has(chargebackKey(cbBiz, conversation.verified_order_id));
 
   return NextResponse.json({
     conversation,
@@ -113,6 +117,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     earlier_total: thread.earlierTotal,
     newer_chat: thread.newer,
     order_facts: orderFacts,
+    chargeback_open: chargebackOpen,
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     order_items: orderItems,

@@ -288,7 +288,7 @@ export default function ChatSupportPage() {
       });
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
-      setActiveConv(data.conversation);
+      setActiveConv({ ...data.conversation, chargeback_open: !!data.chargeback_open });
       setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [], hotLock: data.hot_lock ?? null });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable, items: data.order_items ?? null, itemsEditable: !!data.items_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });

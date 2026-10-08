@@ -13,6 +13,7 @@ import { loadHolidays } from '@/lib/chat/holidays';
 import { staffActor, teamDirectory } from '@/lib/chat/team-routing';
 import { OWNER_KEY } from '@/lib/chat/team-rules';
 import { REFUND_LINK_SQL } from '@/lib/refund/link-mask';
+import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -414,7 +415,12 @@ export async function GET(request: NextRequest) {
   // the note: Monday 10:00 after a weekend note). Worked out here from the note's time and the holiday
   // list, nothing stored; the chip reads "Promised Mon 10 AM" and turns red once that time has come.
   const holidays = await loadHolidays();
+  // A red "Chargeback" tag (owner 2026-10-08): the customer's verified order has an open chargeback alert
+  // (src/lib/chargeback). One light query after the list, never part of it: no table or a failed read means no tag.
+  const cbKeys = await openChargebackKeys((result.rows as Record<string, unknown>[]).map(r => ({
+    business_id: r.tracker_business_id == null ? null : String(r.tracker_business_id), order_id: (r.verified_order_id as string | null) ?? null })));
   for (const r of result.rows as Record<string, unknown>[]) {
+    r.chargeback_open = cbKeys.has(chargebackKey(r.tracker_business_id == null ? null : String(r.tracker_business_id), r.verified_order_id as string | null));
     delete r.total_rows;
     const raw = r.promise_note_at;
     const noteAt = raw instanceof Date ? raw.getTime() : typeof raw === 'string' ? Date.parse(raw) : NaN;

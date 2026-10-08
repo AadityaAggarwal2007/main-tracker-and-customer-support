@@ -63,7 +63,8 @@ export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaitin
   const overdue = !Number.isNaN(waitMs) && waitingLevel(waitMs) === 'overdue';
   // A Ship again chat shows whether the new parcel went (owner 2026-10-03) before anything else.
   // A promise Chikki made while the office was closed (owner 2026-10-05) is kept before anything else.
-  const priority = c.case_kind === 'reship' ? <ReshipChip c={c} />
+  const priority = customer && c.chargeback_open ? <Chip tone="danger" title="A chargeback mail arrived for this customer's order. The Super Admin sees it in Chargebacks.">Chargeback</Chip>
+    : c.case_kind === 'reship' ? <ReshipChip c={c} />
     : customer && open && c.promise_due_at ? <PromiseChip dueAt={c.promise_due_at} />
     : overdue && c.waiting_since ? <WaitingChip since={c.waiting_since} />
     : upset ? <HealthBadge score={c.health_score} reason={c.health_reason} />

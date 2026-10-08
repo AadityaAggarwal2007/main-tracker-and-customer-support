@@ -7,6 +7,8 @@ import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
 import RefundRequestsCard from '@/components/RefundRequestsCard';
 import MailCard from '@/components/MailCard';
+import ChargebacksCard from '@/components/ChargebacksCard';
+import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
@@ -16,7 +18,7 @@ import {
   Package, Upload, Users, Mail,
   Check, AlertCircle, ShoppingBag,
   Loader2, Trash2, Building2, Plus,
-  Settings, Trophy, Undo2
+  Settings, Trophy, Undo2, ShieldAlert
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
@@ -52,6 +54,7 @@ export default function AdminDashboard() {
   // Refund requests (owner, 2026-10-02; Super Admin only): the red pill = New requests he has not
   // opened yet, and the request a chat's "Open request" link asks to open (/admin?tab=refunds&open=<id>).
   const [refundUnseen, setRefundUnseen] = useState(0);
+  const [chargebackNew, setChargebackNew] = useState(0);
   const [refundOpenId, setRefundOpenId] = useState<string | null>(null);
 
   // Orders
@@ -343,6 +346,25 @@ export default function AdminDashboard() {
       setRefundUnseen(Number(d?.unseen) || 0);
     } catch { /* the badge is advisory */ }
   }, [token, superAdmin]);
+  // Chargeback badge (owner 2026-10-08), Super Admin only: new = chargeback mails not opened yet. Same rhythm as the
+  // refund badge: every 60 s and on window focus; advisory, a failed poll keeps the last number.
+  const refreshChargebackCounts = useCallback(async () => {
+    if (!token || !superAdmin) return;
+    try {
+      const r = await fetch('/api/chargebacks?counts=1', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      setChargebackNew(Number(d?.new) || 0);
+    } catch { /* the badge is advisory */ }
+  }, [token, superAdmin]);
+  useEffect(() => {
+    if (!token || !superAdmin) return;
+    void refreshChargebackCounts();
+    const t = setInterval(() => { void refreshChargebackCounts(); }, 60000);
+    const onFocus = () => { void refreshChargebackCounts(); };
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [token, superAdmin, refreshChargebackCounts]);
   useEffect(() => {
     if (!token || !superAdmin) return;
     void refreshRefundCounts();
@@ -943,6 +965,8 @@ export default function AdminDashboard() {
     { id: 'refunds' as TabType, label: 'Refund requests', icon: Undo2, show: isSuperAdmin(user) },
     // Owner 2026-10-08: the real Gmail inbox. The Super Admin always; a member only with the Mail tick.
     { id: 'mail' as TabType, label: 'Mail', icon: Mail, show: can(user, 'mail.view') },
+    // Owner 2026-10-08: chargeback mails from every panel's chargeback Gmail, with a red badge. Super Admin only.
+    { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
 
   return (
@@ -951,14 +975,14 @@ export default function AdminDashboard() {
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
       {/* Sidebar */}
-      <AdminSidebar activeBusiness={activeBusiness} activePanelId={activePanelId} activeTab={activeTab} businesses={businesses} emailWaiting={emailWaiting} humanNeeded={humanNeeded} logout={logout} navItems={navItems} openMe={openMe} refundUnseen={refundUnseen} router={router} setActiveTab={setActiveTab} setProfileOpen={setProfileOpen} setSecurityOpen={setSecurityOpen} setSidebarOpen={setSidebarOpen} sidebarOpen={sidebarOpen} switchPanel={switchPanel} user={user} />
+      <AdminSidebar activeBusiness={activeBusiness} activePanelId={activePanelId} activeTab={activeTab} businesses={businesses} chargebackNew={chargebackNew} emailWaiting={emailWaiting} humanNeeded={humanNeeded} logout={logout} navItems={navItems} openMe={openMe} refundUnseen={refundUnseen} router={router} setActiveTab={setActiveTab} setProfileOpen={setProfileOpen} setSecurityOpen={setSecurityOpen} setSidebarOpen={setSidebarOpen} sidebarOpen={sidebarOpen} switchPanel={switchPanel} user={user} />
 
       {/* Main */}
       <main className="main-content">
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1498,6 +1522,13 @@ export default function AdminDashboard() {
               )}
 
 
+              {/* Chargeback protection (owner 2026-10-08): the panel's chargeback Gmail, WhatsApp number, gateway checklist */}
+              {activeBusiness && isSuperAdmin(user) && (
+                <div id="set-chargeback" style={{ scrollMarginTop: 76 }}>
+                  <ChargebackSettingsCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name} onAlert={showAlert} />
+                </div>
+              )}
+
               {/* Danger Zone */}
               <div id="set-danger" style={{ scrollMarginTop: 76 }} />
               {user?.role === 'admin' && (
@@ -1543,6 +1574,10 @@ export default function AdminDashboard() {
           {/* ════════ MAIL (Super Admin, or a member with the Mail tick) ════════ */}
           {activeTab === 'mail' && can(user, 'mail.view') && (
             <div className="animate-fade-in-up"><MailCard token={token} onAlert={showAlert} activePanelId={activePanelId} initialBox={mailLink?.box ?? null} initialUid={mailLink?.uid ?? null} /></div>
+          )}
+          {/* ════════ CHARGEBACKS (Super Admin only) ════════ */}
+          {activeTab === 'chargebacks' && isSuperAdmin(user) && (
+            <div className="animate-fade-in-up"><ChargebacksCard token={token} onAlert={showAlert} onChanged={() => { void refreshChargebackCounts(); }} /></div>
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && isSuperAdmin(user) && (

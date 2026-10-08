@@ -54,6 +54,8 @@ stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null 
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
 // The reply route records which suggested draft a reply came from (suggest-run.ts): a record only.
 stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
+// The red Chargeback tag (src/lib/chargeback/store.ts): no open alert here; the tag has its own test (chargeback.js).
+stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new Set(), chargebackKey: (b, o) => b + "|" + o };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');
@@ -86,6 +88,7 @@ const compile = (from, to) => {
   const src = fs.readFileSync(path.join(SRC, from), 'utf8')
     .replace(/from '@\/lib\/chat\/([\w-]+)'/g, "from './$1'")
     .replace(/from '@\/lib\/refund\/([\w-]+)'/g, "from './refund-$1'")
+    .replace(/from '@\/lib\/chargeback\/([\w-]+)'/g, "from './chargeback-$1'")
     .replace(/from '@\/lib\/([\w-]+)'/g, "from './$1'")
     .replace(/from 'next\/server'/g, "from './next-server'");
   fs.writeFileSync(path.join(dir, to + '.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true } }).outputText);

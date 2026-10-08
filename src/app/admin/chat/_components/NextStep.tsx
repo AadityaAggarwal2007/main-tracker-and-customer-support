@@ -31,6 +31,7 @@ export default function NextStep({ conv, order, subjectLabel, health, waitingSin
     reshipped: !!conv.reshipped_at,
     threat: !!conv.health_threat,
     accuse: !!conv.health_accuse,
+    chargeback: !!conv.chargeback_open,
     health,
     waitingMs: waitingSince ? msSince(waitingSince) : null,
     returned: !!conv.returned,
