@@ -1,5 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
+import { emailReplyHeld, heldKind, heldMovesToNeedsYou } from './email-draft';
+import { emailDraftOnly } from './email-draft-mode';
 import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
@@ -413,7 +415,10 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
             // escalate_to_human has already moved the conversation to
             // human_needed; the reply is kept as an unsent draft, unless it is one
             // of the hand-overs above.
-            const held = Boolean(aiResult.escalated) && !handOverNow;
+            // Draft mode (owner 2026-10-08, email-draft.ts): the team sends, Chikki only prepares; ON unless
+            // the Super Admin switched it off for this panel. The hand-over lines above still go out.
+            const draftOnly = await emailDraftOnly(account.site_id);
+            const held = emailReplyHeld(Boolean(aiResult.escalated), handOverNow, draftOnly);
 
             // Stored as not-yet-emailed and flipped once SMTP confirms. A
             // message that claims it was sent when the send threw would leave
@@ -425,7 +430,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
               [
                 conversation.id,
                 aiResult.content,
-                JSON.stringify(held ? { emailed: false, withheld: 'escalated' } : { emailed: false, withheld: 'sending' }),
+                JSON.stringify(held ? { emailed: false, withheld: heldKind(Boolean(aiResult.escalated)) } : { emailed: false, withheld: 'sending' }),
               ]
             );
             await recordBrainUsage(aiMsg?.id, brainUsage.brain);
@@ -440,11 +445,13 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
               // escalate_to_human sets this too, but it is set again here so a
               // model that reports an escalation the tool never persisted still
               // leaves a flagged thread rather than a silently dropped refund.
-              await query(
-                `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
-                [conversation.id]
-              );
-              console.log(`[email] Escalated ${fromAddr} for site "${account.site_name}" — reply held, not sent`);
+              if (heldMovesToNeedsYou(Boolean(aiResult.escalated), verifiedNow)) {
+                await query(
+                  `UPDATE conversations SET status = 'human_needed', updated_at = now() WHERE id = $1`,
+                  [conversation.id]
+                );
+              }
+              console.log(`[email] ${aiResult.escalated ? 'Escalated' : 'Draft for the team:'} ${fromAddr} for site "${account.site_name}" — reply held, not sent`);
               continue;
             }
 

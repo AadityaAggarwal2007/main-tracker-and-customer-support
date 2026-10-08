@@ -79,6 +79,7 @@ export const SUBJECT_PROBLEM = ['Not received', 'Damaged item', 'Wrong item', 'M
 // send itself failed. The customer has not seen it.
 export const WITHHELD_LABELS: Record<string, string> = {
   escalated: 'needs a human',
+  draft: 'draft for the team',
   send_failed: 'sending failed',
   sending: 'still sending',
 };

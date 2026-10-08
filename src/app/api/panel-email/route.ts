@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
-import { ensureSiteForPanel } from '@/lib/chat/site';
+import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
+import { emailDraftOnly, setEmailDraftOnly } from '@/lib/chat/email-draft-mode';
 import Imap from 'imap';
 
 // ── Email support for a panel ──────────────────────────────────
@@ -126,8 +127,36 @@ export async function GET(request: NextRequest) {
     [businessId]
   );
 
+  // "AI writes a draft, the team sends" (owner 2026-10-08): ON unless switched off for this panel.
+  const site = await siteForPanel(businessId);
+  const draftOnly = site ? await emailDraftOnly(site.id) : true;
+
   // app_password is never selected — it only ever travels inwards.
-  return NextResponse.json({ accounts: accounts.rows, max: MAX_ACCOUNTS });
+  return NextResponse.json({ accounts: accounts.rows, max: MAX_ACCOUNTS, draftOnly });
+}
+
+// ── PATCH /api/panel-email { businessId, draftOnly } ───────────
+// Super Admin only. ON (the default): Chikki writes the reply to an incoming email as a draft and the
+// team sends it; OFF: she sends routine answers herself, as before (email-draft.ts).
+export async function PATCH(request: NextRequest) {
+  const user = getAuthFromRequest(request);
+  if (!user || user.role !== 'admin') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  try {
+    const { businessId, draftOnly } = await request.json();
+    if (!businessId || typeof draftOnly !== 'boolean') {
+      return NextResponse.json({ error: 'businessId and draftOnly (true or false) are required' }, { status: 400 });
+    }
+    const biz = await queryOne<{ id: string }>(`SELECT id FROM businesses WHERE id = $1`, [businessId]);
+    if (!biz) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+    const site = await ensureSiteForPanel(businessId);
+    await setEmailDraftOnly(site.id, draftOnly);
+    return NextResponse.json({ draftOnly });
+  } catch (err) {
+    console.error('Panel email draft switch error:', err);
+    return NextResponse.json({ error: 'Could not save that setting' }, { status: 500 });
+  }
 }
 
 // ── POST /api/panel-email ──────────────────────────────────────
