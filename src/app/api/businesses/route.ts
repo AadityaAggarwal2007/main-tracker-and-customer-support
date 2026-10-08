@@ -3,7 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
 import { checkOwnerPassword } from '@/lib/owner-password';
-import { PANEL_NAME_KEY_SQL, cleanPanelName, panelNameKey, panelNameTakenMessage } from '@/lib/panel-name';
+import { PANEL_NAME_KEY_SQL, cleanPanelName, panelNameKey, panelNameSimilarMessage, panelNameTakenMessage, panelNamesSimilar } from '@/lib/panel-name';
 
 // ── GET all businesses ─────────────────────────────────────────
 // With ?impactId=<uuid>: returns what deleting that panel would destroy,
@@ -107,6 +107,10 @@ export async function POST(request: NextRequest) {
     if (taken) {
       return NextResponse.json({ error: panelNameTakenMessage(cleanName) }, { status: 409 });
     }
+    // Nor a name that is the same store written another way ("X" / "X Store", one letter apart).
+    const all = await query<{ id: string; name: string }>(`SELECT id::text AS id, name FROM businesses`);
+    const alike = all.rows.find((b) => panelNamesSimilar(b.name, cleanName));
+    if (alike) return NextResponse.json({ error: panelNameSimilarMessage(cleanName, alike.name) }, { status: 409 });
 
     // If setting as default, unset other defaults
     if (isDefault) {
@@ -155,6 +159,9 @@ export async function PATCH(request: NextRequest) {
       if (!newName) return NextResponse.json({ error: 'Business name is required' }, { status: 400 });
       const taken = await queryOne(`SELECT id FROM businesses WHERE ${PANEL_NAME_KEY_SQL} = $1 AND id::text <> $2::text LIMIT 1`, [panelNameKey(newName), String(id)]);
       if (taken) return NextResponse.json({ error: panelNameTakenMessage(newName) }, { status: 409 });
+      const all = await query<{ id: string; name: string }>(`SELECT id::text AS id, name FROM businesses`);
+      const alike = all.rows.find((b) => b.id !== String(id) && panelNamesSimilar(b.name, newName));
+      if (alike) return NextResponse.json({ error: panelNameSimilarMessage(newName, alike.name) }, { status: 409 });
     }
 
     // If setting as default, unset other defaults
