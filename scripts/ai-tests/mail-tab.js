@@ -614,6 +614,18 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
     authState.user = member({ perms: ['mail.view'], panels: ['bizV'] }); assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxK&address=cust@example.com'))).status, 404);
     authState.user = null; assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).status, 401);
   });
+
+  await t('speed: phase=fast asks Gmail only for who / subject / date / flags (no structure, no headers) and writes nothing; the full list adds them and runs the automatic verification', async () => {
+    S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }];
+    const fast = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();
+    const q = S.fetchQueries.at(-1); assert.ok(q.envelope && q.flags && !q.bodyStructure && !q.headers, 'a light FETCH');
+    assert.strictEqual(fast.phase, 'fast'); assert.ok(fast.mails.every((m) => m.hasAttachment === false && m.authPass === false));
+    assert.strictEqual(S.ver.length, 0, 'the sender checks wait for the full list'); assert.strictEqual(fast.mails.length, 4);
+    const full = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    const q2 = S.fetchQueries.at(-1); assert.ok(q2.bodyStructure && q2.headers);
+    assert.strictEqual(full.phase, 'full'); assert.ok(full.mails.some((m) => m.hasAttachment) && full.mails.some((m) => m.authPass));
+    assert.strictEqual(S.ver.length, 1, 'now the automatic verification ran');
+  });
   await t('the ask-for-verification texts ask for the Order ID and the FULL phone number, in English and Hinglish, with no link', () => {
     for (const x of [view.ASK_VERIFY_EN, view.ASK_VERIFY_HINGLISH]) { assert.ok(/order id/i.test(x) && /phone/i.test(x) && !/https?:\/\//.test(x)); }
     assert.ok(/full|poora/i.test(view.ASK_VERIFY_EN + view.ASK_VERIFY_HINGLISH));

@@ -1,3 +1,4 @@
+import { promises as dns } from 'dns';
 import { ImapFlow } from 'imapflow';
 
 // ── Kept-open Gmail connections for the Mail tab (owner 2026-10-08: "sloww hai, load hi nahi ho rahi") ──
@@ -32,6 +33,19 @@ function touch(key: string, entry: Entry): void {
   (entry.idle as { unref?: () => void }).unref?.();
 }
 
+// Gmail's IPv4 address, looked up once and kept 10 minutes. A server whose IPv6 does not work waits for the IPv6 try to
+// fail (seconds) before every new connection; connecting to the IPv4 address (TLS still checks the name imap.gmail.com)
+// skips that wait. If the lookup fails, the plain name is used as before.
+const HOST = 'imap.gmail.com';
+let v4: { ip: string; at: number } | null = null;   // ip '' = the lookup failed (not repeated for 10 minutes either)
+async function gmailHost(): Promise<{ host: string; servername?: string }> {
+  if (!v4 || Date.now() - v4.at > 10 * 60_000) {
+    try { v4 = { ip: (await dns.lookup(HOST, { family: 4 })).address, at: Date.now() }; }
+    catch { v4 = { ip: '', at: Date.now() }; }
+  }
+  return v4.ip ? { host: v4.ip, servername: HOST } : { host: HOST };
+}
+
 async function acquire(key: string, box: PoolBox): Promise<{ client: ImapFlow; entry: Entry; reused: boolean }> {
   const cur = pool().get(key);
   if (cur && cur.pass === box.appPassword) {
@@ -43,14 +57,17 @@ async function acquire(key: string, box: PoolBox): Promise<{ client: ImapFlow; e
   } else if (cur) {
     drop(key, cur);
   }
-  const client = new ImapFlow({ host: 'imap.gmail.com', port: 993, secure: true, auth: { user: box.email, pass: box.appPassword }, logger: false });
+  const target = await gmailHost();
+  const client = new ImapFlow({ ...target, port: 993, secure: true, auth: { user: box.email, pass: box.appPassword }, logger: false });
   const entry = { client, pass: box.appPassword } as Entry;
   // An ImapFlow that errors with no listener would crash the process; a closed one simply leaves the pool.
   client.on('error', () => drop(key, entry));
   client.on('close', () => { if (pool().get(key) === entry) { pool().delete(key); if (entry.idle) clearTimeout(entry.idle); } });
+  const t0 = Date.now();
   entry.ready = client.connect().then(() => client);
   pool().set(key, entry);
   try { await entry.ready; } catch (e) { drop(key, entry); throw e; }
+  if (Date.now() - t0 > 1500) console.log(`[mail-timing] connect slot=${key.split(':')[1]} box=${box.id} ${Date.now() - t0}ms (host ${target.host})`);
   touch(key, entry);
   return { client, entry, reused: false };
 }

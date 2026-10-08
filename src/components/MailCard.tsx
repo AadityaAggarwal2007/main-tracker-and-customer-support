@@ -84,22 +84,34 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     });
   }, [boxes, visibleBoxes, initialBox]);
 
-  // Read the list. A refresh is silent: the rows stay, only the Refresh button spins.
+  // Read the list. The first time (nothing remembered) the QUICK list comes first (who / subject / date / flags: a few
+  // seconds) so the screen is never empty for long, then the full one (attachment icons, automatic sender checks) replaces
+  // it. A refresh later is silent: the rows stay, only the Refresh button spins.
+  const fetchList = useCallback(async (id: string, phase: 'fast' | 'full'): Promise<ListEntry | string> => {
+    try {
+      const r = await fetch(`/api/mail/messages?box=${encodeURIComponent(id)}${phase === 'fast' ? '&phase=fast' : ''}`, { headers: auth, cache: 'no-store' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return d.error || 'Could not read Gmail.';
+      return { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now(), partial: phase === 'fast' };
+    } catch { return 'Could not reach Gmail. It will try again.'; }
+  }, [auth]);
+
   const refresh = useCallback(async (id: string, silent = true) => {
     const seq = ++listSeq.current;
     setRefreshing(true);
     if (!silent) setDown(null);
     try {
-      const r = await fetch(`/api/mail/messages?box=${encodeURIComponent(id)}`, { headers: auth, cache: 'no-store' });
-      const d = await r.json().catch(() => ({}));
+      if (!mailCache.lists.get(id)) {
+        const quick = await fetchList(id, 'fast');
+        if (seq !== listSeq.current) return;
+        if (typeof quick !== 'string') { mailCache.lists.set(id, quick); setEntry(quick); setDown(null); }
+      }
+      const full = await fetchList(id, 'full');
       if (seq !== listSeq.current) return;
-      if (!r.ok) { setDown(d.error || 'Could not read Gmail.'); return; }
-      const e: ListEntry = { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now() };
-      mailCache.lists.set(id, e);
-      setEntry(e); setDown(null);
-    } catch { if (seq === listSeq.current) setDown('Could not reach Gmail. It will try again.'); }
-    finally { if (seq === listSeq.current) setRefreshing(false); }
-  }, [auth]);
+      if (typeof full === 'string') { setDown(full); return; }
+      mailCache.lists.set(id, full); setEntry(full); setDown(null);
+    } finally { if (seq === listSeq.current) setRefreshing(false); }
+  }, [fetchList]);
 
   // A box was chosen: show what is remembered at once, read again only when it is old.
   useEffect(() => {
@@ -313,7 +325,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
         </div>
         <div className="meta mail-foot">
-          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {refreshing && entry ? 'refreshing…' : 'Nothing is stored on the server'}
+          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'Nothing is stored on the server'}
         </div>
       </section>
 

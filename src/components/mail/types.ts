@@ -7,5 +7,6 @@ export interface Full {
   uid: number; subject: string; date: string; from: string; fromAddress: string; to: string; cc: string; replyTo: string;
   text?: string; frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
 }
-export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number }
+// partial: only the quick first list (who / subject / date / flags) has arrived; the attachment icons and the automatic sender checks follow
+export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number; partial?: boolean }
 export interface ThreadItem { folder: 'inbox' | 'sent'; uid: number; from: string; to: string; subject: string; date: string }
