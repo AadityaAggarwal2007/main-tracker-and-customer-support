@@ -1355,8 +1355,9 @@ export default function AdminDashboard() {
                     </div>
                     <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
                       Connect the mailbox customers write to. Every incoming email is read the same way the chat
-                      is. Who sends the reply is your choice below. A customer who threatens or calls the store a
-                      fraud, or asks for a refund, still gets the short &ldquo;a person has your case&rdquo; line on its own.
+                      is. Who sends the reply is your choice below. A verified customer who calls the store a fraud or asks
+                      for a refund or payment help still gets the short &ldquo;a person has your case&rdquo; reply on its own. A
+                      threat (chargeback, police, court) gets no automatic reply at all: it goes straight to your team.
                       This works whether or not the panel is connected to Shopify.
                     </p>
                     <div className="seg" role="group" aria-label="Who sends the email reply" style={{ marginTop: 0, marginBottom: '1rem' }}>
