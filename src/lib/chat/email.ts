@@ -17,7 +17,7 @@ import { recentVisitorMessages } from './chat-history';
 import { dropReplyTimes, insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 import { afterHours } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
-import { friendlyMailError, noteMailboxCheck } from './mailbox-status';
+import { friendlyMailError, mailErrorText, noteMailboxCheck } from './mailbox-status';
 import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
 import { autoVerifySenders } from './mail-auto-verify';
 import { gmailAuthPassed } from './mail-view';
@@ -519,7 +519,7 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
     await client.logout();
   } catch (err) {
     console.error(`[email] IMAP error for ${account.email}:`, (err as Error).message);
-    noteMailboxCheck(account.id, { ok: false, error: friendlyMailError((err as Error).message) });
+    noteMailboxCheck(account.id, { ok: false, error: friendlyMailError(mailErrorText(err)) });
     try { await client.logout(); } catch { /* already gone */ }
   } finally {
     // The "no new mail" path returns before the logout above; closing here makes sure no Gmail connection is

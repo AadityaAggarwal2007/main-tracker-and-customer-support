@@ -1,7 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
-import { friendlyMailError, noteMailboxCheck } from '@/lib/chat/mailbox-status';
+import { friendlyMailError, mailErrorText, noteMailboxCheck } from '@/lib/chat/mailbox-status';
 import { gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { sendChargebackWhatsApp } from './notify';
@@ -65,8 +65,9 @@ async function pollOne(group: Group): Promise<number> {
     if (made > 0) noteMailboxCheck(`cb:${box.id}`, { ok: true, handled: made });
     await client.logout();
   } catch (e) {
-    console.error(`[chargeback] IMAP error for ${box.email}:`, (e as Error).message);
-    noteMailboxCheck(`cb:${box.id}`, { ok: false, error: friendlyMailError((e as Error).message) });
+    const why = mailErrorText(e);
+    console.error(`[chargeback] IMAP error for ${box.email}:`, why);
+    noteMailboxCheck(`cb:${box.id}`, { ok: false, error: friendlyMailError(why) });
   } finally {
     try { client.close(); } catch { /* already closed */ }
   }

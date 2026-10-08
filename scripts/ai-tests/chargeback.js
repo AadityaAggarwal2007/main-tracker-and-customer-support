@@ -287,6 +287,13 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.strictEqual(ns.nextStep({ ...base, status: 'resolved', chargeback: true }).tone, 'muted', 'a closed chat needs nothing');
   });
 
+  await t('disconnect: a database that refuses the DELETE (42501) says which SQL file to run; the SQL file grants DELETE on the mailbox table only', async () => {
+    const fsx = require('fs');
+    const sql = fsx.readFileSync(path.resolve(__dirname, '../../chargeback-disconnect.sql'), 'utf8');
+    assert.ok(/GRANT DELETE ON chargeback_mailboxes TO tracker_user/.test(sql) && !/chargeback_alerts|panel_chargeback/.test(sql.replace(/--[^\n]*/g, '')));
+    assert.ok(/GRANT DELETE ON chargeback_mailboxes/.test(fsx.readFileSync(path.resolve(__dirname, '../../chargeback.sql'), 'utf8')));
+  });
+
   global.fetch = realFetch;
   console.log(`CHARGEBACK: ${n} groups passed`);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });

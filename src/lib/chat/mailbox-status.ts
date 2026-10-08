@@ -14,12 +14,22 @@ export interface MailboxStatus {
 const G = globalThis as unknown as { __mailboxStatus?: Map<string, MailboxStatus> };
 const store = (): Map<string, MailboxStatus> => (G.__mailboxStatus ??= new Map());
 
+// ImapFlow's own message is often just "Command failed": Gmail's reason sits in responseText / response / code, so the
+// words that decide the friendly text are collected from all of them (owner 2026-10-08: a chargeback Gmail said only
+// "Could not read this mailbox"). Safe to log: it is what Gmail answered, never a password.
+export function mailErrorText(e: unknown): string {
+  const x = (e || {}) as { message?: string; responseText?: string; response?: string; code?: string; serverResponseCode?: string; authenticationFailed?: boolean };
+  return [x.message, x.responseText, x.response, x.code, x.serverResponseCode, x.authenticationFailed ? 'authentication failed' : ''].filter(Boolean).join(' | ');
+}
+
 // Turns an IMAP error into words the owner can act on; never echoes the raw server text.
 export function friendlyMailError(message: string | undefined | null): string {
   const t = (message || '').toLowerCase();
   if (t.includes('invalid credentials') || t.includes('authenticationfailed') || t.includes('authentication failed') || t.includes('auth')) {
     return 'Gmail rejected the App Password. Remove the mailbox and connect it again with a new App Password.';
   }
+  if (t.includes('too many') || t.includes('simultaneous')) return 'Gmail has too many connections open for this account. It tries again every minute.';
+  if (t.includes('web login') || t.includes('application-specific')) return 'Google wants a sign-in or an App Password for this account. Open Gmail once in a browser, then connect it again with a new App Password.';
   if (t.includes('imap') && (t.includes('disabled') || t.includes('not enabled'))) return 'IMAP is switched off in this Gmail. Turn it on in Gmail settings.';
   if (t.includes('timeout') || t.includes('etimedout') || t.includes('econnreset') || t.includes('enotfound')) return 'Gmail did not answer in time. It tries again every minute.';
   return 'Could not read this mailbox. It tries again every minute.';

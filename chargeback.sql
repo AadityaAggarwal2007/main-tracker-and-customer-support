@@ -60,5 +60,6 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracker_user') THEN
     GRANT SELECT, INSERT, UPDATE ON chargeback_mailboxes, chargeback_alerts, panel_chargeback TO tracker_user;
+    GRANT DELETE ON chargeback_mailboxes TO tracker_user;   -- Disconnect in Settings (2026-10-08); alerts and settings are never deleted
   END IF;
 END $$;
