@@ -12,6 +12,12 @@ export interface Order {
   business_id: string;
 }
 export interface AuthUser { username: string; displayName: string; role: string; businessIds: string[] | null; permissions?: string[] }
+// One CSV upload in the record (upload-logs-panel.sql, owner 2026-10-08).
+export interface RecentUpload {
+  id: string; filename: string; total_rows: number; new_orders: number; updated_orders: number;
+  uploaded_by: string | null; created_at: string; business_id: string | null; panel_name: string | null;
+  first_order: string | null; last_order: string | null; warning_text: string | null;
+}
 export interface Business {
   id: string; name: string; logo_url: string; support_email: string; support_phone: string;
   is_default: boolean; created_at: string; tracking_domain: string | null; primary_color: string | null; origin_city: string | null;

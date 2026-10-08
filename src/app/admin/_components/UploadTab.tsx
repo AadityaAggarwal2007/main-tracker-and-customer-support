@@ -1,9 +1,10 @@
 'use client';
 
 import { Loader2, FileUp, Mail, Activity, Info } from 'lucide-react';
-import type { Business } from '../_lib/types';
+import type { Business, RecentUpload } from '../_lib/types';
 
-export default function UploadTab({ businesses, dragOver, fetchQueueStats, handleFileUpload, loadingQueue, queueStats, setDragOver, setUploadPanelId, uploadPanelId, uploadProgress, uploadResult, uploading }: {
+export default function UploadTab({ recentUploads, businesses, dragOver, fetchQueueStats, handleFileUpload, loadingQueue, queueStats, setDragOver, setUploadPanelId, uploadPanelId, uploadProgress, uploadResult, uploading }: {
+  recentUploads: RecentUpload[];
   businesses: Business[];
   dragOver: boolean;
   fetchQueueStats: () => Promise<void>;
@@ -103,6 +104,31 @@ export default function UploadTab({ businesses, dragOver, fetchQueueStats, handl
                   ))}
                 </div>
               )}
+
+              {/* Recent uploads: which file went into which panel (owner 2026-10-08) */}
+              <div className="tf-card" style={{ padding: '1rem' }}>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: '0.5rem' }}>Recent uploads</div>
+                {recentUploads.length === 0 ? (
+                  <p className="meta">No uploads recorded yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                    {recentUploads.map((u) => (
+                      <div key={u.id} style={{ padding: '0.5rem 0.625rem', background: 'var(--bg-subtle)', borderRadius: 'var(--radius)', fontSize: '0.75rem', lineHeight: 1.45 }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                          <b style={{ fontSize: '0.8125rem' }}>{u.panel_name || 'Panel not recorded'}</b>
+                          <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{u.filename}</span>
+                          <span className="meta">{new Date(u.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}</span>
+                        </div>
+                        <div className="meta">
+                          {u.uploaded_by || 'unknown'} · {u.new_orders} new · {u.updated_orders} updated
+                          {u.first_order ? ` · orders #${String(u.first_order).replace(/^#/, '')} to #${String(u.last_order ?? u.first_order).replace(/^#/, '')}` : ''}
+                        </div>
+                        {u.warning_text && <div style={{ color: 'hsl(32, 90%, 32%)', fontWeight: 600 }} title={u.warning_text}>⚠ Uploaded after a warning: {u.warning_text}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Email Queue Status */}
               <div className="tf-card" style={{ padding: '1rem' }}>

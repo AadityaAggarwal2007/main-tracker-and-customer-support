@@ -73,14 +73,39 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
   const view = simple ? simpleGroups : groups;
   return (
       <aside className={`sidebar chat-side ${sidebarOpen ? 'open' : ''}`}>
-        <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-            <MessageCircle size={15} /> Chat Support
+        {simple && user ? (
+          // The team member's own board (owner 2026-10-08): their name, how many chats are pending, and where to
+          // finish them. A slow ring turns while chats are pending; it stops for people who ask for less motion.
+          <div className="my-work">
+            <div className="mw-title">{user.displayName.trim().split(/\s+/)[0]} Chat Support</div>
+            {unreadTotal > 0 ? (
+              <>
+                <div className="mw-body">
+                  <div className="mw-ring" aria-hidden="true">
+                    <svg viewBox="0 0 44 44"><circle className="mw-track" cx="22" cy="22" r="19" /><circle className="mw-arc" cx="22" cy="22" r="19" /></svg>
+                    <span className="mw-num">{unreadTotal}</span>
+                  </div>
+                  <div className="mw-text"><b>{unreadTotal} chat{unreadTotal === 1 ? '' : 's'} pending</b><br />Please finish them.</div>
+                </div>
+                <div className="mw-go">
+                  <button type="button" className="btn btn-primary btn-sm" onClick={() => { setTab('active:open'); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}>Open case</button>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => { setTab('human_needed'); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}>Needs you</button>
+                </div>
+              </>
+            ) : (
+              <div className="mw-body"><div className="mw-ring mw-done" aria-hidden="true"><span className="mw-num">✓</span></div><div className="mw-text"><b>All done</b><br />No chat is waiting.</div></div>
+            )}
           </div>
-          <div className="meta" style={{ marginTop: '0.25rem' }}>
-            {unreadTotal > 0 ? `${unreadTotal} waiting` : 'Chat and email in one place'}
+        ) : (
+          <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+              <MessageCircle size={15} /> Chat Support
+            </div>
+            <div className="meta" style={{ marginTop: '0.25rem' }}>
+              {unreadTotal > 0 ? `${unreadTotal} waiting` : 'Chat and email in one place'}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Panel selector: the same switcher as the admin page */}
         <div className="psw-wrap">
