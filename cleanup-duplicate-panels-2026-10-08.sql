@@ -6,10 +6,14 @@
 -- copy of VASTRIKA's #1303. Every upload of such a copy also added a second set of item rows for the same
 -- order number (order_items is keyed by the order number only).
 --
+-- First live run (2026-10-08, 16:15) found 0 copies and stopped with "Nothing changed": order numbers are stored with a
+-- leading # ("#1303"), and a copy was written 4-5 seconds before the row it copies, not at the same second. Fixed below.
+--
 -- This file, in ONE transaction (psql -v ON_ERROR_STOP=1; anything unexpected raises and rolls everything back):
---   1. finds exactly 9 copy rows and proves each one is the same order as the row it copies;
+--   1. finds the copy rows (6 + 2 required; Kurtiya's #1303 when it provably is VASTRIKA's order) and proves each one is
+--      the same order as the row it copies (pin, phone, name, total, placed within 60 seconds);
 --   2. backs up every row it will delete into two NEW tables (cleanup_20261008_orders / _order_items);
---   3. deletes the 9 copy order rows;
+--   3. deletes the copy order rows;
 --   4. deletes only item batches (rows inserted by one later upload) whose content is IDENTICAL to the
 --      earliest batch of that order number; a batch that differs is left alone and reported;
 --   5. prints what is left.
@@ -29,8 +33,7 @@ BEGIN
 END $$;
 
 -- 1. The copies: the same order number in the duplicate panel and in the real panel, with the same
---    pin code, phone, name, total (and the same placed time, except Kurtiya's #1303: the CSV and Shopify
---    differ by 3 seconds there).
+--    pin code, phone, name, total and a placed time within 60 seconds (the live copies are 4-5 s apart).
 CREATE TEMP TABLE dup_orders ON COMMIT DROP AS
 SELECT o.id AS dup_id, o.order_id, b.name AS dup_panel, r.id AS real_id
   FROM orders o
@@ -41,30 +44,44 @@ SELECT o.id AS dup_id, o.order_id, b.name AS dup_panel, r.id AS real_id
    AND o.pincode IS NOT DISTINCT FROM r.pincode
    AND o.customer_mobile = r.customer_mobile
    AND lower(o.customer_name) = lower(r.customer_name)
-   AND o.created_at = r.created_at;
+   AND abs(extract(epoch FROM (o.created_at - r.created_at))) <= 60;
 
 INSERT INTO dup_orders
 SELECT o.id, o.order_id, 'kurtiya', r.id
   FROM orders o
   JOIN businesses b ON b.id = o.business_id AND b.name = 'kurtiya'
   JOIN orders r ON r.order_id = o.order_id AND r.business_id = (SELECT id FROM businesses WHERE name = 'VASTRIKA')
- WHERE o.order_id = '1303'
+ WHERE o.order_id IN ('#1303', '1303')
    AND o.source_store = 'csv'
    AND o.order_total = r.order_total
    AND o.pincode IS NOT DISTINCT FROM r.pincode
    AND o.customer_mobile = r.customer_mobile
-   AND lower(o.customer_name) = lower(r.customer_name);
+   AND lower(o.customer_name) = lower(r.customer_name)
+   AND abs(extract(epoch FROM (o.created_at - r.created_at))) <= 60;
 
 DO $$
-DECLARE n int; v int; s int; k int;
+DECLARE n int; v int; s int; k int; why text;
 BEGIN
   SELECT count(*), count(*) FILTER (WHERE dup_panel = 'vestora'),
          count(*) FILTER (WHERE dup_panel = 'VASTRIKA STORE'), count(*) FILTER (WHERE dup_panel = 'kurtiya')
     INTO n, v, s, k FROM dup_orders;
-  IF n <> 9 OR v <> 6 OR s <> 2 OR k <> 1 THEN
-    RAISE EXCEPTION 'cleanup: expected 6 vestora + 2 VASTRIKA STORE + 1 kurtiya copies (9), found % + % + % (%). Nothing changed.', v, s, k, n;
+  IF v <> 6 OR s <> 2 THEN
+    RAISE EXCEPTION 'cleanup: expected 6 vestora + 2 VASTRIKA STORE copies, found % + %. Nothing changed.', v, s;
   END IF;
-  RAISE NOTICE 'cleanup: 9 copies found and each matches the order it copies.';
+  IF k > 1 THEN RAISE EXCEPTION 'cleanup: found % kurtiya copies, expected at most 1. Nothing changed.', k; END IF;
+  IF k = 0 THEN
+    -- Kurtiya's #1303 is NOT removed unless it is provably VASTRIKA's order. Say why, and go on with the other 8.
+    SELECT string_agg(format('%s: total %s, pin %s, phone %s, name %s, seconds apart %s', o.order_id,
+             (o.order_total = r.order_total), (o.pincode IS NOT DISTINCT FROM r.pincode), (o.customer_mobile = r.customer_mobile),
+             (lower(o.customer_name) = lower(r.customer_name)), round(extract(epoch FROM (o.created_at - r.created_at)))), '; ')
+      INTO why
+      FROM orders o
+      JOIN businesses b ON b.id = o.business_id AND b.name = 'kurtiya'
+      JOIN orders r ON r.order_id = o.order_id AND r.business_id = (SELECT id FROM businesses WHERE name = 'VASTRIKA')
+     WHERE o.order_id IN ('#1303', '1303');
+    RAISE NOTICE 'cleanup: kurtiya #1303 was NOT removed (it did not match VASTRIKA''s order on everything). Compared: %', coalesce(why, 'no #1303 in both panels');
+  END IF;
+  RAISE NOTICE 'cleanup: % copies found (vestora %, VASTRIKA STORE %, kurtiya %), each matches the order it copies.', n, v, s, k;
 END $$;
 
 -- 2. Item batches. One upload chunk inserts all its item rows in one statement, so the rows of one order
@@ -94,15 +111,16 @@ SELECT i.* FROM order_items i JOIN item_dups d ON d.order_id = i.order_id AND d.
 
 -- 4. The deletes, with their counts checked.
 DO $$
-DECLARE del_orders int; del_items int; want_items int;
+DECLARE del_orders int; del_items int; want_items int; want_orders int;
 BEGIN
+  SELECT count(*) INTO want_orders FROM dup_orders;
   SELECT coalesce(sum(n), 0) INTO want_items FROM item_dups;
   DELETE FROM order_items i USING item_dups d WHERE i.order_id = d.order_id AND i.created_at = d.created_at;
   GET DIAGNOSTICS del_items = ROW_COUNT;
   DELETE FROM orders WHERE id IN (SELECT dup_id FROM dup_orders);
   GET DIAGNOSTICS del_orders = ROW_COUNT;
   -- trg_keep_team_items silently keeps the rows of an order the team edited by hand: that shows up here.
-  IF del_orders <> 9 THEN RAISE EXCEPTION 'cleanup: deleted % order rows, expected 9. Rolled back.', del_orders; END IF;
+  IF del_orders <> want_orders THEN RAISE EXCEPTION 'cleanup: deleted % order rows, expected %. Rolled back.', del_orders, want_orders; END IF;
   RAISE NOTICE 'cleanup: deleted % copy orders and % duplicate item rows (% planned).', del_orders, del_items, want_items;
 END $$;
 
@@ -112,7 +130,7 @@ SELECT o.order_id, b.name AS panel, o.tracking_status,
        (SELECT count(*) FROM order_items i WHERE i.order_id = o.order_id) AS item_rows,
        (SELECT count(DISTINCT i.product_name) FROM order_items i WHERE i.order_id = o.order_id) AS distinct_items
   FROM orders o JOIN businesses b ON b.id = o.business_id
- WHERE o.order_id IN ('1140', '1148', '4001', '7168', '8608', '8996', '9456', '9578', '1303')
+ WHERE o.order_id IN (SELECT order_id FROM dup_orders) OR o.order_id IN ('#1303', '1303')
  ORDER BY o.order_id, b.name;
 
 SELECT b.name AS panel, (SELECT count(*) FROM orders o WHERE o.business_id = b.id) AS orders
