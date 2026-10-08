@@ -1006,7 +1006,8 @@ export default function AdminDashboard() {
           />
         )}
 
-        <div className="main-inner">
+        {/* Mail uses the whole width (owner 2026-10-08: "right side extra gap"): the other tabs keep their 80rem column */}
+        <div className={`main-inner${activeTab === 'mail' ? ' main-inner-wide' : ''}`}>
           {/* Toast */}
           {alert && (
             <div className={`toast toast-${alert.type}`}>
