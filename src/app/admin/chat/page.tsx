@@ -7,7 +7,7 @@ import {
   MessageCircle, Inbox,
   Menu,
 } from 'lucide-react';
-import { can } from '@/lib/permissions';
+import { can, isSuperAdmin } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
@@ -28,6 +28,7 @@ import { ReshipDialog } from './_components/ReshipDialog';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import ListHeader from './_components/ListHeader';
+import NextStep from './_components/NextStep';
 import ThreadHeader from './_components/ThreadHeader';
 import Composer from './_components/Composer';
 import Suggestions, { type SuggestState } from './_components/Suggestions';
@@ -43,11 +44,6 @@ export default function ChatSupportPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activePanelId, setActivePanelId] = useState('');
   const [tab, setTab] = useState<InboxTab>('all');
-  // The Problem type list in the sidebar: folded or open, remembered per browser.
-  const [topicsOpen, setTopicsOpenState] = useState(true);
-  useEffect(() => { try { if (localStorage.getItem('chat.topicsOpen') === '0') setTopicsOpenState(false); } catch { /* private window */ } }, []);
-  const setTopicsOpen = (v: boolean) => { setTopicsOpenState(v); try { localStorage.setItem('chat.topicsOpen', v ? '1' : '0'); } catch { /* ignore */ } };
-  const topicsShown = topicsOpen || tab.startsWith('topic:');
   const topicKey = tab.startsWith('topic:') ? tab.slice(6) : '';
   const topicDef = INBOX_TOPICS.find(t => t.key === topicKey) || null;
   // A problem tab has no status or segment of its own: it lists the open chats about it.
@@ -193,7 +189,11 @@ export default function ChatSupportPage() {
     const u = localStorage.getItem('auth_user');
     if (!t || !u) { router.push('/login'); return; }
     setToken(t);
-    setUser(JSON.parse(u));
+    const me = JSON.parse(u);
+    setUser(me);
+    // A team member's inbox is just their Active cases (owner 2026-10-08): the queues, problem
+    // filters and the rest are for the Super Admin. Only the menu changes: no permission does.
+    if (!isSuperAdmin(me)) setTab('active:open');
     setActivePanelId(localStorage.getItem('active_panel_id') || '');
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
@@ -930,6 +930,8 @@ export default function ChatSupportPage() {
 
   // What this login may do here (src/lib/permissions.ts; the API checks the same).
   const canReply = can(user, 'chat.reply');
+  // The team's simple inbox (Active cases only); the Super Admin sees every queue.
+  const simple = !isSuperAdmin(user);
   const canCases = can(user, 'chat.cases');
   // The panel's name on each row only when this login has more than one panel.
   const showPanelName = businesses.length > 1;
@@ -1089,7 +1091,7 @@ export default function ChatSupportPage() {
     <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-      <InboxSidebar activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} setTopicsOpen={setTopicsOpen} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} topicsShown={topicsShown} unreadTotal={unreadTotal} user={user} />
+      <InboxSidebar simple={simple} activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} unreadTotal={unreadTotal} user={user} />
 
       {/* ── Main ── */}
       <main className="main-content chat-main">
@@ -1114,7 +1116,7 @@ export default function ChatSupportPage() {
         <div className={`chat-shell${activeId ? ' thread-open' : ''}`}>
           {/* Conversation list */}
           <div className="chat-list">
-            <ListHeader activeKey={activeKey} activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
+            <ListHeader simple={simple} setTab={setTab} topicCounts={topicCounts} activeKey={activeKey} activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
 
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {loadingList && conversations.length === 0 && (
@@ -1202,7 +1204,7 @@ export default function ChatSupportPage() {
                     : (c.waiting_overdue || c.urgent_waiting) && !isVisitorChat(c) ? ' late' : ''}`}
                   style={{ display: 'block', width: '100%', textAlign: 'left' }}
                 >
-                  <ConversationRow c={c} meKey={meKey} rowUnread={rowUnread} rowWaiting={rowWaiting} searchActive={searchActive} searchTerm={searchTerm} showPanelName={showPanelName} team={team} />
+                  <ConversationRow simple={simple} c={c} meKey={meKey} rowUnread={rowUnread} rowWaiting={rowWaiting} searchActive={searchActive} searchTerm={searchTerm} showPanelName={showPanelName} team={team} />
                 </button>
               ))}
               {listTotal !== null && conversations.length > 0 && conversations.length < listTotal && (
@@ -1241,6 +1243,8 @@ export default function ChatSupportPage() {
               <>
                 {/* Thread header */}
                 <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
+
+                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} />
 
                 {/* Messages */}
                 <div ref={threadRef} className="chat-msgs">

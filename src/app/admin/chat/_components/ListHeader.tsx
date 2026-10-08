@@ -3,14 +3,23 @@
 import { Loader2, X, Search, UsersRound } from 'lucide-react';
 import { isSuperAdmin } from '@/lib/permissions';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
-import type { InboxTopic } from '@/lib/chat/inbox-topics';
+import { INBOX_TOPICS, type InboxTopic } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import type { AuthUser, Business, Conversation, InboxTab } from '../_lib/types';
 import { CASE_LABELS } from '../_lib/inbox';
 import { Chip } from './chips';
 
-export default function ListHeader({ activeKey, activePanelId, businesses, caseKey, caseSummary, conversations, listTotal, mineTab, myChats, release, releaseAll, searchActive, searchInput, setRelease, setSearchInput, setSearchQ, setUnreadOnly, tab, topicDef, unreadOnly, urgentCount, user }: {
+// The list's title follows the queue that is open.
+const TAB_TITLES: Partial<Record<InboxTab, string>> = {
+  all: 'All customers', visitors: 'Visitors', customers: 'Customers', human_needed: 'Needs you', agent_handling: 'With team',
+  ai_handling: 'With AI', 'case:refund': 'Refund', 'case:reship': 'Ship again', resolved: 'Closed',
+};
+
+export default function ListHeader({ simple, setTab, topicCounts, activeKey, activePanelId, businesses, caseKey, caseSummary, conversations, listTotal, mineTab, myChats, release, releaseAll, searchActive, searchInput, setRelease, setSearchInput, setSearchQ, setUnreadOnly, tab, topicDef, unreadOnly, urgentCount, user }: {
+  simple: boolean;
+  setTab: React.Dispatch<React.SetStateAction<InboxTab>>;
+  topicCounts: Record<string, number>;
   activePanelId: string;
   businesses: Business[];
   activeKey: string;
@@ -37,7 +46,7 @@ export default function ListHeader({ activeKey, activePanelId, businesses, caseK
   return (
     <div className="chat-list-head">
       <div className="chat-list-title">
-        <span className="truncate">{searchActive ? 'Search results' : topicDef ? topicDef.label : activeKey === 'open' ? 'Open case' : activeKey === 'closed' ? 'Closed case' : mineTab ? 'My chats' : 'Conversations'}</span>
+        <span className="truncate">{searchActive ? 'Search results' : topicDef ? topicDef.label : activeKey === 'open' ? 'Open case' : activeKey === 'closed' ? 'Closed case' : mineTab ? 'My chats' : (TAB_TITLES[tab] ?? 'Conversations')}</span>
         <span className="count">{listTotal ?? conversations.length}</span>
         {urgentCount > 0 && (
           <Chip tone="danger" title={`Frustrated customers (${HEALTH_PIN_MIN}%+) and customers waiting ${WAITING_OVERDUE_HOURS} hours or more for an answer, kept at the top until they are answered or Closed`}>
@@ -45,6 +54,11 @@ export default function ListHeader({ activeKey, activePanelId, businesses, caseK
           </Chip>
         )}
       </div>
+      {simple && !searchActive && (activeKey === 'open' || activeKey === 'closed') && (
+        <div className="meta" style={{ marginTop: '0.25rem' }}>
+          {activeKey === 'open' ? 'Customers waiting for your reply. Read the short note on each chat, then open it.' : 'Chats you have answered.'}
+        </div>
+      )}
       <div style={{ position: 'relative', marginTop: '0.5rem' }}>
         <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-muted)', pointerEvents: 'none' }} />
         <input
@@ -69,6 +83,23 @@ export default function ListHeader({ activeKey, activePanelId, businesses, caseK
           </button>
         )}
       </div>
+      {!searchActive && !simple && (
+        // Problem types as filters (owner 2026-10-08): one tap lists the OPEN chats about that problem,
+        // the same lists the sidebar's Problem type section used to hold; tap it again to go back.
+        <div className="topic-chips" role="group" aria-label="Filter by problem">
+          {INBOX_TOPICS.filter(t => t.key !== 'risk').map(t => {
+            const id = `topic:${t.key}` as InboxTab;
+            const on = tab === id;
+            const n = topicCounts[t.key] ?? 0;
+            return (
+              <button key={t.key} type="button" className="topic-chip" aria-pressed={on} title={t.hint}
+                onClick={() => { setSearchInput(''); setSearchQ(''); setTab(on ? 'all' : id); }}>
+                {t.label}{n > 0 ? <b>{n}</b> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {!searchActive && tab !== 'resolved' && !activeKey && (
         <div className="seg" role="group" aria-label="Show chats">
           {([false, true] as const).map((only) => (
