@@ -6,6 +6,7 @@ import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
 import TeamScoreCard from '@/components/TeamScoreCard';
 import RefundRequestsCard from '@/components/RefundRequestsCard';
+import MailCard from '@/components/MailCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
@@ -19,7 +20,7 @@ import {
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
-import { plural } from './_lib/format';
+import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
 import UploadTab from './_components/UploadTab';
@@ -928,6 +929,8 @@ export default function AdminDashboard() {
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
     { id: 'score' as TabType, label: isSuperAdmin(user) ? 'Team score' : 'My score', icon: Trophy, show: isSuperAdmin(user) || can(user, 'chat.reply') },
     { id: 'refunds' as TabType, label: 'Refund requests', icon: Undo2, show: isSuperAdmin(user) },
+    // Owner 2026-10-08: the real Gmail inbox. The Super Admin always; a member only with the Mail tick.
+    { id: 'mail' as TabType, label: 'Mail', icon: Mail, show: can(user, 'mail.view') },
   ].filter((i) => i.show);
 
   return (
@@ -943,7 +946,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1379,8 +1382,17 @@ export default function AdminDashboard() {
                             display: 'flex', alignItems: 'center', gap: '0.5rem',
                             padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.5rem',
                           }}>
-                            <span style={{ color: 'var(--success)', fontSize: '0.5rem' }}>●</span>
-                            <span style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{acc.email}</span>
+                            <span title={acc.status ? (acc.status.ok ? 'Gmail is being read' : 'Gmail cannot be read') : 'Not checked since the last restart'}
+                              style={{ color: !acc.status ? 'var(--fg-muted)' : acc.status.ok ? 'var(--success)' : 'var(--danger)', fontSize: '0.5rem' }}>●</span>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{acc.email}</div>
+                              {/* Step 2 (owner 2026-10-08): is the Gmail really being read? */}
+                              <div className="meta" style={{ color: acc.status && !acc.status.ok ? 'var(--danger)' : undefined }}>
+                                {!acc.status ? 'Not checked yet. It is checked every minute.'
+                                  : !acc.status.ok ? `${acc.status.error || 'Could not read this Gmail.'} Last tried ${agoText(acc.status.checkedAt)}.`
+                                  : `Working. Checked ${agoText(acc.status.checkedAt)}.${acc.status.lastMailAt ? ` Last new mail ${agoText(acc.status.lastMailAt)}.` : ''}`}
+                              </div>
+                            </div>
                             <button
                               className="btn-icon"
                               style={{ marginLeft: 'auto', color: 'var(--danger)' }}
@@ -1515,6 +1527,10 @@ export default function AdminDashboard() {
           )}
           {activeTab === 'score' && (isSuperAdmin(user) || can(user, 'chat.reply')) && (
             <div className="animate-fade-in-up"><TeamScoreCard token={token} onAlert={showAlert} mine={!isSuperAdmin(user)} /></div>
+          )}
+          {/* ════════ MAIL (Super Admin, or a member with the Mail tick) ════════ */}
+          {activeTab === 'mail' && can(user, 'mail.view') && (
+            <div className="animate-fade-in-up"><MailCard token={token} onAlert={showAlert} activePanelId={activePanelId} /></div>
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && isSuperAdmin(user) && (

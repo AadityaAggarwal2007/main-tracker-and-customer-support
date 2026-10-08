@@ -17,6 +17,7 @@ import { recentVisitorMessages } from './chat-history';
 import { dropReplyTimes, insertEmailNote, routineHandOverKind, routineLine, saysRefundTime, teamWillReplyLine, urgentKind } from './escalation';
 import { afterHours } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
+import { friendlyMailError, noteMailboxCheck } from './mailbox-status';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -107,7 +108,7 @@ function stripQuotedReply(text: string): string {
 }
 
 // ── Send via Gmail SMTP ────────────────────────────────────────────────────
-async function sendEmailReply({
+export async function sendEmailReply({
   fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments,
 }: {
   fromEmail: string; appPassword: string; toEmail: string; subject: string;
@@ -171,6 +172,8 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
     try {
       const searchFrom = maxUid + 1;
       const uids = await client.search({ uid: `${searchFrom}:*` });
+      // Signed in and read: the Settings card shows "checked just now" (mailbox-status.ts).
+      noteMailboxCheck(account.id, { ok: true });
       if (!uids || uids.length === 0) return 0;
 
       for await (const msg of client.fetch(uids, { uid: true, source: true })) {
@@ -500,10 +503,16 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
       await query(`UPDATE site_emails SET last_uid = $1 WHERE id = $2`, [maxUid, account.id]);
     }
 
+    if (handled > 0) noteMailboxCheck(account.id, { ok: true, handled });
     await client.logout();
   } catch (err) {
     console.error(`[email] IMAP error for ${account.email}:`, (err as Error).message);
+    noteMailboxCheck(account.id, { ok: false, error: friendlyMailError((err as Error).message) });
     try { await client.logout(); } catch { /* already gone */ }
+  } finally {
+    // The "no new mail" path returns before the logout above; closing here makes sure no Gmail connection is
+    // left open every minute (Gmail allows only about 15 at once, and the Mail tab needs one too).
+    try { client.close(); } catch { /* already closed */ }
   }
 
   return handled;

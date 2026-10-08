@@ -21,6 +21,7 @@ export const PERMISSIONS = [
   'orders.view', 'orders.update', 'orders.cancel', 'orders.upload', 'orders.email', 'orders.delete',
   'chat.view', 'chat.reply', 'chat.cases', 'chat.edit', 'chat.senior',
   'chikki.edit', 'settings.panel',
+  'mail.view', 'mail.reply',
 ] as const;
 export type Permission = typeof PERMISSIONS[number];
 
@@ -45,6 +46,12 @@ export const PERMISSION_GROUPS: { title: string; items: { key: Permission; label
   { title: 'Chikki and panel settings', items: [
     { key: 'chikki.edit', label: 'Teach Chikki', hint: 'Saved answers, notes, lessons, team examples' },
     { key: 'settings.panel', label: 'Panel settings', hint: 'Branding, chat widget, COD, custom instructions' },
+  ] },
+  // Owner 2026-10-08: the Mail tab (the real Gmail inbox of each panel) is the Super Admin's. No role
+  // preset has these ticks: the owner gives them to a member by hand, and only for that member's panels.
+  { title: 'Mail (Gmail inbox)', items: [
+    { key: 'mail.view', label: 'Open Mail', hint: "Read the last 30 days of the panel's Gmail inbox (opening a mail marks it read in Gmail)" },
+    { key: 'mail.reply', label: 'Reply from Mail', hint: 'Send a reply from the panel\'s Gmail address (needs Open Mail)' },
   ] },
 ];
 
