@@ -8,7 +8,8 @@ import { STATUS_LABELS, CATEGORY_LABELS, convName, nameFromOrder, nameNote, clos
 import { highlightText } from '../_lib/text';
 import { Chip, WaitingChip, CameBackChip, CaseChip, HealthBadge, PromiseChip, ReshipChip, statusTone, type ChipTone } from './chips';
 
-export default function ConversationRow({ c, meKey, rowUnread, rowWaiting, searchActive, searchTerm, showPanelName, team }: {
+export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaiting, searchActive, searchTerm, showPanelName, team }: {
+  simple: boolean;
   c: Conversation;
   meKey: string | null;
   rowUnread: (c: Conversation) => number;
@@ -95,6 +96,10 @@ export default function ConversationRow({ c, meKey, rowUnread, rowWaiting, searc
         <Chip tone={status.tone} title={status.title}>{status.text}</Chip>
         {priority}
       </div>
+      {simple && !searchActive && c.subject_summary && (
+        // The team's rows say in one line what the customer needs, so a chat is understood before it is opened.
+        <div className="row-brief clamp">{c.subject_summary}</div>
+      )}
       {searchActive && c.match_snippet ? (
         <div className="row-snippet clamp">
           {highlightText(c.match_snippet.replace(/\s+/g, ' '), searchTerm, `r${c.id}`)}

@@ -98,7 +98,6 @@ export default function AdminDashboard() {
 
   // Panel switcher
   const [activePanelId, setActivePanelId] = useState<string>('');
-  const [showPanelDropdown, setShowPanelDropdown] = useState(false);
 
   // Businesses / Brand Settings
   const [businesses, setBusinesses] = useState<Business[]>([]);
@@ -371,7 +370,6 @@ export default function AdminDashboard() {
   const switchPanel = (panelId: string) => {
     setActivePanelId(panelId);
     localStorage.setItem('active_panel_id', panelId);
-    setShowPanelDropdown(false);
     setPage(1);
     setSelectedOrders(new Set());
   };
@@ -881,7 +879,7 @@ export default function AdminDashboard() {
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
       {/* Sidebar */}
-      <AdminSidebar activeBusiness={activeBusiness} activePanelId={activePanelId} activeTab={activeTab} businesses={businesses} emailWaiting={emailWaiting} humanNeeded={humanNeeded} logout={logout} navItems={navItems} openMe={openMe} refundUnseen={refundUnseen} router={router} setActiveTab={setActiveTab} setProfileOpen={setProfileOpen} setSecurityOpen={setSecurityOpen} setShowPanelDropdown={setShowPanelDropdown} setSidebarOpen={setSidebarOpen} showPanelDropdown={showPanelDropdown} sidebarOpen={sidebarOpen} switchPanel={switchPanel} user={user} />
+      <AdminSidebar activeBusiness={activeBusiness} activePanelId={activePanelId} activeTab={activeTab} businesses={businesses} emailWaiting={emailWaiting} humanNeeded={humanNeeded} logout={logout} navItems={navItems} openMe={openMe} refundUnseen={refundUnseen} router={router} setActiveTab={setActiveTab} setProfileOpen={setProfileOpen} setSecurityOpen={setSecurityOpen} setSidebarOpen={setSidebarOpen} sidebarOpen={sidebarOpen} switchPanel={switchPanel} user={user} />
 
       {/* Main */}
       <main className="main-content">

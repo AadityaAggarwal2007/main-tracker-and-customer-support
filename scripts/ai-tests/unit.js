@@ -1395,4 +1395,35 @@ t('stripLinkJunk: utm_source=chatgpt.com, fbclid, gclid go; the AWB, the path, o
   assert.strictEqual(sg.acceptPolish(`ur link ${L} pls check`, 'Your link https://other.in/x, please check.'), 'ur link https://app.fship.in/shipment/tracking?awbno=143449611038166 pls check');
 });
 
+// ── "What to do next" strip (owner 2026-10-08, next-step.ts) ──
+const ns = load('next-step');
+t('next-step: a visitor is told to verify (order ID + full phone) and nothing about any order; a closed chat needs nothing', () => {
+  const base = { status: 'human_needed', known: false, verified: false, subject: 'Refund / Cancellation', caseKind: null, caseByChikki: false, reshipped: false, threat: false, accuse: false, health: null, waitingMs: null, returned: false, promiseDue: false, order: null, heldBy: null, heldByMe: false, canReply: true };
+  const v = ns.nextStep(base);
+  assert.strictEqual(v.wants, 'Not verified yet');
+  assert.ok(/Order ID and the full phone number/.test(v.steps.join(' ')) && !/refund/i.test(v.steps.join(' ')));
+  assert.strictEqual(ns.nextStep({ ...base, status: 'ai_handling' }).tone, 'muted');
+  assert.strictEqual(ns.nextStep({ ...base, status: 'resolved', known: true }).wants, 'Chat is closed');
+});
+t('next-step: known customers get the rule-backed steps (refund form is the Super Admin\'s, no promises, family check for Delivered, Ship again, address in Details), at most 3 steps, upset or overdue is red', () => {
+  const k = { status: 'agent_handling', known: true, verified: true, subject: null, caseKind: null, caseByChikki: false, reshipped: false, threat: false, accuse: false, health: 10, waitingMs: null, returned: false, promiseDue: false, order: { delivered: false, mode: 'normal' }, heldBy: null, heldByMe: true, canReply: true };
+  const refund = ns.nextStep({ ...k, subject: 'Refund / Cancellation' });
+  assert.ok(/Super Admin/.test(refund.steps.join(' ')) && /Do not promise an amount or a time/.test(refund.steps.join(' ')));
+  assert.ok(/family, neighbours/.test(ns.nextStep({ ...k, subject: 'Not received', order: { delivered: true, mode: 'normal' } }).steps.join(' ')));
+  assert.ok(/Never promise arrival today/.test(ns.nextStep({ ...k, subject: 'Delivery delay' }).steps.join(' ')));
+  assert.ok(/Ship again/.test(ns.nextStep({ ...k, subject: 'Wrong tracking link' }).steps.join(' ')));
+  assert.ok(/Details/.test(ns.nextStep({ ...k, subject: 'Address change' }).steps.join(' ')));
+  const reship = ns.nextStep({ ...k, caseKind: 'reship' });
+  assert.strictEqual(reship.wants, 'New parcel not sent yet');
+  assert.strictEqual(ns.nextStep({ ...k, caseKind: 'reship', reshipped: true }).wants, 'New parcel sent');
+  assert.strictEqual(ns.nextStep({ ...k, caseKind: 'refund', caseByChikki: true }).wants, 'Refund case');
+  const threat = ns.nextStep({ ...k, threat: true });
+  assert.strictEqual(threat.tone, 'danger');
+  assert.ok(!/refund|chargeback form/i.test(threat.steps.join(' ').replace(/chargebacks or complaints/, '')), 'a threat gets no refund promise');
+  const late = ns.nextStep({ ...k, subject: 'Refund / Cancellation', waitingMs: 3 * 3600_000, health: 80 });
+  assert.strictEqual(late.tone, 'danger'); assert.ok(late.steps.length <= 3 && /waited 3h/.test(late.steps[0]));
+  assert.ok(/has this chat/.test(ns.nextStep({ ...k, heldBy: 'Rahul', heldByMe: false }).steps[0]));
+  assert.strictEqual(ns.waitedText(90 * 60_000), '1h');
+});
+
 console.log(`UNIT: ${n} groups passed`);

@@ -1,14 +1,16 @@
 'use client';
 
 import type { useRouter } from 'next/navigation';
-import { ShoppingBag, LogOut, MessageCircle, Inbox, UserCheck, ChevronDown, MailOpen, CheckCheck } from 'lucide-react';
+import { ShoppingBag, LogOut, MessageCircle, UserCheck, MailOpen, CheckCheck } from 'lucide-react';
+import PanelSwitcher from '@/components/PanelSwitcher';
 import { ROLE_INFO, type Role } from '@/lib/permissions';
-import { INBOX_TOPICS } from '@/lib/chat/inbox-topics';
 import type { AuthUser, Business, InboxTab } from '../_lib/types';
 import { TOPIC_ICONS, INBOX_TABS } from '../_lib/inbox';
+import type { ChipTone } from './chips';
 import { Chip } from './chips';
 
-export default function InboxSidebar({ activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, setTopicsOpen, sidebarOpen, tab, topicCounts, topicsShown, unreadTotal, user }: {
+export default function InboxSidebar({ simple, activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, sidebarOpen, tab, topicCounts, unreadTotal, user }: {
+  simple: boolean;
   activeCounts: { open: number; closed: number };
   activePanelId: string;
   businesses: Business[];
@@ -24,14 +26,39 @@ export default function InboxSidebar({ activeCounts, activePanelId, businesses, 
   setSearchQ: React.Dispatch<React.SetStateAction<string>>;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setTab: React.Dispatch<React.SetStateAction<InboxTab>>;
-  setTopicsOpen: (v: boolean) => void;
   sidebarOpen: boolean;
   tab: InboxTab;
   topicCounts: Record<string, number>;
-  topicsShown: boolean;
   unreadTotal: number;
   user: AuthUser | null;
 }) {
+  const base = (v: InboxTab) => INBOX_TABS.find(t => t.v === v)!;
+  const caseN = (k: 'refund' | 'reship') => caseCounts[k] ?? { total: 0, unread: 0 };
+  type Item = { v: InboxTab; label: string; icon: typeof UserCheck; n: number; tone: ChipTone; text?: string; hint?: string; sub?: boolean };
+  const caseItem = (k: 'refund' | 'reship'): Item => {
+    const c = caseN(k);
+    return { v: `case:${k}` as InboxTab, label: base(`case:${k}` as InboxTab).label, icon: base(`case:${k}` as InboxTab).icon, n: c.total, tone: c.unread ? 'danger' : 'muted', text: c.unread ? `${c.unread} waiting` : undefined,
+      hint: `${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}` };
+  };
+  const groups: { title: string; items: Item[] }[] = [
+    { title: 'Do now', items: [
+      { v: 'mine', label: 'My chats', icon: base('mine').icon, n: myChats.open, tone: myChats.waiting ? 'danger' : 'muted', hint: `${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}` },
+      { v: 'human_needed', label: 'Needs you', icon: base('human_needed').icon, n: 0, tone: 'danger', hint: 'Chats where the AI stopped and a person must answer' },
+      { v: 'topic:risk', label: 'At risk', icon: TOPIC_ICONS.risk, n: topicCounts.risk ?? 0, tone: 'danger', hint: 'Frustrated customers who may charge back' },
+    ] },
+    { title: 'Cases', items: [caseItem('refund'), caseItem('reship')] },
+    { title: 'Team and AI', items: [
+      { v: 'agent_handling', label: 'With team', icon: base('agent_handling').icon, n: 0, tone: 'muted' },
+      { v: 'active:open', label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger', sub: true, hint: 'The customer wrote and nobody has answered yet' },
+      { v: 'active:closed', label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted', sub: true, hint: 'A team member answered; it comes back to Open case when the customer writes again' },
+      { v: 'ai_handling', label: 'With AI', icon: base('ai_handling').icon, n: 0, tone: 'muted' },
+    ] },
+    { title: 'Everyone', items: [
+      { v: 'all', label: 'All customers', icon: base('all').icon, n: 0, tone: 'muted' },
+      { v: 'visitors', label: 'Visitors', icon: base('visitors').icon, n: 0, tone: 'muted' },
+      { v: 'resolved', label: 'Closed', icon: base('resolved').icon, n: 0, tone: 'muted' },
+    ] },
+  ];
   return (
       <aside className={`sidebar chat-side ${sidebarOpen ? 'open' : ''}`}>
         <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)' }}>
@@ -43,109 +70,63 @@ export default function InboxSidebar({ activeCounts, activePanelId, businesses, 
           </div>
         </div>
 
-        {/* Panel selector */}
-        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
-          <label style={{ fontSize: '0.7rem', color: 'var(--fg-muted)', fontWeight: 600 }}>PANEL</label>
-          <select
-            value={activePanelId}
-            onChange={e => {
-              setActivePanelId(e.target.value);
-              localStorage.setItem('active_panel_id', e.target.value);
+        {/* Panel selector: the same switcher as the admin page */}
+        <div className="psw-wrap">
+          <PanelSwitcher
+            panels={businesses.filter(b => !user?.businessIds || user.businessIds.includes(b.id))}
+            activeId={activePanelId}
+            onSelect={(id) => {
+              setActivePanelId(id);
+              localStorage.setItem('active_panel_id', id);
               setActiveId(null);
               setSidebarOpen(false);
             }}
-            style={{ width: '100%', marginTop: '0.25rem', padding: '0.375rem', borderRadius: 6, border: '1px solid var(--border)', fontSize: '0.8125rem', background: 'var(--card-bg)', color: 'var(--fg)' }}
-          >
-            <option value="">All panels</option>
-            {businesses
-              .filter(b => !user.businessIds || user.businessIds.includes(b.id))
-              .map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          />
         </div>
 
-        {/* Status filters: they scroll inside the sidebar when the screen is short, so the
-            panel picker stays on top and Back to Orders / Sign out stay at the bottom. */}
+        {/* The menu is a work flow, top to bottom (owner 2026-10-08: "koi flow nahi hai"): what to do
+            now, the Refund / Ship again cases, who has the rest, then everything else. The problem
+            types (refund, delay, address...) are filter chips above the list (ListHeader), not menu
+            items. Same tabs and same server filters as before; only the grouping changed. */}
         <nav style={{ padding: '0.5rem', flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          {/* Active cases (owner 2026-10-07): the chats the team took over, in two lists. Open case = the
-              customer wrote and nobody has answered yet (it comes back here by itself when they write
-              again); Closed case = a team member answered. Not the Closed tab below (finished chats). */}
-          <div style={{ padding: '0.25rem 0.75rem 0.25rem', fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
-            Active cases
-          </div>
-          {([
-            { v: 'active:open' as InboxTab, label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger' as const, hint: 'The customer wrote and nobody has answered yet' },
-            { v: 'active:closed' as InboxTab, label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted' as const, hint: 'A team member answered; it comes back to Open case when the customer writes again' },
-          ]).map(s => (
-            <button
-              key={s.v}
-              title={s.hint}
-              onClick={() => { setTab(s.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
-              className={`nav-btn ${tab === s.v ? 'active' : ''}`}
-              style={{ width: '100%' }}
-            >
-              <s.icon size={16} />
-              <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{s.label}</span>
-              {s.n > 0 && <Chip tone={s.tone}>{s.n}</Chip>}
-            </button>
+          {simple ? (
+            // The team's menu (owner 2026-10-08): two lists, said in plain words. Everything else is the Super Admin's.
+            <div>
+              <div className="nav-group">Your chats</div>
+              {([
+                { v: 'active:open' as InboxTab, label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger' as const, line: 'Customer wrote. Reply to them.' },
+                { v: 'active:closed' as InboxTab, label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted' as const, line: 'You answered. It comes back to Open case if they write again.' },
+              ]).map(it => (
+                <button key={it.v} className={`nav-btn nav-simple${tab === it.v ? ' active' : ''}`} style={{ width: '100%' }}
+                  onClick={() => { setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}>
+                  <it.icon size={18} />
+                  <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>
+                    <span style={{ display: 'block' }}>{it.label}</span>
+                    <span className="nav-line">{it.line}</span>
+                  </span>
+                  {it.n > 0 && <Chip tone={it.tone}>{it.n}</Chip>}
+                </button>
+              ))}
+            </div>
+          ) : groups.map((g, gi) => (
+            <div key={g.title}>
+              <div className="nav-group">{g.title}</div>
+              {g.items.filter(it => it.v !== 'mine' || canReply).map(it => (
+                <button
+                  key={it.v}
+                  title={it.hint}
+                  onClick={() => { setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
+                  className={`nav-btn${tab === it.v ? ' active' : ''}${it.sub ? ' nav-sub' : ''}`}
+                  style={{ width: '100%' }}
+                >
+                  <it.icon size={16} style={it.v === 'topic:risk' && it.n > 0 && tab !== it.v ? { color: 'var(--danger)' } : undefined} />
+                  <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{it.label}</span>
+                  {it.n > 0 && <Chip tone={it.tone}>{it.text ?? it.n}</Chip>}
+                </button>
+              ))}
+              {gi < groups.length - 1 && <div style={{ height: 1, background: 'var(--border)', margin: '0.5rem 0.25rem' }} />}
+            </div>
           ))}
-          <div style={{ height: 1, background: 'var(--border)', margin: '0.5rem 0.25rem' }} />
-          {INBOX_TABS.filter(s => s.v !== 'mine' || canReply).map(s => (
-            <button
-              key={s.v}
-              onClick={() => { setTab(s.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
-              className={`nav-btn ${tab === s.v ? 'active' : ''}`}
-              style={{ width: '100%' }}
-            >
-              <s.icon size={16} />
-              <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{s.label}</span>
-              {s.v.startsWith('case:') && (caseCounts[s.v.slice(5)]?.total ?? 0) > 0 && (() => {
-                const c = caseCounts[s.v.slice(5)];
-                return (
-                  <Chip tone={c.unread ? 'danger' : 'muted'} title={`${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}`}>
-                    {c.unread ? `${c.unread} waiting` : c.total}
-                  </Chip>
-                );
-              })()}
-              {s.v === 'mine' && myChats.open > 0 && (
-                // My chats: how many open chats this login holds; red while any customer waits.
-                <Chip tone={myChats.waiting ? 'danger' : 'muted'} title={`${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}`}>
-                  {myChats.open}
-                </Chip>
-              )}
-            </button>
-          ))}
-
-          {/* What the customers are upset about: open chats only, so each queue stays short. The
-              list folds away (remembered) so the menu stays short; At risk shows even folded. */}
-          <button type="button" onClick={() => setTopicsOpen(!topicsShown)} aria-expanded={topicsShown}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '0.75rem 0.75rem 0.25rem', border: 'none', background: 'none', cursor: 'pointer',
-              fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
-            <span style={{ flex: 1, textAlign: 'left' }}>Problem type</span>
-            {!topicsShown && (topicCounts.risk ?? 0) > 0 && (
-              <Chip tone="danger">{topicCounts.risk} at risk</Chip>
-            )}
-            <ChevronDown size={13} style={{ transition: 'transform .15s', transform: topicsShown ? 'rotate(180deg)' : 'none' }} />
-          </button>
-          {topicsShown && INBOX_TOPICS.map(t => {
-            const Icon = TOPIC_ICONS[t.key] || Inbox;
-            const n = topicCounts[t.key] ?? 0;
-            const id = `topic:${t.key}` as InboxTab;
-            return (
-              <button
-                key={id}
-                title={t.hint}
-                onClick={() => { setTab(id); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
-                className={`nav-btn ${tab === id ? 'active' : ''}`}
-                style={{ width: '100%' }}
-              >
-                <Icon size={16} style={t.key === 'risk' && n > 0 ? { color: 'var(--danger)' } : undefined} />
-                <span style={{ flex: 1, textAlign: 'left', minWidth: 0 }}>{t.label}</span>
-                {n > 0 && (
-                  <Chip tone={t.key === 'risk' ? 'danger' : 'muted'}>{n}</Chip>
-                )}
-              </button>
-            );
-          })}
         </nav>
 
         <div style={{ marginTop: 'auto', padding: '0.75rem', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
