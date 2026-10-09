@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
     [conversationId]
   );
   if (!conv || !canAccessPanel(user, conv.tracker_business_id)) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  if (conv.source !== 'chat') return NextResponse.json({ error: 'Sudharo works in chat conversations only' }, { status: 409 });
+  if (conv.source !== 'chat' && conv.source !== 'email') return NextResponse.json({ error: 'Sudharo works in chat and email conversations only' }, { status: 409 });
   if (hasFormLink(text)) return NextResponse.json({ text });
 
   try {

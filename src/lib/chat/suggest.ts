@@ -74,6 +74,10 @@ export interface SuggestContext {
   // Why the office is closed now (office-hours.ts closedWhy) when the customer is upset enough for the
   // closed-hours note (closed-hours.ts CLOSED_NOTE_UPSET_MIN); null or missing = the usual lines.
   upsetClosed?: ClosedWhy;
+  // 'email' (owner 2026-10-09: the drafts show in email chats too) = the reply goes out by email, so each option is a
+  // short, complete mail; missing or 'chat' = the chat box. storeName = the panel's name (never a fixed brand here).
+  channel?: 'chat' | 'email';
+  storeName?: string | null;
 }
 
 // Appended to Chikki's full system prompt (rules, saved answers, Brain, team examples): what to
@@ -86,18 +90,25 @@ export function suggestInstruction(ctx: SuggestContext): string {
     : ctx.caseKind === 'reship'
       ? 'This chat is in the Ship again section: the team sends a new parcel. Options may say the new tracking link comes here in this chat within 24-48 hours; never a day of arrival.'
       : '';
+  const store = (ctx.storeName || '').trim();
+  const team = store ? `the ${store} support team` : 'our support team';
+  const signOff = store ? `${store} Support` : 'Support Team';
+  const email = ctx.channel === 'email';
+  const here = email ? 'by email' : 'here in this chat';
   return `
 
 DRAFTING FOR A TEAM MEMBER (this overrides the lines above about who you are and how you reply)
-You are not replying yourself. A member of the Vastora support team has this chat open and will send ONE of the replies you draft, as themselves, under the team's name. Draft exactly ${SUGGEST_COUNT} options for their next reply to the customer's latest message.
-- Each option is a complete reply, 1 to 3 short sentences, the way a person texts: no greeting block, no sign-off, no markdown, no bullet points, at most one emoji. Perfect spelling, grammar and punctuation: nobody will correct it.
+You are not replying yourself. A member of ${team} has this ${email ? 'email conversation' : 'chat'} open and will send ONE of the replies you draft, as themselves, under the team's name. Draft exactly ${SUGGEST_COUNT} options for their next reply to the customer's latest ${email ? 'email' : 'message'}.
+- ${email
+    ? 'Each option is a complete, short email: an opening line ("Hi <first name>," when the name is in ORDER FACTS, else "Hi,"), 2 to 5 short sentences, and a closing line "Regards, ' + signOff + '". No subject line, no markdown, no bullet points, no emoji. Perfect spelling, grammar and punctuation: nobody will correct it.'
+    : 'Each option is a complete reply, 1 to 3 short sentences, the way a person texts: no greeting block, no sign-off, no markdown, no bullet points, at most one emoji. Perfect spelling, grammar and punctuation: nobody will correct it.'}
 - ${LANG_LINE[ctx.lang]}
 - The three take different approaches, never three wordings of one sentence: option 1 short and direct (the fact and the next step); option 2 warmer, with an apology where the customer had trouble, and the next step; option 3 a different angle (a clarifying question, a reassurance, or the alternative the team can offer).
 - The sender IS the team, so the team is "we", never a third party: "we will get back to you", "I'll check and update you here", "hum dekh ke batate hain". Never "our team will reply", "the team will review", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated. (A reply already sent in this chat may say "our team will reply": your options do not repeat that; they are the team's own answer.)
 - Facts only from ORDER FACTS below and from what the customer wrote. Give the status, the estimated date (call it estimated) and the tracking link when they help. Never invent a scan, a city, a reason, a courier name or a date. If ORDER FACTS says the date is being confirmed, give no date.
 - Never: a day of arrival (today, tonight, tomorrow, aaj, kal); a refund amount, date or method, or "approved" / "processed"; any form or link other than the tracking link in ORDER FACTS; a courier's name (say "our courier partner"); advice to raise a chargeback, a bank or UPI dispute, a police or consumer complaint; asking the customer for anything except the order ID and the phone number on the order; a payment link or "pay again"; a customer-care number.
-- ${when}${upsetClosedLine(ctx.upsetClosed ?? null, ctx.after)}
-${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this chat.
+- ${email ? when.replace(/here in this chat/g, here).replace(/isi chat mein/g, 'email par') : when}${upsetClosedLine(ctx.upsetClosed ?? null, ctx.after)}
+${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this ${email ? 'conversation' : 'chat'}.
 
 ORDER FACTS
 ${ctx.orderJson || 'No verified order facts are available: give no status or date.'}

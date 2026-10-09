@@ -101,8 +101,8 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
   }
 
   // Chikki's knowledge, read fresh like getAIResponse does (ai.ts): each part is optional.
-  const site = await queryOne<{ system_prompt: string | null; cod_available: boolean | null; cod_states: string | null }>(
-    `SELECT system_prompt, cod_available, cod_states FROM sites WHERE id = $1`, [conv.site_id]
+  const site = await queryOne<{ name: string | null; system_prompt: string | null; cod_available: boolean | null; cod_states: string | null }>(
+    `SELECT name, system_prompt, cod_available, cod_states FROM sites WHERE id = $1`, [conv.site_id]
   ).catch(() => null);
   let faqs: SavedAnswer[] = [];
   try {
@@ -160,7 +160,8 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
   } catch (err) { console.error('[suggest] health read failed:', (err as Error)?.message); }
   const system = buildSystemPrompt(site?.system_prompt || null, site?.cod_available, 'chat', faqs, site?.cod_states?.trim() || null, asked)
     + brain + examples
-    + suggestInstruction({ lang, after: afterHours(nowMs, holidays), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson, upsetClosed });
+    + suggestInstruction({ lang, after: afterHours(nowMs, holidays), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson, upsetClosed,
+      channel: conv.source === 'email' ? 'email' : 'chat', storeName: site?.name ?? null });
   const history: ChatCompletionCreateParamsNonStreaming['messages'] = rows.map((r) => (
     r.sender === 'visitor'
       ? { role: 'user' as const, content: r.content || '' }

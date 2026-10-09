@@ -166,6 +166,9 @@ export default function ListHeader({ simple, setTab, topicCounts, activeKey, act
                 ))}
               </div>
             ))}
+            {/* Owner 2026-10-09: the long explanation cluttered the list column; it opens on click. */}
+            <details style={{ marginTop: 4 }}>
+              <summary className="meta" style={{ cursor: 'pointer', fontSize: '0.6875rem' }}>What a mark means</summary>
             <div className="meta" style={{ marginTop: 4, fontSize: '0.6875rem' }}>
               {caseKey === 'reship'
                 // Owner 2026-10-02: Chikki marks Ship again by itself for a fake / invalid tracking claim.
@@ -173,6 +176,7 @@ export default function ListHeader({ simple, setTab, topicCounts, activeKey, act
                 // Owner 2026-10-02: Chikki marks Refund by itself for a threat after the delivery date.
                 : `Marked by your team: internal only, customers are never told; these chats show only here and the AI does not reply in them. Marked by ${AUTO_MARK_NAME}: the customer was told their refund is being processed and that a refund form will come in this chat; only the Super Admin sends it (Send refund form) and closes the chat.`}
             </div>
+            </details>
           </div>
         );
       })()}

@@ -171,7 +171,7 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                         }}
                         style={{ flex: 1, height: 'auto', resize: 'vertical', minHeight: 44 }}
                       />
-                      {polishDraft && activeConv.source !== 'email' && (
+                      {polishDraft && (
                         <button
                           type="button"
                           className="btn btn-outline"
