@@ -13,13 +13,16 @@ const db = {
     S.queries.push({ sql, p });
     for (const t of S.missing) if (sql.includes(t)) throw gone();
     if (/FROM businesses WHERE/.test(sql)) { const rows = S.panels.filter((x) => !p[0] || p[0].includes(x.id)); return { rows, rowCount: rows.length }; }
-    if (/FROM sites s WHERE/.test(sql)) return { rows: [{ business_id: 'A', ai_enabled: true, has_prompt: true, support_gmail: 1 }, { business_id: 'B', ai_enabled: false, has_prompt: false, support_gmail: 0 }], rowCount: 2 };
+    if (/FROM sites s WHERE/.test(sql)) return { rows: [{ business_id: 'A', ai_enabled: true, has_prompt: true, support_gmail: 1, email_ids: ['se1'] }, { business_id: 'B', ai_enabled: false, has_prompt: false, support_gmail: 0, email_ids: null }], rowCount: 2 };
+    if (/FROM messages m JOIN conversations c/.test(sql)) return { rows: [{ business_id: 'A', chats: '9', team: '4' }], rowCount: 1 };
+    if (/FROM chikki_runs r JOIN sites s/.test(sql)) return { rows: [{ business_id: 'A', n: '6' }], rowCount: 1 };
+    if (/FROM staff_presence p LEFT JOIN team_users u/.test(sql)) return { rows: [{ name: 'Rahul' }, { name: 'Super Admin' }], rowCount: 2 };
     if (/FROM conversations c JOIN sites s/.test(sql)) {
       if (S.fail === 'chats') throw new Error('boom');
       return { rows: [{ business_id: 'A', needs_you: '3', email_waiting: '1', waiting: '4', overdue: '2', refund_cases: '1', reship_to_ship: '0' }], rowCount: 1 };
     }
     if (/FROM orders WHERE business_id/.test(sql)) return { rows: [{ business_id: 'A', today: '12', late: '2' }, { business_id: 'B', today: '0', late: '0' }], rowCount: 2 };
-    if (/FROM chargeback_mailboxes m WHERE/.test(sql)) return { rows: [{ business_id: 'A', whatsapp: '919876543210' }, { business_id: 'B', whatsapp: '' }], rowCount: 2 };
+    if (/FROM chargeback_mailboxes m WHERE/.test(sql)) return { rows: [{ business_id: 'A', whatsapp: '919876543210', status_id: 'cb1' }, { business_id: 'B', whatsapp: '', status_id: 'cb1' }], rowCount: 2 };
     if (/FROM chargeback_alerts WHERE status <> 'done'/.test(sql)) return { rows: [{ business_id: 'A', subject: 'PayU Chargeback Notification', snippet: '' }, { business_id: 'A', subject: 'Payment received of Rs 100', snippet: 'thanks' }], rowCount: 2 };
     return { rows: [], rowCount: 0 };
   },
@@ -37,12 +40,13 @@ Module._load = function (request, parent, isMain) {
 };
 
 const rules = require(path.join(SRC, 'lib/panel-board.ts'));
+const mstat = require(path.join(SRC, 'lib/chat/mailbox-status.ts'));
 const server = require(path.join(SRC, 'lib/panel-board-server.ts'));
 const { NextRequest } = require('next/server');
 const route = require(path.join(SRC, 'app/api/panel-board/route.ts'));
 const req = (url) => new NextRequest(`http://localhost${url}`);
 
-const base = { id: 'x', name: 'x', needsYou: 0, waiting: 0, overdue: 0, emailWaiting: 0, refundCases: 0, reshipToShip: 0, chargebacksOpen: 0, refundRequestsNew: 0, ordersToday: 0, lateOrders: 0, aiOn: true, hasPrompt: true, supportGmail: true, chargebackGmail: true, whatsapp: true };
+const base = { id: 'x', name: 'x', needsYou: 0, waiting: 0, overdue: 0, emailWaiting: 0, refundCases: 0, reshipToShip: 0, chargebacksOpen: 0, refundRequestsNew: 0, chatsToday: 0, teamRepliesToday: 0, chikkiToday: 0, ordersToday: 0, lateOrders: 0, aiOn: true, hasPrompt: true, supportGmail: true, chargebackGmail: true, whatsapp: true, supportGmailStatus: 'ok', supportGmailError: null, chargebackGmailStatus: 'ok', chargebackGmailError: null };
 let n = 0;
 const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new Set(); authState.user = { role: 'admin', username: 'owner', displayName: 'Super Admin', businessIds: null, permissions: [] }; await fn(); n++; console.log('  ok  ' + name); };
 
@@ -64,6 +68,23 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.ok(!/WhatsApp/.test(rules.panelNeeds({ ...base, chargebackGmail: false, whatsapp: false }).map((x) => x.text).join()));
     assert.deepStrictEqual(rules.panelNeeds({ ...base, chargebacksOpen: null, refundRequestsNew: null }).map((x) => x.tone), ['ok'], 'a team member sees no Super Admin numbers');
     assert.ok(/no chat yet|All clear/.test(rules.panelNeeds({ ...base, aiOn: null }).map((x) => x.text).join()), 'a panel with no chat site is not called OFF');
+    const gm = rules.panelNeeds({ ...base, supportGmailStatus: 'error', supportGmailError: 'Google refused the App Password', chargebackGmailStatus: 'error', chargebackGmailError: null, overdue: 1 });
+    assert.ok(/waiting over 2 hours/.test(gm[2].text), 'a Gmail that cannot be read comes before the waiting customers (nothing new arrives while it is down)'); gm.pop();
+    assert.deepStrictEqual(gm.map((x) => [x.tone, x.go]), [['danger', 'settings'], ['danger', 'settings']]);
+    assert.ok(/Support Gmail cannot be read: Google refused the App Password/.test(gm[0].text)); assert.ok(/Chargeback Gmail cannot be read: sign-in failed/.test(gm[1].text));
+    assert.deepStrictEqual(rules.panelNeeds({ ...base, supportGmailStatus: 'unknown', chargebackGmailStatus: null }).map((x) => x.tone), ['ok'], 'unknown (just restarted) is not an error');
+  });
+  await t('rules: the totals across panels and the morning routine (ticked by itself at 0; the Super Admin steps only when those numbers exist)', () => {
+    const t1 = rules.summarize([{ ...base, needsYou: 2, overdue: 1, chargebacksOpen: 1, refundRequestsNew: 2, chatsToday: 5, supportGmailStatus: 'error', hasPrompt: false }, { ...base, needsYou: 1, reshipToShip: 3, chikkiToday: 7, chargebackGmail: false }]);
+    assert.strictEqual(t1.panels, 2); assert.strictEqual(t1.needsYou, 3); assert.strictEqual(t1.overdue, 1); assert.strictEqual(t1.chargebacks, 1); assert.strictEqual(t1.refundRequests, 2);
+    assert.strictEqual(t1.reshipToShip, 3); assert.strictEqual(t1.chatsToday, 5); assert.strictEqual(t1.chikkiToday, 7); assert.strictEqual(t1.gmailErrors, 1); assert.strictEqual(t1.setupGaps, 2);
+    const r1 = rules.morningRoutine(t1);
+    assert.deepStrictEqual(r1.map((x) => [x.done, x.count]), [[false, 1], [false, 1], [false, 1], [false, 3], [false, 2], [false, 3], [true, 0], [true, 0], [false, 2]]);
+    assert.strictEqual(r1[0].go, 'chargebacks'); assert.strictEqual(r1[1].go, 'settings');
+    const t2 = rules.summarize([{ ...base, chargebacksOpen: null, refundRequestsNew: null }]);
+    assert.strictEqual(t2.chargebacks, null); assert.strictEqual(t2.refundRequests, null);
+    const r2 = rules.morningRoutine(t2);
+    assert.ok(!r2.some((x) => x.go === 'chargebacks' || x.go === 'refunds'), 'a team member has no chargeback / refund-request step'); assert.ok(r2.every((x) => x.done));
   });
   await t('rules: the panel with the most urgent work comes first; equal panels keep their order', () => {
     const a = { ...base, id: 'a' }, b = { ...base, id: 'b', waiting: 1 }, c = { ...base, id: 'c', chargebacksOpen: 1 }, d = { ...base, id: 'd' };
@@ -76,6 +97,16 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.strictEqual(a.needsYou, 3); assert.strictEqual(a.waiting, 4); assert.strictEqual(a.overdue, 2); assert.strictEqual(a.emailWaiting, 1); assert.strictEqual(a.refundCases, 1);
     assert.strictEqual(a.chargebacksOpen, 1, 'the Rs 100 payment mail is not a chargeback'); assert.strictEqual(a.refundRequestsNew, null, 'the refund area answers that over its own route');
     assert.strictEqual(a.ordersToday, 12); assert.strictEqual(a.lateOrders, 2); assert.strictEqual(a.aiOn, true); assert.strictEqual(a.supportGmail, true); assert.strictEqual(a.chargebackGmail, true); assert.strictEqual(a.whatsapp, true);
+    assert.strictEqual(a.chatsToday, 9); assert.strictEqual(a.teamRepliesToday, 4); assert.strictEqual(a.chikkiToday, 6); assert.strictEqual(b.chatsToday, 0);
+    // the Gmail status comes from the pollers' memory: unknown before their first look, then ok / the error
+    assert.strictEqual(a.supportGmailStatus, 'unknown'); assert.strictEqual(a.chargebackGmailStatus, 'unknown'); assert.strictEqual(b.supportGmailStatus, null, 'no support Gmail = no status');
+    mstat.noteMailboxCheck('se1', { ok: true }); mstat.noteMailboxCheck('cb:cb1', { ok: false, error: 'Google refused the App Password' });
+    const r2 = await server.loadPanelBoard(null, true);
+    assert.strictEqual(r2[0].supportGmailStatus, 'ok'); assert.strictEqual(r2[0].chargebackGmailStatus, 'error'); assert.strictEqual(r2[0].chargebackGmailError, 'Google refused the App Password');
+    assert.strictEqual(r2[1].chargebackGmailStatus, 'error', 'the shared Gmail\'s status is the first row\'s, for both panels');
+    assert.ok(/estimated_delivery >= \(now\(\) AT TIME ZONE 'Asia\/Kolkata'\)::date - 14/.test(S.queries.find((q) => /FROM orders/.test(q.sql)).sql), 'late = the estimated date passed in the last 14 days');
+    const dayInfo = await server.loadBoardDay();
+    assert.deepStrictEqual(dayInfo.online, ['Rahul', 'Super Admin']); assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(dayInfo.date)); assert.strictEqual(typeof dayInfo.officeOpen, 'boolean');
     assert.strictEqual(b.needsYou, 0); assert.strictEqual(b.aiOn, false); assert.strictEqual(b.hasPrompt, false); assert.strictEqual(b.supportGmail, false); assert.strictEqual(b.whatsapp, false);
     // a team member limited to one panel: only that panel, no Super Admin numbers
     S.queries = []; const m = await server.loadPanelBoard(['B'], false);
@@ -94,6 +125,7 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     const d = await res.json();
     assert.deepStrictEqual(d.panels.map((p) => p.name), ['vastora', 'kurtiya']); assert.strictEqual(d.superAdmin, true);
     assert.strictEqual(d.panels[0].chargebacksOpen, 1); assert.strictEqual(d.panels[0].refundRequestsNew, null);
+    assert.deepStrictEqual(d.day.online, ['Rahul', 'Super Admin']); assert.ok(d.day.date);
     authState.user = { role: 'agent', username: 'rahul', displayName: 'Rahul', businessIds: ['B'], permissions: ['chat.view'] };
     const m = await (await route.GET(req('/api/panel-board'))).json();
     assert.strictEqual(m.superAdmin, false); assert.deepStrictEqual(m.panels.map((p) => p.id), ['B']); assert.strictEqual(m.panels[0].chargebacksOpen, null);
