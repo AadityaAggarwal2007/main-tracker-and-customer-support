@@ -3,6 +3,10 @@
 Read this whole file before changing anything. It is the rulebook for any AI
 (Claude Code, Codex, Cursor) working in this repo.
 
+**Start with `PROJECT_MEMORY.md`** (repo root): the one-page state of the project, how the owner
+works with the AI (push and merge yourself, auto-deploy, SQL is his), what is open with him and the
+gotchas; then come back here only for the rows of the feature you touch. Keep it current.
+
 ## MASTER RULES (owner-approved, read before EVERY task)
 
 The rules for this project are in **`SHIPTRACK_MASTER_RULES.md`** (repo root). It is
