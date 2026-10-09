@@ -29,4 +29,4 @@ export type { RefundEvent, Res, TargetChat } from './server-shared';
 export { BLOCK_TEXT, cancelRefundLink, refundFormState, refundMarkLocked, refundThreadState, retryFormEmail, sendRefundForm } from './server-send';
 export type { Block, RefundConv, RefundThreadState } from './server-send';
 export { openLink, postAck, postAckWithRetry, submitRefund } from './server-public';
-export { getRefund, listRefunds, patchRefund, refundCounts, revealPayout, VIEWS } from './server-admin';
+export { getRefund, listRefunds, patchRefund, refundCounts, refundCountsByPanel, revealPayout, VIEWS } from './server-admin';

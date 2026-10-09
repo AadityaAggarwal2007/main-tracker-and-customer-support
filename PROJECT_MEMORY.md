@@ -60,6 +60,9 @@ Done and live:
 - **Suggested replies + Sudharo** in email chats too, every panel; list column explanation folded.
 - **Auto-deploy** workflow working (first live run 2026-10-09; port 22 timed out once, so it
   tries 3 times).
+- **Chargebacks filter** (PR #33): only a mail with a dispute word is a chargeback; the gateway's
+  ₹100 payment / settlement / OTP mails sit under "Other mail", uncounted, no WhatsApp, no chat tag.
+- **Panel board** (Orders tab top, `src/lib/panel-board.ts`): one card per panel, what to do today.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
@@ -71,6 +74,8 @@ Done and live:
 4. VASTRIKA: connect its customer-support Gmail (it has none; the audit showed 1 / 0 / 1).
 5. Optional: WhatsApp Cloud API env vars for chargeback alerts; confirm the stray `KEY` repo
    secret was deleted (last screenshot showed only the 3 needed).
+6. A Manager login for Sunny: Team > Add member, role Manager, pick the panels; the password is
+   shown once (Copy all / WhatsApp). I cannot create it from here (no database access).
 
 ## Gotchas that cost time before
 
