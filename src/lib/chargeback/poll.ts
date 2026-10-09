@@ -3,7 +3,7 @@ import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { friendlyMailError, mailErrorText, noteMailboxCheck } from '@/lib/chat/mailbox-status';
 import { gmailHost } from '@/lib/chat/imap-pool';
-import { gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
+import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { sendChargebackWhatsApp } from './notify';
 
@@ -147,6 +147,13 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (mailbox_id, uid) DO NOTHING RETURNING id`, base);
   if (!ins) return false;                                          // already recorded
+
+  // The gateway's other mail (payment received, settlement, OTP; owner 2026-10-09) is kept under "Other mail" and
+  // nothing more happens: no chat tag, no WhatsApp. The list reads the same words again (parse.ts chargebackKind).
+  if (chargebackKind(subject, shortText(text)) === 'other') {
+    await query(`UPDATE chargeback_alerts SET notify_status = $2 WHERE id = $1`, [ins.id, 'not_chargeback']).catch(() => undefined);
+    return true;
+  }
 
   // The customer's chat for that order: the AI hands it to the team (verified customers only: it was matched by order).
   if (orderId) {

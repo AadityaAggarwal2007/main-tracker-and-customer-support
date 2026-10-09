@@ -4,7 +4,7 @@ import { alertCounts, listAlerts, setAlertPanel, setAlertStatus } from '@/lib/ch
 
 // ── Chargeback alerts: the Super Admin's screen and badge (owner 2026-10-08) ──────────────────
 // GET  /api/chargebacks?counts=1            only the numbers for the sidebar badge (new = not opened yet)
-// GET  /api/chargebacks?view=open|done|all  the alerts, newest unopened first
+// GET  /api/chargebacks?view=open|done|all|other  the alerts, newest unopened first ('other' = the Gmail's non-chargeback mail)
 // PATCH /api/chargebacks { id, status: 'seen' | 'done', note? }
 // Super Admin only: a member gets the red tag in a chat thread, never the gateway mail itself.
 function owner(request: NextRequest) {
@@ -18,7 +18,8 @@ export async function GET(request: NextRequest) {
   const sp = new URL(request.url).searchParams;
   try {
     if (sp.get('counts') === '1') return NextResponse.json(await alertCounts(), { headers: { 'Cache-Control': 'no-store' } });
-    const view = sp.get('view') === 'done' ? 'done' : sp.get('view') === 'all' ? 'all' : 'open';
+    const v = sp.get('view');
+    const view = v === 'done' || v === 'all' || v === 'other' ? v : 'open';
     const [list, counts] = await Promise.all([listAlerts(view), alertCounts()]);
     return NextResponse.json({ ...list, counts }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {

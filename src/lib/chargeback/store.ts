@@ -1,5 +1,5 @@
 import { query, queryOne } from '@/lib/db';
-import { GATEWAY_KEYS, orderCandidates, orderForms, whatsappNumber } from './parse';
+import { GATEWAY_KEYS, chargebackKind, orderCandidates, orderForms, whatsappNumber, type ChargebackKind } from './parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 
 // ── Chargeback data (chargeback.sql) ──────────────────────────────────────────────────────────
@@ -12,6 +12,10 @@ export interface AlertRow {
   subject: string; snippet: string; gateway: string; order_id: string | null; status: 'new' | 'seen' | 'done';
   seen_by_name: string | null; seen_at: string | null; done_by_name: string | null; done_at: string | null; note: string | null;
   notify_status: string; chat_id: string | null;
+  // 'chargeback' = a real dispute mail; 'other' = the gateway's other mail in the same Gmail (owner 2026-10-09: the ₹100
+  // payment mails). Read from the words each time (parse.ts chargebackKind), never stored: Open / Done / the badge and
+  // the chat tag count only 'chargeback'; the "Other mail" view shows the rest so nothing is hidden.
+  kind: ChargebackKind;
   // How the panel was chosen when two panels share the Gmail (routing.ts); null on a single-panel mailbox or before chargeback-shared.sql.
   routed_by?: string | null;
   // The other panels using the same chargeback Gmail: where an alert can be moved by hand.
@@ -20,9 +24,11 @@ export interface AlertRow {
 
 export async function alertCounts(): Promise<{ installed: boolean; new: number; open: number }> {
   try {
-    const r = await queryOne<{ n: number; o: number }>(
-      `SELECT count(*) FILTER (WHERE status = 'new')::int AS n, count(*) FILTER (WHERE status <> 'done')::int AS o FROM chargeback_alerts`);
-    return { installed: true, new: r?.n ?? 0, open: r?.o ?? 0 };
+    // The open rows are few (a chargeback is rare, and Done takes it out); their words decide what counts.
+    const r = await query<{ status: string; subject: string; snippet: string }>(
+      `SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done'`);
+    const real = r.rows.filter(a => chargebackKind(a.subject, a.snippet) === 'chargeback');
+    return { installed: true, new: real.filter(a => a.status === 'new').length, open: real.length };
   } catch (e) {
     if (!missing(e)) console.error('[chargeback] counts:', (e as Error).message);
     return { installed: !missing(e), new: 0, open: 0 };
@@ -35,7 +41,7 @@ const LIST_SQL = (cols: string) => `SELECT a.id, a.business_id, b.name AS panel_
                 WHERE a.order_id IS NOT NULL AND s.tracker_business_id::text = a.business_id AND c.verified_order_id = a.order_id AND c.merged_into IS NULL
                 ORDER BY (c.source = 'chat') DESC, c.last_message_at DESC NULLS LAST LIMIT 1) AS chat_id
          FROM chargeback_alerts a LEFT JOIN businesses b ON b.id::text = a.business_id
-        WHERE ($1 = 'all' OR ($1 = 'open' AND a.status <> 'done') OR ($1 = 'done' AND a.status = 'done'))
+        WHERE ($1 IN ('all', 'other') OR ($1 = 'open' AND a.status <> 'done') OR ($1 = 'done' AND a.status = 'done'))
         ORDER BY (a.status = 'new') DESC, a.received_at DESC
         LIMIT $2`;
 
@@ -50,7 +56,9 @@ async function sharingMap(): Promise<Record<string, { id: string; name: string }
   return out;
 }
 
-export async function listAlerts(view: 'open' | 'done' | 'all', limit = 100): Promise<{ installed: boolean; alerts: AlertRow[] }> {
+export type AlertView = 'open' | 'done' | 'all' | 'other';
+// Open / Done / All list the real chargebacks; Other lists the gateway's other mail from the same Gmail (any status).
+export async function listAlerts(view: AlertView, limit = 100): Promise<{ installed: boolean; alerts: AlertRow[] }> {
   const args = [view, Math.min(Math.max(limit, 1), 200)];
   try {
     let rows: AlertRow[];
@@ -60,6 +68,8 @@ export async function listAlerts(view: 'open' | 'done' | 'all', limit = 100): Pr
       if ((e as { code?: string })?.code !== '42703') throw e;
       rows = (await query<AlertRow>(LIST_SQL(''), args)).rows;
     }
+    for (const a of rows) a.kind = chargebackKind(a.subject, a.snippet);
+    rows = rows.filter(a => view === 'other' ? a.kind === 'other' : a.kind === 'chargeback');
     const share = await sharingMap();
     for (const a of rows) a.alt_panels = share[a.business_id] ?? [];
     return { installed: true, alerts: rows };
@@ -100,12 +110,12 @@ export async function openChargebackKeys(pairs: { business_id: string | null; or
   const out = new Set<string>();
   if (wanted.length === 0) return out;
   try {
-    const r = await query<{ business_id: string; order_id: string }>(
-      `SELECT DISTINCT business_id, order_id FROM chargeback_alerts
+    const r = await query<{ business_id: string; order_id: string; subject: string; snippet: string }>(
+      `SELECT business_id, order_id, subject, snippet FROM chargeback_alerts
         WHERE status <> 'done' AND order_id = ANY($1::text[]) AND business_id = ANY($2::text[])`,
       [wanted.map(p => p.order_id), Array.from(new Set(wanted.map(p => String(p.business_id))))]
     );
-    for (const x of r.rows) out.add(`${x.business_id}|${x.order_id}`);
+    for (const x of r.rows) if (chargebackKind(x.subject, x.snippet) === 'chargeback') out.add(`${x.business_id}|${x.order_id}`);
   } catch (e) {
     if (!missing(e)) console.error('[chargeback] open keys:', (e as Error).message);
   }

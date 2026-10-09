@@ -30,6 +30,10 @@ const db = {
     if (S.missing && /chargeback_|panel_chargeback/.test(sql)) throw gone();
     if (/lower\(m\.email\) AS email/.test(sql)) { const rows = S.boxes.map((b) => ({ business_id: b.business_id, email: b.email.toLowerCase(), name: b.panel_name })); return { rows, rowCount: rows.length }; }
     if (/FROM chargeback_mailboxes m/.test(sql)) return { rows: S.boxes, rowCount: S.boxes.length };
+    const withStatus = () => S.alerts.map((a) => ({ status: 'new', from_name: '', ...a, panel_name: a.business_id }));
+    if (/SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done'/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done'); return { rows, rowCount: rows.length }; }
+    if (/FROM chargeback_alerts a LEFT JOIN businesses/.test(sql)) { const rows = withStatus().filter((a) => p[0] === 'all' || p[0] === 'other' || (p[0] === 'open' ? a.status !== 'done' : a.status === 'done')); return { rows, rowCount: rows.length }; }
+    if (/SELECT business_id, order_id, subject, snippet FROM chargeback_alerts/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done' && p[0].includes(a.order_id) && p[1].includes(a.business_id)); return { rows, rowCount: rows.length }; }
     if (/FROM orders\s+WHERE business_id::text = ANY/.test(sql)) { const rows = S.orders.filter((o) => p[0].includes(o.panel) && p[1].includes(o.order_id)).map((o) => ({ business_id: o.panel, order_id: o.order_id })); return { rows, rowCount: rows.length }; }
     if (/FROM panel_chargeback WHERE business_id = ANY/.test(sql)) { const rows = S.gwRows.filter((g) => p[0].includes(g.business_id)); return { rows, rowCount: rows.length }; }
     if (/UPDATE chargeback_alerts SET business_id = \$2/.test(sql)) { S.moved = { id: p[0], business_id: p[1], order_id: p[2] }; return { rows: [], rowCount: 1 }; }
@@ -314,6 +318,50 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     const sql = fsx.readFileSync(path.resolve(__dirname, '../../chargeback-disconnect.sql'), 'utf8');
     assert.ok(/GRANT DELETE ON chargeback_mailboxes TO tracker_user/.test(sql) && !/chargeback_alerts|panel_chargeback/.test(sql.replace(/--[^\n]*/g, '')));
     assert.ok(/GRANT DELETE ON chargeback_mailboxes/.test(fsx.readFileSync(path.resolve(__dirname, '../../chargeback.sql'), 'utf8')));
+  });
+
+  await t('only a real chargeback counts (owner 2026-10-09: on VASTRIKA one "PayU Chargeback Notification" was real among a page of ₹100 payment mails): the words decide', () => {
+    const k = parse.chargebackKind;
+    for (const [subj, text] of [
+      ['PayU Chargeback Notification', 'Dear merchant, a chargeback has been raised'],
+      ['Dispute raised on payment pay_Abc', 'respond within 5 days'],
+      ['Dispute notice', 'Order #7000 disputed.'],
+      ['Action required: payment pay_X', 'The cardholder has disputed this transaction.'],
+      ['Re: your order', 'Retrieval request received for order 1553'],
+      ['Re: your order', 'A dispute was raised against order 1553'],
+      ['Pre-arbitration case 9988', ''],
+    ]) assert.strictEqual(k(subj, text), 'chargeback', subj);
+    for (const [subj, text] of [
+      ['Payment received of Rs 100', 'Thanks. For disputes write to disputes@payu.in'],
+      ['Transaction successful - INR 100', 'order #1553 paid. Dispute? contact us'],
+      ['Your weekly settlement report', 'settled 12 payments'],
+      ['Security alert', 'New sign-in on your account'],
+      ['Happy Diwali offers', 'disputes@x.com in the footer'],
+      ['Your OTP is 123456', 'do not share'],
+    ]) assert.strictEqual(k(subj, text), 'other', subj);
+  });
+  await t('poll: a payment mail is kept as "Other mail" only: stored, notify_status not_chargeback, no chat moved, no WhatsApp; the real one next to it still alerts', async () => {
+    S.msgs = [
+      { uid: 6, source: mail('m6', 'noreply@payu.in', 'PayU Chargeback Notification', 'A chargeback has been raised for Order ID: 1553.') },
+      { uid: 7, source: mail('m7', 'noreply@payu.in', 'Payment received of Rs 100', 'Order #1553 paid by card. For disputes write to disputes@payu.in') },
+    ];
+    const r = await poll.pollChargebackMailboxes();
+    assert.strictEqual(r.alerts, 2, 'both are stored (nothing is hidden)');
+    const other = S.alerts.find((a) => a.uid === 7), real = S.alerts.find((a) => a.uid === 6);
+    assert.strictEqual(other.notify_status, 'not_chargeback'); assert.strictEqual(real.notify_status, 'sent');
+    assert.strictEqual(S.convUpdates.length, 1, 'only the real chargeback moves the chat'); assert.strictEqual(S.notified.length, 1, 'one WhatsApp');
+    // the list, the badge and the inbox tag read the same words
+    let d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=open'))).json();
+    assert.deepStrictEqual(d.alerts.map((a) => a.uid), [6]); assert.strictEqual(d.alerts[0].kind, 'chargeback'); assert.strictEqual(d.counts.new, 1); assert.strictEqual(d.counts.open, 1);
+    d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=other'))).json();
+    assert.deepStrictEqual(d.alerts.map((a) => a.uid), [7]); assert.strictEqual(d.alerts[0].kind, 'other');
+    d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=all'))).json();
+    assert.deepStrictEqual(d.alerts.map((a) => a.uid), [6], 'All = all real chargebacks');
+    S.alerts = [other];
+    assert.strictEqual((await store.openChargebackKeys([{ business_id: 'bizVast', order_id: '#1553' }])).size, 0, 'a payment mail never tags the chat');
+    S.alerts = [real];
+    assert.strictEqual((await store.openChargebackKeys([{ business_id: 'bizVast', order_id: '#1553' }])).size, 1);
+    assert.deepStrictEqual(await store.alertCounts(), { installed: true, new: 1, open: 1 });
   });
 
   global.fetch = realFetch;
