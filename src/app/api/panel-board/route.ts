@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
-import { loadPanelBoard } from '@/lib/panel-board-server';
+import { loadBoardDay, loadPanelBoard } from '@/lib/panel-board-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,8 +13,8 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
-    const panels = await loadPanelBoard(user.businessIds, isSuperAdmin(user));
-    return NextResponse.json({ panels, superAdmin: isSuperAdmin(user), at: new Date().toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
+    const [panels, day] = await Promise.all([loadPanelBoard(user.businessIds, isSuperAdmin(user)), loadBoardDay()]);
+    return NextResponse.json({ panels, day, superAdmin: isSuperAdmin(user), at: new Date().toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[panel-board]', (e as Error).message);
     return NextResponse.json({ error: 'Could not read the panel board.' }, { status: 500 });

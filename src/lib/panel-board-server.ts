@@ -2,7 +2,10 @@ import { query } from '@/lib/db';
 import { WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { chargebackKind } from '@/lib/chargeback/parse';
-import type { PanelStats } from './panel-board';
+import { getMailboxStatus } from '@/lib/chat/mailbox-status';
+import { loadHolidays } from '@/lib/chat/holidays';
+import { isOfficeHours, istDate } from '@/lib/office-hours';
+import type { GmailStatus, PanelStats } from './panel-board';
 
 // ── The panel board's numbers (owner 2026-10-09) ──────────────────────────────────────────────
 // One read per table, every panel at once, each in its own try: a table that is not installed yet or a read
@@ -24,10 +27,26 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
   const ids = panels.map(p => p.id);
   const by = <T extends { business_id: string }>(rows: T[]) => new Map(rows.map(r => [String(r.business_id), r]));
 
-  const sites = by(await safe('sites', async () => (await query<{ business_id: string; ai_enabled: boolean; has_prompt: boolean; support_gmail: number }>(
+  const sites = by(await safe('sites', async () => (await query<{ business_id: string; ai_enabled: boolean; has_prompt: boolean; support_gmail: number; email_ids: string[] | null }>(
     `SELECT s.tracker_business_id::text AS business_id, s.ai_enabled, COALESCE(length(btrim(s.system_prompt)), 0) > 0 AS has_prompt,
-            (SELECT count(*) FROM site_emails e WHERE e.site_id = s.id)::int AS support_gmail
+            (SELECT count(*) FROM site_emails e WHERE e.site_id = s.id)::int AS support_gmail,
+            (SELECT array_agg(e.id::text ORDER BY e.created_at) FROM site_emails e WHERE e.site_id = s.id) AS email_ids
        FROM sites s WHERE s.tracker_business_id::text = ANY($1::text[])`, [ids])).rows, []));
+
+  // Today in India: customers who wrote, team replies, Chikki's replies.
+  const today = by(await safe('today', async () => (await query<{ business_id: string; chats: string; team: string }>(
+    `SELECT s.tracker_business_id::text AS business_id,
+            count(DISTINCT m.conversation_id) FILTER (WHERE m.sender = 'visitor') AS chats,
+            count(*) FILTER (WHERE m.sender = 'agent') AS team
+       FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN sites s ON s.id = c.site_id
+      WHERE s.tracker_business_id::text = ANY($1::text[]) AND m.created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+        AND m.deleted_at IS NULL
+      GROUP BY s.tracker_business_id`, [ids])).rows, []));
+  const chikki = by(await safe('chikki', async () => (await query<{ business_id: string; n: string }>(
+    `SELECT s.tracker_business_id::text AS business_id, count(*) AS n
+       FROM chikki_runs r JOIN sites s ON s.id = r.site_id
+      WHERE s.tracker_business_id::text = ANY($1::text[]) AND r.created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+      GROUP BY s.tracker_business_id`, [ids])).rows, []));
 
   const chats = by(await safe('chats', async () => (await query<{ business_id: string; needs_you: string; email_waiting: string; waiting: string; overdue: string; refund_cases: string; reship_to_ship: string }>(
     `SELECT s.tracker_business_id::text AS business_id,
@@ -49,12 +68,14 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
     `SELECT business_id::text AS business_id,
             count(*) FILTER (WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS today,
             count(*) FILTER (WHERE estimated_delivery IS NOT NULL AND estimated_delivery < (now() AT TIME ZONE 'Asia/Kolkata')::date
-                               AND created_at >= now() - interval '60 days' AND COALESCE(is_cancelled, false) = false
+                               AND estimated_delivery >= (now() AT TIME ZONE 'Asia/Kolkata')::date - 14 AND COALESCE(is_cancelled, false) = false
                                AND tracking_status <> 'Delivered' AND tracking_status !~* 'cancel|rto|return') AS late
        FROM orders WHERE business_id::text = ANY($1::text[]) GROUP BY business_id`, [ids])).rows, []));
 
-  const cbBoxes = by(await safe('chargeback boxes', async () => (await query<{ business_id: string; whatsapp: string | null }>(
-    `SELECT m.business_id::text AS business_id, (SELECT whatsapp_number FROM panel_chargeback p WHERE p.business_id = m.business_id) AS whatsapp
+  // The chargeback Gmail's sign-in status is kept under the first-connected panel's row of that address (poll.ts).
+  const cbBoxes = by(await safe('chargeback boxes', async () => (await query<{ business_id: string; whatsapp: string | null; status_id: string }>(
+    `SELECT m.business_id::text AS business_id, (SELECT whatsapp_number FROM panel_chargeback p WHERE p.business_id = m.business_id) AS whatsapp,
+            (SELECT f.id::text FROM chargeback_mailboxes f WHERE lower(f.email) = lower(m.email) ORDER BY f.created_at LIMIT 1) AS status_id
        FROM chargeback_mailboxes m WHERE m.business_id::text = ANY($1::text[])`, [ids])).rows, []));
 
   // Super Admin only: open chargebacks (by the words, like the Chargebacks tab). The refund requests to decide are
@@ -69,16 +90,42 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
   }
 
   return panels.map(p => {
-    const s = sites.get(p.id), c = chats.get(p.id), o = orders.get(p.id), cb = cbBoxes.get(p.id);
+    const s = sites.get(p.id), c = chats.get(p.id), o = orders.get(p.id), cb = cbBoxes.get(p.id), t = today.get(p.id);
+    const sup = gmailStatus((s?.email_ids ?? []).map(id => getMailboxStatus(id)));
+    const cbs = cb ? gmailStatus([getMailboxStatus(`cb:${cb.status_id}`)]) : null;
     return {
       id: p.id, name: p.name,
       needsYou: num(c?.needs_you), waiting: num(c?.waiting), overdue: num(c?.overdue), emailWaiting: num(c?.email_waiting),
       refundCases: num(c?.refund_cases), reshipToShip: num(c?.reship_to_ship),
       chargebacksOpen: superAdmin ? (cbOpen.get(p.id) ?? 0) : null,
       refundRequestsNew: null,
+      chatsToday: num(t?.chats), teamRepliesToday: num(t?.team), chikkiToday: num(chikki.get(p.id)?.n),
       ordersToday: num(o?.today), lateOrders: num(o?.late),
       aiOn: s ? s.ai_enabled !== false : null, hasPrompt: s?.has_prompt === true,
       supportGmail: num(s?.support_gmail) > 0, chargebackGmail: !!cb, whatsapp: !!(cb && cb.whatsapp && cb.whatsapp.trim()),
+      supportGmailStatus: num(s?.support_gmail) > 0 ? sup.status : null, supportGmailError: sup.error,
+      chargebackGmailStatus: cbs ? cbs.status : null, chargebackGmailError: cbs ? cbs.error : null,
     };
   });
+}
+
+// One word for a panel's Gmail(s): 'error' when any sign-in failed last time, 'ok' when every known one worked,
+// 'unknown' before the poller's first look after a restart.
+function gmailStatus(list: (ReturnType<typeof getMailboxStatus>)[]): { status: GmailStatus; error: string | null } {
+  const known = list.filter((x): x is NonNullable<typeof x> => !!x);
+  const bad = known.find(x => !x.ok);
+  if (bad) return { status: 'error', error: bad.error };
+  return { status: known.length === list.length && list.length > 0 ? 'ok' : 'unknown', error: null };
+}
+
+// The day itself: India's date, whether the office is open now and who is in ShipTrack right now (seen in the
+// last 5 minutes, like the inbox's team list). Names only; nothing else about a person.
+export async function loadBoardDay(): Promise<{ date: string; officeOpen: boolean; online: string[] }> {
+  const now = Date.now();
+  const holidays = await loadHolidays(now).catch(() => [] as string[]);
+  const online = await safe('presence', async () => (await query<{ name: string }>(
+    `SELECT COALESCE(u.display_name, u.username, CASE WHEN p.actor = 'owner' THEN 'Super Admin' END) AS name
+       FROM staff_presence p LEFT JOIN team_users u ON u.id::text = p.actor
+      WHERE p.last_seen_at > now() - interval '5 minutes' ORDER BY 1`)).rows.map(r => r.name).filter(Boolean), []);
+  return { date: istDate(now), officeOpen: isOfficeHours(now, holidays), online };
 }

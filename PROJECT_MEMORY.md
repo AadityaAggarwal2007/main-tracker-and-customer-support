@@ -62,7 +62,8 @@ Done and live:
   tries 3 times).
 - **Chargebacks filter** (PR #33): only a mail with a dispute word is a chargeback; the gateway's
   ₹100 payment / settlement / OTP mails sit under "Other mail", uncounted, no WhatsApp, no chat tag.
-- **Panel board** (Orders tab top, `src/lib/panel-board.ts`): one card per panel, what to do today.
+- **"Today" tab** (first in the sidebar, the start screen; `src/lib/panel-board.ts`, `PanelBoard.tsx`):
+  the day, totals, the morning routine, one card per panel with what to do + Gmail read status.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

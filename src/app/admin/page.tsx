@@ -21,7 +21,7 @@ import {
   Package, Upload, Users, Mail,
   Check, AlertCircle, ShoppingBag,
   Loader2, Trash2, Building2, Plus,
-  Settings, Trophy, Undo2, ShieldAlert
+  Settings, Trophy, Undo2, ShieldAlert, Sun
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
@@ -51,7 +51,8 @@ export default function AdminDashboard() {
   const [securityOpen, setSecurityOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const openMe = () => (user?.role === 'admin' ? setSecurityOpen(true) : setProfileOpen(true));
-  const [activeTab, setActiveTab] = useState<TabType>('orders');
+  // The first screen is "Today" (owner 2026-10-09): what every panel needs this morning.
+  const [activeTab, setActiveTab] = useState<TabType>('today');
   // A chat's "Emails" link (/admin?tab=mail&box=&uid=) opens that mail once (owner 2026-10-08).
   const [mailLink, setMailLink] = useState<{ box: string; uid: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -962,6 +963,8 @@ export default function AdminDashboard() {
   /* ═══════════════════════════════════════ */
 
   const navItems = [
+    // Owner 2026-10-09: the day's board, every panel at once; anyone logged in sees their own panels.
+    { id: 'today' as TabType, label: 'Today', icon: Sun, show: true },
     { id: 'orders' as TabType, label: 'Orders', icon: ShoppingBag, show: hasPermission('view_orders') },
     { id: 'upload' as TabType, label: 'Upload CSV', icon: Upload, show: hasPermission('upload_csv') },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
@@ -987,7 +990,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1031,16 +1034,18 @@ export default function AdminDashboard() {
             </div>
           )}
 
-          {/* ════════ ORDERS TAB ════════ */}
-          {activeTab === 'orders' && token && (
-            // The panel board (owner 2026-10-09): every panel's "what to do today" above the orders. A line switches to
-            // that panel and opens the screen it names; the chat inbox reads the active panel from localStorage.
+          {/* ════════ TODAY ════════ */}
+          {activeTab === 'today' && token && (
+            // The panel board (owner 2026-10-09): every panel's "what to do today", its own tab. A line switches to that
+            // panel and opens the screen it names; the chat inbox reads the active panel from localStorage.
             <PanelBoard token={token} activePanelId={activePanelId} goTo={(panelId, where) => {
               switchPanel(panelId);
               if (where === 'chats') { router.push('/admin/chat'); return; }
-              if (where === 'chargebacks' || where === 'refunds' || where === 'settings') setActiveTab(where);
+              setActiveTab(where === 'orders' ? 'orders' : where);
             }} />
           )}
+
+          {/* ════════ ORDERS TAB ════════ */}
           {activeTab === 'orders' && (
             <OrdersTab GMAIL_DAILY_LIMIT={GMAIL_DAILY_LIMIT} brandFilter={brandFilter} brands={brands} copyTrackingLink={copyTrackingLink} dateFrom={dateFrom} dateTo={dateTo} emailFilter={emailFilter} emailedOrderIds={emailedOrderIds} emailsSentToday={emailsSentToday} handleDeleteOrder={handleDeleteOrder} handleSearchChange={handleSearchChange} hasPermission={hasPermission} limit={limit} loading={loading} orders={orders} page={page} searchInput={searchInput} selectFirst={selectFirst} selectedOrders={selectedOrders} sendEmail={sendEmail} sendWhatsApp={sendWhatsApp} setBrandFilter={setBrandFilter} setDateFrom={setDateFrom} setDateTo={setDateTo} setDetailOrder={setDetailOrder} setEmailFilter={setEmailFilter} setLimit={setLimit} setPage={setPage} setSelectedOrders={setSelectedOrders} setShowDetailModal={setShowDetailModal} setShowRangeModal={setShowRangeModal} setShowStatusModal={setShowStatusModal} setStatusFilter={setStatusFilter} setStoreFilter={setStoreFilter} statusCounts={statusCounts} statusFilter={statusFilter} storeFilter={storeFilter} toggleSelectAll={toggleSelectAll} toggleSelectOrder={toggleSelectOrder} totalOrders={totalOrders} totalPages={totalPages} />
           )}
