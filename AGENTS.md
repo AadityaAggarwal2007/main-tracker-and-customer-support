@@ -259,7 +259,11 @@ Say what you are about to run and why, and wait for a yes in chat:
    `ssh shiptrack-vps 'cd /var/www/tracker && git pull origin main && sudo -u postgres psql -d tracking_crm -v ON_ERROR_STOP=1 -f <file>.sql'`
 2. **Deploy:** `ssh shiptrack-vps 'cd /var/www/tracker && bash vps-setup/5-deploy.sh'`
    It pulls from GitHub, copies `/etc/tracker/.env`, runs `npm ci`, builds and
-   reloads PM2.
+   reloads PM2. **Since 2026-10-09 it also runs by itself after every merge to `main`**
+   (`.github/workflows/deploy.yml`, owner: "directly push, dont suggest me do"), once the repo
+   secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` are set; until then the job stops green and
+   nothing is deployed. Its log is in the repo's Actions tab. A new SQL file is NOT run by it:
+   that still waits for the owner's yes.
 3. **Check:** `pm2 ls` and `pm2 logs tracker --lines 50 --nostream` as above.
    Then tell the developer what changed, which commit is live, and what he
    should see in the app.
