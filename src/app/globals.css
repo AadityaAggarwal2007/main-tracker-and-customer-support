@@ -2556,6 +2556,18 @@ a {
 .mail-reply { margin-top: 0.75rem; display: grid; gap: 0.5rem; position: sticky; bottom: 0; background: var(--card-bg, #fff); padding-top: 0.5rem; }
 .mail-reply textarea { resize: vertical; font-size: 0.875rem; height: auto; min-height: 7rem; }
 .mail-back { display: none; }
+/* Full-width reading (owner 2026-10-09: "open open poora poora bada bada kar"): the open mail alone, bigger type, a tall frame */
+.mail-app.mail-open.mail-wide { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.mail-app.mail-open.mail-wide .mail-filters, .mail-app.mail-open.mail-wide .mail-listpane { display: none; }
+.mail-app.mail-open.mail-wide .mail-back { display: inline-flex; }
+.mail-app.mail-open.mail-wide .mail-reader { padding: 0 2rem 1.25rem; max-width: 96rem; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.mail-app.mail-open.mail-wide .mail-head h2 { font-size: 1.5rem; }
+.mail-app.mail-open.mail-wide .mail-head .meta { font-size: 0.875rem; }
+.mail-app.mail-open.mail-wide .mail-avatar { width: 3rem; height: 3rem; font-size: 1rem; }
+.mail-app.mail-open.mail-wide .mail-frame { min-height: 62vh; }
+.mail-app.mail-open.mail-wide .mail-verify { font-size: 0.9375rem; }
+.mail-app.mail-open.mail-wide .mail-reply textarea { font-size: 1rem; min-height: 9rem; }
+@media (max-width: 860px) { .mail-widebtn { display: none; } }
 @media (max-width: 1180px) {
   .mail-app { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .mail-filters { grid-column: 1 / -1; display: flex; gap: 0.25rem; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--border); padding: 0.5rem; }

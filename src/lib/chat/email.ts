@@ -21,6 +21,7 @@ import { friendlyMailError, mailErrorText, noteMailboxCheck } from './mailbox-st
 import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
 import { gmailHost } from './imap-pool';
 import { autoVerifySenders } from './mail-auto-verify';
+import { warmMailboxes } from './mail-cache';
 import { gmailAuthPassed } from './mail-view';
 
 // ── Email support ──────────────────────────────────────────────
@@ -552,6 +553,14 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
 
   // The panels' chargeback Gmails ride on this same minute (src/lib/chargeback/poll.ts); never able to stop the sweep.
   try { await pollChargebackMailboxes(); } catch (e) { console.error('[chargeback] sweep:', (e as Error).message); }
+
+  // The Mail tab's copies (mail-cache.ts, owner 2026-10-09): each support Gmail's list is read again when it is a few
+  // minutes old and its newest mails are read ahead, in the background, so the tab opens at once. Never awaited here:
+  // the sweep's minute is not spent on it, and a failure there never touches the poll.
+  void warmMailboxes(accounts.rows.map(a => ({
+    id: a.id, email: a.email, appPassword: a.app_password, siteId: a.site_id, siteName: a.site_name,
+    panelId: a.tracker_business_id == null ? null : String(a.tracker_business_id), panelName: a.site_name,
+  })));
 
   return { accounts: accounts.rowCount ?? 0, handled };
 }

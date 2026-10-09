@@ -35,7 +35,7 @@ function reset(over = {}) {
       { uid: 501, from: { name: 'Vastora Support', address: 'vastora@store.example' }, to: { name: 'Cust', address: 'cust@example.com' }, subject: 'Re: Refund please', date: '2026-10-08T10:00:00Z', seen: true, source: plain('s501', 'Vastora Support <vastora@store.example>', 'Re: Refund please', 'We are checking your order.') },
       { uid: 502, from: { name: 'Vastora Support', address: 'vastora@store.example' }, to: { name: 'Other', address: 'other@example.com' }, subject: 'Hello other', date: '2026-10-07T10:00:00Z', seen: true, source: plain('s502', 'x@y.z', 'Hello other', 'x') },
     ], noSent: false,
-    authFail: false, connects: [], locks: [], searches: [], fetchQueries: [], logouts: 0, closes: 0, sent: [], flagCalls: [],
+    authFail: false, connects: [], locks: [], searches: [], fetchQueries: [], fetchOneOpts: [], logouts: 0, closes: 0, sent: [], flagCalls: [],
     boxes: [
       { id: 'boxV', email: 'vastora@store.example', app_password: 'SECRETSECRETSECR', site_id: 'siteV', site_name: 'Vastora', panel_id: 'bizV', panel_name: 'vastora' },
       { id: 'boxK', email: 'kurtiya@store.example', app_password: 'OTHERSECRETOTHER', site_id: 'siteK', site_name: 'Kurtiya', panel_id: 'bizK', panel_name: 'kurtiya' },
@@ -186,7 +186,8 @@ const member = (extra = {}, role = 'agent') => ({ role, username: 'rahul', permi
 let n = 0;
 const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
 const inbox = require(path.join(SRC, 'lib/chat/mail-inbox.ts'));
-const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
+const mcache = require(path.join(SRC, 'lib/chat/mail-cache.ts'));
+const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mcache.clearMailServerCache(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
 
 (async () => {
   // ── pure parts ──────────────────────────────────────────────────────────────────────────────
@@ -544,9 +545,10 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
   await t('speed: a connection Gmail closed while idle is replaced by a fresh one, once, and the call still works; a different App Password never reuses the old connection', async () => {
     await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
     S.lockFailOnce = true;                                   // the reused connection fails on first use
+    mcache.clearMailServerCache();                           // (the server's copy would answer without Gmail; this test is about the connection)
     const res = await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
     assert.strictEqual(res.status, 200); assert.strictEqual(S.connects.length, 2, 'signed in again once');
-    S.boxes[0].app_password = 'ANOTHERPASSWORD16'; await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    S.boxes[0].app_password = 'ANOTHERPASSWORD16'; mcache.clearMailServerCache(); await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
     assert.strictEqual(S.connects.length, 3, 'a changed App Password signs in again');
   });
   await t('speed: a hung Gmail is cut (504) and its connection is thrown away, never reused', async () => {
@@ -554,7 +556,7 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
     const real = Date.now; // nothing to wait for: the timeout path is exercised with a tiny limit
     const out = await pool.withPooledImap({ id: 'boxV', email: 'vastora@store.example', appPassword: 'SECRETSECRETSECR' }, 'list', () => new Promise(() => {}), 40).catch((e) => e);
     assert.ok(out instanceof pool.PoolTimeout); assert.ok(S.closes >= 1);
-    await messages.GET(req('GET', '/api/mail/messages?box=boxV')); assert.strictEqual(S.connects.length, 2, 'a fresh connection after the hang'); void real;
+    mcache.clearMailServerCache(); await messages.GET(req('GET', '/api/mail/messages?box=boxV')); assert.strictEqual(S.connects.length, 2, 'a fresh connection after the hang'); void real;
   });
 
   // ── replying like Gmail: quote, plain mail, files; the conversation view (owner 2026-10-08) ─────────────────
@@ -670,5 +672,65 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); re
     assert.ok(/full|poora/i.test(view.ASK_VERIFY_EN + view.ASK_VERIFY_HINGLISH));
   });
 
+
+  // ── the server's copy (owner 2026-10-09: "Gmail kholna bahut slow hai, teeno panel par; history bana ke rakh") ──
+  await t('cache: the second full list comes from the server\'s copy (no Gmail call), says so, and the sender checks ran once; a fresh list refreshes behind the screen only when old', async () => {
+    let d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.strictEqual(d.cached, false); assert.strictEqual(S.searches.length, 1); assert.deepStrictEqual(d.mails.map((m) => m.uid), [14, 13, 11, 12]);
+    d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.strictEqual(d.cached, true); assert.strictEqual(S.searches.length, 1, 'Gmail was not asked again'); assert.ok(d.at > 0);
+    assert.deepStrictEqual(d.mails.map((m) => m.uid), [14, 13, 11, 12]); assert.strictEqual(d.unread, 3);
+    assert.strictEqual(mcache.mailCacheStats().lists, 1);
+    // the quick first list (phase=fast) is never the copy: it has no attachment icons or sender checks
+    d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();
+    assert.strictEqual(d.cached, false); assert.strictEqual(S.searches.length, 2);
+    // old copy: answered at once, read again behind the screen
+    const box = await inbox.mailboxFor(OWNER, 'boxV');
+    const stale = await mcache.listCached(box, Date.now() + mcache.LIST_FRESH_MS + 1);
+    assert.strictEqual(stale.cached, true); await new Promise((r) => setTimeout(r, 30)); assert.strictEqual(S.searches.length, 3, 'one background read');
+    mcache.clearMailServerCache(); assert.strictEqual(mcache.mailCacheStats().lists, 0);
+  });
+  await t('cache: a mail opened twice is downloaded once; the copy is marked read in Gmail with one flag call; Mark unread and a reply update the copy; a peek never marks read', async () => {
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+    let d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'))).json();
+    assert.strictEqual(d.mail.uid, 11); const downloads = S.fetchOneOpts.length; assert.strictEqual(downloads, 1);
+    assert.deepStrictEqual(S.flagCalls, [['add', 11, ['\\Seen']]], 'marked read on the first open');
+    let list = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json();
+    assert.strictEqual(list.mails.find((m) => m.uid === 11).unread, false, 'the copy of the list follows'); assert.strictEqual(list.unread, 2);
+    d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'))).json();
+    assert.strictEqual(d.mail.uid, 11); assert.strictEqual(S.fetchOneOpts.length, downloads, 'not downloaded again'); assert.strictEqual(S.flagCalls.length, 1, 'no second flag call');
+    // Mark unread: Gmail and the copy; opening it again marks it read with one flag call and still no download
+    assert.strictEqual((await message.PATCH(req('PATCH', '/api/mail/message', { box: 'boxV', uid: 11, seen: false }))).status, 200);
+    list = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json(); assert.strictEqual(list.mails.find((m) => m.uid === 11).unread, true);
+    await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'));
+    assert.strictEqual(S.fetchOneOpts.length, downloads); assert.deepStrictEqual(S.flagCalls.slice(-1), [['add', 11, ['\\Seen']]]);
+    // a peek (the read-ahead) keeps the copy but marks nothing
+    d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=13&peek=1'))).json();
+    assert.strictEqual(d.mail.uid, 13); assert.strictEqual(S.fetchOneOpts.length, downloads + 1); assert.ok(!S.flagCalls.some((f) => f[1] === 13));
+    list = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json(); assert.strictEqual(list.mails.find((m) => m.uid === 13).unread, true);
+    // a reply: the copy says answered
+    mcache.noteAnswered('boxV', 13);
+    list = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json(); assert.strictEqual(list.mails.find((m) => m.uid === 13).answered, true);
+    assert.strictEqual((await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=13'))).json()).mail.answered, true);
+  });
+  await t('cache: the poller\'s warm-up reads the list once and the newest mails ahead without marking them read; a second warm-up within minutes reads nothing', async () => {
+    const box = await inbox.mailboxFor(OWNER, 'boxV');
+    const w = await mcache.warmMailbox(box);
+    assert.strictEqual(w.refreshed, true); assert.strictEqual(w.preread, 4, 'every mail of the small inbox');
+    assert.strictEqual(S.searches.length, 1); assert.strictEqual(S.fetchOneOpts.length, 4); assert.strictEqual(S.flagCalls.length, 0, 'read ahead never marks read');
+    const stats = mcache.mailCacheStats(); assert.strictEqual(stats.lists, 1); assert.strictEqual(stats.mails, 4); assert.ok(stats.bytes > 0);
+    const again = await mcache.warmMailbox(box);
+    assert.strictEqual(again.refreshed, false); assert.strictEqual(again.preread, 0); assert.strictEqual(S.searches.length, 1); assert.strictEqual(S.fetchOneOpts.length, 4);
+    // the screen now opens from the copy: no Gmail call at all
+    const d = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=12'))).json();
+    assert.strictEqual(d.mail.uid, 12); assert.strictEqual(S.fetchOneOpts.length, 4);
+    assert.strictEqual((await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json()).cached, true); assert.strictEqual(S.searches.length, 1);
+    // warmMailboxes never throws: a mailbox Gmail refuses is logged and the next one still warms
+    S.authFail = true; await mcache.warmMailboxes([box]); S.authFail = false;
+    // the old-copy warm reads again and forgets a mail that left the inbox
+    S.msgs = S.msgs.filter((m) => m.uid !== 12);
+    const later = await mcache.warmMailbox(box, Date.now() + mcache.LIST_WARM_MS + 1);
+    assert.strictEqual(later.refreshed, true); assert.strictEqual(mcache.mailCacheStats().mails, 3, 'uid 12 forgotten');
+  });
   console.log(`MAIL-TAB: ${n} groups passed`);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });

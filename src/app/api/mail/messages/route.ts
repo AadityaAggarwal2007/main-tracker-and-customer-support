@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { listMails } from '@/lib/chat/mail-inbox';
+import { listCached } from '@/lib/chat/mail-cache';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
-import { autoVerifySenders } from '@/lib/chat/mail-auto-verify';
 import { can } from '@/lib/permissions';
 
-// GET /api/mail/messages?box=<mailbox id>: the last 30 days of that Gmail inbox, unread first, read live from
-// Gmail and stored nowhere. `verified` says which senders a team member has verified for an order (mail-verify.ts),
-// with the customer's chat to open (only for a login that may open Chat Support).
+// GET /api/mail/messages?box=<mailbox id>: the last 30 days of that Gmail inbox, unread first. Since 2026-10-09 the
+// full list comes from the server's copy (mail-cache.ts: kept in memory, refreshed by the poller every few minutes and
+// behind the screen when older than 45 s), so it opens at once on every panel; `cached` / `at` say so. `verified`
+// says which senders are verified for an order (mail-verify.ts), with the customer's chat to open (only for a login
+// that may open Chat Support).
 export async function GET(request: NextRequest) {
   const a = await mailAccess(request, new URL(request.url).searchParams.get('box'), 'view');
   if ('error' in a) return a.error;
@@ -16,11 +18,12 @@ export async function GET(request: NextRequest) {
     // checks (automatic verification) need the full list and are skipped. The verified marks already saved still show.
     const phase = new URL(request.url).searchParams.get('phase') === 'fast' ? 'fast' as const : 'full' as const;
     const t0 = Date.now();
-    const r = await listMails(a.box, Date.now(), { phase });
+    // The quick first list is only for a mailbox the server has no copy of yet; the full list runs the automatic
+    // verification (mail-auto-verify.ts) inside refreshList, once per read, not once per screen.
+    const r = phase === 'fast'
+      ? { ...await listMails(a.box, Date.now(), { phase }), cached: false, at: Date.now() }
+      : { ...await listCached(a.box), phase };
     const gmailMs = Date.now() - t0;
-    // Step 1 / 2 of the automatic verification (mail-auto-verify.ts): a sender whose address is on one of this
-    // panel's orders and whose mail Gmail itself marked dmarc=pass is verified before the team has to.
-    if (phase === 'full') await autoVerifySenders(a.box.panelId, r.mails.map(m => ({ email: m.fromAddress, authPass: m.authPass, subject: m.subject })));
     const verified = await verifiedSenders(a.box.panelId, r.mails.map(m => m.fromAddress));
     if (!can(a.user, 'chat.view')) for (const list of Object.values(verified)) for (const v of list) v.chatId = null;
     const total = Date.now() - t0;
