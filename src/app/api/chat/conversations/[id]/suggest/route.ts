@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 //      3 drafts for the team member's next reply (suggest-run.ts), cached per customer message.
 // PATCH /api/chat/conversations/:id/suggest { suggestion_id, picked }   which one was clicked.
 // Logins that may read and reply in Chat Support, inside their panels; a verified customer's chat
-// box only (never a visitor, never email, never a Closed chat). Nothing is sent to the customer.
+// box or email thread only (never a visitor, never a Closed chat). Nothing is sent to the customer.
 async function loadConv(request: NextRequest, id: string) {
   const user = getAuthFromRequest(request);
   if (!user) return { res: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };

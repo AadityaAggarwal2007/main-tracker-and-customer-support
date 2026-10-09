@@ -681,11 +681,11 @@ export default function ChatSupportPage() {
   }, []);
 
   /* ═══ SUGGESTED REPLIES + SUDHARO (owner 2026-10-04) ═══ */
-  // Shown for a verified customer's chat box that this login could reply in (never a visitor,
-  // never email, never a Closed chat). Drafted when the chat opens and again when the customer
+  // Shown for a verified customer's chat box or email thread that this login could reply in (never a
+  // visitor, never a Closed chat; email since 2026-10-09, owner: "suggestions sab panels mein, email mein bhi"). Drafted when the chat opens and again when the customer
   // writes; the server caches per customer message, so reopening a chat costs nothing.
   const knownCustomer = !!activeConv && !!(activeConv.verified_order_id || activeConv.phone_match_order_id);
-  const suggestShown = !!activeConv && activeConv.source === 'chat' && knownCustomer && activeConv.status !== 'resolved' && can(user, 'chat.reply');
+  const suggestShown = !!activeConv && (activeConv.source === 'chat' || activeConv.source === 'email') && knownCustomer && activeConv.status !== 'resolved' && can(user, 'chat.reply');
   const lastCustomerId = [...messages].reverse().find(m => m.sender === 'visitor' && !m.deleted_at)?.id ?? null;
 
   const fetchSuggestions = useCallback(async (id: string, lang: SuggestLang, refresh: boolean) => {
@@ -1303,7 +1303,7 @@ export default function ChatSupportPage() {
                     onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} />
                 )}
                 {activeConv.status !== 'resolved' && canReply && (
-                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} />
+                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} />
                 )}
               </>
             )}

@@ -1227,6 +1227,18 @@ t('suggest: the instruction speaks as the team, in the chosen language, with the
   assert.ok(sg.suggestInstruction({ ...base, orderJson: null }).includes('No verified order facts'));
   for (const s of [day, night]) assert.ok(/never mention Karry, Chikki, an AI/.test(s));
 });
+t('suggest: email conversations get short complete mails with the store\'s own name (owner 9 Oct); the chat box keeps the texting style; no fixed brand', () => {
+  const base = { lang: 'auto', after: 'tomorrow', caseKind: null, orderJson: '{"status":"Order Placed"}' };
+  const mail = sg.suggestInstruction({ ...base, channel: 'email', storeName: 'kurtiya' });
+  assert.ok(/A member of the kurtiya support team/.test(mail) && /Regards, kurtiya Support/.test(mail) && /2 to 5 short sentences/.test(mail));
+  assert.ok(/tomorrow morning, after 10 AM, by email/.test(mail) && !/here in this chat/.test(mail) && !/isi chat mein/.test(mail));
+  const chat = sg.suggestInstruction({ ...base, channel: 'chat', storeName: 'VASTRIKA' });
+  assert.ok(/A member of the VASTRIKA support team/.test(chat) && /the way a person texts/.test(chat) && /here in this chat/.test(chat) && !/Regards,/.test(chat));
+  const none = sg.suggestInstruction(base);
+  assert.ok(/A member of our support team/.test(none), 'no panel name = "our support team", never a fixed brand');
+  assert.ok(/Regards, Support Team/.test(sg.suggestInstruction({ ...base, channel: 'email' })));
+  for (const txt of [mail, chat, none]) assert.ok(!/Vastora support team/.test(txt), 'the instruction never hard-codes one panel');
+});
 t('suggest: the sender is the team, so "our team will" becomes "we will" (seen live 4 Oct)', () => {
   assert.strictEqual(sg.asTeam("You're most welcome, Kiran! Our team will get back to you here tomorrow morning after 10 AM."), "You're most welcome, Kiran! We will get back to you here tomorrow morning after 10 AM.");
   assert.strictEqual(sg.asTeam('Happy to help! The team will review your request and reply here.'), 'Happy to help! We will review your request and reply here.');
