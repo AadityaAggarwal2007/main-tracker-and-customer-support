@@ -61,5 +61,5 @@ jobs:
           echo "The key is a valid private key."
           HOSTNAME_ONLY=$(printf '%s' "$HOST" | sed 's/^ *hostname *//' | tr -d ' \r\n')
           USER_ONLY=$(printf '%s' "$USER" | tr -d ' \r\n')
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o BatchMode=yes "$USER_ONLY@$HOSTNAME_ONLY" \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ConnectionAttempts=3 -o BatchMode=yes "$USER_ONLY@$HOSTNAME_ONLY" \
             'set -e; cd /var/www/tracker && bash vps-setup/5-deploy.sh && git log -1 --oneline && (pm2 ls | grep -E " tracker " || true)'
