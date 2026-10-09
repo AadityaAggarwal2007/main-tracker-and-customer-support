@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { sendMailReply, type ReplyFile } from '@/lib/chat/mail-inbox';
+import { noteAnswered } from '@/lib/chat/mail-cache';
 import { cleanReply, parseUid, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES } from '@/lib/chat/mail-view';
 import { hasFormLink } from '@/lib/refund/link-mask';
 import { stripLinkJunk } from '@/lib/chat/reply-guards';
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const sent = await sendMailReply(a.box, uid, stripLinkJunk(clean.text).text, { includeQuote, files: replyFiles });
+    noteAnswered(a.box.id, uid);
     return NextResponse.json({ ok: true, to: sent.to, files: replyFiles.length });
   } catch (e) { return mailFail(e); }
 }

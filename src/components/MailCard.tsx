@@ -11,6 +11,11 @@
 // An HTML mail is shown in a sandboxed frame (no scripts) with remote pictures blocked until "Show images".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
+
+// Owner 2026-10-09 ("open open poora poora bada bada kar"): an open mail takes the whole width by default (the filters and
+// the list step aside; the List button brings them back); the choice is remembered per browser.
+const WIDE_KEY = 'mail_wide';
+const readWide = () => { try { return localStorage.getItem(WIDE_KEY) !== '0'; } catch { return true; } };
 import { agoText } from '@/app/admin/_lib/format';
 import { VIEW_LABELS, initials, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
@@ -44,6 +49,9 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   const [sort, setSort] = useState<MailSort>('unreadfirst');
   const [q, setQ] = useState('');
   const [openUid, setOpenUid] = useState<number | null>(null);
+  const [wide, setWide] = useState(true);
+  useEffect(() => { setWide(readWide()); }, []);
+  const toggleWide = () => { setWide(w => { try { localStorage.setItem(WIDE_KEY, w ? '0' : '1'); } catch { /* ignore */ } return !w; }); };
   const [mail, setMail] = useState<Full | null>(null);
   const [opening, setOpening] = useState(false);
   const [thread, setThread] = useState<ThreadItem[] | null>(null);
@@ -261,7 +269,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   }
 
   return (
-    <div className={`mail-app${openUid ? ' mail-open' : ''}`}>
+    <div className={`mail-app${openUid ? ' mail-open' : ''}${openUid && wide ? ' mail-wide' : ''}`}>
       {/* Filters (owner 2026-10-08): what a support person sorts the day by */}
       <nav className="mail-filters" aria-label="Mail filters">
         {FILTER_GROUPS.map(g => (
@@ -325,7 +333,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
         </div>
         <div className="meta mail-foot">
-          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'Nothing is stored on the server'}
+          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'kept ready on the server, refreshed every few minutes'}
         </div>
       </section>
 
@@ -369,6 +377,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             versions={verified[mail.fromAddress] || []}
             thread={thread} threadLoading={threadLoading}
             onBack={() => { setOpenUid(null); setMail(null); }}
+            wide={wide} onToggleWide={toggleWide}
             onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
             onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
             onShowImages={() => void openMail(mail.uid, true)}

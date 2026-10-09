@@ -60,7 +60,7 @@ export function frameHtml(html: string, allowImages = false): string {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; ${img} font-src data:;`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">`
     + '<base target="_blank"><meta name="viewport" content="width=device-width,initial-scale=1">'
-    + '<style>html,body{margin:0;padding:12px;background:#fff;color:#111;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}a{color:#5b21b6}table{max-width:100%}</style>'
+    + '<style>html,body{margin:0;padding:12px;background:#fff;color:#111;font:16px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}a{color:#5b21b6}table{max-width:100%}</style>'
     + `</head><body>${body}</body></html>`;
 }
 

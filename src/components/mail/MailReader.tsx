@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, Maximize2, MessageCircle, Minimize2, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
 import { initials } from '@/lib/chat/mail-filters';
@@ -11,11 +11,13 @@ import type { Att, Box, Full, ThreadItem, Ver } from './types';
 const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // The open mail: who, the verification bar, actions, the body in a sandboxed frame, the reply box (owner 2026-10-08).
-export default function MailReader({ token, box, mail, versions, thread, threadLoading, canReply, onAlert, onBack, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, canReply, onAlert, onBack, wide, onToggleWide, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
   thread: ThreadItem[] | null; threadLoading: boolean;
   onAlert: (type: string, message: string) => void;
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
+  // Full width (the list and filters hidden) or next to the list (owner 2026-10-09).
+  wide?: boolean; onToggleWide?: () => void;
   onShowImages: () => void; onMarkUnread: () => void;
   onChanged: () => void;            // a verification was added or removed: read the list again
   onSent: () => void;
@@ -106,6 +108,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <div className="mail-readbar">
         <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={onBack}><ChevronLeft size={16} /> List</button>
         <span style={{ flex: 1 }} />
+        {onToggleWide && <button type="button" className="btn btn-ghost btn-sm mail-widebtn" onClick={onToggleWide} title={wide ? 'Show the list next to the mail' : 'Open the mail full width'}>{wide ? <Minimize2 size={16} /> : <Maximize2 size={16} />} {wide ? 'With list' : 'Full width'}</button>}
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPrev?.()} disabled={!onPrev} title="Previous mail in the list"><ChevronLeft size={16} /></button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNext?.()} disabled={!onNext} title="Next mail in the list"><ChevronRight size={16} /></button>
       </div>
