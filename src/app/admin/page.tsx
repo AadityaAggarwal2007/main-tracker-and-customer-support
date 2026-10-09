@@ -28,6 +28,7 @@ import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelC
 import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
+import PanelBoard from '@/components/PanelBoard';
 import UploadTab from './_components/UploadTab';
 import UploadWarningDialog from './_components/UploadWarningDialog';
 import NewPanelDialog from './_components/NewPanelDialog';
@@ -1031,6 +1032,15 @@ export default function AdminDashboard() {
           )}
 
           {/* ════════ ORDERS TAB ════════ */}
+          {activeTab === 'orders' && token && (
+            // The panel board (owner 2026-10-09): every panel's "what to do today" above the orders. A line switches to
+            // that panel and opens the screen it names; the chat inbox reads the active panel from localStorage.
+            <PanelBoard token={token} activePanelId={activePanelId} goTo={(panelId, where) => {
+              switchPanel(panelId);
+              if (where === 'chats') { router.push('/admin/chat'); return; }
+              if (where === 'chargebacks' || where === 'refunds' || where === 'settings') setActiveTab(where);
+            }} />
+          )}
           {activeTab === 'orders' && (
             <OrdersTab GMAIL_DAILY_LIMIT={GMAIL_DAILY_LIMIT} brandFilter={brandFilter} brands={brands} copyTrackingLink={copyTrackingLink} dateFrom={dateFrom} dateTo={dateTo} emailFilter={emailFilter} emailedOrderIds={emailedOrderIds} emailsSentToday={emailsSentToday} handleDeleteOrder={handleDeleteOrder} handleSearchChange={handleSearchChange} hasPermission={hasPermission} limit={limit} loading={loading} orders={orders} page={page} searchInput={searchInput} selectFirst={selectFirst} selectedOrders={selectedOrders} sendEmail={sendEmail} sendWhatsApp={sendWhatsApp} setBrandFilter={setBrandFilter} setDateFrom={setDateFrom} setDateTo={setDateTo} setDetailOrder={setDetailOrder} setEmailFilter={setEmailFilter} setLimit={setLimit} setPage={setPage} setSelectedOrders={setSelectedOrders} setShowDetailModal={setShowDetailModal} setShowRangeModal={setShowRangeModal} setShowStatusModal={setShowStatusModal} setStatusFilter={setStatusFilter} setStoreFilter={setStoreFilter} statusCounts={statusCounts} statusFilter={statusFilter} storeFilter={storeFilter} toggleSelectAll={toggleSelectAll} toggleSelectOrder={toggleSelectOrder} totalOrders={totalOrders} totalPages={totalPages} />
           )}

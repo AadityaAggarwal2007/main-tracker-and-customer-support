@@ -118,6 +118,15 @@ export async function refundCounts(): Promise<Res> {
   return res(200, { unseen: Number(r.unseen) || 0, new: Number(r.new) || 0, approved: Number(r.approved) || 0 });
 }
 
+// GET /api/refunds/counts?byPanel=1 (the panel board, owner 2026-10-09): new requests per panel, { by_panel: { <business_id>: n } }.
+// Kept here so the refund tables stay inside the refund files (refund-isolation I2); the board reads it over HTTP.
+export async function refundCountsByPanel(): Promise<Res> {
+  const r = await pool.query(`SELECT business_id, count(*)::int AS n FROM refund_requests WHERE status = 'new' GROUP BY business_id`);
+  const by_panel: Record<string, number> = {};
+  for (const row of r.rows as { business_id: string; n: number }[]) by_panel[String(row.business_id)] = Number(row.n) || 0;
+  return res(200, { by_panel });
+}
+
 // Never payout_enc: the full details come only from revealPayout.
 const REQ_COLS = `r.id, r.ref_code, r.link_id, r.conversation_id, r.site_id, r.business_id, r.order_id, r.order_snapshot, r.phone_fp,
        r.reason, r.sub_reason, r.checked_around, r.details, r.payout_method, r.payout_mask, r.payout_fp, r.holder_matches,

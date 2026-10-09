@@ -478,6 +478,11 @@ on(/^SELECT count\(\*\) FILTER \(WHERE status = 'new'(?: AND seen_at IS NULL)?\)
   return rows([{ new: c((r) => r.status === 'new'), unseen: c((r) => r.status === 'new' && !r.seen_at), approved: c((r) => r.status === 'approved'),
     rejected: c((r) => r.status === 'rejected'), refunded: c((r) => r.status === 'refunded'), cancelled: c((r) => r.status === 'cancelled') }]);
 });
+on(/^SELECT business_id, count\(\*\)::int AS n FROM refund_requests WHERE status = 'new' GROUP BY business_id$/, () => {
+  if (db.missingTables) throw pgErr('42P01', 'relation "refund_requests" does not exist');
+  const by = {}; for (const r of T.refund_requests) if (r.status === 'new') by[r.business_id] = (by[r.business_id] || 0) + 1;
+  return rows(Object.entries(by).map(([business_id, n]) => ({ business_id, n })));
+});
 on(/^SELECT count\(\*\)::int AS n FROM refund_links WHERE status = 'active' AND created_at > now\(\) - interval '14 days'$/,
   () => rows([{ n: T.refund_links.filter((l) => l.status === 'active' && tms(l.created_at) > NOW - 14 * DAY).length }]));
 on(/^SELECT l\.id, l\.order_id, l\.order_snapshot, s\.name AS panel, l\.status, l\.revoked_reason, l\.created_at, l\.expires_at, l\.opened_count, l\.last_opened_at, l\.conversation_id FROM refund_links l LEFT JOIN sites s ON s\.id = l\.site_id WHERE l\.status = 'active' AND l\.created_at > now\(\) - interval '14 days' ORDER BY l\.created_at DESC LIMIT 100$/,
@@ -1499,6 +1504,10 @@ t('R18 list, counts, sent links and the detail drawer (masked; seen; viewed once
   const q = await withRequest({ order: { customer_name: 'Ravi Kumar' } });
   const c = await counts();
   ok(c.body.unseen >= 1 && c.body.new >= 1);
+  // ?byPanel=1 (the panel board, owner 2026-10-09): new requests per panel, Super Admin only
+  const bp = await call(R.counts.GET, areq('/api/refunds/counts?byPanel=1', owner()));
+  eq(bp.status, 200); ok(Object.values(bp.body.by_panel).some((n) => n >= 1), 'this panel has a new request');
+  eq((await call(R.counts.GET, areq('/api/refunds/counts?byPanel=1', member('neha')))).status, 403);
   const l = await list('?view=new');
   eq(l.status, 200);
   const row = l.body.items.find((x) => x.id === q.id);
