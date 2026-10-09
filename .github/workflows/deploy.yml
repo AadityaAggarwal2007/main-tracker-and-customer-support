@@ -36,17 +36,30 @@ jobs:
             echo "ready=yes" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy (vps-setup/5-deploy.sh)
+      # Plain ssh instead of a third-party action, with a check of the key that never prints it (owner 2026-10-09:
+      # "ssh: no key found" twice; the secret was pasted without its BEGIN / END lines or with Windows line ends).
+      - name: Check the key and connect
         if: steps.check.outputs.ready == 'yes'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          command_timeout: 15m
-          script: |
-            set -e
-            cd /var/www/tracker
-            bash vps-setup/5-deploy.sh
-            git log -1 --oneline
-            pm2 ls | grep -E ' tracker ' || true
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # \r (pasted from some editors) and a literal "\n" (pasted as one line) are made real line ends again.
+          printf '%s\n' "$KEY" | tr -d '\r' | sed 's/\\n/\n/g' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          lines=$(grep -c . ~/.ssh/deploy_key || true)
+          first=$(head -n1 ~/.ssh/deploy_key | grep -c -- '-----BEGIN' || true)
+          last=$(grep -c -- '-----END' ~/.ssh/deploy_key || true)
+          echo "VPS_SSH_KEY: $lines lines, BEGIN line on top: $([ "$first" = 1 ] && echo yes || echo NO), END line: $([ "$last" -ge 1 ] && echo yes || echo NO)"
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
+            echo "::error::VPS_SSH_KEY is not a usable private key. Paste the WHOLE key, from the -----BEGIN line to the -----END line."
+            exit 1
+          fi
+          echo "The key is a valid private key."
+          HOSTNAME_ONLY=$(printf '%s' "$HOST" | sed 's/^ *hostname *//' | tr -d ' \r\n')
+          USER_ONLY=$(printf '%s' "$USER" | tr -d ' \r\n')
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o BatchMode=yes "$USER_ONLY@$HOSTNAME_ONLY" \
+            'set -e; cd /var/www/tracker && bash vps-setup/5-deploy.sh && git log -1 --oneline && (pm2 ls | grep -E " tracker " || true)'
