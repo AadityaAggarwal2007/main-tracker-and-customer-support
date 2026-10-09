@@ -73,3 +73,27 @@ export function whatsappNumber(raw: unknown): string | null {
   if (digits.length >= 11 && digits.length <= 15) return digits;
   return null;
 }
+
+// ── Is this mail really a chargeback? (owner 2026-10-09) ─────────────────────────────────────
+// The chargeback Gmail also receives the gateway's other mail (payment received, settlement, OTP, offers; on
+// VASTRIKA only "PayU Chargeback Notification" was real among a page of ₹100 payment mails). A mail is a
+// chargeback only when its SUBJECT or its first lines carry a dispute word; everything else is kept as
+// "Other mail" (visible, never counted, no WhatsApp, no chat tag). Pure: the list re-reads old rows with
+// it, so a better word list here fixes the old rows too.
+const STRONG = /charge\s?-?backs?|retrieval\s+request|representment|pre-?arbitration|\barbitration\b|cardholder\s+(has\s+)?(disputed|raised|claimed)|fraud\s+(claim|alert|chargeback)/i;
+// "dispute" alone is in every gateway footer ("write to disputes@..."): it counts only as a subject word or in a
+// phrase that says one was raised.
+const DISPUTE_SUBJECT = /\bdisputes?\b|\bdisputed\b/i;
+const DISPUTE_PHRASE = /(dispute|disputes)\s+(has\s+been\s+|was\s+|is\s+)?(raised|opened|received|initiated|filed|created|registered|logged|notification|notice|alert|id\b|reference|ref\b|case)|(raised|opened|filed|initiated|received)\s+(a\s+|an?\s+new\s+|the\s+)?dispute|disputed\s+(the|this|a|your)\s+(transaction|payment|charge|order)|dispute\s+(case|id|ref)[\s:#]/i;
+// Payment-success and settlement mail never is one, even when the footer talks about disputes.
+const NOISE_SUBJECT = /payment\s+(received|successful|success|confirmation|confirmed)|transaction\s+(successful|success|alert|confirmation)|settlement|payout|invoice|statement|\botp\b|verification\s+code|sign-?in|security\s+alert|newsletter|welcome\s+to|password/i;
+
+export type ChargebackKind = 'chargeback' | 'other';
+export function chargebackKind(subject: string, text: string): ChargebackKind {
+  const subj = (subject || '').replace(/\s+/g, ' ');
+  const head = (text || '').replace(/\s+/g, ' ').slice(0, 1500);
+  if (STRONG.test(subj) || DISPUTE_SUBJECT.test(subj)) return 'chargeback';
+  if (NOISE_SUBJECT.test(subj)) return 'other';
+  if (STRONG.test(head) || DISPUTE_PHRASE.test(head)) return 'chargeback';
+  return 'other';
+}
