@@ -387,14 +387,19 @@ export default function ChatSupportPage() {
     return () => window.removeEventListener('popstate', onBack);
   }, []);
 
-  // Team score's "Open chat" link (/admin/chat?open=<id>): open that chat once, then drop the query.
+  // Team score's "Open chat" link (/admin/chat?open=<id>): open that chat once, then drop the query. Without a link,
+  // the chat and the section that were open before a refresh come back (owner 2026-10-10: "jahan chhoot raha hai wahin rahe").
   useEffect(() => {
     try {
       const id = new URLSearchParams(window.location.search).get('open');
-      if (id && /^[\w-]{6,80}$/.test(id)) { setActiveId(id); window.history.replaceState(window.history.state, '', '/admin/chat'); }
+      if (id && /^[\w-]{6,80}$/.test(id)) { setActiveId(id); window.history.replaceState(window.history.state, '', '/admin/chat'); return; }
+      const last = JSON.parse(localStorage.getItem('chat_last') || 'null') as { id?: unknown; tab?: unknown } | null;
+      if (last && typeof last.tab === 'string' && last.tab) setTab(last.tab as InboxTab);
+      if (last && typeof last.id === 'string' && /^[\w-]{6,80}$/.test(last.id)) setActiveId(last.id);
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => { try { localStorage.setItem('chat_last', JSON.stringify({ id: activeId ?? '', tab })); } catch { /* ignore */ } }, [activeId, tab]);
 
   /* ═══ ACTIONS ═══ */
   // Take over / Hand to AI / Close; take = "Take from X" (the chat becomes this login's).

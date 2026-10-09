@@ -182,6 +182,13 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     finally { if (seq === openSeq.current) setOpening(false); }
   }, [auth, patchItems]);
 
+  // The mailbox and the open mail are remembered for the next refresh (owner 2026-10-10; the admin page restores them
+  // through initialBox / initialUid). A closed mail is remembered as "none".
+  useEffect(() => {
+    if (!boxId) return;
+    try { localStorage.setItem('mail_last', JSON.stringify({ box: boxId, uid: openUid ?? 0 })); } catch { /* ignore */ }
+  }, [boxId, openUid]);
+
   // Opens the mail a chat's "Emails" link pointed at, once, when its mailbox's list is there.
   useEffect(() => {
     if (initialDone.current || !initialUid || !boxId || boxId !== initialBox || items.length === 0) return;
