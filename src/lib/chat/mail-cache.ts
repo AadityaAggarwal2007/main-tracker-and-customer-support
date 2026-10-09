@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { listMails, readMail, setSeen, type MailBoxSecret, type MailFull } from './mail-inbox';
 import type { MailListItem } from './mail-view';
 import type { PoolSlot } from './imap-pool';
@@ -9,19 +11,24 @@ import { autoVerifySenders } from './mail-auto-verify';
 // click downloaded the mail again. Now the server keeps, in the PM2 process's memory, each mailbox's last list and
 // the mails that were opened or read ahead, and the every-minute poller (email.ts pollAllMailboxes -> warmMailboxes)
 // keeps the lists fresh and reads the newest mails ahead, so the tab opens from memory at once on every panel.
-// Memory only: no customer mail is written to the database or the disk; a restart empties it and the next poller
-// minute fills it again. Gmail stays the truth: a list older than LIST_FRESH_MS is read again in the background
-// when it is asked for, and read / answered flags set from here are written to Gmail and mirrored in the copy.
+// The copy also lives in ONE file on the server's disk (owner 2026-10-09 night, "slow hai abhi bhi": from this VPS a
+// Gmail sign-in takes 2-14 s and one mail 2-3 s, so filling the copy again after every deploy's PM2 restart took
+// minutes, and the tab was slow until then): MAIL_CACHE_DIR/mail-cache.json (default <app>/.mail-cache, gitignored,
+// mode 0600, written only after something changed, never the App Password), read once at start, so a restart
+// answers from the copy at once. Nothing goes to the database. Gmail stays the truth: a list older than LIST_FRESH_MS
+// is read again in the background when it is asked for, the poller reads every list again each minute (which also
+// keeps the Gmail connections alive) and reads the rest of the month's mails ahead a few at a time until every mail
+// is kept, and read / answered flags set from here are written to Gmail and mirrored in the copy.
 
 export interface CachedList { mails: MailListItem[]; unread: number; truncated: boolean; days: number; at: number }
 interface CachedMail { mail: MailFull; at: number; bytes: number }
 
 export const LIST_FRESH_MS = 45_000;          // a list this old is answered at once and refreshed behind the screen
-export const LIST_WARM_MS = 4 * 60_000;       // the poller reads a list again when it is this old
-export const MAIL_TTL_MS = 30 * 60_000;       // an opened mail is kept this long
-export const MAIL_MAX = 400;                  // and at most this many ...
-export const MAIL_BUDGET_BYTES = 48 * 1024 * 1024;   // ... within this much memory
-export const PREREAD = 20;                    // the poller reads ahead this many of the newest mails per mailbox (only the ones not kept yet)
+export const LIST_WARM_MS = 50_000;           // the poller (every minute) reads a list again when it is this old
+export const MAIL_TTL_MS = 24 * 3_600_000;    // a kept mail is forgotten after a day unopened (a mail's text never changes)
+export const MAIL_MAX = 600;                  // and at most this many ...
+export const MAIL_BUDGET_BYTES = 96 * 1024 * 1024;   // ... within this much memory
+export const PREREAD = 10;                    // the poller reads ahead this many not-yet-kept mails per mailbox per minute, newest first, until all are kept
 
 const lists = new Map<string, CachedList>();
 const inflight = new Map<string, Promise<CachedList>>();
@@ -30,7 +37,56 @@ let mailBytes = 0;
 
 const mailKey = (boxId: string, uid: number, images: boolean) => `${boxId}:${uid}:${images ? 1 : 0}`;
 
-export function cachedList(boxId: string): CachedList | null { return lists.get(boxId) ?? null; }
+// ── the file on disk ──
+// MAIL_CACHE_DIR: where the file lives ('off' = memory only, the tests' default); the app directory's .mail-cache otherwise.
+const cacheFile = (): string | null => {
+  const dir = process.env.MAIL_CACHE_DIR || path.join(process.cwd(), '.mail-cache');
+  return dir === 'off' ? null : path.join(dir, 'mail-cache.json');
+};
+let loaded = false;
+let dirty = false;
+let saving: Promise<void> | null = null;
+interface Snapshot { v: 1; lists: [string, CachedList][]; mails: [string, CachedMail][] }
+// Read once, at the first use after a start. A broken or missing file is simply an empty copy.
+export function loadFromDisk(): boolean {
+  if (loaded) return false;
+  loaded = true;
+  const file = cacheFile();
+  if (!file) return false;
+  try {
+    const snap = JSON.parse(fs.readFileSync(file, 'utf8')) as Snapshot;
+    if (snap?.v !== 1 || !Array.isArray(snap.lists) || !Array.isArray(snap.mails)) return false;
+    const now = Date.now();
+    for (const [k, v] of snap.lists) if (v && Array.isArray(v.mails)) lists.set(k, v);
+    for (const [k, v] of snap.mails) if (v?.mail && now - v.at <= MAIL_TTL_MS) { mails.set(k, v); mailBytes += v.bytes; }
+    console.log(`[mail-cache] loaded ${lists.size} lists and ${mails.size} mails from disk`);
+    return true;
+  } catch (e) {
+    if ((e as { code?: string })?.code !== 'ENOENT') console.error('[mail-cache] load:', (e as Error).message);
+    return false;
+  }
+}
+// Written whole, to a temporary name first, only when something changed; at most one write at a time.
+export function saveToDisk(): Promise<void> {
+  const file = cacheFile();
+  if (!file || !dirty) return Promise.resolve();
+  if (saving) return saving;
+  dirty = false;
+  saving = (async () => {
+    try {
+      const snap: Snapshot = { v: 1, lists: Array.from(lists.entries()), mails: Array.from(mails.entries()) };
+      await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      const tmp = `${file}.${process.pid}.tmp`;
+      await fs.promises.writeFile(tmp, JSON.stringify(snap), { mode: 0o600 });
+      await fs.promises.rename(tmp, file);
+    } catch (e) { dirty = true; console.error('[mail-cache] save:', (e as Error).message); }
+    finally { saving = null; }
+  })();
+  return saving;
+}
+const changed = () => { dirty = true; };
+
+export function cachedList(boxId: string): CachedList | null { loadFromDisk(); return lists.get(boxId) ?? null; }
 
 // Reads the full list from Gmail (headers only), runs the automatic sender checks (mail-auto-verify.ts) and keeps it.
 // One read per mailbox at a time: a second caller waits for the same read.
@@ -42,7 +98,7 @@ export function refreshList(box: MailBoxSecret, now = Date.now()): Promise<Cache
     try { await autoVerifySenders(box.panelId, r.mails.map(m => ({ email: m.fromAddress, authPass: m.authPass, subject: m.subject }))); }
     catch (e) { console.error('[mail-cache] auto-verify:', (e as Error).message); }
     const entry: CachedList = { mails: r.mails, unread: r.unread, truncated: r.truncated, days: r.days, at: Date.now() };
-    lists.set(box.id, entry);
+    lists.set(box.id, entry); changed();
     // A mail that left the inbox (archived, deleted) is forgotten.
     const keep = new Set(r.mails.map(m => m.uid));
     for (const [k, v] of Array.from(mails.entries())) if (k.startsWith(`${box.id}:`) && !keep.has(v.mail.uid)) drop(k);
@@ -54,6 +110,7 @@ export function refreshList(box: MailBoxSecret, now = Date.now()): Promise<Cache
 
 // The list for the screen: the kept one at once (refreshed behind it when old), else read now.
 export async function listCached(box: MailBoxSecret, now = Date.now()): Promise<CachedList & { cached: boolean }> {
+  loadFromDisk();
   const have = lists.get(box.id);
   if (have) {
     if (now - have.at > LIST_FRESH_MS) refreshList(box, now).catch(e => console.error('[mail-cache] refresh:', (e as Error).message));
@@ -72,7 +129,7 @@ function store(key: string, mail: MailFull, now: number): void {
   drop(key);
   const bytes = mail.frame.length + mail.text.length + 2048;
   mails.set(key, { mail, at: now, bytes });
-  mailBytes += bytes;
+  mailBytes += bytes; changed();
   for (const [k, v] of Array.from(mails.entries())) {
     if (mails.size <= MAIL_MAX && mailBytes <= MAIL_BUDGET_BYTES && now - v.at <= MAIL_TTL_MS) break;
     if (k === key) continue;
@@ -80,6 +137,7 @@ function store(key: string, mail: MailFull, now: number): void {
   }
 }
 export function cachedMail(boxId: string, uid: number, images = false, now = Date.now()): MailFull | null {
+  loadFromDisk();
   const key = mailKey(boxId, uid, images);
   const v = mails.get(key);
   if (!v) return null;
@@ -112,35 +170,42 @@ export function noteSeen(boxId: string, uid: number, seen: boolean): void {
   const l = lists.get(boxId);
   if (!l) return;
   const m = l.mails.find(x => x.uid === uid);
-  if (m && m.unread === seen) { m.unread = !seen; l.unread = l.mails.filter(x => x.unread).length; }
+  if (m && m.unread === seen) { m.unread = !seen; l.unread = l.mails.filter(x => x.unread).length; changed(); }
 }
 export function noteAnswered(boxId: string, uid: number): void {
   const m = lists.get(boxId)?.mails.find(x => x.uid === uid);
-  if (m) m.answered = true;
+  if (m) { m.answered = true; changed(); }
   for (const images of [false, true]) { const v = mails.get(mailKey(boxId, uid, images)); if (v) v.mail.answered = true; }
 }
 
-// The poller's minute: a list older than LIST_WARM_MS is read again, then the newest mails not yet kept are read ahead
-// (never marking them read). Mailboxes one after another, one warm run at a time, never throwing.
+// The poller's minute: every list older than LIST_WARM_MS is read again (which also keeps that Gmail connection
+// alive), then up to PREREAD not-yet-kept mails are read ahead, newest first (never marking them read), so within
+// a few minutes every mail of the month is kept and every click is instant. The mailboxes run side by side (each has
+// its own connections); one warm run at a time; never throwing; the file is written afterwards when something changed.
 let warmChain: Promise<void> = Promise.resolve();
 export function warmMailboxes(boxes: MailBoxSecret[], now = Date.now()): Promise<void> {
-  warmChain = warmChain.then(async () => { for (const b of boxes) await warmMailbox(b, now).catch(e => console.error(`[mail-cache] warm ${b.email}:`, (e as Error).message)); });
+  warmChain = warmChain.then(async () => {
+    await Promise.all(boxes.map(b => warmMailbox(b, now).catch(e => console.error(`[mail-cache] warm ${b.email}:`, (e as Error).message))));
+    await saveToDisk();
+  });
   return warmChain;
 }
-export async function warmMailbox(box: MailBoxSecret, now = Date.now()): Promise<{ refreshed: boolean; preread: number }> {
+export async function warmMailbox(box: MailBoxSecret, now = Date.now()): Promise<{ refreshed: boolean; preread: number; left: number }> {
+  loadFromDisk();
   const have = lists.get(box.id);
   const refreshed = !have || now - have.at > LIST_WARM_MS;
   const list = refreshed ? await refreshList(box, now) : have!;
+  const todo = list.mails.filter(m => !cachedMail(box.id, m.uid, false, now)).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   let preread = 0;
-  for (const m of list.mails) {
-    if (preread >= PREREAD) break;
-    if (cachedMail(box.id, m.uid, false, now)) continue;
+  for (const m of todo.slice(0, PREREAD)) {
     const mail = await readMail(box, m.uid, { markRead: false, folder: 'inbox', slot: 'bg' });
     if (mail) { store(mailKey(box.id, m.uid, false), mail, now); preread += 1; }
   }
-  return { refreshed, preread };
+  return { refreshed, preread, left: Math.max(0, todo.length - preread) };
 }
 
 // For the tests and a sign-out of every mailbox: forget everything.
-export function clearMailServerCache(): void { lists.clear(); inflight.clear(); mails.clear(); mailBytes = 0; }
+export function clearMailServerCache(): void { lists.clear(); inflight.clear(); mails.clear(); mailBytes = 0; dirty = false; loaded = true; }
+// For the tests: forget that the file was read, so the next use reads it again.
+export function forgetDiskLoad(): void { loaded = false; }
 export function mailCacheStats(): { lists: number; mails: number; bytes: number } { return { lists: lists.size, mails: mails.size, bytes: mailBytes }; }

@@ -64,8 +64,10 @@ Done and live:
   ₹100 payment / settlement / OTP mails sit under "Other mail", uncounted, no WhatsApp, no chat tag.
 - **"Today" tab** (first in the sidebar, the start screen; `src/lib/panel-board.ts`, `PanelBoard.tsx`):
   the day, totals, the morning routine, one card per panel with what to do + Gmail read status.
-- **Mail tab fast on every panel**: `src/lib/chat/mail-cache.ts` keeps each Gmail's list + opened mails in
-  the server's memory, warmed by the minute poller; an open mail is full width by default.
+- **Mail tab fast on every panel**: `src/lib/chat/mail-cache.ts` keeps each Gmail's list + mails in the
+  server's memory AND in `<app>/.mail-cache/mail-cache.json` (survives deploys); the minute poller refreshes
+  lists and reads 10 mails/min ahead until the whole month is kept. From this VPS a Gmail sign-in is 2-14 s.
+  An open mail is full width by default.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

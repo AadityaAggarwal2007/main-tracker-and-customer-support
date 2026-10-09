@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# the Mail tab's copy of each Gmail (src/lib/chat/mail-cache.ts): customer mail, never in Git
+/.mail-cache/
