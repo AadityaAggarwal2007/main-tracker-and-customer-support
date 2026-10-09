@@ -1,0 +1,52 @@
+# Deploy to the VPS by itself after every merge to main (owner 2026-10-09: "directly push, dont suggest me do").
+# It runs the same vps-setup/5-deploy.sh the owner used to run by hand over SSH.
+# One-time setup (repo Settings > Secrets and variables > Actions), values are never written in this repo:
+#   VPS_HOST      the server's address
+#   VPS_USER      the SSH user (root)
+#   VPS_SSH_KEY   a private key whose public half is in that user's ~/.ssh/authorized_keys on the server
+# Until the three are set, the job says so and stops green: nothing is deployed.
+# Only a push to main (or a manual run) deploys: pull requests and forks never reach the server.
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check the deploy secrets are set
+        id: check
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$KEY" ]; then
+            echo "::notice::VPS_HOST / VPS_USER / VPS_SSH_KEY are not set yet: nothing deployed."
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy (vps-setup/5-deploy.sh)
+        if: steps.check.outputs.ready == 'yes'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+            cd /var/www/tracker
+            bash vps-setup/5-deploy.sh
+            git log -1 --oneline
+            pm2 ls | grep -E ' tracker ' || true
