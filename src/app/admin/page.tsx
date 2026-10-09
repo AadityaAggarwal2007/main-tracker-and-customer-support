@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
+
+const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks'];
 import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
@@ -178,6 +180,16 @@ export default function AdminDashboard() {
     // Restore last active panel
     const savedPanel = localStorage.getItem('active_panel_id') || '';
     setActivePanelId(savedPanel);
+    // Restore the last tab and, for Mail, the mailbox and the mail that were open (owner 2026-10-10: a refresh used to
+    // land on Today every time; a tab this login may not see falls back to Today below). A ?tab= link wins (next effect).
+    try {
+      if (!new URLSearchParams(window.location.search).get('tab')) {
+        const savedTab = localStorage.getItem('admin_tab') as TabType | null;
+        if (savedTab && TAB_IDS.includes(savedTab)) setActiveTab(savedTab);
+        const last = JSON.parse(localStorage.getItem('mail_last') || 'null') as { box?: unknown; uid?: unknown } | null;
+        if (last && typeof last.box === 'string' && /^[\w-]{6,80}$/.test(last.box)) setMailLink({ box: last.box, uid: Number.isInteger(last.uid) && Number(last.uid) > 0 ? Number(last.uid) : 0 });
+      }
+    } catch { /* ignore */ }
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
     // The session answer also carries the login's current role, panels and permissions (the
@@ -402,6 +414,8 @@ export default function AdminDashboard() {
   }, []);
   // Anyone else who lands on that link gets the normal start tab.
   useEffect(() => { if (user && activeTab === 'refunds' && !superAdmin) setActiveTab('orders'); }, [user, activeTab, superAdmin]);
+  // The tab is remembered for the next refresh (owner 2026-10-10).
+  useEffect(() => { try { localStorage.setItem('admin_tab', activeTab); } catch { /* ignore */ } }, [activeTab]);
   // Auto-refresh email stats every 30 seconds
   useEffect(() => {
     if (!token) return;
@@ -976,6 +990,8 @@ export default function AdminDashboard() {
     // Owner 2026-10-08: chargeback mails from every panel's chargeback Gmail, with a red badge. Super Admin only.
     { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
+  // A remembered tab this login may not see (a member after the owner changed their ticks) goes to Today.
+  useEffect(() => { if (user && !navItems.some(i => i.id === activeTab)) setActiveTab('today'); }, [user, activeTab, navItems]);
 
   return (
     <div className="admin-layout">

@@ -67,7 +67,7 @@ Done and live:
 - **Mail tab fast on every panel**: `src/lib/chat/mail-cache.ts` keeps each Gmail's list + mails in the
   server's memory AND in `<app>/.mail-cache/mail-cache.json` (survives deploys); the minute poller refreshes
   lists and reads 10 mails/min ahead until the whole month is kept. From this VPS a Gmail sign-in is 2-14 s.
-  An open mail is full width by default.
+  An open mail is full width by default. A refresh comes back to the same tab / mailbox / mail / chat.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
