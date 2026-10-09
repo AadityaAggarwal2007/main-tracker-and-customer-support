@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { listMails } from '@/lib/chat/mail-inbox';
-import { listCached } from '@/lib/chat/mail-cache';
+import { cachedList, listCached } from '@/lib/chat/mail-cache';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
 import { can } from '@/lib/permissions';
 
@@ -18,10 +18,13 @@ export async function GET(request: NextRequest) {
     // checks (automatic verification) need the full list and are skipped. The verified marks already saved still show.
     const phase = new URL(request.url).searchParams.get('phase') === 'fast' ? 'fast' as const : 'full' as const;
     const t0 = Date.now();
-    // The quick first list is only for a mailbox the server has no copy of yet; the full list runs the automatic
-    // verification (mail-auto-verify.ts) inside refreshList, once per read, not once per screen.
+    // The quick first list (a page load) is answered from the server's copy too when there is one (owner 2026-10-09
+    // evening, "abhi bhi slow hai": it used to ask Gmail live on every page load); it reads Gmail only for a mailbox
+    // the server has no copy of yet. The full list runs the automatic verification (mail-auto-verify.ts) inside
+    // refreshList, once per read, not once per screen.
+    const copy = cachedList(a.box.id);
     const r = phase === 'fast'
-      ? { ...await listMails(a.box, Date.now(), { phase }), cached: false, at: Date.now() }
+      ? (copy ? { ...copy, cached: true, phase: 'full' as const } : { ...await listMails(a.box, Date.now(), { phase }), cached: false, at: Date.now() })
       : { ...await listCached(a.box), phase };
     const gmailMs = Date.now() - t0;
     const verified = await verifiedSenders(a.box.panelId, r.mails.map(m => m.fromAddress));

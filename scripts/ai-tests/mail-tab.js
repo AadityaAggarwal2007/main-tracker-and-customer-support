@@ -681,13 +681,17 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     assert.strictEqual(d.cached, true); assert.strictEqual(S.searches.length, 1, 'Gmail was not asked again'); assert.ok(d.at > 0);
     assert.deepStrictEqual(d.mails.map((m) => m.uid), [14, 13, 11, 12]); assert.strictEqual(d.unread, 3);
     assert.strictEqual(mcache.mailCacheStats().lists, 1);
-    // the quick first list (phase=fast) is never the copy: it has no attachment icons or sender checks
+    // the quick first list (a page load) is the copy too when there is one (it is better than a quick list: icons and sender checks included)
     d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();
-    assert.strictEqual(d.cached, false); assert.strictEqual(S.searches.length, 2);
+    assert.strictEqual(d.cached, true); assert.strictEqual(d.phase, 'full'); assert.strictEqual(S.searches.length, 1, 'no Gmail call');
+    mcache.clearMailServerCache();
+    d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();
+    assert.strictEqual(d.cached, false); assert.strictEqual(d.phase, 'fast'); assert.strictEqual(S.searches.length, 2, 'no copy yet: the quick list reads Gmail');
+    await messages.GET(req('GET', '/api/mail/messages?box=boxV')); assert.strictEqual(S.searches.length, 3);
     // old copy: answered at once, read again behind the screen
     const box = await inbox.mailboxFor(OWNER, 'boxV');
     const stale = await mcache.listCached(box, Date.now() + mcache.LIST_FRESH_MS + 1);
-    assert.strictEqual(stale.cached, true); await new Promise((r) => setTimeout(r, 30)); assert.strictEqual(S.searches.length, 3, 'one background read');
+    assert.strictEqual(stale.cached, true); await new Promise((r) => setTimeout(r, 30)); assert.strictEqual(S.searches.length, 4, 'one background read');
     mcache.clearMailServerCache(); assert.strictEqual(mcache.mailCacheStats().lists, 0);
   });
   await t('cache: a mail opened twice is downloaded once; the copy is marked read in Gmail with one flag call; Mark unread and a reply update the copy; a peek never marks read', async () => {
