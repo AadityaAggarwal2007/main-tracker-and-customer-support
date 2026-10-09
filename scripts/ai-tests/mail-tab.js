@@ -186,6 +186,7 @@ const member = (extra = {}, role = 'agent') => ({ role, username: 'rahul', permi
 let n = 0;
 const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
 const inbox = require(path.join(SRC, 'lib/chat/mail-inbox.ts'));
+process.env.MAIL_CACHE_DIR = 'off';   // the copy stays in memory in the tests, except the disk group below
 const mcache = require(path.join(SRC, 'lib/chat/mail-cache.ts'));
 const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mcache.clearMailServerCache(); reset(); mverify.resetVerifyLimits(); authState.user = OWNER; await fn(); n++; console.log('  ok  ' + name); };
 
@@ -734,7 +735,39 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     // the old-copy warm reads again and forgets a mail that left the inbox
     S.msgs = S.msgs.filter((m) => m.uid !== 12);
     const later = await mcache.warmMailbox(box, Date.now() + mcache.LIST_WARM_MS + 1);
-    assert.strictEqual(later.refreshed, true); assert.strictEqual(mcache.mailCacheStats().mails, 3, 'uid 12 forgotten');
+    assert.strictEqual(later.refreshed, true); assert.strictEqual(later.left, 0); assert.strictEqual(mcache.mailCacheStats().mails, 3, 'uid 12 forgotten');
+    // a big inbox is read ahead a few per minute, newest first, until every mail is kept
+    mcache.clearMailServerCache(); S.fetchOneOpts = [];
+    S.msgs = Array.from({ length: 25 }, (_, i) => ({ uid: 200 + i, seen: true, answered: false, date: new Date(Date.parse('2026-10-01T00:00:00Z') + i * 3600e3).toISOString(), from: { name: 'N' + i, address: `n${i}@example.com` }, subject: 'S' + i, source: plain('n' + i, `n${i}@example.com`, 'S' + i, 'body ' + i) }));
+    const w1 = await mcache.warmMailbox(box); assert.strictEqual(w1.preread, mcache.PREREAD); assert.strictEqual(w1.left, 25 - mcache.PREREAD);
+    assert.ok(mcache.cachedMail('boxV', 224) && !mcache.cachedMail('boxV', 200), 'the newest first');
+    const w2 = await mcache.warmMailbox(box); assert.strictEqual(w2.refreshed, false); assert.strictEqual(w2.preread, mcache.PREREAD);
+    const w3 = await mcache.warmMailbox(box); assert.strictEqual(w3.preread, 5); assert.strictEqual(w3.left, 0); assert.strictEqual(mcache.mailCacheStats().mails, 25);
+  });
+  await t('cache: the copy is written to one file on disk (mode 0600, never the App Password) and read back after a restart, so the tab answers at once with no Gmail call', async () => {
+    const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'mail-cache-'));
+    process.env.MAIL_CACHE_DIR = dir;
+    try {
+      await messages.GET(req('GET', '/api/mail/messages?box=boxV'));
+      await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'));
+      await mcache.saveToDisk();
+      const file = path.join(dir, 'mail-cache.json');
+      assert.ok(fs.existsSync(file)); assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+      const text = fs.readFileSync(file, 'utf8'); assert.ok(!/SECRETSECRETSECR/.test(text), 'no App Password on disk'); assert.ok(/Where is my order/.test(text));
+      const searches = S.searches.length, downloads = S.fetchOneOpts.length;
+      // "restart": memory empty, the file is read at the first use
+      mcache.clearMailServerCache(); mcache.forgetDiskLoad();
+      const d = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();
+      assert.strictEqual(d.cached, true); assert.deepStrictEqual(d.mails.map((m) => m.uid), [14, 13, 11, 12]); assert.strictEqual(d.mails.find((m) => m.uid === 11).unread, false);
+      const m = await (await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11'))).json();
+      assert.strictEqual(m.mail.uid, 11); assert.strictEqual(S.searches.length, searches, 'no list read'); assert.strictEqual(S.fetchOneOpts.length, downloads, 'no download');
+      // nothing changed: no second write; a change: written again
+      const mtime = fs.statSync(file).mtimeMs; await mcache.saveToDisk(); assert.strictEqual(fs.statSync(file).mtimeMs, mtime);
+      mcache.noteSeen('boxV', 13, true); await mcache.saveToDisk(); assert.ok(/"uid":13,[^}]*"unread":false/.test(fs.readFileSync(file, 'utf8')));
+      // a missing or broken file is an empty copy, never an error
+      fs.writeFileSync(file, '{broken'); mcache.clearMailServerCache(); mcache.forgetDiskLoad();
+      assert.strictEqual(mcache.cachedList('boxV'), null);
+    } finally { process.env.MAIL_CACHE_DIR = 'off'; mcache.clearMailServerCache(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
   console.log(`MAIL-TAB: ${n} groups passed`);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });
