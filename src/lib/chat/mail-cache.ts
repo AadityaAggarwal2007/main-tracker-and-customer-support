@@ -21,7 +21,7 @@ export const LIST_WARM_MS = 4 * 60_000;       // the poller reads a list again w
 export const MAIL_TTL_MS = 30 * 60_000;       // an opened mail is kept this long
 export const MAIL_MAX = 400;                  // and at most this many ...
 export const MAIL_BUDGET_BYTES = 48 * 1024 * 1024;   // ... within this much memory
-export const PREREAD = 6;                     // the poller reads ahead this many of the newest mails per mailbox
+export const PREREAD = 20;                    // the poller reads ahead this many of the newest mails per mailbox (only the ones not kept yet)
 
 const lists = new Map<string, CachedList>();
 const inflight = new Map<string, Promise<CachedList>>();
