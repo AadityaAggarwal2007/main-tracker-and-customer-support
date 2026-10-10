@@ -5,6 +5,8 @@ import { chargebackKind } from '@/lib/chargeback/parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 import { aiHealth, AI_REASON_TEXT, type AiHealth } from '@/lib/chat/ai-health';
 import { loadHolidays } from '@/lib/chat/holidays';
+import { loadWaHealth } from '@/lib/chat/whatsapp-health';
+import type { WaHealth } from '@/lib/chat/whatsapp-health-rules';
 import { isOfficeHours, istDate } from '@/lib/office-hours';
 import type { GmailStatus, PanelStats } from './panel-board';
 
@@ -122,7 +124,7 @@ function gmailStatus(list: (ReturnType<typeof getMailboxStatus>)[]): { status: G
 // The day itself: India's date, whether the office is open now and who is in ShipTrack right now (seen in the
 // last 5 minutes, like the inbox's team list). Names only; nothing else about a person.
 export interface BoardAi extends AiHealth { text: string | null }
-export async function loadBoardDay(): Promise<{ date: string; officeOpen: boolean; online: string[]; ai: BoardAi }> {
+export async function loadBoardDay(superAdmin = false): Promise<{ date: string; officeOpen: boolean; online: string[]; ai: BoardAi; whatsapp: WaHealth | null }> {
   const now = Date.now();
   // Chikki's health (ai-health.ts): a red banner while every model fails (credits, key, rate limit, timeouts).
   const h = aiHealth(now);
@@ -132,5 +134,7 @@ export async function loadBoardDay(): Promise<{ date: string; officeOpen: boolea
     `SELECT COALESCE(u.display_name, u.username, CASE WHEN p.actor = 'owner' THEN 'Super Admin' END) AS name
        FROM staff_presence p LEFT JOIN team_users u ON u.id::text = p.actor
       WHERE p.last_seen_at > now() - interval '5 minutes' ORDER BY 1`)).rows.map(r => r.name).filter(Boolean), []);
-  return { date: istDate(now), officeOpen: isOfficeHours(now, holidays), online, ai };
+  // The WhatsApp number's health (whatsapp-health.ts): the Super Admin's only, like the WhatsApp tab.
+  const whatsapp = superAdmin ? await loadWaHealth(now).catch((e) => { console.error('[panel-board] whatsapp:', (e as Error).message); return null; }) : null;
+  return { date: istDate(now), officeOpen: isOfficeHours(now, holidays), online, ai, whatsapp };
 }

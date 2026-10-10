@@ -7,6 +7,7 @@
 // here touches Shopify, the orders or Chat Support; the rules are in whatsapp-auto-rules.ts.
 import { query, queryOne } from '@/lib/db';
 import { sendWhatsAppTemplate, waConfigured, waDigits } from './whatsapp';
+import { stoppedNumbers } from './whatsapp-stop';
 import { listTemplates, renderTemplate, type TemplateInfo } from './whatsapp-templates';
 import { templatesAccount } from './whatsapp-settings';
 import { loadBrands } from './whatsapp-brands';
@@ -93,6 +94,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     for (const b of await loadBrands().catch(() => [])) brands.set(b.id, { name: b.name, email: b.email });
     const { list } = await templateStates(nowMs);
     let budget = BATCH;
+    // numbers whose customer wrote STOP (whatsapp-stop.ts): never messaged
+    const stopped = await stoppedNumbers().catch(() => new Set<string>());
 
     for (const [panelId, s] of on) {
       out.panels++;
@@ -146,6 +149,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         if (r.is_cancelled) { await skip(SKIP.cancelled); continue; }
         const digits = waDigits(r.customer_mobile);
         if (!digits) { await skip(SKIP.noNumber); continue; }
+        if (stopped.has(digits)) { await skip(SKIP.stopped); continue; }
         if (r.kind === 'placed' && nowMs - createdMs > FRESH_MS) { await skip(SKIP.tooOld); continue; }
         if (r.kind === 'tracking') {
           if (r.delivered_at || /^delivered$/i.test(r.tracking_status || '')) { await skip(SKIP.delivered); continue; }

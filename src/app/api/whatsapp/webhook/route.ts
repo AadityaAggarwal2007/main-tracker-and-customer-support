@@ -3,6 +3,7 @@ import { parseWaWebhook, waSignatureOk } from '@/lib/chat/whatsapp';
 import { storeWaInbound, storeWaStatus } from '@/lib/chat/whatsapp-inbound';
 import { noteWebhookOk, noteWebhookRefused } from '@/lib/chat/whatsapp-webhook-status';
 import { sendWaAutoReply } from '@/lib/chat/whatsapp-autoreply';
+import { handleWaKeyword, waKeyword } from '@/lib/chat/whatsapp-stop';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,8 +42,18 @@ export async function POST(request: NextRequest) {
       const r = await storeWaInbound(m);
       if (r.outcome === 'stored') {
         stored++;
-        // one fixed reply: this number only sends order updates, help is by email (whatsapp-autoreply.ts)
-        if (r.conversationId && Date.now() - m.timestamp < 6 * 3_600_000) {
+        // STOP / START (whatsapp-stop.ts), else one fixed reply: this number only sends order updates, help is by email
+        // (whatsapp-autoreply.ts)
+        const kw = waKeyword(m.text);
+        let handled = false;
+        if (r.conversationId && kw) {
+          try {
+            const k = await handleWaKeyword(r.conversationId, m.from, kw);
+            console.log(`[whatsapp] ${kw.toUpperCase()} from ••••${m.from.slice(-4)}: ${k}`);
+            handled = !(kw === 'start' && k === 'unchanged'); // "start" from a number that never stopped is an ordinary message
+          } catch (err) { console.error('[whatsapp] stop / start:', (err as Error).message); handled = true; }
+        }
+        if (!handled && r.conversationId && Date.now() - m.timestamp < 6 * 3_600_000) {
           try { if ((await sendWaAutoReply(r.conversationId, m.from)) === 'sent') replied++; }
           catch (err) { console.error('[whatsapp] auto reply:', (err as Error).message); }
         }

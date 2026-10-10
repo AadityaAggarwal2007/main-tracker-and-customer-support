@@ -118,6 +118,9 @@ Done and live:
   after a team member replied "Dear Customer ... Team Vastrika"): a customer's message gets one fixed reply per chat
   per 24 h, "this number only sends order updates, for help email <brand email>" (`whatsapp-autoreply.ts`). The
   Automation tab's list is brand-wise: Brand row + one line per order with both messages, filters and search.
+  A customer who writes STOP (or "band karo") gets no more automatic messages (`whatsapp-stop.ts`, START undoes it).
+  The Today board shows the number's health to the Super Admin: Meta quality, customers messaged in 24 h vs the
+  daily limit (TIER_250 = 250), failed today, wrote STOP; plus a morning-routine step.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

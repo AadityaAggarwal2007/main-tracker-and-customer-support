@@ -8,12 +8,13 @@
 // lines from src/lib/panel-board.ts and the numbers behind them. Refreshes every minute and on focus. A line is a
 // button that makes that panel the active one and opens the screen for it.
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Circle, CheckSquare, Loader2, RefreshCw, ShieldAlert, Sun, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Circle, CheckSquare, Loader2, MessageCircle, RefreshCw, ShieldAlert, Sun, Users } from 'lucide-react';
+import { waHealthLines, type WaHealth } from '@/lib/chat/whatsapp-health-rules';
 import { morningRoutine, panelNeeds, sortPanels, summarize, type PanelStats, type Need } from '@/lib/panel-board';
 import { agoText } from '@/app/admin/_lib/format';
 
 type Panel = PanelStats & { needs: Need[] };
-interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number } }
+interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number }; whatsapp?: WaHealth | null }
 
 const dateText = (iso: string) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -63,7 +64,11 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
   }, [load]);
 
   const totals = panels ? summarize(panels) : null;
-  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok)) : [];
+  const wa = day?.whatsapp || null;
+  const waLines = wa ? waHealthLines(wa) : [];
+  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok), wa ? waLines.length : null) : [];
+  // the WhatsApp tab opens on Automation (its sub-tab is remembered in localStorage wa_tab)
+  const openWhatsApp = () => { try { localStorage.setItem('wa_tab', 'automation'); } catch { /* private window */ } goTo(activePanelId, 'whatsapp'); };
   const left = routine.filter(s => !s.done).length;
   // A step's screen opens on the panel with the most of that thing.
   const panelFor = (go: NonNullable<Need['go']>) => {
@@ -101,6 +106,40 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
           </div>
         </div>
       )}
+      {wa && (() => {
+        // The WhatsApp number's health (owner 2026-10-10): Meta's quality rating, the daily limit, the automation's failures.
+        const worst = waLines.some(l => l.tone === 'danger') ? 'danger' : waLines.length ? 'warn' : 'ok';
+        const q = (wa.quality || 'UNKNOWN').toUpperCase();
+        const qTone = q === 'GREEN' ? 'chip-ok' : q === 'YELLOW' ? 'chip-warn' : q === 'RED' ? 'chip-danger' : 'chip-muted';
+        const pct = wa.limit ? Math.min(100, Math.round((wa.used24h / wa.limit) * 100)) : 0;
+        return (
+          <div className={`pb-wa pb-wa-${worst}`} role={worst === 'danger' ? 'alert' : undefined}>
+            <div className="pb-wa-head">
+              <MessageCircle size={16} style={{ color: '#16a34a' }} />
+              <b>WhatsApp number</b>
+              <span className={`chip ${qTone}`} title="Meta's quality rating: how customers react to our messages">Quality {q === 'UNKNOWN' ? 'not known' : q}</span>
+              {wa.status && !['CONNECTED', 'UNKNOWN'].includes(wa.status.toUpperCase()) && <span className="chip chip-danger">{wa.status}</span>}
+              <span className="meta" style={{ marginLeft: 'auto' }}>{worst === 'ok' ? 'Healthy' : `${waLines.length} to look at`}</span>
+              <button type="button" className="btn btn-outline btn-sm" onClick={openWhatsApp}>Open</button>
+            </div>
+            <dl className="pb-wa-nums">
+              <div>
+                <dt title="Different customers we started a WhatsApp conversation with in the last 24 hours, against Meta's daily limit">Customers messaged, last 24 h</dt>
+                <dd>{wa.used24h}{wa.limit ? <span className="meta"> / {wa.limit}</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not known'}</span>}</dd>
+                {wa.limit ? <div className="pb-wa-bar" aria-hidden="true"><i style={{ width: `${pct}%`, background: pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)' }} /></div> : null}
+              </div>
+              <div className={wa.failedToday ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.failedToday}</dd></div>
+              <div><dt>Waiting to go</dt><dd>{wa.waitingToday}</dd></div>
+              <div title="Customers who wrote STOP: the automation never messages them"><dt>Wrote STOP</dt><dd>{wa.stopped}</dd></div>
+            </dl>
+            {waLines.length > 0 && (
+              <ul className="pb-needs" style={{ marginTop: '0.5rem' }}>
+                {waLines.map((l, k) => <li key={k} className={`pb-need pb-${l.tone === 'danger' ? 'danger' : 'warn'}`}><button type="button" className="pb-need-btn" onClick={openWhatsApp}>{l.text}</button></li>)}
+              </ul>
+            )}
+          </div>
+        );
+      })()}
       {!panels && !error && <div className="meta" style={{ padding: '0.5rem 0' }}>Reading every panel…</div>}
 
       {totals && (
@@ -123,7 +162,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
               {routine.map((s, i) => (
                 <li key={i} className={s.done ? 'done' : ''}>
                   {s.done ? <CheckCircle2 size={15} style={{ color: 'var(--success)' }} /> : <Circle size={15} style={{ color: 'var(--fg-muted)' }} />}
-                  {s.done ? <span>{s.text}</span> : <button type="button" className="pb-need-btn" onClick={() => goTo(panelFor(s.go), s.go)}>{s.text}</button>}
+                  {s.done ? <span>{s.text}</span> : <button type="button" className="pb-need-btn" onClick={() => (s.go === 'whatsapp' ? openWhatsApp() : goTo(panelFor(s.go), s.go))}>{s.text}</button>}
                   {!s.done && <span className="chip chip-warn" style={{ marginLeft: 'auto' }}>{s.count}</span>}
                 </li>
               ))}

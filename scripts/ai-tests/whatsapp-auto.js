@@ -30,6 +30,7 @@ const db = {
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_auto:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_auto:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM chat_settings WHERE key LIKE 'wa_brand:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_brand:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql)) return { rows: S.panels.map((x) => ({ ...x })), rowCount: S.panels.length };
     if (/FROM site_emails se JOIN sites s/.test(sql)) return { rows: [], rowCount: 0 };
     if (/^SELECT 1 FROM wa_auto_sends LIMIT 1/.test(sql)) { if (S.noTable) { const e = new Error('relation "wa_auto_sends" does not exist'); e.code = '42P01'; throw e; } return { rows: [{ '?column?': 1 }], rowCount: 1 }; }
@@ -110,6 +111,8 @@ const route = require(path.join(SRC, 'app/api/whatsapp/automation/route.ts'));
 const brandRules = require(path.join(SRC, 'lib/chat/whatsapp-brand-rules.ts'));
 const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
 const view = require(path.join(SRC, 'lib/chat/whatsapp-auto-view.ts'));
+const stop = require(path.join(SRC, 'lib/chat/whatsapp-stop.ts'));
+const health = require(path.join(SRC, 'lib/chat/whatsapp-health-rules.ts'));
 const OWNER = { username: 'owner', role: 'admin', businessIds: null, permissions: [] };
 const AGENT = { username: 'anurag', role: 'agent', businessIds: null, permissions: ['chat.view', 'chat.reply'] };
 const jreq = (user, body, url = 'http://x/api/whatsapp/automation') => ({ __user: user, url, json: async () => body, nextUrl: { searchParams: new URL(url).searchParams } });
@@ -226,6 +229,35 @@ async function t(name, fn) {
     turnOn(); S.orders = [order({ customer_mobile: '12345' })];
     await run(IST(13, 12));
     deq(S.rows.map((x) => [x.kind, x.status, x.error]), [['placed', 'skipped', rules.SKIP.noNumber], ['tracking', 'skipped', rules.SKIP.noNumber]]); eq(sends().length, 0);
+  });
+  await t('STOP: a number that wrote STOP is Skipped with the reason, nobody else is touched; START (stopped:false) messages it again', async () => {
+    turnOn(); S.settings['wa_stop:919876543210'] = JSON.stringify({ stopped: true, at: 'x' });
+    S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' })];
+    await run(IST(13, 12));
+    deq(S.rows.filter((x) => x.kind === 'placed').map((x) => [x.order_id, x.status, x.error]), [['#1553', 'skipped', rules.SKIP.stopped], ['#1554', 'sent', null]]);
+    deq(sends().map((x) => x.body.to), ['919811122233']);
+    S.settings['wa_stop:919876543210'] = JSON.stringify({ stopped: false, at: 'y' });
+    S.orders.push(order({ order_id: '#1555' }));
+    await run(IST(13, 13));
+    eq(S.rows.find((x) => x.order_id === '#1555' && x.kind === 'placed').status, 'sent');
+  });
+  await t('waKeyword: only the whole message counts (English, Hinglish, Hindi); a question with "stop" in it never', () => {
+    for (const x of ['STOP', 'Stop.', ' stop ', 'Unsubscribe', 'band karo', 'Band kar do!!', 'message mat bhejo', 'Msg mat bhejo', 'बंद करो', 'please stop', "don't message me", 'opt-out']) eq(stop.waKeyword(x), 'stop', x);
+    for (const x of ['START', 'Start', 'chalu karo']) eq(stop.waKeyword(x), 'start', x);
+    for (const x of ['when will it stop?', 'stop calling me about refund I want my money', 'my order', 'bus stop road delivery', '', null, 'band hai kya shop']) eq(stop.waKeyword(x), null, String(x));
+    deq([stop.parseStop('{"stopped":true}'), stop.parseStop('{"stopped":false}'), stop.parseStop('junk')], [true, false, false]);
+  });
+  await t('number health: what the quality, the status, the daily limit and the failures mean', () => {
+    const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'TIER_250', limit: 250, used24h: 12, failedToday: 0, waitingToday: 3, stopped: 0, phoneError: null };
+    deq([health.tierLimit('TIER_250'), health.tierLimit('tier_1k'), health.tierLimit('TIER_UNLIMITED'), health.tierLimit('junk')], [250, 1000, null, null]);
+    deq(health.waHealthLines(base), []);
+    deq(health.waHealthLines({ ...base, quality: 'YELLOW' }).map((l) => l.tone), ['warn']);
+    deq(health.waHealthLines({ ...base, quality: 'RED', status: 'FLAGGED' }).map((l) => l.tone), ['danger', 'danger']);
+    assert.match(health.waHealthLines({ ...base, used24h: 180 })[0].text, /72% used: 180 of 250/);
+    eq(health.waHealthLines({ ...base, used24h: 230 })[0].tone, 'danger');
+    assert.match(health.waHealthLines({ ...base, failedToday: 2 })[0].text, /2 automation messages failed today/);
+    eq(health.waHealthLines({ ...base, limit: null, used24h: 9999 }).length, 0);
+    eq(health.waHealthLines({ ...base, phoneError: 'token expired' })[0].tone, 'warn');
   });
   await t('a refusal that cannot change (not on WhatsApp) fails at once; a hiccup is tried again 3 times then fails; Send again queues it', async () => {
     turnOn(); S.orders = [order()];

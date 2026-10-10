@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { can, isSuperAdmin } from '@/lib/permissions';
 import { query } from '@/lib/db';
 import { sendWhatsAppTemplate, waDigits } from '@/lib/chat/whatsapp';
+import { isWaStopped } from '@/lib/chat/whatsapp-stop';
 import { waConversationFor } from '@/lib/chat/whatsapp-inbound';
 import { listTemplates, renderTemplate } from '@/lib/chat/whatsapp-templates';
 import { templatesAccount } from '@/lib/chat/whatsapp-settings';
@@ -24,6 +25,7 @@ export async function POST(request: NextRequest) {
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   const digits = waDigits(body.to);
   if (!digits) return NextResponse.json({ error: 'Type the customer\'s WhatsApp number with the country code (10 digits = India)' }, { status: 400 });
+  if (await isWaStopped(digits)) return NextResponse.json({ error: 'This customer wrote STOP: no message can be started to them until they write START' }, { status: 409 });
   const name = String(body.template ?? '');
   if (!NAME_RE.test(name)) return NextResponse.json({ error: 'Pick a template' }, { status: 400 });
   const params = Array.isArray(body.params) ? (body.params as unknown[]).slice(0, 20).map((v) => String(v ?? '').trim().slice(0, 1024)) : [];

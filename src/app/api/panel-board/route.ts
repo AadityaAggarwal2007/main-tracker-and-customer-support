@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
-    const [panels, day] = await Promise.all([loadPanelBoard(user.businessIds, isSuperAdmin(user)), loadBoardDay()]);
+    const [panels, day] = await Promise.all([loadPanelBoard(user.businessIds, isSuperAdmin(user)), loadBoardDay(isSuperAdmin(user))]);
     return NextResponse.json({ panels, day, superAdmin: isSuperAdmin(user), at: new Date().toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[panel-board]', (e as Error).message);

@@ -36,6 +36,7 @@ export default function PrivacyPage() {
         profile name are delivered to ShipTrack by Meta&apos;s WhatsApp Business Platform and shown to that store&apos;s
         support team. Replies are sent through the same platform. Meta&apos;s own handling of WhatsApp messages is
         described in WhatsApp&apos;s privacy policy. We do not use WhatsApp data for advertising and we do not sell it.
+        To stop the automatic order messages on WhatsApp, reply STOP to that number; reply START to get them again.
       </p>
 
       <H2>Who sees it</H2>

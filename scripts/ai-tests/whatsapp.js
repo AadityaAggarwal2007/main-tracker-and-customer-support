@@ -29,6 +29,7 @@ const db = {
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
     if (/WHERE c\.source = 'whatsapp' AND m\.sender = 'agent'/.test(sql)) { const rows = S.msgs.filter((m) => m.sender === 'agent').map((m) => ({ id: m.id, conversation_id: m.conversation_id, content: m.content, created_at: '2026-10-10T10:00:00Z', metadata: m.metadata, name: 'Jatin', phone: '+919876543210' })); return { rows, rowCount: rows.length }; }
+    if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$2, updated_at = now\(\) WHERE to_number = \$1 AND status = 'pending'/.test(sql)) { let n = 0; for (const r of S.autoRows || []) if (r.to_number === p[0] && r.status === 'pending') { r.status = 'skipped'; r.error = p[1]; n++; } return { rows: [], rowCount: n }; }
     if (/^UPDATE messages SET metadata[\s\S]*wa_sent[\s\S]*WHERE id = \$1/.test(sql)) { const m = S.msgs.find((x) => x.id === p[0]); if (m) Object.assign(m.metadata, { wa_sent: p[1] }, p[2] != null ? { wa_id: p[2] } : {}, p[3] != null ? { wa_error: p[3] } : {}); return { rows: [], rowCount: m ? 1 : 0 }; }
     if (/^UPDATE messages/.test(sql)) { const hits = S.msgs.filter((m) => m.metadata && m.metadata.wa_id === p[0]); for (const m of hits) { if (p[1] != null) m.metadata.wa_status = p[1]; if (p[2] != null) m.metadata.wa_error = p[2]; } return { rows: [], rowCount: hits.length }; }
     throw new Error('fake db query: ' + sql.slice(0, 80));
@@ -38,6 +39,7 @@ const db = {
     if (/FROM conversations c JOIN sites s ON s\.id = c\.site_id WHERE c\.id = \$1/.test(sql)) { const c = S.convs.find((x) => x.id === p[0] && x.source === 'whatsapp'); const s = c && S.sites.find((x) => x.id === c.site_id); return c ? { panel: s ? s.tracker_business_id : null } : null; }
     if (/FROM wa_auto_sends WHERE business_id = \$1 AND to_number = \$2/.test(sql)) return (S.autoRows || []).some((x) => x.business_id === p[0] && x.to_number === p[1] && ['sent', 'delivered', 'read'].includes(x.status)) ? { '?column?': 1 } : null;
     if (/FROM orders o WHERE o\.business_id::text = \$1 AND right/.test(sql)) return (S.orderPanels || {})[p[1]] === p[0] ? { '?column?': 1 } : null;
+    if (/^INSERT INTO messages[\s\S]*wa_stop_reply/.test(sql)) { const m = { id: 'm' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: { channel: 'whatsapp', wa_stop_reply: p[2] } }; S.msgs.push(m); return { id: m.id }; }
     if (/^INSERT INTO messages[\s\S]*wa_auto_reply/.test(sql)) {
       if (S.msgs.some((m) => m.conversation_id === p[0] && m.metadata && m.metadata.wa_auto_reply)) return null;
       const m = { id: 'm' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: { channel: 'whatsapp', wa_auto_reply: true } }; S.msgs.push(m); return { id: m.id };
@@ -114,6 +116,7 @@ const wa = require(path.join(SRC, 'lib/chat/whatsapp.ts'));
 const inbound = require(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/webhook/route.ts'));
 const autoReply = require(path.join(SRC, 'lib/chat/whatsapp-autoreply.ts'));
+const stopLib = require(path.join(SRC, 'lib/chat/whatsapp-stop.ts'));
 const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
 const prof = require(path.join(SRC, 'lib/chat/whatsapp-profile.ts'));
 const rProfile = require(path.join(SRC, 'app/api/whatsapp/profile/route.ts'));
@@ -391,6 +394,29 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const ai = S.msgs.filter((m) => m.sender === 'ai');
     eq(ai.length, 1); assert.match(ai[0].content, /email the store you ordered from/);
     deq([ai[0].metadata.wa_sent, !!ai[0].metadata.wa_error], [false, true]);
+  }));
+
+  await t('webhook: STOP turns the number off (one confirmation, no help-by-email reply, its waiting automation skipped); a second STOP is quiet; START turns it on', () => withEnvAR(async () => {
+    S.autoRows = [{ id: '7', business_id: 'bizVast', to_number: '919876543210', status: 'pending', body_text: null, template: null, wa_id: null }];
+    await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.1', 'STOP')])) }));
+    eq(JSON.parse(S.settings['wa_stop:919876543210']).stopped, true);
+    let ai = S.msgs.filter((m) => m.sender === 'ai');
+    deq(ai.map((m) => [m.content, m.metadata.wa_stop_reply, m.metadata.wa_sent]), [[stopLib.STOP_REPLY, 'stop', true]]);
+    deq([S.autoRows[0].status, S.autoRows[0].error], ['skipped', 'The customer asked us to stop WhatsApp messages (STOP)']);
+    await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.2', 'band karo')])) }));
+    eq(S.msgs.filter((m) => m.sender === 'ai').length, 1);
+    eq(await stopLib.isWaStopped('919876543210'), true);
+    await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.3', 'Start')])) }));
+    eq(JSON.parse(S.settings['wa_stop:919876543210']).stopped, false);
+    ai = S.msgs.filter((m) => m.sender === 'ai');
+    deq(ai.map((m) => m.metadata.wa_stop_reply), ['stop', 'start']);
+    deq(S.fetches.filter((f) => /\/messages$/.test(f.url)).map((f) => f.init.body.text.body), [stopLib.STOP_REPLY, stopLib.START_REPLY]);
+  }));
+  await t('start route: a number that wrote STOP cannot be sent a first-message template (409)', () => withEnvAR(async () => {
+    S.settings['wa_stop:919876543210'] = JSON.stringify({ stopped: true, at: 'x' });
+    const r = await rStart.POST(jreq(AGENT, { to: '98765 43210', template: 'order_update', params: ['Rahul', '#1042'] }));
+    deq([r.status, /wrote STOP/.test(r.body.error)], [409, true]);
+    eq(S.fetches.length, 0);
   }));
 
   console.log('whatsapp: templates (pure)');

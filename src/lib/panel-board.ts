@@ -39,7 +39,7 @@ export interface PanelStats {
 export type GmailStatus = 'ok' | 'error' | 'unknown';
 
 export type NeedTone = 'danger' | 'warn' | 'ok';
-export interface Need { tone: NeedTone; text: string; go?: 'chats' | 'chargebacks' | 'refunds' | 'settings' | 'orders' }
+export interface Need { tone: NeedTone; text: string; go?: 'chats' | 'chargebacks' | 'refunds' | 'settings' | 'orders' | 'whatsapp' }
 
 const n = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -99,9 +99,12 @@ export function summarize(panels: PanelStats[]): BoardSummary {
 // The morning routine (owner 2026-10-09: "everyday morning check"): the same every day, in the order that protects the
 // store; a step is ticked by itself when its number is 0. "go" opens the screen for it.
 export interface RoutineStep { text: string; count: number; done: boolean; go: NonNullable<Need['go']> }
-export function morningRoutine(t: BoardSummary, aiDown = false): RoutineStep[] {
+// waProblems: the WhatsApp number's open problems (whatsapp-health-rules.ts waHealthLines), null = not shown (a team
+// member, or WhatsApp not set up).
+export function morningRoutine(t: BoardSummary, aiDown = false, waProblems: number | null = null): RoutineStep[] {
   const steps: RoutineStep[] = [];
   steps.push({ text: 'Chikki is answering customers (OpenRouter credits and key fine)', count: aiDown ? 1 : 0, done: !aiDown, go: 'settings' });
+  if (waProblems !== null) steps.push({ text: 'WhatsApp number healthy (quality, daily limit, no failed messages)', count: waProblems, done: waProblems === 0, go: 'whatsapp' });
   if (t.chargebacks !== null) steps.push({ text: 'Answer every open chargeback', count: t.chargebacks, done: t.chargebacks === 0, go: 'chargebacks' });
   steps.push({ text: 'Both Gmails of every panel are being read', count: t.gmailErrors, done: t.gmailErrors === 0, go: 'settings' });
   steps.push({ text: 'No customer waiting over 2 hours', count: t.overdue, done: t.overdue === 0, go: 'chats' });
