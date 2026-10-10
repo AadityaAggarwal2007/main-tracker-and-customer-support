@@ -5,13 +5,15 @@ import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import MetaError from './MetaError';
 import PhonePreview from './PhonePreview';
 import { renderTemplate, varCount, type TemplateInfo } from '@/lib/chat/whatsapp-templates';
-import { EMPTY_FORM, SECTION, label, spin, type Alert, type TemplateForm, type WaLists, type WaProfileData, type WaSettings } from './types';
+import { ORDER_PLACED_PRESET } from '@/lib/chat/whatsapp-brand-rules';
+import BrandsCard from './BrandsCard';
+import { EMPTY_FORM, SECTION, label, spin, type Alert, type Brand, type TemplateForm, type WaLists, type WaProfileData, type WaSettings } from './types';
 
 const STATUS_CLASS: Record<string, string> = { APPROVED: 'chip-ok', PENDING: 'chip-warn', REJECTED: 'chip-danger', PAUSED: 'chip-warn', DISABLED: 'chip-danger' };
 
 // The account's templates with Meta's review status; make a new one or edit one, with the phone showing the
 // message as it is typed (the example values stand in for {{n}}).
-export default function TemplatesPanel({ token, s, lists, prof, onAlert, reload }: { token: string; s: WaSettings | null; lists: WaLists | null; prof: WaProfileData | null; onAlert: Alert; reload: () => Promise<void> }) {
+export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert, reload }: { token: string; s: WaSettings | null; lists: WaLists | null; prof: WaProfileData | null; brands: Brand[]; onAlert: Alert; reload: () => Promise<void> }) {
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -21,6 +23,8 @@ export default function TemplatesPanel({ token, s, lists, prof, onAlert, reload 
   const vars = varCount(form.body);
 
   const startNew = () => { setEditId(null); setForm(EMPTY_FORM); setOpen(true); setPreview(null); };
+  // The owner's order-placed confirmation, ready to send to Meta (edit any word before sending).
+  const startOrderPlaced = () => { setEditId(null); setForm({ ...ORDER_PLACED_PRESET }); setOpen(true); setPreview(null); };
   const startEdit = (t: TemplateInfo) => { setEditId(t.id); setForm({ name: t.name, language: t.language, category: t.category || 'UTILITY', header: t.header || '', body: t.body, footer: t.footer || '', examples: [] }); setOpen(true); setPreview(null); };
   const submit = async () => {
     setBusy('save');
@@ -54,7 +58,8 @@ export default function TemplatesPanel({ token, s, lists, prof, onAlert, reload 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.5rem', flexWrap: 'wrap' }}>
             <span style={SECTION}>Templates</span>
             <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Meta reviews a new one (minutes to a day); only Approved ones can be sent. Click one to see it on the phone.</span>
-            <button type="button" className="btn btn-sm btn-primary" style={{ marginLeft: 'auto', gap: 4 }} onClick={startNew}><Plus size={14} /> New template</button>
+            <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={startOrderPlaced}>Order placed template</button>
+            <button type="button" className="btn btn-sm btn-primary" style={{ gap: 4 }} onClick={startNew}><Plus size={14} /> New template</button>
           </div>
           {lists?.error && <MetaError error={lists.error} />}
           {lists && !lists.error && lists.templates.length === 0 && <p style={{ fontSize: '0.8125rem', color: 'var(--fg-muted)' }}>No templates on this account yet.</p>}
@@ -82,6 +87,8 @@ export default function TemplatesPanel({ token, s, lists, prof, onAlert, reload 
             ))}
           </div>
         </div>
+
+        <BrandsCard token={token} brands={brands} onAlert={onAlert} reload={reload} />
 
         {open && (
           <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: '0.5rem' }}>

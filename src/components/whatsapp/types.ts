@@ -12,6 +12,8 @@ export interface WaChat { id: string; name: string | null; phone: string | null;
 export interface WaSent { id: string; conversationId: string; text: string; at: string; name: string | null; phone: string | null; by: string | null; template: string | null; sent: boolean | null; status: string | null; error: string | null }
 export interface WaActivity { chats: WaChat[]; sent: WaSent[]; error?: string }
 
+import type { Brand } from '@/lib/chat/whatsapp-brand-rules';
+export type { Brand };
 export type WaTab = 'setup' | 'test' | 'profile' | 'templates' | 'send' | 'activity';
 export type Alert = (type: string, message: string) => void;
 

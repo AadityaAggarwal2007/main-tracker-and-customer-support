@@ -14,7 +14,7 @@ import TemplatesPanel from './TemplatesPanel';
 import SendPanel from './SendPanel';
 import TestPanel from './TestPanel';
 import ActivityPanel from './ActivityPanel';
-import { spin, type Alert, type WaActivity, type WaLists, type WaProfileData, type WaSettings, type WaTab } from './types';
+import { spin, type Alert, type Brand, type WaActivity, type WaLists, type WaProfileData, type WaSettings, type WaTab } from './types';
 
 const TABS: { id: WaTab; label: string }[] = [
   { id: 'setup', label: 'Setup' }, { id: 'test', label: 'Test' }, { id: 'profile', label: 'Number & profile' }, { id: 'templates', label: 'Templates' }, { id: 'send', label: 'Send' }, { id: 'activity', label: 'Activity' },
@@ -28,6 +28,7 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
   const [lists, setLists] = useState<WaLists | null>(null);
   const [prof, setProf] = useState<WaProfileData | null>(null);
   const [act, setAct] = useState<WaActivity | null>(null);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [loading, setLoading] = useState(true);
   const auth = { Authorization: `Bearer ${token}` };
 
@@ -35,11 +36,12 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
     setLoading(true);
     const get = (u: string) => fetch(u, { headers: auth, cache: 'no-store' }).then((r) => r.json()).catch(() => null);
     try {
-      const [a, b, c, d] = await Promise.all([get('/api/whatsapp/settings'), get('/api/whatsapp/templates'), get('/api/whatsapp/profile'), get('/api/whatsapp/activity')]);
+      const [a, b, c, d, e] = await Promise.all([get('/api/whatsapp/settings'), get('/api/whatsapp/templates'), get('/api/whatsapp/profile'), get('/api/whatsapp/activity'), get('/api/whatsapp/brands')]);
       if (a && !a.error) setS(a);
       if (b) setLists(b);
       if (c) setProf(c);
       if (d) setAct(d);
+      if (e && Array.isArray(e.brands)) setBrands(e.brands);
     } finally { setLoading(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -70,8 +72,8 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
       {tab === 'setup' && <SetupPanel key={`${s?.waba}|${s?.appId}`} token={token} s={s} lists={lists} onAlert={onAlert} reload={load} />}
       {tab === 'test' && <TestPanel token={token} s={s} prof={prof} act={act} onAlert={onAlert} goSend={() => pick('send')} goActivity={() => pick('activity')} />}
       {tab === 'profile' && <ProfilePanel token={token} s={s} prof={prof} onAlert={onAlert} reload={load} />}
-      {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} onAlert={onAlert} reload={load} />}
-      {tab === 'send' && <SendPanel token={token} s={s} lists={lists} prof={prof} onAlert={onAlert} onOpenChat={onOpenChat} />}
+      {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} reload={load} />}
+      {tab === 'send' && <SendPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} onOpenChat={onOpenChat} />}
       {tab === 'activity' && <ActivityPanel act={act} onOpenChat={onOpenChat} />}
     </div>
   );
