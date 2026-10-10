@@ -33,12 +33,14 @@ export default function BrandsCard({ token, brands, onAlert, reload }: { token: 
         {brands.map((b) => {
           const v = val(b);
           const dirty = !!edit[b.id];
+          const unsaved = !b.savedName || !b.savedEmail; // nothing saved yet: Save keeps what is shown
+          const canSave = (dirty || unsaved) && !!v.name.trim();
           return (
             <div key={b.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(7rem, 9rem) 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
               <div style={{ fontSize: '0.8125rem', fontWeight: 700, paddingBottom: 10 }}>{b.panel}</div>
               <label><span style={label}>Brand name in the message</span><input className="form-input" value={v.name} maxLength={40} onChange={(e) => setEdit({ ...edit, [b.id]: { ...v, name: e.target.value } })} /></label>
               <label><span style={label}>Support email in the message{!b.savedEmail && b.supportGmail ? ' (its support Gmail)' : ''}</span><input className="form-input" value={v.email} maxLength={128} placeholder="help@brand.com" inputMode="email" onChange={(e) => setEdit({ ...edit, [b.id]: { ...v, email: e.target.value } })} /></label>
-              <button type="button" className="btn btn-sm btn-primary" disabled={busy === b.id || !dirty} onClick={() => void save(b)}>{busy === b.id ? <Loader2 size={14} style={spin} /> : 'Save'}</button>
+              <button type="button" className="btn btn-sm btn-primary" disabled={busy === b.id || !canSave} onClick={() => void save(b)}>{busy === b.id ? <Loader2 size={14} style={spin} /> : (unsaved && !dirty ? 'Save these' : 'Save')}</button>
             </div>
           );
         })}
