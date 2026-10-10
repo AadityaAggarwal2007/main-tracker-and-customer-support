@@ -87,15 +87,17 @@ export async function runLateEscalation(now = Date.now()): Promise<LateRun> {
 }
 
 // The red bar in every team member's inbox: the chats moved in the last 2 hours, in the login's panels.
-export interface LateAlert { id: string; conversation_id: string; at: string; from_name: string; to_name: string; waited_min: number; customer: string | null }
+// Since 2026-10-10 (Chargeback Shield step 2) also the chats moved for a Critical chargeback risk (reason 'chargeback_risk',
+// src/lib/chargeback/risk-escalate.ts): kind 'risk', with the order and the first reason.
+export interface LateAlert { id: string; conversation_id: string; at: string; from_name: string; to_name: string; waited_min: number; customer: string | null; kind?: 'late' | 'risk'; order?: string | null; why?: string | null }
 export async function lateAlerts(panels: string[] | null): Promise<LateAlert[]> {
   try {
-    const r = await query<{ id: string; conversation_id: string; at: string; meta: Record<string, unknown> | null; customer: string | null }>(
-      `SELECT e.id::text AS id, e.conversation_id, e.created_at AS at, e.meta, c.visitor_name AS customer
+    const r = await query<{ id: string; conversation_id: string; at: string; meta: Record<string, unknown> | null; customer: string | null; reason: string }>(
+      `SELECT e.id::text AS id, e.conversation_id, e.created_at AS at, e.meta, c.visitor_name AS customer, e.reason
          FROM chat_events e
          JOIN conversations c ON c.id = e.conversation_id
          JOIN sites s ON s.id = c.site_id
-        WHERE e.reason = 'no_reply_30' AND e.created_at > now() - interval '2 hours'
+        WHERE e.reason IN ('no_reply_30', 'chargeback_risk') AND e.created_at > now() - interval '2 hours'
           AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))
         ORDER BY e.created_at DESC LIMIT 10`,
       [panels]
@@ -104,6 +106,9 @@ export async function lateAlerts(panels: string[] | null): Promise<LateAlert[]> 
       id: x.id, conversation_id: x.conversation_id, at: new Date(x.at).toISOString(),
       from_name: String(x.meta?.from_name ?? 'A team member'), to_name: String(x.meta?.to_name ?? 'the Manager'),
       waited_min: Number(x.meta?.waited_min ?? NO_REPLY_MIN), customer: x.customer || null,
+      kind: x.reason === 'chargeback_risk' ? 'risk' as const : 'late' as const,
+      order: x.reason === 'chargeback_risk' ? String(x.meta?.order ?? '') || null : null,
+      why: x.reason === 'chargeback_risk' && Array.isArray(x.meta?.reasons) ? String((x.meta?.reasons as unknown[])[0] ?? '') || null : null,
     }));
   } catch (e) {
     if ((e as { code?: string })?.code !== '42P01') console.error('[late] alerts:', (e as Error).message);

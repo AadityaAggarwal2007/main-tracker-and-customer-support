@@ -15,7 +15,7 @@ import type { AiCredit } from '@/lib/chat/ai-credit-rules';
 import { agoText } from '@/app/admin/_lib/format';
 
 type Panel = PanelStats & { needs: Need[] };
-interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number }; whatsapp?: WaHealth | null; aiCredit?: AiCredit | null }
+interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number }; whatsapp?: WaHealth | null; aiCredit?: AiCredit | null; risk?: { critical: number; high: number; watch: number; movedToday: number } | null }
 
 const dateText = (iso: string) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -69,7 +69,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
   const waLines = wa ? waHealthLines(wa) : [];
   const credit = day?.aiCredit || null;
   const creditLow = !!credit && (credit.level === 'warn' || credit.level === 'danger');
-  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok), wa ? waLines.length : null, creditLow) : [];
+  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok), wa ? waLines.length : null, creditLow, day?.risk ? day.risk.critical : null) : [];
   // the WhatsApp tab opens on Automation (its sub-tab is remembered in localStorage wa_tab)
   const openWhatsApp = () => { try { localStorage.setItem('wa_tab', 'automation'); } catch { /* private window */ } goTo(activePanelId, 'whatsapp'); };
   const left = routine.filter(s => !s.done).length;
@@ -107,6 +107,23 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
               {day.ai.failsLastHour} failed {day.ai.failsLastHour === 1 ? 'reply' : 'replies'} in the last hour{day.ai.lastFailAt ? `, last ${agoText(day.ai.lastFailAt)}` : ''}{day.ai.detail ? ` · "${day.ai.detail}"` : ''}. Visitors are asked for their order ID and phone number until it works again; verified customers go to Needs you.
             </div>
           </div>
+        </div>
+      )}
+      {day?.risk && (day.risk.critical + day.risk.high > 0) && (
+        // Chargeback Shield (owner 2026-10-10): customers who sound like a chargeback is coming; Critical ones go to the Manager.
+        <div className={`pb-wa pb-wa-${day.risk.critical ? 'danger' : 'warn'}`} role={day.risk.critical ? 'alert' : undefined}>
+          <div className="pb-wa-head">
+            <ShieldAlert size={16} />
+            <b>Chargeback risk</b>
+            <span className={`chip ${day.risk.critical ? 'chip-danger' : 'chip-warn'}`}>{day.risk.critical ? `${day.risk.critical} Critical` : 'High'}</span>
+            <button type="button" className="btn btn-outline btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { try { localStorage.setItem('cb_mode', 'risk'); } catch { /* private window */ } goTo(activePanelId, 'chargebacks'); }}>Stop them</button>
+          </div>
+          <dl className="pb-wa-nums">
+            <div className={day.risk.critical ? 'pb-hot' : ''}><dt>Critical</dt><dd>{day.risk.critical}</dd></div>
+            <div><dt>High</dt><dd>{day.risk.high}</dd></div>
+            <div><dt>Watch</dt><dd>{day.risk.watch}</dd></div>
+            <div><dt>Given to the Manager today</dt><dd>{day.risk.movedToday}</dd></div>
+          </dl>
         </div>
       )}
       {credit && credit.level !== 'unknown' && (
