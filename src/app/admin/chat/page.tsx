@@ -22,6 +22,7 @@ import {
 import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems } from './_lib/types';
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
+import { TemplateDialog } from './_components/TemplateDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
 import { ReshipDialog } from './_components/ReshipDialog';
@@ -118,6 +119,8 @@ export default function ChatSupportPage() {
   const [threadRefund, setThreadRefund] = useState<{ id: string; state: RefundThreadState | null } | null>(null);
   const [teamLogOpen, setTeamLogOpen] = useState(false);
   const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // A WhatsApp template to send in this chat (owner 2026-10-10): the only message after 24 h of silence.
+  const [templateEdit, setTemplateEdit] = useState<{ convId: string; busy: boolean } | null>(null);
   // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
   const [release, setRelease] = useState<'ask' | 'busy' | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -307,7 +310,7 @@ export default function ChatSupportPage() {
 
   // The team history and the transfer dialog belong to the chat they were opened on; the release
   // question to the tab it was asked on.
-  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); setItemsEdit(null); setReshipEdit(null); }, [activeId]);
+  useEffect(() => { setTeamLogOpen(false); setTransferEdit(null); setItemsEdit(null); setReshipEdit(null); setTemplateEdit(null); }, [activeId]);
   useEffect(() => { setRelease(null); }, [tab]);
 
   /* ═══ POLLING ═══ */
@@ -749,6 +752,27 @@ export default function ChatSupportPage() {
       if (data.changed === false) showAlert('success', 'Already correct');
     } catch { showAlert('error', 'Could not fix that right now'); }
     finally { setPolishing(false); }
+  };
+
+  // Sends an approved WhatsApp template through the same reply route (saved first, then sent; the record
+  // keeps the filled-in text).
+  const sendTemplate = async (t: { name: string; language: string; params: string[]; text: string }) => {
+    if (!activeId || !templateEdit) return;
+    setTemplateEdit({ convId: activeId, busy: true });
+    try {
+      const res = await fetch('/api/chat/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ conversationId: activeId, content: t.text, template: { name: t.name, language: t.language, params: t.params } }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showAlert('error', data.error || 'Could not send that template'); setTemplateEdit({ convId: activeId, busy: false }); return; }
+      setTemplateEdit(null);
+      if (data.whatsapp && data.whatsapp.ok === false) showAlert('error', `Saved, but WhatsApp did not take it: ${data.whatsapp.error || 'unknown reason'}`);
+      else showAlert('success', 'Template sent on WhatsApp');
+      await fetchThread(activeId, true);
+      fetchConversations(true);
+    } catch { showAlert('error', 'Could not send that template'); setTemplateEdit({ convId: activeId, busy: false }); }
   };
 
   const sendReply = async () => {
@@ -1311,7 +1335,7 @@ export default function ChatSupportPage() {
                     onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} />
                 )}
                 {activeConv.status !== 'resolved' && canReply && (
-                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} />
+                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} openTemplate={activeConv.source === 'whatsapp' ? () => setTemplateEdit({ convId: activeConv.id, busy: false }) : undefined} />
                 )}
               </>
             )}
@@ -1337,6 +1361,9 @@ export default function ChatSupportPage() {
           <MyProfile token={token} onAlert={showAlert} onClose={() => setMeOpen(false)}
             onUserChanged={(name) => setUser((u) => (u ? { ...u, displayName: name } : u))} />
         ))}
+        {templateEdit && activeConv?.id === templateEdit.convId && (
+          <TemplateDialog token={token} busy={templateEdit.busy} onCancel={() => setTemplateEdit(null)} onSend={sendTemplate} />
+        )}
         {transferEdit && staff && activeConv?.id === transferEdit.convId && (
           <TransferDialog targets={staff.transfer_to} team={team} me={staff.me} busy={transferEdit.busy} error={transferEdit.error}
             onCancel={() => setTransferEdit(null)} onSend={sendTransfer} />

@@ -49,7 +49,7 @@ module.exports = {
 };`);
 const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body);
 stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.__emails.push(a); } };');
-stub('whatsapp', 'module.exports = { sendWhatsAppText: async (to, text) => { (global.__wa = global.__wa || []).push([to, text]); return { ok: true, id: "wamid.test" }; } };');
+stub('whatsapp', 'module.exports = { sendWhatsAppText: async (to, text) => { (global.__wa = global.__wa || []).push([to, text]); return { ok: true, id: "wamid.test" }; }, sendWhatsAppTemplate: async (to, name, lang, params) => { (global.__wa = global.__wa || []).push([to, "template:" + name, lang, params]); return { ok: true, id: "wamid.tpl" }; } };');
 stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
@@ -443,9 +443,9 @@ async function handle(q, p, tx) {
     const msg = db.messages.find((x) => x.id === p[0]); if (msg) msg.metadata = { ...(msg.metadata || {}), emailed: p[1] };
     return rows([]);
   }
-  if (q === "UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text)) WHERE id = $1") {
+  if (q === "UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text, 'wa_template', $5::text)) WHERE id = $1") {
     const msg = db.messages.find((x) => x.id === p[0]);
-    if (msg) { const add = { wa_sent: p[1], wa_id: p[2], wa_error: p[3] }; for (const k of Object.keys(add)) if (add[k] == null) delete add[k]; msg.metadata = { ...(msg.metadata || {}), ...add }; }
+    if (msg) { const add = { wa_sent: p[1], wa_id: p[2], wa_error: p[3], wa_template: p[4] }; for (const k of Object.keys(add)) if (add[k] == null) delete add[k]; msg.metadata = { ...(msg.metadata || {}), ...add }; }
     return rows([]);
   }
 
@@ -1012,6 +1012,16 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     status(r, 200);
     deq([r.body.whatsapp, global.__wa], [{ ok: true, error: null }, [['919876543210', 'Hi, we have checked your order.']]]);
     deq(agentMsgs('r1w')[0].metadata, { agent: 'anurag', wa_sent: true, wa_id: 'wamid.test' });
+  });
+
+  await t('R69 a WhatsApp template reply: Meta gets the template by name with its values, the record keeps the filled text', async () => {
+    newConv({ id: 'r1t', source: 'whatsapp', status: 'agent_handling', visitor_id: 'wa:919876543210' });
+    global.__wa = [];
+    const r = await reply('anurag', 'r1t', 'Hi Rahul, your order #1042 has shipped.', { template: { name: 'order_shipped', language: 'en_US', params: ['Rahul', '#1042'] } });
+    status(r, 200);
+    deq(global.__wa, [['919876543210', 'template:order_shipped', 'en_US', ['Rahul', '#1042']]]);
+    deq(agentMsgs('r1t')[0].metadata, { agent: 'anurag', wa_sent: true, wa_id: 'wamid.tpl', wa_template: 'order_shipped' });
+    eq(agentMsgs('r1t')[0].content, 'Hi Rahul, your order #1042 has shipped.');
   });
 
   await t('R2 the customer\'s other open chats nobody holds come along (one claim event); others stay', async () => {

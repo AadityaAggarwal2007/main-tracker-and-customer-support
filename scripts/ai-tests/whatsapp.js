@@ -8,7 +8,7 @@ require.extensions['.ts'] = (m, filename) => m._compile(
 
 const S = {};
 function reset() {
-  Object.assign(S, { convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] } });
+  Object.assign(S, { convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] }, settings: {}, metaTemplates: null });
 }
 reset();
 let seq = 0;
@@ -16,10 +16,14 @@ const db = {
   query: async (sql, p = []) => {
     if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
+    if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/^UPDATE messages/.test(sql)) { const hits = S.msgs.filter((m) => m.metadata && m.metadata.wa_id === p[0]); for (const m of hits) { if (p[1] != null) m.metadata.wa_status = p[1]; if (p[2] != null) m.metadata.wa_error = p[2]; } return { rows: [], rowCount: hits.length }; }
     throw new Error('fake db query: ' + sql.slice(0, 80));
   },
   queryOne: async (sql, p = []) => {
+    if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
+    if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
     if (/metadata->>'wa_id' = \$1 LIMIT 1/.test(sql)) { const m = S.msgs.find((x) => x.metadata && x.metadata.wa_id === p[0]); return m ? { id: m.id } : null; }
     if (/FROM businesses WHERE id::text = \$1/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { id: b.id } : null; }
     if (/FROM businesses ORDER BY is_default DESC/.test(sql)) { const b = [...S.panels].sort((a, c) => (c.is_default ? 1 : 0) - (a.is_default ? 1 : 0))[0]; return b ? { id: b.id } : null; }
@@ -33,6 +37,8 @@ const db = {
 };
 const fakes = {
   '@/lib/db': db,
+  '@/lib/auth': { getAuthFromRequest: (req) => req.__user || null },
+  '@/lib/chat/team-routing': { staffActor: (u) => ({ name: u.displayName || u.username }) },
   '@/lib/chat/subject': { updateConversationSubject: async (id) => { S.subject.push(id); } },
   '@/lib/chat/health': { updateConversationHealth: async (id) => { S.health.push(id); } },
   'next/server': {
@@ -56,14 +62,33 @@ Module._load = function (request, parent, ...rest) {
   if (/^\.\/(subject|health)$/.test(request) && parent && /whatsapp-inbound/.test(parent.filename || '')) return fakes['@/lib/chat/' + request.slice(2)];
   return origLoad.call(this, request, parent, ...rest);
 };
-global.fetch = async (url, init) => {
-  S.fetches.push({ url, init: { ...init, body: JSON.parse(init.body) }, auth: init.headers.Authorization });
+global.fetch = async (url, init = {}) => {
+  S.fetches.push({ url, method: init.method, init: { ...init, body: init.body ? JSON.parse(init.body) : undefined }, auth: init.headers && init.headers.Authorization });
+  if (/message_templates/.test(url) && S.metaTemplates) {
+    if (init.method === 'GET') return { ok: true, status: 200, json: async () => ({ data: S.metaTemplates }) };
+    if (init.method === 'POST') { const b = JSON.parse(init.body); S.metaTemplates.push({ id: 't' + S.metaTemplates.length, status: 'PENDING', ...b }); return { ok: true, status: 200, json: async () => ({ id: 'tnew', status: 'PENDING', category: b.category }) }; }
+    if (init.method === 'DELETE') { const n = decodeURIComponent(url.split('name=')[1]); const i = S.metaTemplates.findIndex((t) => t.name === n); if (i < 0) return { ok: false, status: 400, json: async () => ({ error: { message: 'not found', code: 100 } }) }; S.metaTemplates.splice(i, 1); return { ok: true, status: 200, json: async () => ({ success: true }) }; }
+  }
   return { ok: S.fetchStatus < 400, status: S.fetchStatus, json: async () => S.fetchBody };
 };
 
 const wa = require(path.join(SRC, 'lib/chat/whatsapp.ts'));
 const inbound = require(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/webhook/route.ts'));
+const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
+const rTemplates = require(path.join(SRC, 'app/api/whatsapp/templates/route.ts'));
+const rSettings = require(path.join(SRC, 'app/api/whatsapp/settings/route.ts'));
+const rStart = require(path.join(SRC, 'app/api/whatsapp/start/route.ts'));
+const OWNER = { username: 'owner', displayName: 'Super Admin', role: 'admin', businessIds: null, permissions: [] };
+const AGENT = { username: 'anurag', displayName: 'Anurag', role: 'agent', businessIds: null, permissions: ['chat.view', 'chat.reply'] };
+const VIEWER = { username: 'v', displayName: 'V', role: 'viewer', businessIds: null, permissions: ['chat.view'] };
+const jreq = (user, body, url = 'http://x/api') => ({ __user: user, url, json: async () => body, headers: { get: () => null }, nextUrl: { searchParams: new URL(url).searchParams } });
+const META = () => [
+  { id: 'a1', name: 'hello_world', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'HEADER', format: 'TEXT', text: 'Hello World' }, { type: 'BODY', text: 'Welcome and congratulations!!' }, { type: 'FOOTER', text: 'WhatsApp Business Platform sample message' }] },
+  { id: 'a2', name: 'order_update', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, about your order {{2}}: we are looking into it and will update you here.', example: { body_text: [['Rahul', '#1042']] } }] },
+  { id: 'a3', name: 'offer', language: 'en', category: 'MARKETING', status: 'REJECTED', rejected_reason: 'INVALID_FORMAT', components: [{ type: 'BODY', text: 'Sale!' }] },
+  { id: 'a4', name: 'pending_one', language: 'hi', category: 'UTILITY', status: 'PENDING', components: [{ type: 'BODY', text: 'Namaste {{1}}' }] },
+];
 
 const env = { WHATSAPP_CLOUD_TOKEN: 'tok-secret', WHATSAPP_PHONE_NUMBER_ID: '1335396902996145' };
 const webhookBody = (messages, statuses, extra = {}) => ({
@@ -253,6 +278,131 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       deq([r.status, r.body.stored], [200, 0]);
     } finally { db.queryOne = origQuery; }
   });
+
+  console.log('whatsapp: templates (pure)');
+  await t('templateSpec: a good template becomes Meta components; the name is cleaned; examples travel with the body', () => {
+    const r = tpl.templateSpec({ name: 'Order Shipped', language: 'en_US', category: 'utility', header: 'Order update', body: 'Hi {{1}}, your order {{2}} has shipped. Track it on our page.', footer: 'Vastora Support', examples: ['Rahul', '#1042'] });
+    eq(r.ok, true);
+    deq(r.spec, { name: 'order_shipped', language: 'en_US', category: 'UTILITY', vars: 2, components: [
+      { type: 'HEADER', format: 'TEXT', text: 'Order update' },
+      { type: 'BODY', text: 'Hi {{1}}, your order {{2}} has shipped. Track it on our page.', example: { body_text: [['Rahul', '#1042']] } },
+      { type: 'FOOTER', text: 'Vastora Support' },
+    ] });
+    const plain = tpl.templateSpec({ name: 'hello', language: 'hi', category: 'MARKETING', body: 'Namaste! Sale is on.' });
+    deq(plain.spec.components, [{ type: 'BODY', text: 'Namaste! Sale is on.' }]);
+  });
+  await t('templateSpec: every refusal is one plain sentence', () => {
+    const bad = (input) => { const r = tpl.templateSpec({ name: 'ok_name', language: 'en_US', category: 'UTILITY', body: 'Hello there', ...input }); eq(r.ok, false); return r.error; };
+    assert.match(bad({ name: 'Bad Name!' }), /Name: small letters/);
+    assert.match(bad({ language: 'fr' }), /Pick a language/);
+    assert.match(bad({ category: 'AUTHENTICATION' }), /Utility or Marketing/);
+    assert.match(bad({ body: '  ' }), /Write the message body/);
+    assert.match(bad({ body: 'x'.repeat(1025) }), /over 1024/);
+    assert.match(bad({ body: 'Hi {{1}}, order {{3}} shipped.' }), /missing \{\{2\}\}/);
+    assert.match(bad({ body: 'Hi {{0}} there' }), /up to \{\{20\}\}/);
+    assert.match(bad({ body: '{{1}} is your code' }), /cannot start or end/);
+    assert.match(bad({ body: 'Hi {{1}}, see {{2}}.', examples: ['Rahul'] }), /example value for each variable \(2\)/);
+    assert.match(bad({ header: 'Hi {{1}}' }), /No variables in the header/);
+    assert.match(bad({ header: 'h'.repeat(61) }), /header is over 60/);
+    assert.match(bad({ footer: 'f'.repeat(61) }), /footer is over 60/);
+  });
+  await t('varCount / renderTemplate: values fill {{n}}, a missing value stays visible, header and footer join', () => {
+    eq(tpl.varCount('Hi {{1}} and {{2}} and {{1}}'), 2);
+    eq(tpl.varCount('plain'), 0);
+    eq(tpl.renderTemplate({ header: 'Order update', body: 'Hi {{1}}, order {{2}} shipped.', footer: 'Support' }, ['Rahul', '#1042']), 'Order update\nHi Rahul, order #1042 shipped.\nSupport');
+    eq(tpl.renderTemplate({ body: 'Hi {{1}}, order {{2}}.' }, ['Rahul']), 'Hi Rahul, order {{2}}.');
+  });
+  await t('readTemplates: Meta rows become ours; header / body / footer split; rejected reason kept; junk skipped', () => {
+    const rows = tpl.readTemplates({ data: [...META(), 'junk', { id: 'x' }] });
+    deq(rows.map((r) => [r.name, r.status, r.vars, r.header, r.footer, r.rejectedReason]), [
+      ['hello_world', 'APPROVED', 0, 'Hello World', 'WhatsApp Business Platform sample message', null],
+      ['order_update', 'APPROVED', 2, null, null, null],
+      ['offer', 'REJECTED', 0, null, null, 'INVALID_FORMAT'],
+      ['pending_one', 'PENDING', 1, null, null, null],
+    ]);
+    deq(tpl.readTemplates(null), []);
+  });
+  await t('listTemplates / createTemplate / deleteTemplate: the API calls carry the token and the account id; no account id = a plain refusal', async () => {
+    S.metaTemplates = META();
+    const l = await tpl.listTemplates('28873951022288651', env, global.fetch);
+    eq(l.ok, true); eq(l.value.length, 4);
+    assert.match(S.fetches[0].url, /^https:\/\/graph\.facebook\.com\/v25\.0\/28873951022288651\/message_templates\?fields=/);
+    eq(S.fetches[0].auth, 'Bearer tok-secret');
+    const spec = tpl.templateSpec({ name: 'order_shipped', language: 'en_US', category: 'UTILITY', body: 'Hi {{1}}, shipped.', examples: ['Rahul'] }).spec;
+    deq(await tpl.createTemplate('28873951022288651', spec, env, global.fetch), { ok: true, value: { id: 'tnew', status: 'PENDING' } });
+    deq(S.fetches[1].init.body, { name: 'order_shipped', language: 'en_US', category: 'UTILITY', components: spec.components });
+    deq(await tpl.deleteTemplate('28873951022288651', 'order_shipped', env, global.fetch), { ok: true, value: true });
+    eq(S.metaTemplates.length, 4);
+    deq(await tpl.deleteTemplate('28873951022288651', 'nope', env, global.fetch), { ok: false, error: 'not found' });
+    deq(await tpl.listTemplates('', env, global.fetch), { ok: false, error: 'Set the WhatsApp Business Account id first' });
+    deq(await tpl.listTemplates('28873951022288651', {}, global.fetch), { ok: false, error: 'WhatsApp is not set up (token missing)' });
+    deq(await tpl.deleteTemplate('28873951022288651', 'Bad Name', env, global.fetch), { ok: false, error: 'Not a template name' });
+  });
+
+  console.log('whatsapp: template routes');
+  const withEnv = async (fn) => { const keep = { ...process.env }; Object.assign(process.env, env); try { await fn(); } finally { delete process.env.WHATSAPP_CLOUD_TOKEN; delete process.env.WHATSAPP_PHONE_NUMBER_ID; Object.assign(process.env, keep); } };
+  await t('settings: the Super Admin saves the account id in chat_settings (digits only); a member is refused; GET never carries the token', () => withEnv(async () => {
+    eq((await rSettings.GET(jreq(AGENT, {}))).status, 401);
+    const r = await rSettings.POST(jreq(OWNER, { waba: ' 2887 3951 0222 88651 ' }));
+    deq([r.status, r.body], [200, { ok: true, waba: '28873951022288651' }]);
+    eq(S.settings.whatsapp_waba_id, '28873951022288651');
+    eq((await rSettings.POST(jreq(OWNER, { waba: '12' }))).status, 400);
+    const g = await rSettings.GET(jreq(OWNER, {}));
+    deq([g.body.configured, g.body.waba, g.body.panel, g.body.phoneNumberId], [true, '28873951022288651', { id: 'bizVast', name: 'bizVast' }, '1335396902996145']);
+    assert.ok(!JSON.stringify(g.body).includes('tok-secret'));
+  }));
+  await t('templates GET: a member who may reply sees the approved ones with ?approved=1, the Super Admin all; a viewer is refused; no account id = a hint', () => withEnv(async () => {
+    S.metaTemplates = META();
+    const none = await rTemplates.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/templates'));
+    deq([none.body.templates, none.body.error], [[], 'Set the WhatsApp Business Account id in Settings > WhatsApp']);
+    S.settings.whatsapp_waba_id = '28873951022288651';
+    const all = await rTemplates.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/templates'));
+    deq(all.body.templates.map((t) => t.name), ['hello_world', 'order_update', 'offer', 'pending_one']);
+    const appr = await rTemplates.GET(jreq(AGENT, {}, 'http://x/api/whatsapp/templates?approved=1'));
+    deq(appr.body.templates.map((t) => t.name), ['hello_world', 'order_update']);
+    eq((await rTemplates.GET(jreq(VIEWER, {}, 'http://x/api/whatsapp/templates'))).status, 403);
+    eq((await rTemplates.GET(jreq(null, {}, 'http://x/api/whatsapp/templates'))).status, 401);
+  }));
+  await t('templates POST / DELETE: Super Admin only; a bad form is a 400 with the reason; a good one goes to Meta for review', () => withEnv(async () => {
+    S.metaTemplates = META(); S.settings.whatsapp_waba_id = '28873951022288651';
+    eq((await rTemplates.POST(jreq(AGENT, { name: 'x', language: 'en_US', category: 'UTILITY', body: 'Hi' }))).status, 403);
+    const bad = await rTemplates.POST(jreq(OWNER, { name: 'order_shipped', language: 'en_US', category: 'UTILITY', body: 'Hi {{1}}' }));
+    deq([bad.status, bad.body.error], [400, 'The body cannot start or end with a variable (Meta refuses it)']);
+    const ok = await rTemplates.POST(jreq(OWNER, { name: 'Order Shipped', language: 'en_US', category: 'UTILITY', body: 'Hi {{1}}, your order {{2}} has shipped.', examples: ['Rahul', '#1042'] }));
+    deq([ok.status, ok.body], [200, { ok: true, id: 'tnew', status: 'PENDING', name: 'order_shipped' }]);
+    eq(S.metaTemplates.length, 5);
+    const del = await rTemplates.DELETE(jreq(OWNER, {}, 'http://x/api/whatsapp/templates?name=order_shipped'));
+    deq([del.status, S.metaTemplates.length], [200, 4]);
+    eq((await rTemplates.DELETE(jreq(AGENT, {}, 'http://x/api/whatsapp/templates?name=hello_world'))).status, 403);
+  }));
+  await t('start: an approved template with its values opens the chat (With team) and the record keeps the filled text; not approved / missing values / bad number refused', () => withEnv(async () => {
+    S.metaTemplates = META(); S.settings.whatsapp_waba_id = '28873951022288651';
+    const r = await rStart.POST(jreq(AGENT, { to: '98765 43210', template: 'order_update', params: ['Rahul', '#1042'] }));
+    deq([r.status, r.body.ok, r.body.text], [200, true, 'Hi Rahul, about your order #1042: we are looking into it and will update you here.']);
+    eq(S.convs.length, 1);
+    deq([S.convs[0].visitor_id, S.convs[0].status, S.convs[0].source], ['wa:919876543210', 'agent_handling', 'whatsapp']);
+    const sent = S.fetches.find((f) => /\/messages$/.test(f.url));
+    deq(sent.init.body, { messaging_product: 'whatsapp', recipient_type: 'individual', to: '919876543210', type: 'template', template: { name: 'order_update', language: { code: 'en_US' }, components: [{ type: 'body', parameters: [{ type: 'text', text: 'Rahul' }, { type: 'text', text: '#1042' }] }] } });
+    deq(S.msgs.map((m) => [m.conversation_id, m.content, m.metadata]), [[S.convs[0].id, 'Hi Rahul, about your order #1042: we are looking into it and will update you here.', { agent: 'Anurag', wa_template: 'order_update', wa_sent: true, wa_id: 'wamid.out1' }]]);
+    eq(r.body.conversationId, S.convs[0].id);
+    deq((await rStart.POST(jreq(AGENT, { to: '9876543210', template: 'pending_one', params: ['x'] }))).body.error, 'That template is not approved yet (Meta reviews it first)');
+    deq((await rStart.POST(jreq(AGENT, { to: '9876543210', template: 'order_update', params: ['Rahul'] }))).body.error, 'Fill every value (2)');
+    eq((await rStart.POST(jreq(AGENT, { to: '123', template: 'hello_world', params: [] }))).status, 400);
+    eq((await rStart.POST(jreq(VIEWER, { to: '9876543210', template: 'hello_world', params: [] }))).status, 403);
+    // The same number again: the same chat, a second message.
+    await rStart.POST(jreq(OWNER, { to: '+91 98765 43210', template: 'hello_world', params: [] }));
+    deq([S.convs.length, S.msgs.length, S.msgs[1].content], [1, 2, 'Hello World\nWelcome and congratulations!!\nWhatsApp Business Platform sample message']);
+  }));
+  await t('start: Meta refuses -> the record keeps the refusal and the route says so (502)', () => withEnv(async () => {
+    S.metaTemplates = META(); S.settings.whatsapp_waba_id = '28873951022288651';
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => /\/messages$/.test(url) ? { ok: false, status: 400, json: async () => ({ error: { code: 131026, message: 'Message Undeliverable' } }) } : realFetch(url, init);
+    try {
+      const r = await rStart.POST(jreq(OWNER, { to: '9876543210', template: 'hello_world', params: [] }));
+      deq([r.status, r.body.error], [502, 'WhatsApp did not take it: This number cannot receive WhatsApp messages from us']);
+      deq(S.msgs[0].metadata, { agent: 'Super Admin', wa_template: 'hello_world', wa_sent: false, wa_error: 'This number cannot receive WhatsApp messages from us' });
+    } finally { global.fetch = realFetch; }
+  }));
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

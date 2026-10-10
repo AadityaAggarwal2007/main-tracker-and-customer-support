@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
-import { sendWhatsAppText, type WaSendResult } from '@/lib/chat/whatsapp';
+import { sendWhatsAppText, sendWhatsAppTemplate, type WaSendResult } from '@/lib/chat/whatsapp';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import { stripLinkJunk } from '@/lib/chat/reply-guards';
 import { hasFormLink } from '@/lib/refund/link-mask';
@@ -52,7 +52,13 @@ export async function POST(request: NextRequest) {
   try {
     // suggestionId + suggestionIndex (optional): the reply started from a suggested draft
     // (suggest-run.ts); recorded after the save, never a reason to refuse the reply.
-    const { conversationId, content, attachmentIds, suggestionId, suggestionIndex } = await request.json();
+    const { conversationId, content, attachmentIds, suggestionId, suggestionIndex, template } = await request.json();
+    // A WhatsApp template (whatsapp-templates.ts): { name, language, params[] }. The content is the template's
+    // text with the values filled in (what the chat record shows); Meta gets the template by name.
+    const tpl = template && typeof template === 'object' && typeof template.name === 'string' && /^[a-z0-9_]{1,512}$/.test(template.name)
+      ? { name: template.name as string, language: typeof template.language === 'string' && /^[a-z]{2}(_[A-Z]{2})?$/.test(template.language) ? template.language as string : 'en_US',
+          params: Array.isArray(template.params) ? (template.params as unknown[]).slice(0, 20).map((v) => String(v ?? '').slice(0, 1024)) : [] }
+      : null;
     // Pasted **bold** would reach the customer as literal asterisks. A link pasted from ChatGPT or an
     // ad (utm_source=chatgpt.com, fbclid ...) loses that tag (owner 2026-10-05: "team ki bas ki kuch
     // nahi hai"); the link itself, its AWB and the rest of the reply are exactly as typed.
@@ -243,13 +249,14 @@ export async function POST(request: NextRequest) {
     let whatsapp: { ok: boolean; error: string | null } | null = null;
     if (conversation.source === 'whatsapp') {
       const to = conversation.visitor_id.replace(/^wa:/, '');
-      const r: WaSendResult = hasText ? await sendWhatsAppText(to, message.content) : { ok: false, error: 'Files are not sent on WhatsApp yet; type a message', code: null };
+      const r: WaSendResult = tpl ? await sendWhatsAppTemplate(to, tpl.name, tpl.language, tpl.params)
+        : hasText ? await sendWhatsAppText(to, message.content) : { ok: false, error: 'Files are not sent on WhatsApp yet; type a message', code: null };
       const waId = r.ok ? r.id : null, waError = 'error' in r ? r.error : null;
       whatsapp = { ok: r.ok, error: waError };
       await query(
-        `UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text))
+        `UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text, 'wa_template', $5::text))
           WHERE id = $1`,
-        [message.id, r.ok, waId, waError]
+        [message.id, r.ok, waId, waError, tpl ? tpl.name : null]
       ).catch(err => console.error('[chat] could not record WhatsApp status:', (err as Error).message));
       if (waError) console.error('[whatsapp] reply not sent:', waError);
     }
