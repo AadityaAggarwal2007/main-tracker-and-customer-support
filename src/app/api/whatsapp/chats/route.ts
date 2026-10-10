@@ -54,7 +54,36 @@ export async function GET(request: NextRequest) {
         LIMIT 300`,
       [panel]
     );
+    // What the automation sent per brand (owner: "chat mein dikhe kis customer ko gaya"): the latest 30 per brand,
+    // with the customer's name from the order and whether they wrote back since. The table may not be installed.
+    let sent: Record<string, unknown>[] = [];
+    try {
+      const sr = await query<{
+        id: string; panel_id: string; order_id: string; kind: string; status: string; to_number: string | null; body_text: string | null;
+        template: string | null; error: string | null; sent_at: string | null; at: string; customer_name: string | null; replied: boolean;
+      }>(
+        `SELECT w.id::text AS id, w.business_id AS panel_id, w.order_id, w.kind, w.status, w.to_number, w.body_text, w.template, w.error,
+                w.sent_at, COALESCE(w.sent_at, w.updated_at) AS at, o.customer_name,
+                EXISTS (SELECT 1 FROM sites s2
+                          JOIN conversations c2 ON c2.site_id = s2.id AND c2.source = 'whatsapp' AND c2.visitor_id = 'wa:' || w.to_number
+                          JOIN messages m2 ON m2.conversation_id = c2.id AND m2.sender = 'visitor' AND m2.deleted_at IS NULL AND m2.created_at > w.sent_at
+                         WHERE s2.tracker_business_id::text = w.business_id) AS replied
+           FROM (SELECT x.*, row_number() OVER (PARTITION BY x.business_id ORDER BY COALESCE(x.sent_at, x.updated_at) DESC) AS rn
+                   FROM wa_auto_sends x WHERE x.status IN ('sent', 'delivered', 'read', 'failed')) w
+           LEFT JOIN orders o ON o.business_id::text = w.business_id AND o.order_id = w.order_id
+          WHERE w.rn <= 30 AND ($1::text IS NULL OR w.business_id = $1::text)
+          ORDER BY COALESCE(w.sent_at, w.updated_at) DESC`,
+        [panel]
+      );
+      sent = sr.rows.map((r) => ({
+        id: r.id, panelId: r.panel_id, orderId: r.order_id, kind: r.kind, status: r.status, phone: r.to_number ? '+' + r.to_number : null,
+        text: (r.body_text || '').slice(0, 1000), template: r.template, error: r.error, at: r.at, name: r.customer_name, replied: !!r.replied,
+      }));
+    } catch (e) {
+      if ((e as { code?: string })?.code !== '42P01') console.error('[whatsapp] chats sent list:', (e as Error).message);
+    }
     return NextResponse.json({
+      sent,
       panels: sums.rows,
       chats: rows.rows.map((r) => ({
         id: r.id, name: r.name, phone: r.phone, status: r.status, unread: r.unread, at: r.last_message_at,

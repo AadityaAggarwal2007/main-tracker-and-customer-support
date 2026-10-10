@@ -24,6 +24,8 @@ export async function GET(request: NextRequest) {
   // WhatsApp automation (owner 2026-10-10): rides on this minute, before the mailbox sweep so a slow Gmail never
   // holds it back. Not awaited; it has its own one-at-a-time guard and never throws.
   void runWaAutomation().catch((e) => console.error('[wa-auto] run:', (e as Error).message));
+  // and once more half a minute later, so a new order's message goes within about 30 seconds, not a minute
+  setTimeout(() => { void runWaAutomation().catch((e) => console.error('[wa-auto] run:', (e as Error).message)); }, 30_000);
 
   const client = await getPool().connect();
   try {

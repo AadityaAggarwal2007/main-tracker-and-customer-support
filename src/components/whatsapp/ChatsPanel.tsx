@@ -12,6 +12,8 @@ import { SECTION, spin, type Alert } from './types';
 // so the same holder / WhatsApp rules as the inbox). Every panel gets a column; none is hard-coded.
 interface PanelSum { id: string; name: string; chats: number; unread: number; today: number; waiting: number }
 interface Chat { id: string; name: string | null; phone: string | null; status: string; unread: number; at: string | null; last: string; lastSender: string | null; panelId: string | null; panel: string | null; automation: boolean; customerMsgs: number; subject: string | null }
+interface Sent { id: string; panelId: string; orderId: string; kind: string; status: string; phone: string | null; text: string; template: string | null; error: string | null; at: string; name: string | null; replied: boolean }
+const TICK: Record<string, string> = { sent: '✓ sent', delivered: '✓✓ delivered', read: '✓✓ read', failed: '! failed' };
 const STATUS: Record<string, string> = { agent_handling: 'With team', human_needed: 'Needs you', resolved: 'Closed', ai_handling: 'With AI' };
 const WHO: Record<string, string> = { visitor: 'Customer', agent: 'Team', ai: 'Chikki' };
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true }) : '—');
@@ -23,6 +25,8 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
   const [panel, setPanel] = useState<string>(() => { try { return localStorage.getItem('wa_chats_panel') || 'all'; } catch { return 'all'; } });
   const [panels, setPanels] = useState<PanelSum[]>([]);
   const [chats, setChats] = useState<Chat[] | null>(null);
+  const [sent, setSent] = useState<Sent[]>([]);
+  const [openSent, setOpenSent] = useState<Sent | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<ThreadMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
@@ -39,7 +43,7 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
       const r = await fetch(`/api/whatsapp/chats?panel=${encodeURIComponent(scope)}`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => null);
       if (!r.ok || !j) { warn(j?.error || 'Could not read the chats'); return; }
-      setPanels(j.panels || []); setChats(j.chats || []);
+      setPanels(j.panels || []); setChats(j.chats || []); setSent(Array.isArray(j.sent) ? j.sent : []);
       if (j.error) warn(j.error); else lastErr.current = '';
     } catch { /* offline: the next refresh tries again */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -68,15 +72,15 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
     return () => clearInterval(t);
   }, [open, readThread]);
   useEffect(() => {
-    if (!open || view !== 'board') return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(null); };
+    if ((!open && !openSent) || view !== 'board') return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(null); setOpenSent(null); } };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, view]);
+  }, [open, openSent, view]);
 
   const switchView = (v: 'board' | 'list') => { setView(v); setChats(null); try { localStorage.setItem('wa_chats_view', v); } catch { /* private window */ } };
   const pick = (id: string) => { setPanel(id); setChats(null); setOpen(null); try { localStorage.setItem('wa_chats_panel', id); } catch { /* private window */ } };
-  const choose = (id: string) => { setOpen(id); setMsgs([]); setText(''); };
+  const choose = (id: string) => { setOpenSent(null); setOpen(id); setMsgs([]); setText(''); };
   const send = async () => {
     const body = text.trim();
     if (!open || !body || sending) return;
@@ -170,6 +174,28 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
                   {list.length === 0 && <div className="meta" style={{ fontSize: '0.78rem', padding: '0.5rem' }}>No WhatsApp chats yet. When a customer of {p.name} writes back, the chat appears here.</div>}
                   {list.map((c) => card(c, false))}
                 </div>
+                {(() => {
+                  const mine = sent.filter((x) => x.panelId === p.id);
+                  return (
+                    <div style={{ borderTop: '1px solid var(--border)', padding: '0.6rem', display: 'grid', gap: 6 }}>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>Sent by automation · {mine.length}</div>
+                      {mine.length === 0 && <div className="meta" style={{ fontSize: '0.75rem' }}>Nothing sent yet{p.name ? ` for ${p.name}` : ''}.</div>}
+                      <div style={{ display: 'grid', gap: 6, maxHeight: '40vh', overflowY: 'auto' }}>
+                        {mine.map((x) => (
+                          <button key={x.id} type="button" onClick={() => { setOpen(null); setOpenSent(x); }} style={{ textAlign: 'left', border: `1px solid ${openSent?.id === x.id ? 'var(--primary)' : 'var(--border)'}`, background: 'var(--bg, #fff)', borderRadius: 8, padding: '0.4rem 0.6rem', display: 'grid', gap: 2, cursor: 'pointer', font: 'inherit', color: 'inherit' }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem' }}>
+                              <strong>{x.name || 'Customer'}</strong>
+                              <span>{x.orderId}</span>
+                              <span className={`chip ${x.status === 'failed' ? 'chip-danger' : x.status === 'read' ? 'chip-ok' : ''}`}>{TICK[x.status] || x.status}</span>
+                              {x.replied && <span className="chip chip-warn">Replied</span>}
+                            </div>
+                            <div className="meta" style={{ fontSize: '0.7rem' }}>{x.kind === 'placed' ? 'Order placed' : 'Tracking link'} · {x.phone || '—'} · {when(x.at)}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
@@ -194,6 +220,23 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
             <div style={{ display: 'grid', justifyItems: 'center' }}>
               {open ? thread : <div className="meta" style={{ fontSize: '0.8125rem', padding: '2rem 0' }}>Click a chat on the left to read it and answer.</div>}
             </div>
+          </div>
+        </>
+      )}
+
+      {view === 'board' && openSent && !open && (
+        <>
+          <div onClick={() => setOpenSent(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,10,30,0.25)', zIndex: 60 }} />
+          <div role="dialog" aria-label="Message sent by the automation" style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(440px, 100vw)', background: 'var(--bg, #fff)', boxShadow: '-8px 0 24px rgba(0,0,0,0.15)', zIndex: 61, overflowY: 'auto', padding: '1rem', display: 'grid', alignContent: 'start', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <strong>{openSent.name || 'Customer'}</strong><span className="meta">{openSent.orderId}</span>
+              <button type="button" className="btn btn-sm btn-ghost" aria-label="Close" style={{ marginLeft: 'auto' }} onClick={() => setOpenSent(null)}><X size={16} /></button>
+            </div>
+            <PhoneThread
+              name={openSent.name || openSent.phone || 'Customer'} phone={openSent.phone || ''} picture={null}
+              messages={[{ id: openSent.id, from: 'us', auto: true, text: openSent.text || '(the message text was not kept)', at: openSent.at, template: openSent.template, sent: openSent.status !== 'failed', status: openSent.status, error: openSent.error }]}
+              composer={<div className="wa-compose" style={{ fontSize: '0.75rem', color: '#54656f' }}>{openSent.replied ? 'They wrote back: their chat is in this brand\'s column above.' : 'No reply yet. Until they write, only a template can go (Send tab).'}</div>}
+            />
           </div>
         </>
       )}

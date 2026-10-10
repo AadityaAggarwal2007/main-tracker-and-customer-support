@@ -140,12 +140,13 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
         <div style={{ overflowX: 'auto' }}>
           {o.recent.length > 0 && (
             <table style={{ width: '100%', fontSize: '0.8125rem', borderCollapse: 'collapse' }}>
-              <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}><th style={{ padding: '4px 6px' }}>Panel</th><th style={{ padding: '4px 6px' }}>Order</th><th style={{ padding: '4px 6px' }}>Message</th><th style={{ padding: '4px 6px' }}>Status</th><th style={{ padding: '4px 6px' }}>Number</th><th style={{ padding: '4px 6px' }}>When</th><th style={{ padding: '4px 6px' }}>Note</th><th /></tr></thead>
+              <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}><th style={{ padding: '4px 6px' }}>Panel</th><th style={{ padding: '4px 6px' }}>Order</th><th style={{ padding: '4px 6px' }}>Customer</th><th style={{ padding: '4px 6px' }}>Message</th><th style={{ padding: '4px 6px' }}>Status</th><th style={{ padding: '4px 6px' }}>Number</th><th style={{ padding: '4px 6px' }}>When</th><th style={{ padding: '4px 6px' }}>Note</th><th /></tr></thead>
               <tbody>
                 {o.recent.map((r) => (
                   <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td style={{ padding: '6px' }}>{r.panel}</td>
                     <td style={{ padding: '6px', fontWeight: 600 }}>{r.order_id}</td>
+                    <td style={{ padding: '6px' }}>{r.name || '—'}</td>
                     <td style={{ padding: '6px' }}>{r.kind === 'placed' ? 'Order placed' : 'Tracking link'}</td>
                     <td style={{ padding: '6px' }}><span className={`chip ${STATUS_TONE[r.status] || 'chip-warn'}`}>{r.status}</span></td>
                     <td style={{ padding: '6px' }}>{r.to || '—'}</td>
