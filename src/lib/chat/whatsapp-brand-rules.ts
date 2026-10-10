@@ -13,7 +13,7 @@ export const ORDER_PLACED_PRESET = {
   header: '',
   body: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Thank you for shopping with us! Your tracking details will be shared with you within 1-2 days. For any confusion, please email us at {{4}} and our team will help you.',
   footer: '',
-  examples: ['Rahul', '#1042', 'Vastora', 'help@vastora.in'],
+  examples: ['Rahul', '#1042', 'Your Brand', 'help@yourbrand.com'],
 };
 // Which variable of an order-placed template is which (0-based), used by the Send screen to fill them per brand.
 export const ORDER_PLACED_SLOTS = { customer: 0, order: 1, brand: 2, email: 3 };
