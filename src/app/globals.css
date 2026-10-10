@@ -2653,3 +2653,23 @@ a {
 .pb-routine li.done { color: var(--fg-muted); font-weight: 500; text-decoration: line-through; }
 .pb-today-line { font-size: 0.75rem; }
 @media (max-width: 900px) { .pb-top { grid-template-columns: 1fr; } }
+
+/* ── WhatsApp screen (owner 2026-10-10): the phone preview ───────────────────────────────── */
+.wa-phone { width: 300px; max-width: 100%; border-radius: 28px; border: 8px solid #1f1f1f; background: #efeae2; overflow: hidden; box-shadow: var(--shadow-md, 0 8px 24px rgba(0,0,0,0.12)); font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; min-height: 500px; }
+.wa-phone-top { display: flex; justify-content: space-between; padding: 6px 14px 2px; background: #075e54; color: #fff; font-size: 0.7rem; }
+.wa-header { display: flex; align-items: center; gap: 8px; padding: 6px 10px 8px; background: #075e54; }
+.wa-chat { flex: 1; padding: 8px 10px; background: #efeae2 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='1' fill='%23d9d2c6'/%3E%3C/svg%3E"); font-size: 0.85rem; color: #111b21; overflow-y: auto; }
+.wa-day { margin: 2px auto 10px; width: max-content; background: #fff; color: #54656f; font-size: 0.68rem; padding: 3px 10px; border-radius: 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.08); }
+.wa-bubble { background: #d9fdd3; border-radius: 8px 0 8px 8px; padding: 6px 8px 4px; margin-left: 40px; box-shadow: 0 1px 1px rgba(0,0,0,0.08); white-space: pre-wrap; word-break: break-word; line-height: 1.35; }
+.wa-meta { text-align: right; color: #667781; font-size: 0.66rem; margin-top: 2px; }
+.wa-compose { display: flex; align-items: center; gap: 8px; padding: 8px 10px 14px; background: #f0f2f5; }
+.wa-compose > span:first-child { flex: 1; background: #fff; border-radius: 20px; padding: 7px 12px; color: #8696a0; font-size: 0.8rem; }
+.wa-mic { width: 34px; height: 34px; border-radius: 50%; background: #00a884; display: grid; place-items: center; font-size: 0.9rem; }
+.wa-profile { flex: 1; background: #fff; padding: 0 12px 12px; font-size: 0.82rem; color: #111b21; overflow-y: auto; }
+.wa-profile-row { padding: 8px 0; border-top: 1px solid #f0f2f5; display: grid; gap: 2px; white-space: pre-wrap; word-break: break-word; }
+.wa-profile-row > span:first-child { font-size: 0.68rem; color: #667781; }
+.wa-layout { display: grid; grid-template-columns: minmax(0, 1fr) 316px; gap: 1.25rem; align-items: start; }
+@media (max-width: 900px) { .wa-layout { grid-template-columns: 1fr; } .wa-phone { margin: 0 auto; } }
+.wa-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 1rem; }
+.wa-hint { border-left: 3px solid var(--warning); background: hsl(38, 95%, 95%); padding: 0.5rem 0.75rem; border-radius: 0 8px 8px 0; font-size: 0.8125rem; display: grid; gap: 2px; }
+.wa-err { color: var(--danger); font-size: 0.8125rem; margin: 0; word-break: break-word; }

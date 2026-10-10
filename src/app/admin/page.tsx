@@ -12,7 +12,7 @@ import MailCard from '@/components/MailCard';
 import { clearMailCache } from '@/components/mail/cache';
 import ChargebacksCard from '@/components/ChargebacksCard';
 import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
-import WhatsAppCard from '@/components/WhatsAppCard';
+import WhatsAppPage from '@/components/whatsapp/WhatsAppPage';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
@@ -22,12 +22,13 @@ import {
   Package, Upload, Users, Mail,
   Check, AlertCircle, ShoppingBag,
   Loader2, Trash2, Building2, Plus,
-  Settings, Trophy, Undo2, ShieldAlert, Sun
+  Settings, Trophy, Undo2, ShieldAlert, Sun,
+  MessageSquareText,
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
 
-const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks'];
+const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks', 'whatsapp'];
 import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
@@ -426,7 +427,7 @@ export default function AdminDashboard() {
       : activeTab === 'settings' ? hasPermission('manage_businesses')
       : activeTab === 'team' ? hasPermission('manage_team')
       : activeTab === 'score' ? isSuperAdmin(user) || can(user, 'chat.reply')
-      : activeTab === 'refunds' || activeTab === 'chargebacks' ? isSuperAdmin(user)
+      : activeTab === 'refunds' || activeTab === 'chargebacks' || activeTab === 'whatsapp' ? isSuperAdmin(user)
       : activeTab === 'mail' ? can(user, 'mail.view') : true;
     if (!ok) setActiveTab('today');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1004,6 +1005,8 @@ export default function AdminDashboard() {
     { id: 'mail' as TabType, label: 'Mail', icon: Mail, show: can(user, 'mail.view') },
     // Owner 2026-10-08: chargeback mails from every panel's chargeback Gmail, with a red badge. Super Admin only.
     { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: isSuperAdmin(user) },
+    // Owner 2026-10-10: the WhatsApp business number: setup, profile, templates, a test send, activity. Super Admin only.
+    { id: 'whatsapp' as TabType, label: 'WhatsApp', icon: MessageSquareText, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
 
   return (
@@ -1019,7 +1022,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1398,13 +1401,6 @@ export default function AdminDashboard() {
                 </div>
               )}
 
-                  <div id="set-whatsapp" style={{ scrollMarginTop: 76 }} />
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '0.75rem 0 -0.25rem' }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>WhatsApp</span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>One number for every panel: templates and the first message to a customer</span>
-                  </div>
-                  {/* WhatsApp (owner 2026-10-10): setup status, the account id, message templates, message a number */}
-                  <WhatsAppCard token={token} onAlert={showAlert} onOpenChat={(id) => router.push(`/admin/chat?open=${encodeURIComponent(id)}`)} />
 
 
                   <div id="set-shopify" style={{ scrollMarginTop: 76 }} />
@@ -1666,6 +1662,10 @@ export default function AdminDashboard() {
           {/* ════════ CHARGEBACKS (Super Admin only) ════════ */}
           {activeTab === 'chargebacks' && isSuperAdmin(user) && (
             <div className="animate-fade-in-up"><ChargebacksCard token={token} onAlert={showAlert} onChanged={() => { void refreshChargebackCounts(); }} /></div>
+          )}
+          {/* ════════ WHATSAPP (Super Admin only) ════════ */}
+          {activeTab === 'whatsapp' && isSuperAdmin(user) && (
+            <WhatsAppPage token={token} onAlert={showAlert} onOpenChat={(id) => router.push(`/admin/chat?open=${encodeURIComponent(id)}`)} />
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && isSuperAdmin(user) && (
