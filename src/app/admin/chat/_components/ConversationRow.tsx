@@ -1,6 +1,6 @@
 'use client';
 
-import { Mail, MessageCircle, Phone, BadgeCheck } from 'lucide-react';
+import { Mail, MessageCircle, Phone, BadgeCheck, Smartphone } from 'lucide-react';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { waitingLevel } from '@/lib/chat/waiting';
 import type { Conversation, TeamMember } from '../_lib/types';
@@ -77,7 +77,7 @@ export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaitin
   return (
     <>
       <div className="row-line">
-        {c.source === 'email' ? <Mail className="row-icon" /> : <MessageCircle className="row-icon" />}
+        {c.source === 'email' ? <Mail className="row-icon" /> : c.source === 'whatsapp' ? <Smartphone className="row-icon" aria-label="WhatsApp" /> : <MessageCircle className="row-icon" />}
         <span className={`row-name truncate${unread > 0 ? ' unread' : ''}`} title={nameNote(c)} style={{ fontStyle: nameFromOrder(c) ? 'italic' : undefined }}>
           {convName(c)}
         </span>

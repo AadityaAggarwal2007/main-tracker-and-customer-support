@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink } from 'lucide-react';
+import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone } from 'lucide-react';
 import { can, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
@@ -93,7 +93,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
 
       {/* Row 1: who, with two chips: verified / phone match / visitor, and who has it */}
       <div className="th-id">
-        {activeConv.source === 'email' ? <Mail className="row-icon" aria-label="Email" /> : <MessageCircle className="row-icon" aria-label="Chat" />}
+        {activeConv.source === 'email' ? <Mail className="row-icon" aria-label="Email" /> : activeConv.source === 'whatsapp' ? <Smartphone className="row-icon" aria-label="WhatsApp" /> : <MessageCircle className="row-icon" aria-label="Chat" />}
         <span className="th-name truncate" title={nameNote(activeConv)} style={{ fontStyle: nameFromOrder(activeConv) ? 'italic' : undefined }}>{convName(activeConv)}</span>
         {nameFromOrder(activeConv) && <span className="meta">(from order)</span>}
         <div className="th-chips">

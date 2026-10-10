@@ -68,6 +68,16 @@ Done and live:
   server's memory AND in `<app>/.mail-cache/mail-cache.json` (survives deploys); the minute poller refreshes
   lists and reads 10 mails/min ahead until the whole month is kept. From this VPS a Gmail sign-in is 2-14 s.
   An open mail is full width by default. A refresh comes back to the same tab / mailbox / mail / chat.
+- **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
+  send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
+  = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route
+  `GET/POST /api/whatsapp/webhook` (no login; GET = Meta's verify, POST signed with WHATSAPP_APP_SECRET when
+  set), the staff reply route sends the text back (`wa_sent` / `wa_id` / `wa_error` on the message; the inbox
+  shows the refusal, e.g. the 24-hour window). Chikki does NOT answer on WhatsApp. Env names in `.env.example`:
+  WHATSAPP_CLOUD_TOKEN, WHATSAPP_PHONE_NUMBER_ID (=1335396902996145), WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET,
+  WHATSAPP_API_BASE (default v25.0), WHATSAPP_PANEL_ID (default: the default panel). The owner's setup file
+  (uploaded, CONFIDENTIAL) holds a permanent System User token that was shared in chat: he must rotate it;
+  never commit or echo it. Test: `scripts/ai-tests/whatsapp.js` (in test:ai) + R68 in team-routing.js.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
@@ -77,8 +87,13 @@ Done and live:
    displayed (likely a dead App Password → Disconnect + reconnect). Waiting for the screenshot.
 3. kurtiya: connect the SAME chargeback Gmail; tick gateways (VASTRIKA = PayU, kurtiya = PayGlocal).
 4. VASTRIKA: connect its customer-support Gmail (it has none; the audit showed 1 / 0 / 1).
-5. Optional: WhatsApp Cloud API env vars for chargeback alerts; confirm the stray `KEY` repo
-   secret was deleted (last screenshot showed only the 3 needed).
+5. WhatsApp test with Jatin (number +91 87964 14056): the owner adds WHATSAPP_CLOUD_TOKEN,
+   WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN (and WHATSAPP_APP_SECRET) to `/etc/tracker/.env`,
+   deploys (env-only change still needs a deploy), sets the Callback URL
+   `https://shiptrack.store/api/whatsapp/webhook` + the verify token in Meta App Dashboard > WhatsApp >
+   Configuration, subscribes to `messages`, switches the app to Live, then Jatin texts the number and
+   the chat shows in Chat Support > With team > Open case; the team replies from the inbox (within 24 h
+   of his message). Afterwards rotate the token. Also: confirm the stray `KEY` repo secret was deleted.
 6. A Manager login for Sunny: Team > Add member, role Manager, pick the panels; the password is
    shown once (Copy all / WhatsApp). I cannot create it from here (no database access).
 
