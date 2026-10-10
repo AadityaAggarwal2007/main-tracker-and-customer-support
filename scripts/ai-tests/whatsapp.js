@@ -18,6 +18,8 @@ const db = {
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
+    if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
+    if (/WHERE c\.source = 'whatsapp' AND m\.sender = 'agent'/.test(sql)) { const rows = S.msgs.filter((m) => m.sender === 'agent').map((m) => ({ id: m.id, conversation_id: m.conversation_id, content: m.content, created_at: '2026-10-10T10:00:00Z', metadata: m.metadata, name: 'Jatin', phone: '+919876543210' })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE messages/.test(sql)) { const hits = S.msgs.filter((m) => m.metadata && m.metadata.wa_id === p[0]); for (const m of hits) { if (p[1] != null) m.metadata.wa_status = p[1]; if (p[2] != null) m.metadata.wa_error = p[2]; } return { rows: [], rowCount: hits.length }; }
     throw new Error('fake db query: ' + sql.slice(0, 80));
   },
@@ -94,6 +96,8 @@ const prof = require(path.join(SRC, 'lib/chat/whatsapp-profile.ts'));
 const rProfile = require(path.join(SRC, 'app/api/whatsapp/profile/route.ts'));
 const rPicture = require(path.join(SRC, 'app/api/whatsapp/profile/picture/route.ts'));
 const rName = require(path.join(SRC, 'app/api/whatsapp/display-name/route.ts'));
+const errs = require(path.join(SRC, 'lib/chat/whatsapp-errors.ts'));
+const rActivity = require(path.join(SRC, 'app/api/whatsapp/activity/route.ts'));
 const rTemplates = require(path.join(SRC, 'app/api/whatsapp/templates/route.ts'));
 const rSettings = require(path.join(SRC, 'app/api/whatsapp/settings/route.ts'));
 const rStart = require(path.join(SRC, 'app/api/whatsapp/start/route.ts'));
@@ -492,6 +496,32 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([t2.status, t2.components[0].text, S.metaTemplates.length], ['PENDING', 'Hi {{1}}, your order {{2}} is on its way.', 4]);
     deq((await tpl.updateTemplate('abc', { components: [], category: 'UTILITY' }, env, global.fetch)), { ok: false, error: 'Not a template id' });
     deq((await tpl.updateTemplate('999999', { components: [], category: 'UTILITY' }, env, global.fetch)), { ok: false, error: 'Unsupported post request' });
+  }));
+
+  console.log('whatsapp: errors in plain words, activity');
+  await t('metaHint: (#10), a dead token, the 24-hour window, an unknown id, not set up; nothing for an unknown text', () => {
+    assert.match(errs.metaHint('(#10) Application does not have permission for this action').fix, /System users.*Assign assets.*whatsapp_business_management/);
+    assert.match(errs.metaHint('The WhatsApp token was refused (expired or revoked)').what, /dead/);
+    assert.match(errs.metaHint('The customer last wrote over 24 hours ago: WhatsApp only allows a template message now').fix, /approved template/);
+    assert.match(errs.metaHint('Meta does not know this WhatsApp Business Account id, or the token has no rights on it').fix, /Setup tab/);
+    assert.match(errs.metaHint('WhatsApp is not set up (token or phone number id missing)').fix, /WHATSAPP_CLOUD_TOKEN/);
+    assert.match(errs.metaHint('This number cannot receive WhatsApp messages from us').what, /blocked/);
+    eq(errs.metaHint('Something odd'), null);
+    eq(errs.metaHint(''), null);
+  });
+  await t('activity route: the WhatsApp chats and what the team sent, with Meta\'s report; Super Admin only', () => withEnv(async () => {
+    S.convs.push({ id: 'c1', site_id: 'site1', visitor_id: 'wa:919876543210', visitor_name: 'Jatin', visitor_phone: '+919876543210', status: 'agent_handling', source: 'whatsapp', unread_count: 1, merged_into: null });
+    S.msgs.push({ id: 'm1', conversation_id: 'c1', sender: 'visitor', content: 'Hello', metadata: { wa_id: 'w1' } });
+    S.msgs.push({ id: 'm2', conversation_id: 'c1', sender: 'agent', content: 'Hi Jatin', metadata: { agent: 'Super Admin', wa_sent: true, wa_id: 'wamid.out1', wa_status: 'read' } });
+    S.msgs.push({ id: 'm3', conversation_id: 'c1', sender: 'agent', content: 'Hello World', metadata: { agent: 'Anurag', wa_template: 'hello_world', wa_sent: false, wa_error: 'The WhatsApp token was refused (expired or revoked)' } });
+    eq((await rActivity.GET(jreq(AGENT, {}))).status, 401);
+    const r = await rActivity.GET(jreq(OWNER, {}));
+    eq(r.status, 200);
+    deq(r.body.chats.map((c) => [c.id, c.name, c.status, c.unread, c.last_message]), [['c1', 'Jatin', 'agent_handling', 1, 'Hello World']]);
+    deq(r.body.sent.map((m) => [m.id, m.by, m.template, m.sent, m.status, m.error]), [
+      ['m2', 'Super Admin', null, true, 'read', null],
+      ['m3', 'Anurag', 'hello_world', false, null, 'The WhatsApp token was refused (expired or revoked)'],
+    ]);
   }));
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);

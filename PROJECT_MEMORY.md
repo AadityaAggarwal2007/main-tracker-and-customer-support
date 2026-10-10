@@ -86,6 +86,11 @@ Done and live:
   asks Meta for a display-name change, edits the business profile (about, description, address, email, websites,
   category) and the profile picture (needs the Meta App id 1427249435405269 typed in the card), and edits a
   template. Business hours are not in Meta's API. Owner typed the WABA id and made a template (awaiting approval).
+  **Own tab (15:30):** admin tab "WhatsApp" (`src/components/whatsapp/*`): Setup checklist, Number & profile, Templates,
+  Send, Activity, each with a WhatsApp-styled phone preview. The Settings card is gone. Live, the profile read
+  answered "(#10) Application does not have permission": the System User token lacks rights -> Business
+  Settings > System users > Assign assets (app + WABA, full control), new token with whatsapp_business_management,
+  .env, deploy (= the token rotation). The screen explains this under the error.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
