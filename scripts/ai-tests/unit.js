@@ -1389,6 +1389,17 @@ t('closed-hours: who gets the note and when (Critical: weekend 1st / night 2nd m
   assert.strictEqual(step({ teamActiveMin: 30 }), 'full');
   assert.deepStrictEqual([ch.CLOSED_NOTE_CRITICAL_MIN, ch.CLOSED_NOTE_UPSET_MIN, ch.TEAM_ACTIVE_MIN, ch.CLOSED_NOTE_KEY], [75, 50, 30, 'closed_note']);
 });
+t('closed-hours (owner 10 Oct): the status first for a message that only asks where the order is; anger, refund or a threat is never only that', () => {
+  for (const x of ['#5121', '5121', 'Order no 5121', '?', 'Please reply', 'where is my order', 'Mera order kahan hai?', 'Still my parcel has not delivered', 'hello sir', 'kab aayega mera order'])
+    assert.ok(ch.asksStatusOnly(x), x);
+  for (const x of ['This is a fraud, where is my order', 'I want refund', 'cancel my order', 'It looks like scam', 'I will go to consumer court', 'thanks', 'I needed it before 28 September but it is already too late and nobody tells me anything at all about it', ''])
+    assert.ok(!ch.asksStatusOnly(x), x);
+  const f = { order_id: '#5121', status: 'Reached City', eta: '2026-10-14', late: false, tracking_link: 'https://x/track/1' };
+  assert.strictEqual(ch.statusLine(f, 'where is my order'), 'Your order #5121 is at the "Reached City" stage, estimated delivery 14 October 2026. You can follow it here: https://x/track/1');
+  assert.strictEqual(ch.statusLine({ ...f, late: true, tracking_link: null }, 'mera order kahan hai'), 'Aapka order #5121 abhi "Reached City" stage par hai.');
+  assert.strictEqual(ch.statusLine(null, 'x'), null);
+  for (const st of ['Out for Delivery', 'Delivered', 'Order Placed']) assert.ok(!tp.promisesToday(ch.statusLine({ ...f, status: st }, 'where')), st);
+});
 t('closed-hours: the notes are fixed text in English and Hinglish, honest about OUR hours, never "the courier is closed", never a day of arrival, and the waiting rule matches every one', () => {
   const EN = 'where is my order, nobody answers', HI = 'bhai mera order kahan hai';
   const all = [];

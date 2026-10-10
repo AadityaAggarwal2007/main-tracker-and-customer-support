@@ -43,6 +43,21 @@ export interface ClosedNoteInput {
   teamActiveMin: number | null;   // minutes since a team member last wrote in this chat; null = never
 }
 
+// Owner 2026-10-10 (Chikki review A9 / A11: a customer who only sent the order number or "please reply" got the weekend
+// note instead of their order's status, and was annoyed): "order ka status bheje; customer kuch bola toh woh weekend
+// wali baat". A message that only asks where the order is (or is just the order number, "?", "reply", "hello") gets the
+// status first, when Chikki has not answered yet in this closed stretch; the note comes with the customer's next
+// message. Anything angry, a refund / cancel, a threat or a fraud word is never "only a status ask".
+const NOT_STATUS = /\b(?:refund|cancel\w*|money\s+back|paisa\s+wapas|paise\s+wapas|fraud|scam|fake|chor|dhokha|cheat\w*|complaint|consumer|police|fir|court|legal|lawyer|chargeback|bank|dispute|worst|useless|bakwas|bekar|faltu)\b|धोखा|ठग|पैसे वापस/i;
+const STATUS_WORDS = /\b(?:where|status|track\w*|update|kab|kaha|kahan|kidhar|deliver\w*|aaya|aayi|aayega|aayegi|aaega|ayega|milega|milegi|mila|mili|order|parcel|package|shipment|reply|jawab|respond|hello|hi|hey|hlo|sir|madam|mam|please|plz|pls)\b|कहाँ|कब|ऑर्डर/i;
+export function asksStatusOnly(text: string): boolean {
+  const t = String(text || '').trim();
+  if (!t || t.length > 160 || NOT_STATUS.test(t)) return false;
+  if (/^[\s?!.]+$/.test(t)) return true;                                   // "?", "..."
+  if (/^(?:order\s*(?:id|no\.?|number)?\s*[:#-]?\s*)?#?\s*[a-z]{0,4}\d{3,}\s*$/i.test(t)) return true;   // just the order number
+  return t.split(/\s+/).length <= 14 && STATUS_WORDS.test(t);
+}
+
 // Which note this message gets: 'full' the first time, 'short' the second, 'silent' after that
 // (nothing is sent), null = this customer or moment does not qualify (today's replies).
 export function closedNoteStep(i: ClosedNoteInput): ClosedNoteStep | null {
@@ -86,6 +101,21 @@ export function closedNote(customerText: string, why: Exclude<ClosedWhy, null>, 
   return hi
     ? `Aapki pareshani samajh aati hai, aur iske liye hamein afsos hai. ${whyLine(why, true)} ${whenCap} hamari team sabse pehle aapka case lekar baithegi, shipping partner se baat karegi, aur isi chat mein aapko update degi.`
     : `I understand how frustrating this has been, and I'm sorry. ${whyLine(why, false)} ${whenCap}, our team will sit down with your case first thing, take it up with the shipping partner, and update you here in this chat.`;
+}
+
+// The status a customer gets first (owner 2026-10-10, see asksStatusOnly), from the tracking page's own words: the
+// order, its stage, the estimated date (not for a late order: its date is being confirmed), the tracking link. Never
+// "today", never a reason, never a promise. null = nothing to say (no order).
+export interface StatusFacts { order_id: string; status: string; eta: string | null; late: boolean; tracking_link: string | null }
+export function statusLine(f: StatusFacts | null, customerText: string): string | null {
+  if (!f || !f.order_id || !f.status) return null;
+  const hi = looksHinglish(customerText);
+  const date = f.eta && !f.late ? new Date(f.eta).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' }) : null;
+  const id = f.order_id.startsWith('#') ? f.order_id : `#${f.order_id}`;
+  if (hi) {
+    return `Aapka order ${id} abhi "${f.status}" stage par hai${date ? `, estimated delivery ${date}` : ''}.${f.tracking_link ? ` Yahan track kar sakte hain: ${f.tracking_link}` : ''}`;
+  }
+  return `Your order ${id} is at the "${f.status}" stage${date ? `, estimated delivery ${date}` : ''}.${f.tracking_link ? ` You can follow it here: ${f.tracking_link}` : ''}`;
 }
 
 // Matched by waiting.ts (a Postgres regex, case-insensitive) against the AI's last message: a
