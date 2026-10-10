@@ -99,8 +99,9 @@ export function summarize(panels: PanelStats[]): BoardSummary {
 // The morning routine (owner 2026-10-09: "everyday morning check"): the same every day, in the order that protects the
 // store; a step is ticked by itself when its number is 0. "go" opens the screen for it.
 export interface RoutineStep { text: string; count: number; done: boolean; go: NonNullable<Need['go']> }
-export function morningRoutine(t: BoardSummary): RoutineStep[] {
+export function morningRoutine(t: BoardSummary, aiDown = false): RoutineStep[] {
   const steps: RoutineStep[] = [];
+  steps.push({ text: 'Chikki is answering customers (OpenRouter credits and key fine)', count: aiDown ? 1 : 0, done: !aiDown, go: 'settings' });
   if (t.chargebacks !== null) steps.push({ text: 'Answer every open chargeback', count: t.chargebacks, done: t.chargebacks === 0, go: 'chargebacks' });
   steps.push({ text: 'Both Gmails of every panel are being read', count: t.gmailErrors, done: t.gmailErrors === 0, go: 'settings' });
   steps.push({ text: 'No customer waiting over 2 hours', count: t.overdue, done: t.overdue === 0, go: 'chats' });

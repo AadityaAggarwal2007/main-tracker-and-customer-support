@@ -28,6 +28,7 @@ import { detectSituations, examplesSection, pickExamples, type Example } from '.
 import { EFFORT_PLAN, effortFor, effortScore, groupFor, newEffortUsage, type EffortUsage } from './effort';
 import { CHECK_NOTE, latestOrderFacts, parseCheck } from './self-check';
 import { BlankReplyError, MAX_REPLY_TOKENS, SELF_CHECK_MAX_TOKENS, SELF_CHECK_TIMEOUT_MS, THINKING_TIMEOUT_MS, attemptOrder, getActiveModel, getClient, isRetryable, withThinking, withoutThinking } from './ai-models';
+import { noteAiFailure, noteAiSuccess } from './ai-health';
 import { buildSystemPrompt, type Channel, type SavedAnswer } from './ai-prompt';
 import { CATEGORIZE_TOOL, ESCALATE_TOOL, ORDER_LOOKUP_TOOL } from './ai-tools';
 import { UNPROVEN_LOOKUP, VERIFICATION_DEPLOYED_AT, courierAsksSoFar, couriersInLookups, dropOrphanedToolCalls, isProvenLookup, type StoredMessage } from './ai-history';
@@ -1115,12 +1116,14 @@ export async function getAIResponse(
         if ((ask.orderId || ask.last4) && consecutiveAsks(guardRows, known) >= 2) return handOver('H6', result);
       }
     }
+    noteAiSuccess();
     return finish(result, model);
   }
 
   // Every model is down. The customer must never see a stack trace, a provider
   // name, or silence, so answer like a busy human and invite them to continue.
   console.error('[AI] Every model failed:', (lastErr as Error)?.message);
+  noteAiFailure((lastErr as { status?: number })?.status, String((lastErr as Error)?.message || ''));   // the Today board's red banner (ai-health.ts)
   return {
     content: AI_BUSY_REPLY,
     toolCallMeta: null,

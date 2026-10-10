@@ -92,5 +92,8 @@ Done and live:
 - Order numbers repeat across panels and are stored WITH a leading `#`; `order_items` is keyed by
   order number only (known, not fixed).
 - Team member replies and the suggest / polish routes accept `source` 'chat' or 'email'.
+- OpenRouter credits / the key's monthly limit ran out once (2026-10-10 night): every model 402 for 3 h, every
+  visitor got the "took longer than expected" line. The Today board now shows a red banner; the owner
+  recharges at openrouter.ai (Credits + the key's monthly limit).
 - The GitHub Actions secret must be the WHOLE private key (7 lines with BEGIN / END); the owner
   copies it with `pbcopy`, never by selecting in Terminal.

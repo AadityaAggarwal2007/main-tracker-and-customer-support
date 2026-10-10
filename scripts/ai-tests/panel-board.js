@@ -40,6 +40,7 @@ Module._load = function (request, parent, isMain) {
 };
 
 const rules = require(path.join(SRC, 'lib/panel-board.ts'));
+const aih = require(path.join(SRC, 'lib/chat/ai-health.ts'));
 const mstat = require(path.join(SRC, 'lib/chat/mailbox-status.ts'));
 const server = require(path.join(SRC, 'lib/panel-board-server.ts'));
 const { NextRequest } = require('next/server');
@@ -79,8 +80,9 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.strictEqual(t1.panels, 2); assert.strictEqual(t1.needsYou, 3); assert.strictEqual(t1.overdue, 1); assert.strictEqual(t1.chargebacks, 1); assert.strictEqual(t1.refundRequests, 2);
     assert.strictEqual(t1.reshipToShip, 3); assert.strictEqual(t1.chatsToday, 5); assert.strictEqual(t1.chikkiToday, 7); assert.strictEqual(t1.gmailErrors, 1); assert.strictEqual(t1.setupGaps, 2);
     const r1 = rules.morningRoutine(t1);
-    assert.deepStrictEqual(r1.map((x) => [x.done, x.count]), [[false, 1], [false, 1], [false, 1], [false, 3], [false, 2], [false, 3], [true, 0], [true, 0], [false, 2]]);
-    assert.strictEqual(r1[0].go, 'chargebacks'); assert.strictEqual(r1[1].go, 'settings');
+    assert.deepStrictEqual(r1.map((x) => [x.done, x.count]), [[true, 0], [false, 1], [false, 1], [false, 1], [false, 3], [false, 2], [false, 3], [true, 0], [true, 0], [false, 2]]);
+    assert.ok(/Chikki is answering/.test(r1[0].text)); assert.strictEqual(r1[1].go, 'chargebacks'); assert.strictEqual(r1[2].go, 'settings');
+    assert.deepStrictEqual(rules.morningRoutine(t1, true)[0], { text: r1[0].text, count: 1, done: false, go: 'settings' }, 'Chikki down = the first step open');
     const t2 = rules.summarize([{ ...base, chargebacksOpen: null, refundRequestsNew: null }]);
     assert.strictEqual(t2.chargebacks, null); assert.strictEqual(t2.refundRequests, null);
     const r2 = rules.morningRoutine(t2);
@@ -107,6 +109,11 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.ok(/estimated_delivery >= \(now\(\) AT TIME ZONE 'Asia\/Kolkata'\)::date - 14/.test(S.queries.find((q) => /FROM orders/.test(q.sql)).sql), 'late = the estimated date passed in the last 14 days');
     const dayInfo = await server.loadBoardDay();
     assert.deepStrictEqual(dayInfo.online, ['Rahul', 'Super Admin']); assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(dayInfo.date)); assert.strictEqual(typeof dayInfo.officeOpen, 'boolean');
+    assert.strictEqual(dayInfo.ai.ok, true); assert.strictEqual(dayInfo.ai.text, null);
+    // Chikki failing (every model 402): the board carries the banner's words until a reply goes out again
+    aih.noteAiFailure(402, '402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/x');
+    const down = await server.loadBoardDay(); assert.strictEqual(down.ai.ok, false); assert.strictEqual(down.ai.reason, 'credits'); assert.ok(/credits/.test(down.ai.text)); assert.strictEqual(down.ai.failsLastHour, 1);
+    aih.noteAiSuccess(); assert.strictEqual((await server.loadBoardDay()).ai.ok, true); aih.resetAiHealth();
     assert.strictEqual(b.needsYou, 0); assert.strictEqual(b.aiOn, false); assert.strictEqual(b.hasPrompt, false); assert.strictEqual(b.supportGmail, false); assert.strictEqual(b.whatsapp, false);
     // a team member limited to one panel: only that panel, no Super Admin numbers
     S.queries = []; const m = await server.loadPanelBoard(['B'], false);
