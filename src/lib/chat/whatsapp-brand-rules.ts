@@ -26,6 +26,17 @@ export const ORDER_TRACKING_PRESET = {
   footer: '',
   examples: ['Rahul', '#1042', 'Your Brand', 'https://shiptrack.store/track/abc123', 'help@yourbrand.com'],
 };
+// ShipTrack's own alert to the owner (owner 2026-10-10: the AI's OpenRouter credits about to run out, ai-credit.ts).
+// One variable = what is wrong and what to do; to the number saved in WhatsApp > Setup.
+export const SHIPTRACK_ALERT_PRESET = {
+  name: 'shiptrack_alert',
+  language: 'en_US',
+  category: 'UTILITY',
+  header: 'ShipTrack alert',
+  body: 'Hello, this is an alert from your ShipTrack dashboard: {{1}} Please check it on the Today board.',
+  footer: '',
+  examples: ['OpenRouter credits: $3.10 left, about 1 day at $4.00 a day. Recharge at openrouter.ai (Credits), and turn on Auto top-up.'],
+};
 // Which variable of an order-placed template is which (0-based), used by the Send screen to fill them per brand.
 export const ORDER_PLACED_SLOTS = { customer: 0, order: 1, brand: 2, email: 3 };
 export const isOrderPlaced = (templateName: string) => templateName.startsWith('order_placed');

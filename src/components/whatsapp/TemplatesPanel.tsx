@@ -5,7 +5,7 @@ import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import MetaError from './MetaError';
 import PhonePreview from './PhonePreview';
 import { renderTemplate, varCount, type TemplateInfo } from '@/lib/chat/whatsapp-templates';
-import { ORDER_PLACED_PRESET, ORDER_TRACKING_PRESET } from '@/lib/chat/whatsapp-brand-rules';
+import { ORDER_PLACED_PRESET, ORDER_TRACKING_PRESET, SHIPTRACK_ALERT_PRESET } from '@/lib/chat/whatsapp-brand-rules';
 import BrandsCard from './BrandsCard';
 import { EMPTY_FORM, SECTION, label, spin, type Alert, type Brand, type TemplateForm, type WaLists, type WaProfileData, type WaSettings } from './types';
 
@@ -29,6 +29,7 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
   // The owner's order-placed confirmation, ready to send to Meta (edit any word before sending).
   const startOrderPlaced = () => { setEditId(null); setForm({ ...ORDER_PLACED_PRESET, examples: [...ORDER_PLACED_PRESET.examples] }); setOpen(true); setPreview(null); };
   const startTracking = () => { setEditId(null); setForm({ ...ORDER_TRACKING_PRESET, examples: [...ORDER_TRACKING_PRESET.examples] }); setOpen(true); setPreview(null); };
+  const startAlert = () => { setEditId(null); setForm({ ...SHIPTRACK_ALERT_PRESET, examples: [...SHIPTRACK_ALERT_PRESET.examples] }); setOpen(true); setPreview(null); };
   const startEdit = (t: TemplateInfo) => { setEditId(t.id); setForm({ name: t.name, language: t.language, category: t.category || 'UTILITY', header: t.header || '', body: t.body, footer: t.footer || '', examples: [] }); setOpen(true); setPreview(null); };
   const submit = async () => {
     setBusy('save');
@@ -64,6 +65,7 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
             <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Meta reviews a new one (minutes to a day); only Approved ones can be sent. Click one to see it on the phone.</span>
             <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={startOrderPlaced}>Order placed template</button>
             <button type="button" className="btn btn-sm btn-outline" style={{ gap: 4 }} onClick={startTracking}>Tracking link template</button>
+            <button type="button" className="btn btn-sm btn-outline" style={{ gap: 4 }} onClick={startAlert} title="For your own WhatsApp: ShipTrack tells you when the AI credits run low">ShipTrack alert template</button>
             <button type="button" className="btn btn-sm btn-primary" style={{ gap: 4 }} onClick={startNew}><Plus size={14} /> New template</button>
           </div>
           {lists?.error && <MetaError error={lists.error} />}

@@ -8,13 +8,14 @@
 // lines from src/lib/panel-board.ts and the numbers behind them. Refreshes every minute and on focus. A line is a
 // button that makes that panel the active one and opens the screen for it.
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Circle, CheckSquare, Loader2, MessageCircle, RefreshCw, ShieldAlert, Sun, Users } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, Circle, CheckSquare, Loader2, MessageCircle, RefreshCw, ShieldAlert, Sun, Users } from 'lucide-react';
 import { waHealthLines, type WaHealth } from '@/lib/chat/whatsapp-health-rules';
 import { morningRoutine, panelNeeds, sortPanels, summarize, type PanelStats, type Need } from '@/lib/panel-board';
+import type { AiCredit } from '@/lib/chat/ai-credit-rules';
 import { agoText } from '@/app/admin/_lib/format';
 
 type Panel = PanelStats & { needs: Need[] };
-interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number }; whatsapp?: WaHealth | null }
+interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number }; whatsapp?: WaHealth | null; aiCredit?: AiCredit | null }
 
 const dateText = (iso: string) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -66,7 +67,9 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
   const totals = panels ? summarize(panels) : null;
   const wa = day?.whatsapp || null;
   const waLines = wa ? waHealthLines(wa) : [];
-  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok), wa ? waLines.length : null) : [];
+  const credit = day?.aiCredit || null;
+  const creditLow = !!credit && (credit.level === 'warn' || credit.level === 'danger');
+  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok), wa ? waLines.length : null, creditLow) : [];
   // the WhatsApp tab opens on Automation (its sub-tab is remembered in localStorage wa_tab)
   const openWhatsApp = () => { try { localStorage.setItem('wa_tab', 'automation'); } catch { /* private window */ } goTo(activePanelId, 'whatsapp'); };
   const left = routine.filter(s => !s.done).length;
@@ -101,9 +104,37 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
           <div>
             <b>Chikki cannot answer customers right now</b> — {day.ai.text || 'every model failed'}.
             <div className="meta" style={{ color: 'inherit', opacity: 0.85 }}>
-              {day.ai.failsLastHour} failed {day.ai.failsLastHour === 1 ? 'reply' : 'replies'} in the last hour{day.ai.lastFailAt ? `, last ${agoText(day.ai.lastFailAt)}` : ''}{day.ai.detail ? ` · "${day.ai.detail}"` : ''}. Customers get "Sorry, that took longer than expected" until it works again; verified customers go to Needs you.
+              {day.ai.failsLastHour} failed {day.ai.failsLastHour === 1 ? 'reply' : 'replies'} in the last hour{day.ai.lastFailAt ? `, last ${agoText(day.ai.lastFailAt)}` : ''}{day.ai.detail ? ` · "${day.ai.detail}"` : ''}. Visitors are asked for their order ID and phone number until it works again; verified customers go to Needs you.
             </div>
           </div>
+        </div>
+      )}
+      {credit && credit.level !== 'unknown' && (
+        // The AI's OpenRouter money (owner 2026-10-10, ai-credit.ts): what is left, how many days at the recent spend.
+        <div className={`pb-wa pb-wa-${credit.level === 'ok' ? 'ok' : credit.level}`} role={credit.level === 'danger' ? 'alert' : undefined}>
+          <div className="pb-wa-head">
+            <Bot size={16} style={{ color: 'var(--primary)' }} />
+            <b>AI credits (OpenRouter)</b>
+            <span className={`chip ${credit.level === 'ok' ? 'chip-ok' : credit.level === 'warn' ? 'chip-warn' : 'chip-danger'}`}>{credit.level === 'ok' ? 'Enough' : credit.level === 'warn' ? 'Running low' : 'About to run out'}</span>
+            <span className="meta" style={{ marginLeft: 'auto' }}>{credit.checkedAt ? `checked ${agoText(credit.checkedAt)}` : ''}</span>
+            <a className="btn btn-outline btn-sm" href="https://openrouter.ai/settings/credits" target="_blank" rel="noreferrer">OpenRouter</a>
+          </div>
+          <dl className="pb-wa-nums">
+            {credit.balance !== null && <div className={credit.binding === 'credits' && credit.level !== 'ok' ? 'pb-hot' : ''}><dt>Credits left</dt><dd>${credit.balance.toFixed(2)}</dd></div>}
+            {credit.keyLimit !== null && credit.keyLeft !== null && (
+              <div className={credit.binding === 'key' && credit.level !== 'ok' ? 'pb-hot' : ''}>
+                <dt title="The AI key's own spending limit">Key limit left{credit.keyReset ? ` (${credit.keyReset})` : ''}</dt>
+                <dd>${credit.keyLeft.toFixed(2)}<span className="meta"> / ${credit.keyLimit.toFixed(0)}</span></dd>
+              </div>
+            )}
+            {credit.perDay !== null && <div><dt>Spend a day (last week)</dt><dd>${credit.perDay.toFixed(2)}</dd></div>}
+            {credit.daysLeft !== null && <div className={credit.level !== 'ok' ? 'pb-hot' : ''}><dt>Lasts about</dt><dd>{credit.daysLeft < 1 ? '< 1 day' : `${Math.floor(credit.daysLeft)} days`}</dd></div>}
+          </dl>
+          {credit.lines.length > 0 && (
+            <ul className="pb-needs" style={{ marginTop: '0.5rem' }}>
+              {credit.lines.map((l, k) => <li key={k} className={`pb-need pb-${l.tone}`}><span className="pb-need-btn">{l.text}</span></li>)}
+            </ul>
+          )}
         </div>
       )}
       {wa && (() => {

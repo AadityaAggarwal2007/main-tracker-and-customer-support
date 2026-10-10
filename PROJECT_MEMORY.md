@@ -141,6 +141,11 @@ Done and live:
   pack-of-N answer, "is this site fake?" answer for visitors, vastora WhatsApp automation ON (customers say they never
   got an order ID). Second run: all "took longer" = OpenRouter credits / monthly key limit (6 days). Owner answers:
   status first, then the weekend note (done); "site genuine?" = a saved answer he adds; BOGO and automation later.
+- **Same night:** AI down -> visitors get "Thanks for writing to <brand>! share order ID + phone" (no "took longer");
+  Mail conversation has its own Gmail connection + a server copy (it kept spinning); AI credit meter on Today +
+  WhatsApp alert (`ai-credit.ts`): the owner must (1) make the "ShipTrack alert template" in WhatsApp > Templates and
+  wait for Meta, (2) type his number in WhatsApp > Setup "Your WhatsApp number for ShipTrack alerts", (3) still turn
+  on OpenRouter Auto top-up / raise the key's monthly limit.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
