@@ -43,3 +43,30 @@ export async function setAppId(value: string): Promise<void> {
     [APP_KEY, value.trim()]
   );
 }
+
+// The MESSAGING account id (owner 2026-10-10: Meta's reply to creating a template on the WhatsApp account was
+// "WhatsApp accounts cannot be used with this API"; Meta keeps templates and billing on the Messaging account,
+// Business Settings > Accounts > Messaging accounts). When it is saved, every template call (list, create,
+// edit, delete, the check before a send) uses it; without it they use the WhatsApp account id as before.
+export const MESSAGING_KEY = 'whatsapp_messaging_id';
+export async function messagingId(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  try {
+    const row = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [MESSAGING_KEY]);
+    const v = (row?.value || '').trim();
+    if (v) return v;
+  } catch (err) {
+    console.error('[whatsapp] messaging id read failed:', (err as Error)?.message);
+  }
+  return (env.WHATSAPP_MESSAGING_ACCOUNT_ID || '').trim();
+}
+export async function setMessagingId(value: string): Promise<void> {
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [MESSAGING_KEY, value.trim()]
+  );
+}
+// The id the template calls go to: the Messaging account when saved, else the WhatsApp account.
+export async function templatesAccount(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  return (await messagingId(env)) || (await wabaId(env));
+}

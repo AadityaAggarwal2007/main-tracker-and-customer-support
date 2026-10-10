@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { can, isSuperAdmin } from '@/lib/permissions';
 import { createTemplate, deleteTemplate, listTemplates, templateSpec, updateTemplate, TEMPLATE_CATEGORIES, TEMPLATE_LANGUAGES } from '@/lib/chat/whatsapp-templates';
-import { wabaId } from '@/lib/chat/whatsapp-settings';
+import { templatesAccount } from '@/lib/chat/whatsapp-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!isSuperAdmin(user) && !can(user, 'chat.reply')) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  const waba = await wabaId();
+  const waba = await templatesAccount();
   if (!waba) return NextResponse.json({ templates: [], waba: '', error: 'Set the WhatsApp Business Account id in Settings > WhatsApp' });
   const r = await listTemplates(waba);
   if ('error' in r) return NextResponse.json({ templates: [], waba, error: r.error });
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     examples: Array.isArray(body.examples) ? body.examples.map((e) => String(e ?? '')) : [],
   });
   if ('error' in spec) return NextResponse.json({ error: spec.error }, { status: 400 });
-  const waba = await wabaId();
+  const waba = await templatesAccount();
   if (!waba) return NextResponse.json({ error: 'Set the WhatsApp Business Account id first' }, { status: 400 });
   if (typeof body.id === 'string' && body.id) {
     const u = await updateTemplate(body.id, spec.spec);
@@ -55,7 +55,7 @@ export async function DELETE(request: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!isSuperAdmin(user)) return NextResponse.json({ error: 'Super Admin only' }, { status: 403 });
   const name = new URL(request.url).searchParams.get('name') || '';
-  const waba = await wabaId();
+  const waba = await templatesAccount();
   if (!waba) return NextResponse.json({ error: 'Set the WhatsApp Business Account id first' }, { status: 400 });
   const r = await deleteTemplate(waba, name);
   if ('error' in r) return NextResponse.json({ error: r.error }, { status: 502 });

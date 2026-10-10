@@ -5,7 +5,7 @@ import { query } from '@/lib/db';
 import { sendWhatsAppTemplate, waDigits } from '@/lib/chat/whatsapp';
 import { waConversationFor } from '@/lib/chat/whatsapp-inbound';
 import { listTemplates, renderTemplate } from '@/lib/chat/whatsapp-templates';
-import { wabaId } from '@/lib/chat/whatsapp-settings';
+import { templatesAccount } from '@/lib/chat/whatsapp-settings';
 import { staffActor } from '@/lib/chat/team-routing';
 
 export const dynamic = 'force-dynamic';
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   if (!NAME_RE.test(name)) return NextResponse.json({ error: 'Pick a template' }, { status: 400 });
   const params = Array.isArray(body.params) ? (body.params as unknown[]).slice(0, 20).map((v) => String(v ?? '').trim().slice(0, 1024)) : [];
 
-  const waba = await wabaId();
+  const waba = await templatesAccount();
   if (!waba) return NextResponse.json({ error: 'Set the WhatsApp Business Account id in Settings > WhatsApp' }, { status: 400 });
   const list = await listTemplates(waba);
   if ('error' in list) return NextResponse.json({ error: list.error }, { status: 502 });

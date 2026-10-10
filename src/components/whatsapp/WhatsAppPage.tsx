@@ -69,7 +69,7 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
       <div className="wa-tabs" role="tablist">
         {TABS.map((t) => <button key={t.id} type="button" role="tab" className="seg-btn" aria-pressed={tab === t.id} onClick={() => pick(t.id)}>{t.label}</button>)}
       </div>
-      {tab === 'setup' && <SetupPanel key={`${s?.waba}|${s?.appId}`} token={token} s={s} lists={lists} onAlert={onAlert} reload={load} />}
+      {tab === 'setup' && <SetupPanel key={`${s?.waba}|${s?.appId}|${s?.messaging}`} token={token} s={s} lists={lists} onAlert={onAlert} reload={load} />}
       {tab === 'test' && <TestPanel token={token} s={s} prof={prof} act={act} onAlert={onAlert} goSend={() => pick('send')} goActivity={() => pick('activity')} />}
       {tab === 'profile' && <ProfilePanel token={token} s={s} prof={prof} onAlert={onAlert} reload={load} />}
       {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} reload={load} />}

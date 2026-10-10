@@ -17,8 +17,8 @@ export function metaHint(error: string | null | undefined): MetaHint | null {
   }
   if (/cannot be used with this API/i.test(e)) {
     return {
-      what: 'Meta says the account id saved here is not a WhatsApp Business Account that this API can make templates on (for example the payment-only "Messaging account", or an account from another app).',
-      fix: 'Setup tab > Check token: the saved account id must be the WhatsApp Business Account that holds +91 87964 14056 (Meta Business Settings > Accounts > WhatsApp accounts > the one with the number; its id is in the address bar). Fix the id there, then send the template again. If it is already that id, send the code in [brackets] to your developer.',
+      what: 'Meta keeps message templates on the Messaging account, not on the WhatsApp account, so it refused to make one on the WhatsApp account id.',
+      fix: 'Setup tab > "Messaging account id": paste the id of Business Settings > Accounts > Messaging accounts > Shiptrack (the number in its address bar), Save, then send the template again. The System User needs Full control on that Messaging account (System users > shiptrack-server > Assign assets).',
     };
   }
   if (code === '10' || /does not have permission for this action/i.test(e)) {
