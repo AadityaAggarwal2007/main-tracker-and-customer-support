@@ -20,6 +20,7 @@ export default function TestPanel({ token, s, prof, act, onAlert, goSend, goActi
   const [name, setName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errCode, setErrCode] = useState<number | null>(null);
   const [sentOk, setSentOk] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const digits = to.replace(/\D/g, '');
@@ -51,12 +52,12 @@ export default function TestPanel({ token, s, prof, act, onAlert, goSend, goActi
   }, [load]);
 
   const send = async () => {
-    setBusy(true); setError(''); setSentOk('');
+    setBusy(true); setError(''); setErrCode(null); setSentOk('');
     try {
       try { localStorage.setItem('wa_test_to', to); } catch { /* private window */ }
       const r = await fetch('/api/whatsapp/test-send', { method: 'POST', headers: auth, body: JSON.stringify({ to, text }) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) { setError(j.error || 'WhatsApp did not take it'); await load(true); return; }
+      if (!r.ok) { setError(j.error || 'WhatsApp did not take it'); setErrCode(typeof j.code === 'number' ? j.code : null); await load(true); return; }
       setSentOk('Meta accepted it. Watch the ticks on the phone: ✓ sent, ✓✓ delivered, blue ✓✓ read.');
       onAlert('success', 'Sent on WhatsApp');
       await load(true);
@@ -97,7 +98,7 @@ export default function TestPanel({ token, s, prof, act, onAlert, goSend, goActi
           {error && (
             <div style={{ marginTop: '0.75rem' }}>
               <MetaError error={error} />
-              <button type="button" className="btn btn-sm btn-outline" onClick={goSend}>Send a template instead</button>
+              {(errCode === 131047 || /24 hours/.test(error)) && <button type="button" className="btn btn-sm btn-outline" onClick={goSend}>Send a template instead</button>}
             </div>
           )}
           {sentOk && <p style={{ margin: '0.75rem 0 0', fontSize: '0.8125rem', color: 'var(--success, #15803d)' }}>{sentOk}</p>}

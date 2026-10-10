@@ -603,6 +603,15 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([r.body.name, r.body.messages.map((m) => [m.from, m.text, m.sent, m.status, m.error])], ['Aaditya', [['customer', 'Helliooo', null, null, null], ['us', 'Test reply', true, 'read', null]]]);
   }));
 
+  await t('the paid-message-account refusal (#10): the text keeps Meta\'s words once and metaHint names the account and the fix', () => {
+    const e = wa.waErrorText(400, { error: { code: 10, message: '(#10) Viewer cannot access the provided Paid Message Account 28873951022288651' } });
+    deq(e, { text: 'WhatsApp refused the message: (#10) Viewer cannot access the provided Paid Message Account 28873951022288651', code: 10 });
+    const h = errs.metaHint(e.text);
+    assert.match(h.what, /28873951022288651.*Billing & payments/);
+    assert.match(h.fix, /System users > shiptrack-server > Add assets > WhatsApp accounts.*28873951022288651/);
+    assert.match(errs.metaHint('WhatsApp refused the message: (#10) Application does not have permission for this action').fix, /System users/);
+  });
+
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
