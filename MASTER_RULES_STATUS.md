@@ -495,3 +495,8 @@ duty: logged in today since 10 AM, around, office open, the chat's panel; the on
 Nobody logged in = nobody gets a chat (they stay visible to everyone). Never Chikki's chats, a Refund / Ship again chat,
 or the Manager. Rules 11 / 14 (a waiting customer always has a person): PASS, better (a named person within a minute);
 nothing is closed or hidden.
+
+Step 4 (same day): a team member's chat with no reply for 30 office minutes goes to the Manager by itself (verified =
+Needs You; no Manager = Super Admin) and every member's inbox shows a red bar for two hours. Nothing to the customer.
+Rules 11 / 14 / 15 (a waiting customer is never left; threats 1 h, others 2 h): PASS, stricter (30 minutes, a named
+person). Not the Manager's or Super Admin's chats, not Refund / Ship again.

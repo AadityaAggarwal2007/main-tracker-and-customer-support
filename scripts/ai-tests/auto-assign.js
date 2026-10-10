@@ -171,7 +171,7 @@ const here = (key, ms) => { S.seen[key] = ms; };
   });
   await t('the minute cron starts it, not awaited, and again 30 seconds later', () => {
     const src = fs.readFileSync(path.join(SRC, 'app/api/cron/chat-email-poll/route.ts'), 'utf8');
-    ok(/void runAutoAssign\(\)\.catch/.test(src) && /setTimeout\(\(\) => \{ void runAutoAssign\(\)/.test(src));
+    ok(/void runLateEscalation\(\)\.then\(\(\) => runAutoAssign\(\)\)\.catch/.test(src) && /setTimeout\(\(\) => \{ void runAutoAssign\(\)/.test(src), 'the 30-minute move first, then the queue');
   });
 
   console.log(`AUTO-ASSIGN: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

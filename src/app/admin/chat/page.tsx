@@ -23,6 +23,7 @@ import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMess
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
 import { ForwardDialog } from './_components/ForwardDialog';
+import { TeamAlerts, type TeamAlert } from './_components/TeamAlerts';
 import { TemplateDialog } from './_components/TemplateDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
@@ -123,6 +124,8 @@ export default function ChatSupportPage() {
   const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // Forward to Manager (owner 2026-10-10): the dialog's state.
   const [forwardEdit, setForwardEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // The red bar (owner 2026-10-10): chats moved to the Manager after 30 minutes without a reply, from the list's answer.
+  const [teamAlerts, setTeamAlerts] = useState<TeamAlert[]>([]);
   // A WhatsApp template to send in this chat (owner 2026-10-10): the only message after 24 h of silence.
   const [templateEdit, setTemplateEdit] = useState<{ convId: string; busy: boolean } | null>(null);
   // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
@@ -271,6 +274,7 @@ export default function ChatSupportPage() {
       const data = await res.json();
       if (res.ok && Array.isArray(data.team)) setTeam(data.team);
       if (res.ok && data.me !== undefined) setMeKey(data.me ?? null);
+      if (res.ok && Array.isArray(data.alerts)) setTeamAlerts(data.alerts);
       if (res.ok && data.mine) setMyChats({ open: data.mine.open ?? 0, waiting: data.mine.waiting ?? 0, held: data.mine.held ?? 0 });
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
@@ -1418,6 +1422,7 @@ export default function ChatSupportPage() {
           <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}
             onCancel={() => setItemsEdit(null)} onSave={saveItems} />
         )}
+        <TeamAlerts alerts={teamAlerts} onOpen={openConversation} />
       </main>
     </div>
   );
