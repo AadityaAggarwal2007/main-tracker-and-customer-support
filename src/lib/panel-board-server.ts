@@ -8,6 +8,8 @@ import { loadHolidays } from '@/lib/chat/holidays';
 import { loadWaHealth } from '@/lib/chat/whatsapp-health';
 import type { WaHealth } from '@/lib/chat/whatsapp-health-rules';
 import { isOfficeHours, istDate } from '@/lib/office-hours';
+import { loadCommon, savedMode } from '@/lib/chat/common-setup';
+import { commonReady, modeFor } from '@/lib/chat/common-setup-rules';
 import type { GmailStatus, PanelStats } from './panel-board';
 
 // ── The panel board's numbers (owner 2026-10-09) ──────────────────────────────────────────────
@@ -30,11 +32,17 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
   const ids = panels.map(p => p.id);
   const by = <T extends { business_id: string }>(rows: T[]) => new Map(rows.map(r => [String(r.business_id), r]));
 
-  const sites = by(await safe('sites', async () => (await query<{ business_id: string; ai_enabled: boolean; has_prompt: boolean; support_gmail: number; email_ids: string[] | null }>(
-    `SELECT s.tracker_business_id::text AS business_id, s.ai_enabled, COALESCE(length(btrim(s.system_prompt)), 0) > 0 AS has_prompt,
+  const sites = by(await safe('sites', async () => (await query<{ site_id?: string; business_id: string; ai_enabled: boolean; has_prompt: boolean; support_gmail: number; email_ids: string[] | null }>(
+    `SELECT s.id::text AS site_id, s.tracker_business_id::text AS business_id, s.ai_enabled, COALESCE(length(btrim(s.system_prompt)), 0) > 0 AS has_prompt,
             (SELECT count(*) FROM site_emails e WHERE e.site_id = s.id)::int AS support_gmail,
             (SELECT array_agg(e.id::text ORDER BY e.created_at) FROM site_emails e WHERE e.site_id = s.id) AS email_ids
        FROM sites s WHERE s.tracker_business_id::text = ANY($1::text[])`, [ids])).rows, []));
+
+  // Step 7: a panel on the All panels setup has a prompt even with none of its own.
+  const common = commonReady(await loadCommon());
+  for (const s of Array.from(sites.values())) {
+    if (s.site_id && !s.has_prompt && common && modeFor(await savedMode(s.site_id), null, true) === 'common') s.has_prompt = true;
+  }
 
   // Today in India: customers who wrote, team replies, Chikki's replies.
   const today = by(await safe('today', async () => (await query<{ business_id: string; chats: string; team: string }>(

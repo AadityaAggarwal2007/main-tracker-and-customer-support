@@ -32,6 +32,8 @@ import { noteAiFailure, noteAiSuccess } from './ai-health';
 import { buildSystemPrompt, type Channel, type SavedAnswer } from './ai-prompt';
 import { CATEGORIZE_TOOL, ESCALATE_TOOL, ORDER_LOOKUP_TOOL } from './ai-tools';
 import { UNPROVEN_LOOKUP, VERIFICATION_DEPLOYED_AT, courierAsksSoFar, couriersInLookups, dropOrphanedToolCalls, isProvenLookup, type StoredMessage } from './ai-history';
+import { setupFor } from './common-setup';
+import { fillBrand } from './common-setup-rules';
 
 // Moved out of this file on 2026-10-02 (pure move); re-exported so no importer changes.
 export { AI_MODELS, attemptOrder, getActiveModel, getChain, getClient, getModelList, isRetryable, loadActiveModelFromDb, persistActiveModel, setActiveModel, sideAttemptOrder, sideModel } from './ai-models';
@@ -151,6 +153,9 @@ export async function getAIResponse(
   let faqs: SavedAnswer[] = [];
   // The states COD works in, if the owner set some (read fresh like the saved answers).
   let codStates: string | null = null;
+  // The "All panels" setup (owner 2026-10-10, step 7, common-setup.ts): a panel in 'common' mode uses the common prompt
+  // and saved answers ({brand} = its own name) and the common effort levels. Never throws: else the panel's own setup.
+  const setup = siteId ? await setupFor(siteId, siteSystemPrompt) : null;
   if (siteId) {
     try {
       const c = await queryOne<{ cod_states: string | null }>(`SELECT cod_states FROM sites WHERE id = $1`, [siteId]);
@@ -164,9 +169,11 @@ export async function getAIResponse(
         `SELECT question, answer FROM site_faqs
           WHERE site_id = $1 AND is_enabled = true
           ORDER BY sort_order, created_at`,
-        [siteId]
+        [setup?.faqSite ?? siteId]
       );
-      faqs = r.rows;
+      faqs = setup?.mode === 'common'
+        ? r.rows.map((f) => ({ question: fillBrand(f.question, setup.brand), answer: fillBrand(f.answer, setup.brand) }))
+        : r.rows;
     } catch (err) {
       // A broken FAQ read must never take the whole reply down.
       console.error('[AI] saved answers lookup failed:', (err as Error)?.message);
@@ -207,7 +214,7 @@ export async function getAIResponse(
   const courierNote = !courierAskedNow ? ''
     : courierAsks !== null && courierAsks >= COURIER_NAME_FROM_ASK ? COURIER_NAME_OK_NOTE : COURIER_NAME_NOT_YET_NOTE;
 
-  let systemPrompt = buildSystemPrompt(siteSystemPrompt, codAvailable, channel, faqs, codStates, askedNow)
+  let systemPrompt = buildSystemPrompt(setup ? setup.prompt : siteSystemPrompt, codAvailable, channel, faqs, codStates, askedNow, setup?.brand ?? null)
     + (alreadyReplied ? ALREADY_REPLIED_NOTE : '')
     + (codAlreadyTold && codStates ? codAlreadyToldNote(codStates) : '');
 
@@ -291,7 +298,9 @@ export async function getAIResponse(
   let effortSettings: unknown = null;
   if (siteId && isCustomer) {
     try {
-      effortSettings = (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
+      effortSettings = setup?.mode === 'common' && setup.effort
+        ? setup.effort
+        : (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
     } catch (err) {
       // Before chikki-effort.sql is applied the column does not exist: the defaults stand.
       console.error('[AI] effort settings read failed:', (err as Error)?.message);

@@ -3,6 +3,7 @@ import { getAuthFromRequest, type AuthUser } from '@/lib/auth';
 import { queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
 import { CUSTOMER_GROUPS, EFFORTS, cleanEffortSettings } from '@/lib/chat/effort';
+import { COMMON_EDIT_ERROR, saveCommon, setupForSite } from '@/lib/chat/common-setup';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,12 @@ export async function POST(request: NextRequest) {
     const siteId = await siteIdFor(businessId, user);
     if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
     const settings = cleanEffortSettings(given);
+    // Step 7: a panel on the All panels setup changes the common levels (every such panel), and only an admin of all.
+    if ((await setupForSite(siteId).catch(() => null))?.mode === 'common') {
+      if (user.businessIds && user.businessIds.length > 0) return NextResponse.json({ error: COMMON_EDIT_ERROR }, { status: 403 });
+      await saveCommon({ effort: settings }, user.username);
+      return NextResponse.json({ settings, scope: 'common' });
+    }
     await queryOne(`UPDATE sites SET chikki_effort = $2::jsonb WHERE id = $1 RETURNING id`, [siteId, JSON.stringify(settings)]);
     return NextResponse.json({ settings });
   } catch (err) {

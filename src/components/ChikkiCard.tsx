@@ -66,6 +66,8 @@ export default function ChikkiCard({
   const [rulebook, setRulebook] = useState<RuleSection[]>([]);
   const [changes, setChanges] = useState<RuleChange[]>([]);
   const [effortData, setEffortData] = useState<EffortData | null>(null);
+  // Step 7: this panel uses the All panels setup (Settings > All panels setup).
+  const [setup, setSetup] = useState<{ mode: 'common'; brand: string } | null>(null);
   const [canEdit, setCanEdit] = useState(false);
   const [canEditCommon, setCanEditCommon] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -117,6 +119,7 @@ export default function ChikkiCard({
       setNotes(d.notes || []); setTopics(d.topics || []); setLocked(d.locked || []);
       setRulebook(d.rulebook || []); setChanges(d.ruleChanges || []); setEffortData(d.effort || null);
       setCanEdit(!!d.canEdit); setCanEditCommon(!!d.canEditCommon);
+      setSetup(d.setup && d.setup.mode === 'common' ? { mode: 'common', brand: String(d.setup.brand || '') } : null);
     } catch { /* keep what is on screen */ }
   }, [token, businessId]);
 
@@ -464,6 +467,13 @@ export default function ChikkiCard({
           </button>
         </label>
       </div>
+
+      {setup && (
+        <div className="chikki-common" role="note">
+          This panel uses the <b>All panels setup</b>: the prompt, saved answers and effort levels you change here change on every
+          panel that uses it. <b>{'{brand}'}</b> is said as &ldquo;{setup.brand || 'the panel name'}&rdquo; here. Notes, Cash on Delivery and the courier stay this panel&apos;s.
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div role="tablist" aria-label="Chikki" style={{ display: 'flex', gap: 4, padding: 4, margin: '0.875rem 1.5rem 0', borderRadius: 10, background: 'var(--muted)', overflowX: 'auto' }}>

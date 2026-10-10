@@ -34,6 +34,8 @@ export interface PanelEmailAccount {
 export interface PanelChatSite {
   id: string; widgetKey: string; aiEnabled: boolean;
   systemPrompt: string | null; codAvailable: boolean | null; codStates: string | null; domain: string; conversations: number;
+  // Step 7: 'common' = Chikki uses the All panels setup (systemPrompt is then the common prompt).
+  setupMode?: 'common' | 'own'; brand?: string;
 }
 // What deleting a panel would destroy — Tracker rows plus the chat-support site
 export interface PanelImpact {

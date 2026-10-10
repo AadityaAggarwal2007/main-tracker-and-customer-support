@@ -512,3 +512,11 @@ Step 6 (same day): the open chat in Chat Support loads fast: the newest 200 mess
 3-second refresh asks only for what changed. Staff screens only; every message is still there (Load older), nothing
 deleted or hidden. One additive index (`chat-speed.sql`) waits for the owner's yes. Rules 11 / 14: PASS (a new
 customer message shows within 3 seconds as before); the rest NOT APPLICABLE.
+
+Step 7 (same day): one Chikki setup for every panel (Settings > All panels setup; rulebook 12.4): the prompt, saved
+answers and effort levels made once from a panel, `{brand}` = each panel's own name; a panel switched to it (or a new
+panel with no prompt) uses it; nothing deleted. Found and fixed with it: the owner's identity block (rules 40 / 41,
+"Karry from the Vastora team") was in the code with the name Vastora, so VASTRIKA's and kurtiya's customers were told
+"Vastora". Owner change recorded: each panel's Chikki says "Karry from the <panel> team" and signs "Karry, <panel>
+Support" (vastora unchanged). Rules 40 / 41: PASS (no AI words, no model; the right store name). Rule 2 (rules change
+only with the owner): PASS, he asked for one setup on every panel; the live AI test runs before a panel is switched.

@@ -200,7 +200,7 @@ export function guardOptions(options: string[], ctx: GuardContext): string[] {
 }
 
 // "Sudharo": the team member's own draft, spelling and grammar fixed, nothing else.
-export const POLISH_INSTRUCTION = `You fix the spelling, grammar and punctuation of a short reply that a Vastora support team member is about to send to a customer in live chat.
+export const POLISH_INSTRUCTION = `You fix the spelling, grammar and punctuation of a short reply that an online store's support team member is about to send to a customer in live chat.
 Keep everything else exactly as it is: the meaning, the language (Hinglish stays Hinglish in Roman letters, Hindi stays Hindi, English stays English), the tone, every fact, number, date, amount, name, order ID and link, the line breaks and any emoji. Do not add a greeting, a sign-off, an apology, a promise or any sentence that is not there; do not remove or soften anything; do not answer the customer yourself. If the draft is already correct, return it unchanged.
 Output the corrected reply text only: no quotes, no explanation, no labels.`;
 

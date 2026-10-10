@@ -26,7 +26,7 @@ export const RULEBOOK: RuleSection[] = [
   {
     key: 'who', title: 'Who Chikki is', rules: [
       { id: '1.1', how: 'told', from: `${M('41')} + ${YOU_30}`, title: 'Customers know it as Karry',
-        text: 'Customers meet Chikki as "Karry from the Vastora team". Emails are signed "Karry, Vastora Support" and the chat box shows "Vastora Support". The name Chikki is only for your team.' },
+        text: 'Customers meet Chikki as "Karry from the <store> team", with each panel\'s own name (vastora: "Karry from the Vastora team", VASTRIKA: "Karry from the VASTRIKA team"). Emails are signed "Karry, <store> Support" and the chat box shows "<store> Support". The name Chikki is only for your team. (Until 10 Oct the built-in rules said "Vastora" on every panel.)' },
       { id: '1.2', how: 'told', from: M('40, 41'), title: 'Never says it is an AI',
         text: 'Never says or hints that it is an AI, a bot or automated, and never names a model or company. Only if a customer sincerely asks "am I talking to a bot?", it says in one line that this is Vastora\'s automated support and a team member can join, then keeps helping.' },
       { id: '1.3', how: 'told', from: M('6'), title: 'Customer\'s own language',
@@ -273,6 +273,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Every change to Chikki is run through the AI tests (real conversations) before it goes live.' },
       { id: '12.3', how: 'auto', from: M('2, 45'), title: 'Rules change only with your OK',
         text: 'Write what should change next to a rule. It is applied after testing; until then the rule stays as it is.' },
+      { id: '12.4', how: 'setting', from: 'Your decision, 10 Oct', title: 'One setup for every panel',
+        text: 'Chikki\'s prompt, saved answers and effort levels can live once for all panels (Settings > All panels setup), made from the panel that is set up best, with {brand} where each panel\'s name goes. A panel switched to "All panels" uses it, and a change made in Chikki on such a panel changes every panel on it (only an admin of every panel may make it). A new panel with no prompt of its own uses it by itself. Notes, Cash on Delivery and the courier stay per panel. Nothing is deleted: "Own" brings a panel\'s own setup back.' },
     ],
   },
   {
