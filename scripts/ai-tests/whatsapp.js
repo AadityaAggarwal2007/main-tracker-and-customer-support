@@ -17,6 +17,9 @@ const db = {
     if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: /'agent'/.test(sql) ? 'agent' : 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/FROM messages m\s+WHERE m\.conversation_id = \$1 AND m\.deleted_at IS NULL AND m\.sender IN/.test(sql)) { const rows = S.msgs.filter((m) => m.conversation_id === p[0]).slice().reverse().map((m, i) => ({ id: m.id, sender: m.sender, content: m.content, created_at: '2026-10-10T10:0' + (9 - Math.min(i, 9)) + ':00Z', metadata: m.metadata })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
+    if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql.replace(/\s+/g, ' '))) { const rows = S.panels.map((x) => ({ id: x.id, name: x.id === 'bizVast' ? 'vastora' : 'kurtiya' })); return { rows, rowCount: rows.length }; }
+    if (/FROM site_emails se JOIN sites s/.test(sql.replace(/\s+/g, ' '))) return { rows: [{ id: 'bizVast', email: 'help@vastora.in' }], rowCount: 1 };
+    if (/FROM chat_settings WHERE key LIKE 'wa_brand:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_brand:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
@@ -100,6 +103,8 @@ const rPicture = require(path.join(SRC, 'app/api/whatsapp/profile/picture/route.
 const rName = require(path.join(SRC, 'app/api/whatsapp/display-name/route.ts'));
 const errs = require(path.join(SRC, 'lib/chat/whatsapp-errors.ts'));
 const rActivity = require(path.join(SRC, 'app/api/whatsapp/activity/route.ts'));
+const brandsLib = require(path.join(SRC, 'lib/chat/whatsapp-brands.ts'));
+const rBrands = require(path.join(SRC, 'app/api/whatsapp/brands/route.ts'));
 const diag = require(path.join(SRC, 'lib/chat/whatsapp-diagnose.ts'));
 const rThread = require(path.join(SRC, 'app/api/whatsapp/thread/route.ts'));
 const rTestSend = require(path.join(SRC, 'app/api/whatsapp/test-send/route.ts'));
@@ -611,6 +616,38 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     assert.match(h.fix, /System users > shiptrack-server > Add assets > WhatsApp accounts.*28873951022288651/);
     assert.match(errs.metaHint('WhatsApp refused the message: (#10) Application does not have permission for this action').fix, /System users/);
   });
+
+  console.log('whatsapp: brands and the order-placed template');
+  await t('the order-placed preset is a valid Utility template with 4 variables, never starting or ending on one', () => {
+    const P = brandsLib.ORDER_PLACED_PRESET;
+    const r = tpl.templateSpec(P);
+    eq(r.ok, true);
+    deq([r.spec.vars, r.spec.category, r.spec.name], [4, 'UTILITY', 'order_placed']);
+    assert.match(P.body, /placed successfully/); assert.match(P.body, /within 1-2 days/); assert.match(P.body, /Thank you/); assert.match(P.body, /email us at \{\{4\}\}/);
+    eq(tpl.renderTemplate(P, ['Rahul', '#1042', 'Vastora', 'help@vastora.in']).startsWith('Hi Rahul, your order #1042 with Vastora has been placed successfully.'), true);
+    deq([brandsLib.isOrderPlaced('order_placed'), brandsLib.isOrderPlaced('order_placed_v2'), brandsLib.isOrderPlaced('hello_world')], [true, true, false]);
+  });
+  await t('cleanBrand / parseBrand: the rules for a brand name and email; a bad saved value falls back', () => {
+    deq(brandsLib.cleanBrand({ name: '  VASTRIKA  ', email: 'help@vastrika.com' }), { ok: true, name: 'VASTRIKA', email: 'help@vastrika.com' });
+    deq(brandsLib.cleanBrand({ name: 'Kurtiya', email: '' }), { ok: true, name: 'Kurtiya', email: '' });
+    assert.match(brandsLib.cleanBrand({ name: 'A', email: '' }).error, /2 to 40/);
+    assert.match(brandsLib.cleanBrand({ name: 'Bad {{1}}', email: '' }).error, /cannot have/);
+    assert.match(brandsLib.cleanBrand({ name: 'Okay', email: 'nope' }).error, /email/);
+    deq(brandsLib.parseBrand('{"name":"X","email":"a@b.co"}'), { name: 'X', email: 'a@b.co' });
+    deq(brandsLib.parseBrand('junk'), { name: null, email: null });
+  });
+  await t('brands route: every panel with its saved or default words (support Gmail); saving one is Super Admin only and validated', () => withEnv(async () => {
+    eq((await rBrands.GET(jreq(AGENT, {}))).status, 401);
+    const g = await rBrands.GET(jreq(OWNER, {}));
+    deq(g.body.brands.map((b) => [b.id, b.panel, b.name, b.email, b.savedName, b.supportGmail]), [['bizVast', 'vastora', 'vastora', 'help@vastora.in', null, 'help@vastora.in'], ['bizKurt', 'kurtiya', 'kurtiya', '', null, null]]);
+    eq((await rBrands.POST(jreq(AGENT, { businessId: 'bizVast', name: 'Vastora', email: 'a@b.co' }))).status, 401);
+    eq((await rBrands.POST(jreq(OWNER, { businessId: 'nope', name: 'Vastora', email: '' }))).status, 404);
+    eq((await rBrands.POST(jreq(OWNER, { businessId: 'bizVast', name: 'V', email: '' }))).status, 400);
+    deq((await rBrands.POST(jreq(OWNER, { businessId: 'bizKurt', name: 'Kurtiya Official', email: 'care@kurtiya.in' }))).body, { ok: true, name: 'Kurtiya Official', email: 'care@kurtiya.in' });
+    eq(S.settings['wa_brand:bizKurt'], '{"name":"Kurtiya Official","email":"care@kurtiya.in"}');
+    const g2 = await rBrands.GET(jreq(OWNER, {}));
+    deq(g2.body.brands.map((b) => [b.id, b.name, b.email, b.savedName, b.savedEmail]), [['bizVast', 'vastora', 'help@vastora.in', null, null], ['bizKurt', 'Kurtiya Official', 'care@kurtiya.in', 'Kurtiya Official', 'care@kurtiya.in']]);
+  }));
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

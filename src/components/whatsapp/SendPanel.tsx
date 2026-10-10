@@ -4,11 +4,12 @@ import { useState } from 'react';
 import { Loader2, Send } from 'lucide-react';
 import PhonePreview from './PhonePreview';
 import { renderTemplate } from '@/lib/chat/whatsapp-templates';
-import { SECTION, label, spin, type Alert, type WaLists, type WaProfileData, type WaSettings } from './types';
+import { isOrderPlaced, ORDER_PLACED_SLOTS } from '@/lib/chat/whatsapp-brand-rules';
+import { SECTION, label, spin, type Alert, type Brand, type WaLists, type WaProfileData, type WaSettings } from './types';
 
 // Send a test (or the real first message) to a number: an approved template with its values, previewed on the
 // phone; the chat then opens in Chat Support. A plain text goes from the inbox once the customer has written.
-export default function SendPanel({ token, s, lists, prof, onAlert, onOpenChat }: { token: string; s: WaSettings | null; lists: WaLists | null; prof: WaProfileData | null; onAlert: Alert; onOpenChat: (id: string) => void }) {
+export default function SendPanel({ token, s, lists, prof, brands, onAlert, onOpenChat }: { token: string; s: WaSettings | null; lists: WaLists | null; prof: WaProfileData | null; brands: Brand[]; onAlert: Alert; onOpenChat: (id: string) => void }) {
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const approved = (lists?.templates || []).filter((t) => t.status === 'APPROVED');
   const [to, setTo] = useState('');
@@ -17,7 +18,15 @@ export default function SendPanel({ token, s, lists, prof, onAlert, onOpenChat }
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<{ ok: boolean; text: string; conversationId?: string } | null>(null);
   const chosen = approved.find((t) => t.name === name) || null;
-  const ready = !!chosen && to.replace(/\D/g, '').length >= 10 && params.slice(0, chosen.vars).filter((p) => p.trim()).length === chosen.vars && !busy;
+  const [brandId, setBrandId] = useState('');
+  const orderPlaced = !!chosen && isOrderPlaced(chosen.name) && chosen.vars === 4;
+  // The brand's own name and support email fill {{3}} and {{4}} of an order-placed template.
+  const pickBrand = (id: string) => {
+    setBrandId(id);
+    const b = brands.find((x) => x.id === id);
+    setParams((p) => { const n = Array.from({ length: Math.max(chosen?.vars ?? 0, p.length) }, (_, i) => p[i] || ''); n[ORDER_PLACED_SLOTS.brand] = b ? b.name : ''; n[ORDER_PLACED_SLOTS.email] = b ? b.email : ''; return n; });
+  };
+  const ready = !!chosen && to.replace(/\D/g, '').length >= 10 && params.slice(0, chosen.vars).filter((p) => (p || '').trim()).length === chosen.vars && !busy;
   const send = async () => {
     if (!chosen) return;
     setBusy(true);
@@ -46,10 +55,17 @@ export default function SendPanel({ token, s, lists, prof, onAlert, onOpenChat }
                   {approved.map((t) => <option key={t.id || t.name} value={t.name}>{t.name} ({t.language})</option>)}
                 </select></label>
             </div>
+            {orderPlaced && (
+              <label><span style={label}>Brand (fills its name and support email: Value 3 and 4)</span>
+                <select className="form-input" value={brandId} onChange={(e) => pickBrand(e.target.value)}>
+                  <option value="">Pick the brand</option>
+                  {brands.map((b) => <option key={b.id} value={b.id}>{b.panel} · {b.name} · {b.email || 'no email yet'}</option>)}
+                </select></label>
+            )}
             {chosen && chosen.vars > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(10rem, 1fr))', gap: '0.5rem' }}>
                 {Array.from({ length: chosen.vars }, (_, i) => (
-                  <label key={i}><span style={label}>Value {i + 1}</span><input className="form-input" value={params[i] || ''} onChange={(e) => { const p = [...params]; p[i] = e.target.value; setParams(p); }} /></label>
+                  <label key={i}><span style={label}>Value {i + 1}</span><input className="form-input" value={params[i] || ''} onChange={(e) => { const p = Array.from({ length: Math.max(chosen?.vars ?? 0, params.length) }, (_, k) => params[k] || ''); p[i] = e.target.value; setParams(p); }} /></label>
                 ))}
               </div>
             )}

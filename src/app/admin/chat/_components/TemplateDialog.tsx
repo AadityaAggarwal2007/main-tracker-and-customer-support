@@ -22,7 +22,7 @@ export function TemplateDialog({ token, busy, onCancel, onSend }: {
     return () => { on = false; };
   }, [token]);
   const chosen = (list || []).find((t) => t.name === name) || null;
-  const ready = !!chosen && params.slice(0, chosen.vars).filter((p) => p.trim()).length === chosen.vars && !busy;
+  const ready = !!chosen && params.slice(0, chosen.vars).filter((p) => (p || '').trim()).length === chosen.vars && !busy;
   return (
     <div className="modal-overlay" onClick={() => { if (!busy) onCancel(); }}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="tpl-title" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '30rem' }}>
