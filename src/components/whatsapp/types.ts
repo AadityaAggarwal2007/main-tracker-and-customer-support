@@ -16,7 +16,7 @@ import type { Brand } from '@/lib/chat/whatsapp-brand-rules';
 export type { Brand };
 import type { AutoOverview } from '@/lib/chat/whatsapp-auto';
 export type { AutoOverview };
-export type WaTab = 'setup' | 'test' | 'profile' | 'templates' | 'automation' | 'send' | 'activity';
+export type WaTab = 'setup' | 'test' | 'profile' | 'templates' | 'automation' | 'chats' | 'send' | 'activity';
 export type Alert = (type: string, message: string) => void;
 
 export const EMPTY_FORM = { name: '', language: 'en_US', category: 'UTILITY', header: '', body: '', footer: '', examples: [] as string[] };

@@ -25,12 +25,40 @@ export async function waPanelId(env: NodeJS.ProcessEnv = process.env): Promise<s
   return row?.id ?? null;
 }
 
+// Which brand a number belongs to (owner 2026-10-10: "ye bhi brand wise ... chat ka system"). One WhatsApp number
+// serves every brand, so the chat of a customer who writes back goes to the panel of the brand they dealt with:
+// (1) the panel whose automated message this number last received, (2) the panel of the number's latest order,
+// (3) the default WhatsApp panel (WHATSAPP_PANEL_ID, else the default panel). Routing a chat to an inbox is not
+// verification: the chat stays a plain visitor (a phone number alone never makes anyone a customer).
+export async function waPanelFor(digits: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  try {
+    const a = await queryOne<{ business_id: string }>(
+      `SELECT business_id FROM wa_auto_sends WHERE to_number = $1 AND status IN ('sent', 'delivered', 'read') ORDER BY sent_at DESC NULLS LAST LIMIT 1`,
+      [digits]
+    );
+    if (a?.business_id) {
+      const ok = await queryOne<{ id: string }>(`SELECT id::text AS id FROM businesses WHERE id::text = $1`, [a.business_id]);
+      if (ok) return ok.id;
+    }
+  } catch { /* the automation table is not installed: fall through */ }
+  try {
+    const o = await queryOne<{ business_id: string }>(
+      `SELECT o.business_id::text AS business_id FROM orders o
+        WHERE o.business_id IS NOT NULL AND right(regexp_replace(o.customer_mobile, '\D', '', 'g'), 10) = $1
+        ORDER BY o.created_at DESC LIMIT 1`,
+      [digits.slice(-10)]
+    );
+    if (o?.business_id) return o.business_id;
+  } catch { /* no order lookup: fall through */ }
+  return waPanelId(env);
+}
+
 export type InboundOutcome = 'stored' | 'duplicate' | 'no_panel';
 
 // The customer's WhatsApp chat on the WhatsApp panel's site: the latest one for that number, else a new one
 // (With team). Also used when the TEAM starts the conversation with a template (whatsapp-templates.ts).
-export async function waConversationFor(digits: string, name: string | null, env: NodeJS.ProcessEnv = process.env): Promise<{ id: string; status: string } | null> {
-  const panel = await waPanelId(env);
+export async function waConversationFor(digits: string, name: string | null, env: NodeJS.ProcessEnv = process.env): Promise<{ id: string; status: string; panel: string } | null> {
+  const panel = await waPanelFor(digits, env);
   if (!panel) return null;
   const site = await ensureSiteForPanel(panel, 'whatsapp');
   const visitorId = `wa:${digits}`;
@@ -40,14 +68,37 @@ export async function waConversationFor(digits: string, name: string | null, env
       ORDER BY created_at DESC LIMIT 1`,
     [site.id, visitorId]
   );
-  if (found) return found;
-  return queryOne<{ id: string; status: string }>(
+  if (found) return { ...found, panel };
+  const made = await queryOne<{ id: string; status: string }>(
     `INSERT INTO conversations
        (id, site_id, visitor_id, visitor_name, visitor_phone, status, source, unread_count, last_message_at, created_at, updated_at)
      VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 'agent_handling', 'whatsapp', 0, now(), now(), now())
      RETURNING id, status`,
     [site.id, visitorId, name, '+' + digits]
   );
+  return made ? { ...made, panel } : null;
+}
+
+// The automation's own messages (WhatsApp > Automation) are not chats until the customer answers: then the thread
+// gets what was sent to that number by this brand, as quiet system lines dated when they went (never counted as
+// waiting, unread, search, the AI or the team score: the 'system' sender is left out of all of them).
+export async function backfillAutomation(conversationId: string, panelId: string, digits: string): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at)
+       SELECT gen_random_uuid()::text, $1, 'system', w.body_text,
+              jsonb_build_object('system', true, 'step', 'wa_auto', 'automation', true, 'channel', 'whatsapp',
+                                 'wa_template', w.template, 'wa_id', w.wa_id, 'wa_status', w.status, 'auto_id', w.id::text),
+              w.sent_at
+         FROM wa_auto_sends w
+        WHERE w.business_id = $2 AND w.to_number = $3 AND w.status IN ('sent', 'delivered', 'read')
+          AND w.body_text IS NOT NULL AND w.sent_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = $1 AND m.metadata->>'auto_id' = w.id::text)`,
+      [conversationId, panelId, digits]
+    );
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '42P01') console.error('[whatsapp] automation backfill:', (e as Error).message);
+  }
 }
 
 export async function storeWaInbound(m: WaInbound, env: NodeJS.ProcessEnv = process.env): Promise<{ outcome: InboundOutcome; conversationId: string | null }> {
@@ -56,6 +107,7 @@ export async function storeWaInbound(m: WaInbound, env: NodeJS.ProcessEnv = proc
 
   const conv = await waConversationFor(m.from, m.name, env);
   if (!conv) return { outcome: 'no_panel', conversationId: null };
+  await backfillAutomation(conv.id, conv.panel, m.from);
 
   await query(
     `INSERT INTO messages (id, conversation_id, sender, content, metadata, created_at)

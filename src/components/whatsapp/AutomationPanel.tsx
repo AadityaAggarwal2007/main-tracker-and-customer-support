@@ -82,6 +82,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <strong style={{ fontSize: '1rem' }}>{p.name}</strong>
             <span className={`chip ${p.enabled ? 'chip-ok' : 'chip-warn'}`}>{p.enabled ? 'ON' : 'OFF'}</span>
+            {p.replied > 0 && <span className="chip chip-ok" title="Customers who wrote back after one of these messages">{p.replied} replied</span>}
             {p.enabled && p.since && <span className="meta" style={{ fontSize: '0.75rem' }}>messaging orders placed since {when(p.since)}</span>}
             <button type="button" className={`btn btn-sm ${p.enabled ? 'btn-outline' : 'btn-primary'}`} style={{ marginLeft: 'auto', gap: 4 }} disabled={busy === p.id || (!p.enabled && !o.installed)} onClick={() => void toggle(p.id, p.name, !p.enabled)}>
               {busy === p.id ? <Loader2 size={13} style={spin} /> : <Power size={13} />} {p.enabled ? 'Turn OFF' : 'Turn ON'}

@@ -182,6 +182,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
 export interface PanelAuto {
   id: string; name: string; enabled: boolean; since: string | null;
   placed: Counts; tracking: Counts; placed24: Counts; tracking24: Counts;
+  replied: number;                     // customers who wrote back after one of these messages (distinct numbers)
 }
 export interface RecentRow {
   id: string; panel: string; order_id: string; kind: Kind; status: string; to: string | null; error: string | null; code: number | null;
@@ -201,7 +202,7 @@ export async function automationOverview(): Promise<AutoOverview> {
   const stateOf = (name: string) => (list ? (list.find((t) => t.name === name)?.status || 'MISSING') : 'UNKNOWN');
   const panels: PanelAuto[] = panelRows.rows.map((p) => {
     const s = settings.get(p.id) || { enabled: false, since: null };
-    return { id: p.id, name: p.name, enabled: s.enabled, since: s.since ? new Date(s.since).toISOString() : null, placed: zero(), tracking: zero(), placed24: zero(), tracking24: zero() };
+    return { id: p.id, name: p.name, enabled: s.enabled, since: s.since ? new Date(s.since).toISOString() : null, placed: zero(), tracking: zero(), placed24: zero(), tracking24: zero(), replied: 0 };
   });
   let installed = true; let recent: RecentRow[] = [];
   try {
@@ -211,6 +212,17 @@ export async function automationOverview(): Promise<AutoOverview> {
       const p = panels.find((x) => x.id === row.business_id); if (!p || !STATUSES.includes(row.status)) continue;
       p[row.kind][row.status] += row.n; p[row.kind === 'placed' ? 'placed24' : 'tracking24'][row.status] += row.n24;
     }
+    try {
+      const rep = await query<{ business_id: string; replied: number }>(
+        `SELECT w.business_id, count(DISTINCT w.to_number)::int AS replied
+           FROM wa_auto_sends w
+           JOIN sites s ON s.tracker_business_id::text = w.business_id
+           JOIN conversations c ON c.site_id = s.id AND c.source = 'whatsapp' AND c.visitor_id = 'wa:' || w.to_number
+           JOIN messages m ON m.conversation_id = c.id AND m.sender = 'visitor' AND m.deleted_at IS NULL AND m.created_at > w.sent_at
+          WHERE w.sent_at IS NOT NULL GROUP BY w.business_id`
+      );
+      for (const row of rep.rows) { const p = panels.find((x) => x.id === row.business_id); if (p) p.replied = row.replied; }
+    } catch (e) { console.error('[wa-auto] replied count:', (e as Error).message); }
     const r = await query<{ id: string; business_id: string; order_id: string; kind: Kind; status: string; to_number: string | null; error: string | null; code: number | null; attempts: number; due_at: string; sent_at: string | null }>(
       `SELECT id::text AS id, business_id, order_id, kind, status, to_number, error, code, attempts, due_at, sent_at FROM wa_auto_sends ORDER BY updated_at DESC LIMIT 30`);
     recent = r.rows.map((x) => ({ id: x.id, panel: panels.find((p) => p.id === x.business_id)?.name || x.business_id, order_id: x.order_id, kind: x.kind, status: x.status, to: maskTo(x.to_number), error: x.error, code: x.code, attempts: x.attempts, due_at: x.due_at, sent_at: x.sent_at }));
