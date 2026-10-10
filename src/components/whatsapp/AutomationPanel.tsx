@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Power, RefreshCw } from 'lucide-react';
 import { SECTION, spin, type Alert, type AutoOverview } from './types';
 
@@ -18,11 +18,15 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [o, setO] = useState<AutoOverview | null>(null);
   const [busy, setBusy] = useState('');
+  const lastErr = useRef('');
+  const [testTo, setTestTo] = useState(() => { try { return localStorage.getItem('wa_test_to') || ''; } catch { return ''; } });
+  const [testName, setTestName] = useState('');
+  const [testOut, setTestOut] = useState<Record<string, { kind: string; ok: boolean; text: string; error: string | null }[]>>({});
   const load = useCallback(async (fresh = false) => {
     try {
       const r = await fetch(`/api/whatsapp/automation${fresh ? '?fresh=1' : ''}`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => null);
-      if (r.ok && j) setO(j); else if (j?.error) onAlert('error', j.error);
+      if (r.ok && j) { setO(j); lastErr.current = ''; } else if (j?.error && j.error !== lastErr.current) { lastErr.current = j.error; onAlert('error', j.error); }
     } catch { /* offline: the next refresh tries again */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -54,6 +58,19 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
     } finally { setBusy(''); }
   };
 
+  const test = async (id: string, name: string) => {
+    if (!testTo.trim()) { onAlert('error', 'Type your WhatsApp number first'); return; }
+    setBusy('t' + id);
+    try {
+      try { localStorage.setItem('wa_test_to', testTo.trim()); } catch { /* private window */ }
+      const r = await fetch('/api/whatsapp/automation', { method: 'POST', headers: auth, body: JSON.stringify({ action: 'test', businessId: id, to: testTo, name: testName }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not send the test'); return; }
+      setTestOut((x) => ({ ...x, [id]: j.results || [] }));
+      const sent = (j.results || []).filter((x: { ok: boolean }) => x.ok).length;
+      onAlert(sent ? 'success' : 'error', `${name}: ${sent} of 2 test messages sent to ${testTo}${j.order ? ` (filled from order ${j.order})` : ''}`);
+    } finally { setBusy(''); }
+  };
   if (!o) return <div className="tf-card" style={{ padding: '1.25rem' }}><Loader2 size={16} style={spin} /> Loading…</div>;
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -88,6 +105,19 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
               {busy === p.id ? <Loader2 size={13} style={spin} /> : <Power size={13} />} {p.enabled ? 'Turn OFF' : 'Turn ON'}
             </button>
           </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: '0.78rem' }}>
+            <span className="meta">Check it on your own phone:</span>
+            <input className="form-input" style={{ width: 150, height: 32 }} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="Your number" inputMode="tel" />
+            <input className="form-input" style={{ width: 130, height: 32 }} value={testName} onChange={(e) => setTestName(e.target.value)} placeholder="Name (optional)" />
+            <button type="button" className="btn btn-sm btn-outline" disabled={busy === 't' + p.id} onClick={() => void test(p.id, p.name)}>{busy === 't' + p.id ? <Loader2 size={13} style={spin} /> : 'Send both as a test'}</button>
+            <span className="meta">(the brand's latest order fills them; no customer is messaged, nothing is counted)</span>
+          </div>
+          {(testOut[p.id] || []).map((t) => (
+            <div key={t.kind} style={{ fontSize: '0.78rem', padding: '6px 8px', borderRadius: 8, background: t.ok ? 'var(--ok-bg, #ecfdf3)' : 'var(--danger-bg, #fef3f2)' }}>
+              <strong>{t.kind === 'placed' ? 'Order placed' : 'Tracking link'}:</strong> {t.ok ? 'sent' : `not sent (${t.error})`}
+              {t.text && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: 'var(--fg-muted)' }}>{t.text}</div>}
+            </div>
+          ))}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', fontSize: '0.8125rem', borderCollapse: 'collapse' }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}><th style={{ padding: '4px 6px' }}>Message</th>{COLS.map((c) => <th key={c.key} style={{ padding: '4px 6px' }}>{c.label}</th>)}</tr></thead>

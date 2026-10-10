@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
 import { waConfigured } from '@/lib/chat/whatsapp';
+import { webhookStatus } from '@/lib/chat/whatsapp-webhook-status';
 import { appId, messagingId, setAppId, setMessagingId, setWabaId, wabaId } from '@/lib/chat/whatsapp-settings';
 import { getPhone } from '@/lib/chat/whatsapp-profile';
 import { waPanelId } from '@/lib/chat/whatsapp-inbound';
@@ -25,6 +26,7 @@ export async function GET(request: NextRequest) {
     configured: waConfigured(),
     verifyTokenSet: !!process.env.WHATSAPP_VERIFY_TOKEN,
     appSecretSet: !!process.env.WHATSAPP_APP_SECRET,
+    webhook: webhookStatus(),
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
     waba: await wabaId(),
     messaging: await messagingId(),

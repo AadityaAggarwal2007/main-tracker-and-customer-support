@@ -10,7 +10,7 @@ const IST = (d, h, m = 0) => Date.UTC(2026, 9, d, h, m) - 330 * 60000;   // an I
 const S = {};
 function reset() {
   Object.assign(S, {
-    nowMs: IST(13, 12), noTable: false, sendFail: null, fetches: [], seq: 0,
+    nowMs: IST(13, 12), noTable: false, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0,
     settings: { whatsapp_messaging_id: '28873951022288651', 'wa_brand:b1': JSON.stringify({ name: 'Vastora', email: 'help@vastora.test' }) },
     panels: [{ id: 'b1', name: 'vastora' }, { id: 'b2', name: 'VASTRIKA' }],
     orders: [], rows: [],
@@ -34,7 +34,7 @@ const db = {
     if (/FROM site_emails se JOIN sites s/.test(sql)) return { rows: [], rowCount: 0 };
     if (/^SELECT 1 FROM wa_auto_sends LIMIT 1/.test(sql)) { if (S.noTable) { const e = new Error('relation "wa_auto_sends" does not exist'); e.code = '42P01'; throw e; } return { rows: [{ '?column?': 1 }], rowCount: 1 }; }
     if (/FROM orders o WHERE o\.business_id::text = \$1 AND o\.created_at >= \$2 AND o\.is_cancelled IS NOT TRUE/.test(sql)) {
-      const rows = S.orders.filter((o) => o.business_id === p[0] && new Date(o.created_at) >= p[1] && !o.is_cancelled && !S.rows.some((r) => r.business_id === p[0] && r.order_id === o.order_id && r.kind === 'placed')).slice(0, 100)
+      const rows = S.orders.filter((o) => o.business_id === p[0] && new Date(o.created_at) >= p[1] && !o.is_cancelled && !(S.rows.some((r) => r.business_id === p[0] && r.order_id === o.order_id && r.kind === 'placed') && S.rows.some((r) => r.business_id === p[0] && r.order_id === o.order_id && r.kind === 'tracking'))).slice(0, 100)
         .map((o) => ({ order_id: o.order_id, customer_mobile: o.customer_mobile, created_at: o.created_at }));
       return { rows, rowCount: rows.length };
     }
@@ -45,12 +45,17 @@ const db = {
       return { rows: [], rowCount: 1 };
     }
     if (/FROM wa_auto_sends w LEFT JOIN orders o/.test(sql)) {
-      const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs).map((r) => {
+      S.trackingFlags = (S.trackingFlags || []).concat([p[1]]);
+      const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
         const o = orderOf(r);
         return { id: r.id, order_id: r.order_id, kind: r.kind, attempts: r.attempts, due_at: r.due_at, gone: !o, customer_name: o && o.customer_name, customer_mobile: o && o.customer_mobile, created_at: o && o.created_at, is_cancelled: o && o.is_cancelled, tracking_status: o && o.tracking_status, delivered_at: o && o.delivered_at, tracking_token: o && o.tracking_token, tracking_domain: null };
       });
       return { rows, rowCount: rows.length };
     }
+    if (/^UPDATE wa_auto_sends SET due_at = now\(\) \+ interval '30 minutes'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'pending' && new Date(x.due_at).getTime() <= S.nowMs); if (!r || S.stealClaims) return { rows: [], rowCount: 0 }; r.due_at = new Date(S.nowMs + 30 * 60000); return { rows: [{ id: r.id }], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'skipped', error = 'Automation was switched off'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.status === 'pending') { r.status = 'skipped'; r.error = 'Automation was switched off'; n++; } return { rows: [], rowCount: n }; }
+    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, updated_at = now\(\) WHERE id = \$1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'failed'; r.error = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = NULL, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: null, attempts: r.attempts + 1 }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'skipped'; r.error = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, attempts = attempts \+ 1, updated_at/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'failed'; r.error = p[1]; r.attempts++; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'sent'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'sent', wa_id: p[1], to_number: p[2], template: p[3], body_text: p[4], error: null, attempts: r.attempts + 1, sent_at: new Date(S.nowMs) }); return { rows: [], rowCount: 1 }; }
@@ -65,6 +70,7 @@ const db = {
       return { rows, rowCount: rows.length };
     }
     if (/FROM wa_auto_sends ORDER BY updated_at DESC LIMIT 30/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 30).map((r) => ({ ...r })), rowCount: S.rows.length };
+    if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT 1 FROM businesses WHERE id::text = \$1/.test(sql)) return S.panels.some((x) => x.id === p[0]) ? { rows: [{ x: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
     if (/^SELECT value FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? { rows: [], rowCount: 0 } : { rows: [{ value: v }], rowCount: 1 }; }
     throw new Error('fake db query: ' + sql.slice(0, 120));
@@ -89,6 +95,7 @@ global.fetch = async (url, init = {}) => {
   S.fetches.push({ url, method: init.method || 'GET', body });
   if (/message_templates/.test(url)) return { ok: true, status: 200, json: async () => ({ data: S.metaTemplates.map((t) => ({ ...t })) }) };
   if (/\/messages$/.test(url)) {
+    if (S.sendThrow) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
     if (S.sendFail) return { ok: false, status: 400, json: async () => ({ error: { code: S.sendFail.code, message: S.sendFail.message } }) };
     return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.' + (++S.seq) }] }) };
   }
@@ -239,10 +246,46 @@ async function t(name, fn) {
   });
   await t('every panel the same: a second panel switched on gets its own brand words and only its own orders', async () => {
     turnOn('b1'); turnOn('b2'); S.orders = [order(), order({ business_id: 'b2', order_id: '#9001', customer_mobile: '9811122233' })];
+    S.settings['wa_brand:b2'] = JSON.stringify({ name: 'VASTRIKA', email: 'care@vastrika.test' });
     await run(IST(13, 12));
     eq(sends().length, 2);
     const b2 = sends().find((x) => x.body.to === '919811122233');
-    deq(b2.body.template.components[0].parameters.map((x) => x.text), ['Aaditya', '#9001', 'VASTRIKA', 'our support team']);
+    deq(b2.body.template.components[0].parameters.map((x) => x.text), ['Aaditya', '#9001', 'VASTRIKA', 'care@vastrika.test']);
+  });
+  await t('review fixes: a brand with no support email fails loudly instead of "email us at our support team"', async () => {
+    turnOn('b2'); S.orders = [order({ business_id: 'b2', order_id: '#9001' })];
+    await run(IST(13, 12));
+    eq(sends().length, 0); deq([S.rows[0].status, /support email/.test(S.rows[0].error)], ['failed', true]);
+  });
+  await t('review fixes: a row another server process already claimed is never sent here', async () => {
+    turnOn(); S.orders = [order()]; S.stealClaims = true;
+    await run(IST(13, 12)); eq(sends().length, 0); eq(S.rows[0].status, 'pending');
+  });
+  await t('review fixes: a timeout is never sent again by itself (Meta may have taken it)', async () => {
+    turnOn(); S.orders = [order()]; S.sendThrow = true;
+    await run(IST(13, 12)); deq([S.rows[0].status, /may still have been delivered/.test(S.rows[0].error)], ['failed', true]);
+    S.sendThrow = false; await run(IST(13, 12, 15)); eq(sends().length, 1);
+  });
+  await t('review fixes: 60 waiting tracking rows never hold back a new order-placed message; tracking rows are asked for only when they can go', async () => {
+    turnOn(); S.metaTemplates[1].status = 'PENDING';
+    S.orders = Array.from({ length: 60 }, (_, i) => order({ order_id: '#3' + String(100 + i), created_at: new Date(IST(11, 11)), customer_mobile: '98765432' + String(10 + (i % 80)) }));
+    for (const o of S.orders) { S.rows.push({ id: String(++S.seq), business_id: 'b1', order_id: o.order_id, kind: 'placed', status: 'sent', to_number: '91' + o.customer_mobile, attempts: 1, due_at: new Date(IST(11, 11)) }, { id: String(++S.seq), business_id: 'b1', order_id: o.order_id, kind: 'tracking', status: 'pending', to_number: '91' + o.customer_mobile, attempts: 0, due_at: new Date(IST(13, 11)) }); }
+    S.orders.push(order({ order_id: '#4000' }));
+    await run(IST(13, 12));
+    eq(sends().length, 1); eq(sends()[0].body.template.name, 'order_placed'); eq(S.trackingFlags.slice(-1)[0], false);
+    S.metaTemplates[1].status = 'APPROVED'; auto.resetTemplateCache();
+    await run(IST(13, 12, 1)); eq(S.trackingFlags.slice(-1)[0], true);
+  });
+  await t('review fixes: switching OFF drops the waiting messages, so switching ON later sends nothing old', async () => {
+    turnOn(); S.orders = [order()]; await run(IST(13, 12));
+    eq(S.rows[1].status, 'pending');
+    await auto.saveAuto('b1', false, IST(13, 13));
+    deq([S.rows[1].status, S.rows[1].error], ['skipped', 'Automation was switched off']);
+    await auto.saveAuto('b1', true, IST(14, 10)); await run(IST(15, 11, 5));
+    eq(sends().length, 1);
+  });
+  await t('review fixes: the phone fallback strips every non-digit in SQL (\\D, not the letter D)', () => {
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'), 'utf8'), /regexp_replace\(o\.customer_mobile, '\\\\D', '', 'g'\)/);
   });
   await t('a delivery report goes to the row by the message id, never moving it backwards; the webhook path imports only the small status module', async () => {
     turnOn(); S.orders = [order()]; await run(IST(13, 12));
@@ -284,6 +327,21 @@ async function t(name, fn) {
     eq((await route.POST(jreq(OWNER, { action: 'retry', id: 'abc' }))).status, 400);
     eq((await route.POST(jreq(OWNER, { action: 'retry', id: '2' }))).status, 409);      // the tracking row is still pending
     const r = await route.POST(jreq(OWNER, { action: 'retry', id: '1' })); eq(r.status, 200); eq(S.rows[0].status, 'pending');
+  });
+  await t('POST test: both messages of a brand to the owner\'s number, filled from its latest order; nothing recorded; a bad number or panel refused', async () => {
+    S.orders = [order(), order({ order_id: '#1560', created_at: new Date(IST(13, 11, 30)) })];
+    eq((await route.POST(jreq(AGENT, { action: 'test', businessId: 'b1', to: '9289144767' }))).status, 401);
+    eq((await route.POST(jreq(OWNER, { action: 'test', businessId: 'nope', to: '9289144767' }))).status, 404);
+    eq((await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '12' }))).status, 400);
+    const r = await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '92891 44767', name: 'Aaditya\n' }));
+    deq([r.status, r.body.order, r.body.results.map((x) => [x.kind, x.ok])], [200, '#1560', [['placed', true], ['tracking', true]]]);
+    const s2 = sends(); eq(s2.length, 2); eq(s2[0].body.to, '919289144767');
+    deq(s2[0].body.template.components[0].parameters.map((x) => x.text), ['Aaditya', '#1560', 'Vastora', 'help@vastora.test']);
+    eq(s2[1].body.template.components[0].parameters[3].text, 'https://shiptrack.store/track/tok-1553');
+    eq(S.rows.length, 0);
+    S.metaTemplates[1].status = 'PENDING';
+    const r2 = await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '9289144767' }));
+    deq(r2.body.results.map((x) => [x.kind, x.ok, x.error]), [['placed', true, null], ['tracking', false, 'Template not approved by Meta yet']]);
   });
   await t('the minute cron route starts the automation, not awaited, before the mailbox sweep', () => {
     const src = fs.readFileSync(path.join(SRC, 'app/api/cron/chat-email-poll/route.ts'), 'utf8');
