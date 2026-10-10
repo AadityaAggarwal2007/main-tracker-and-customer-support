@@ -624,7 +624,8 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     eq(r.ok, true);
     deq([r.spec.vars, r.spec.category, r.spec.name], [4, 'UTILITY', 'order_placed']);
     assert.match(P.body, /placed successfully/); assert.match(P.body, /within 1-2 days/); assert.match(P.body, /Thank you/); assert.match(P.body, /email us at \{\{4\}\}/);
-    eq(tpl.renderTemplate(P, ['Rahul', '#1042', 'Vastora', 'help@vastora.in']).startsWith('Hi Rahul, your order #1042 with Vastora has been placed successfully.'), true);
+    eq(P.header, 'Order Placed Successfully');
+    eq(tpl.renderTemplate(P, ['Rahul', '#1042', 'Vastora', 'help@vastora.in']).startsWith('Order Placed Successfully\nHi Rahul, your order #1042 with Vastora has been placed successfully.'), true);
     deq([brandsLib.isOrderPlaced('order_placed'), brandsLib.isOrderPlaced('order_placed_v2'), brandsLib.isOrderPlaced('hello_world')], [true, true, false]);
   });
   await t('cleanBrand / parseBrand: the rules for a brand name and email; a bad saved value falls back', () => {
