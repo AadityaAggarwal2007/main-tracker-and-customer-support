@@ -10,7 +10,7 @@ export const ORDER_PLACED_PRESET = {
   name: 'order_placed',
   language: 'en_US',
   category: 'UTILITY',
-  header: '',
+  header: 'Order Placed Successfully',
   body: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Thank you for shopping with us! Your tracking details will be shared with you within 1-2 days. For any confusion, please email us at {{4}} and our team will help you.',
   footer: '',
   examples: ['Rahul', '#1042', 'Your Brand', 'help@yourbrand.com'],
