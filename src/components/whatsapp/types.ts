@@ -2,7 +2,8 @@ import type { TemplateInfo } from '@/lib/chat/whatsapp-templates';
 import type { PhoneInfo, Profile } from '@/lib/chat/whatsapp-profile';
 
 export interface WaSettings {
-  configured: boolean; verifyTokenSet: boolean; appSecretSet: boolean; phoneNumberId: string;
+  configured: boolean; verifyTokenSet: boolean; appSecretSet: boolean;
+  webhook?: { lastOk: number | null; lastRefused: number | null; refusedReason: string | null; refusedSinceOk: number }; phoneNumberId: string;
   waba: string; messaging: string; wabaFromEnv: boolean; appId: string; panel: { id: string; name: string } | null; webhookUrl: string;
   phone: PhoneInfo | null; phoneError: string | null;
 }

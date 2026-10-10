@@ -42,6 +42,16 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://shiptrack.store';
   const hasTemplates = !!lists && !lists.error;
   const approved = (lists?.templates || []).some((t) => t.status === 'APPROVED');
+  // Meta's last webhook calls since the server started (a wrong WHATSAPP_APP_SECRET refuses every one of them)
+  const hook = s?.webhook;
+  const ago = (ms: number | null) => (ms ? `${Math.max(1, Math.round((Date.now() - ms) / 60000))} min ago` : '');
+  const refusedLast = !!hook?.lastRefused && (!hook.lastOk || hook.lastRefused > hook.lastOk);
+  const hookOk = !!hook?.lastOk && !refusedLast;
+  const hookText = !hook || (!hook.lastOk && !hook.lastRefused) ? 'Webhook calls: none since the last deploy yet'
+    : refusedLast ? `Webhook calls are being REFUSED (${hook.refusedSinceOk} so far)` : `Webhook calls arriving: last one accepted ${ago(hook.lastOk)}`;
+  const hookNote = refusedLast
+    ? `Customers' messages are not coming in: ${hook?.refusedReason || 'signature'}. Put the right App secret (Meta app "ship track msg" > App settings > Basic) in /etc/tracker/.env, or remove the line, and deploy.`
+    : 'Send any WhatsApp message to the number and press Refresh: this line should say accepted.';
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
       <div className="tf-card" style={{ padding: '1.25rem' }}>
@@ -49,7 +59,8 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
         <Row ok={s ? s.configured : null} text="Token and phone number id on the server" note={s?.configured ? `Phone number id ${s.phoneNumberId}` : 'WHATSAPP_CLOUD_TOKEN and WHATSAPP_PHONE_NUMBER_ID in /etc/tracker/.env, then deploy'} />
         <Row ok={s ? s.verifyTokenSet : null} text="Webhook verify token on the server" note={`Meta App Dashboard > WhatsApp > Configuration: Callback URL ${origin}${s?.webhookUrl || '/api/whatsapp/webhook'}, field "messages" subscribed`} />
         <Row ok={s ? s.appSecretSet : null} text="Webhook calls signature-checked" note={s?.appSecretSet ? 'WHATSAPP_APP_SECRET is set' : 'Not yet: put the Meta app secret (App settings > Basic) in /etc/tracker/.env as WHATSAPP_APP_SECRET before real customers'} />
-        <Row ok={s ? !!s.panel : null} text={s?.panel ? `WhatsApp chats go to the panel "${s.panel.name}"` : 'No panel for WhatsApp chats'} note="One number for the whole install; WHATSAPP_PANEL_ID in .env picks another panel" />
+        <Row ok={hook ? hookOk : null} text={hookText} note={hookNote} />
+        <Row ok={s ? !!s.panel : null} text={s?.panel ? `WhatsApp chats go to their brand (others to "${s.panel.name}")` : 'No panel for WhatsApp chats'} note="One number for every brand: a customer's chat goes to the brand whose message they got or whose order they have; anyone else to this panel (WHATSAPP_PANEL_ID in .env picks another)" />
         <Row ok={s ? !!s.waba : null} text="WhatsApp Business Account id saved" note="Needed for templates (below)" />
         <Row ok={s ? !!s.messaging : null} text="Messaging account id saved" note="Templates live on the Messaging account (Meta refuses to make one on the WhatsApp account)" />
         <Row ok={s ? !!s.appId : null} text="Meta App id saved" note="Needed for the profile picture (below)" />

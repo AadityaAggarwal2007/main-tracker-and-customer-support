@@ -241,3 +241,34 @@ export async function retryFailed(id: string): Promise<boolean> {
 export async function panelExists(id: string): Promise<boolean> {
   return !!(await queryOne(`SELECT 1 FROM businesses WHERE id::text = $1`, [id]));
 }
+
+// "Send a test to my number" (owner 2026-10-10: "har cheez check kario"): both automation messages exactly as a
+// customer of this brand would get them, filled from the brand's latest order (its order id and real tracking link)
+// with the name typed, to the number typed. Nothing is recorded in wa_auto_sends and no customer is messaged.
+export interface TestSend { kind: Kind; ok: boolean; text: string; error: string | null }
+export async function sendAutomationTest(panelId: string, to: string, name: string): Promise<{ results: TestSend[]; order: string | null } | { error: string }> {
+  const digits = waDigits(to);
+  if (!digits) return { error: 'Type the WhatsApp number (10 digits = India)' };
+  if (!waConfigured()) return { error: 'WhatsApp is not set up on the server (token / phone number id)' };
+  const { list, error } = await templateStates(Date.now(), true);
+  if (!list) return { error: error || 'Could not read the templates' };
+  const brand = (await loadBrands().catch(() => [])).find((b) => b.id === panelId);
+  const o = await queryOne<{ order_id: string; tracking_token: string | null; tracking_domain: string | null }>(
+    `SELECT o.order_id, o.tracking_token::text AS tracking_token, b.tracking_domain
+       FROM orders o LEFT JOIN businesses b ON b.id = o.business_id
+      WHERE o.business_id::text = $1 ORDER BY o.created_at DESC LIMIT 1`,
+    [panelId]
+  ).catch(() => null);
+  const base = (o?.tracking_domain || process.env.TRACKING_BASE_URL || 'https://shiptrack.store').replace(/\/+$/, '');
+  const facts: OrderFacts = { orderId: o?.order_id || '#TEST', customerName: name || 'Test', trackingLink: o?.tracking_token ? `${base}/track/${o.tracking_token}` : `${base}/track` };
+  const words: BrandWords = { name: brand?.name || '', email: brand?.email || '' };
+  const results: TestSend[] = [];
+  for (const kind of ['placed', 'tracking'] as const) {
+    const tpl = approved(list, kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
+    if (!tpl) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
+    const params = (kind === 'placed' ? placedParams(facts, words) : trackingParams(facts, words)).slice(0, tpl.vars);
+    const r = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params);
+    results.push({ kind, ok: !('error' in r), text: renderTemplate(tpl, params), error: 'error' in r ? r.error : null });
+  }
+  return { results, order: o?.order_id || null };
+}

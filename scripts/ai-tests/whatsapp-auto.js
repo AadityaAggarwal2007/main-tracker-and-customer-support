@@ -65,6 +65,7 @@ const db = {
       return { rows, rowCount: rows.length };
     }
     if (/FROM wa_auto_sends ORDER BY updated_at DESC LIMIT 30/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 30).map((r) => ({ ...r })), rowCount: S.rows.length };
+    if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT 1 FROM businesses WHERE id::text = \$1/.test(sql)) return S.panels.some((x) => x.id === p[0]) ? { rows: [{ x: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
     if (/^SELECT value FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? { rows: [], rowCount: 0 } : { rows: [{ value: v }], rowCount: 1 }; }
     throw new Error('fake db query: ' + sql.slice(0, 120));
@@ -284,6 +285,21 @@ async function t(name, fn) {
     eq((await route.POST(jreq(OWNER, { action: 'retry', id: 'abc' }))).status, 400);
     eq((await route.POST(jreq(OWNER, { action: 'retry', id: '2' }))).status, 409);      // the tracking row is still pending
     const r = await route.POST(jreq(OWNER, { action: 'retry', id: '1' })); eq(r.status, 200); eq(S.rows[0].status, 'pending');
+  });
+  await t('POST test: both messages of a brand to the owner\'s number, filled from its latest order; nothing recorded; a bad number or panel refused', async () => {
+    S.orders = [order(), order({ order_id: '#1560', created_at: new Date(IST(13, 11, 30)) })];
+    eq((await route.POST(jreq(AGENT, { action: 'test', businessId: 'b1', to: '9289144767' }))).status, 401);
+    eq((await route.POST(jreq(OWNER, { action: 'test', businessId: 'nope', to: '9289144767' }))).status, 404);
+    eq((await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '12' }))).status, 400);
+    const r = await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '92891 44767', name: 'Aaditya\n' }));
+    deq([r.status, r.body.order, r.body.results.map((x) => [x.kind, x.ok])], [200, '#1560', [['placed', true], ['tracking', true]]]);
+    const s2 = sends(); eq(s2.length, 2); eq(s2[0].body.to, '919289144767');
+    deq(s2[0].body.template.components[0].parameters.map((x) => x.text), ['Aaditya', '#1560', 'Vastora', 'help@vastora.test']);
+    eq(s2[1].body.template.components[0].parameters[3].text, 'https://shiptrack.store/track/tok-1553');
+    eq(S.rows.length, 0);
+    S.metaTemplates[1].status = 'PENDING';
+    const r2 = await route.POST(jreq(OWNER, { action: 'test', businessId: 'b1', to: '9289144767' }));
+    deq(r2.body.results.map((x) => [x.kind, x.ok, x.error]), [['placed', true, null], ['tracking', false, 'Template not approved by Meta yet']]);
   });
   await t('the minute cron route starts the automation, not awaited, before the mailbox sweep', () => {
     const src = fs.readFileSync(path.join(SRC, 'app/api/cron/chat-email-poll/route.ts'), 'utf8');

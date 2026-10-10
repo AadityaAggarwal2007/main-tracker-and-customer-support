@@ -332,9 +332,13 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       eq((await route.POST(req('POST', { body }))).status, 403);
       eq((await route.POST(req('POST', { body, headers: { 'x-hub-signature-256': 'sha256=deadbeef' } }))).status, 403);
       eq(S.convs.length, 0);
+      const hs = require(path.join(SRC, 'lib/chat/whatsapp-webhook-status.ts'));
+      let st = hs.webhookStatus();
+      deq([st.refusedSinceOk >= 2, st.refusedReason, st.lastRefused > (st.lastOk || 0)], [true, 'the signature does not match WHATSAPP_APP_SECRET', true]);
       const sig = 'sha256=' + crypto.createHmac('sha256', 'app-secret').update(body).digest('hex');
       const ok = await route.POST(req('POST', { body, headers: { 'x-hub-signature-256': sig } }));
       deq([ok.status, ok.body.stored, S.convs.length], [200, 1, 1]);
+      st = hs.webhookStatus(); deq([st.refusedSinceOk, !!st.lastOk], [0, true]);
     } finally { delete process.env.WHATSAPP_APP_SECRET; }
   });
   await t('POST: a database failure on one message never breaks the answer (Meta would resend forever)', async () => {

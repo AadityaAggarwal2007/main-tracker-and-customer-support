@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseWaWebhook, waSignatureOk } from '@/lib/chat/whatsapp';
 import { storeWaInbound, storeWaStatus } from '@/lib/chat/whatsapp-inbound';
+import { noteWebhookOk, noteWebhookRefused } from '@/lib/chat/whatsapp-webhook-status';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +25,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const raw = await request.text();
   if (!waSignatureOk(raw, request.headers.get('x-hub-signature-256'), process.env.WHATSAPP_APP_SECRET)) {
+    const why = request.headers.get('x-hub-signature-256') ? 'the signature does not match WHATSAPP_APP_SECRET' : 'the call carried no signature';
+    noteWebhookRefused(why);
+    console.error(`[whatsapp] webhook refused: ${why} (check that WHATSAPP_APP_SECRET is the App secret of the app "ship track msg")`);
     return NextResponse.json({ error: 'Bad signature' }, { status: 403 });
   }
+  noteWebhookOk();
   let body: unknown = null;
   try { body = JSON.parse(raw); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   const { messages, statuses } = parseWaWebhook(body);
