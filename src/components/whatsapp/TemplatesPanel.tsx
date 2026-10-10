@@ -116,7 +116,6 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
                 ))}
               </div>
             )}
-        <BrandsCard token={token} brands={brands} onAlert={onAlert} reload={reload} />
             <label><span style={label}>Footer (optional)</span><input className="form-input" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} maxLength={60} /></label>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-outline" onClick={() => { setOpen(false); setEditId(null); }}>Cancel</button>
@@ -124,6 +123,8 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
             </div>
           </form>
         )}
+
+        <BrandsCard token={token} brands={brands} onAlert={onAlert} reload={reload} />
       </div>
       <PhonePreview name={name} picture={prof?.profile?.pictureUrl || null} message={shown} />
     </div>
