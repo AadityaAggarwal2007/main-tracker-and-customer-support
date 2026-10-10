@@ -211,7 +211,7 @@ export interface PanelAuto {
   replied: number;                     // customers who wrote back after one of these messages (distinct numbers)
 }
 export interface RecentRow {
-  id: string; panel: string; order_id: string; name: string | null; kind: Kind; status: string; to: string | null; error: string | null; code: number | null;
+  id: string; panel: string; panel_id: string; order_id: string; name: string | null; kind: Kind; status: string; to: string | null; error: string | null; code: number | null;
   attempts: number; due_at: string; sent_at: string | null;
 }
 export interface AutoOverview {
@@ -252,8 +252,8 @@ export async function automationOverview(): Promise<AutoOverview> {
     const r = await query<{ id: string; business_id: string; order_id: string; kind: Kind; status: string; to_number: string | null; error: string | null; code: number | null; attempts: number; due_at: string; sent_at: string | null; customer_name: string | null }>(
       `SELECT w.id::text AS id, w.business_id, w.order_id, w.kind, w.status, w.to_number, w.error, w.code, w.attempts, w.due_at, w.sent_at, o.customer_name
          FROM wa_auto_sends w LEFT JOIN orders o ON o.business_id::text = w.business_id AND o.order_id = w.order_id
-        ORDER BY w.updated_at DESC LIMIT 30`);
-    recent = r.rows.map((x) => ({ id: x.id, panel: panels.find((p) => p.id === x.business_id)?.name || x.business_id, order_id: x.order_id, name: x.customer_name || null, kind: x.kind, status: x.status, to: maskTo(x.to_number), error: x.error, code: x.code, attempts: x.attempts, due_at: x.due_at, sent_at: x.sent_at }));
+        ORDER BY w.updated_at DESC LIMIT 300`);
+    recent = r.rows.map((x) => ({ id: x.id, panel: panels.find((p) => p.id === x.business_id)?.name || x.business_id, panel_id: x.business_id, order_id: x.order_id, name: x.customer_name || null, kind: x.kind, status: x.status, to: maskTo(x.to_number), error: x.error, code: x.code, attempts: x.attempts, due_at: x.due_at, sent_at: x.sent_at }));
   } catch (e) {
     if (missingTable(e)) installed = false; else console.error('[wa-auto] overview:', (e as Error).message);
   }

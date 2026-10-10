@@ -113,6 +113,11 @@ Done and live:
   hours, retries for hiccups, delivery reports by wamid. Open: the owner makes + gets `order_tracking` approved (button
   "Tracking link template"), runs the SQL (his yes), switches one panel ON. Webhook signature (WHATSAPP_APP_SECRET)
   still not set (red line in Setup): after the automation, one step at a time.
+  **Evening state:** SQL run, both templates APPROVED, WHATSAPP_APP_SECRET set (webhook checked), VASTRIKA and kurtiya
+  ON, vastora OFF (its checkout recharge ran out). The number is ShipTrack's for every brand, NOT a help line (owner,
+  after a team member replied "Dear Customer ... Team Vastrika"): a customer's message gets one fixed reply per chat
+  per 24 h, "this number only sends order updates, for help email <brand email>" (`whatsapp-autoreply.ts`). The
+  Automation tab's list is brand-wise: Brand row + one line per order with both messages, filters and search.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

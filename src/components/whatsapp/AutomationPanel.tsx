@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Power, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Power, RefreshCw, Search } from 'lucide-react';
 import { SECTION, spin, type Alert, type AutoOverview } from './types';
+import { SHOW_LABELS, countByPanel, countByShow, filterOrders, groupOrders, type AutoShow } from '@/lib/chat/whatsapp-auto-view';
+import type { RecentRow } from '@/lib/chat/whatsapp-auto';
 
 // WhatsApp > Automation (owner 2026-10-10: "har naye order par apne aap message chala jaye, on/off ka button, kitne
 // bheje kitne fail"). The order-placed message at once and the tracking link 48 hours later, per panel, default OFF.
@@ -12,6 +14,9 @@ const COLS: { key: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipp
 ];
 const STATUS_TONE: Record<string, string> = { pending: 'chip-warn', sent: 'chip-ok', delivered: 'chip-ok', read: 'chip-ok', failed: 'chip-danger', skipped: 'chip-warn' };
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true }) : '—');
+const STATUS_WORD: Record<string, string> = { pending: 'Waiting', sent: 'Sent ✓', delivered: 'Delivered ✓✓', read: 'Read ✓✓', failed: 'Failed', skipped: 'Skipped' };
+const PAGE = 25;
+const store = { get: (k: string) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private window */ } } };
 const tplTone = (s: string) => (s === 'APPROVED' ? 'chip-ok' : s === 'PENDING' ? 'chip-warn' : 'chip-danger');
 
 export default function AutomationPanel({ token, onAlert }: { token: string; onAlert: Alert }) {
@@ -21,6 +26,11 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
   const lastErr = useRef('');
   const [testTo, setTestTo] = useState(() => { try { return localStorage.getItem('wa_test_to') || ''; } catch { return ''; } });
   const [testName, setTestName] = useState('');
+  const [brand, setBrandState] = useState(() => store.get('wa_auto_brand') || 'all');
+  const setBrand = (b: string) => { setBrandState(b); setShown(PAGE); store.set('wa_auto_brand', b); };
+  const [show, setShow] = useState<AutoShow>('all');
+  const [q, setQ] = useState('');
+  const [shown, setShown] = useState(PAGE);
   const [testOut, setTestOut] = useState<Record<string, { kind: string; ok: boolean; text: string; error: string | null }[]>>({});
   const load = useCallback(async (fresh = false) => {
     try {
@@ -71,7 +81,24 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
       onAlert(sent ? 'success' : 'error', `${name}: ${sent} of 2 test messages sent to ${testTo}${j.order ? ` (filled from order ${j.order})` : ''}`);
     } finally { setBusy(''); }
   };
+  const lines = useMemo(() => groupOrders(o?.recent || []), [o]);
+  const brandOk = brand === 'all' || !o || o.panels.some((p) => p.id === brand);
+  const panelSel = brandOk ? brand : 'all';
+  const list = useMemo(() => filterOrders(lines, { panel: panelSel, show, q }), [lines, panelSel, show, q]);
+  const perPanel = useMemo(() => countByPanel(lines, { show, q }), [lines, show, q]);
+  const perShow = useMemo(() => countByShow(lines, { panel: panelSel, q }), [lines, panelSel, q]);
   if (!o) return <div className="tf-card" style={{ padding: '1.25rem' }}><Loader2 size={16} style={spin} /> Loading…</div>;
+  const cell = (r: RecentRow | null, label: string) => {
+    if (!r) return <span className="meta">—</span>;
+    return (
+      <div style={{ display: 'grid', gap: 2 }}>
+        <span><span className={`chip ${STATUS_TONE[r.status] || 'chip-warn'}`} title={label}>{STATUS_WORD[r.status] || r.status}</span></span>
+        <span className="meta" style={{ fontSize: '0.72rem' }}>{r.status === 'pending' ? `goes ${when(r.due_at)}` : when(r.sent_at || r.due_at)}</span>
+        {r.error && <span style={{ fontSize: '0.72rem', color: r.status === 'failed' ? 'var(--danger, #b91c1c)' : 'var(--fg-muted)', maxWidth: 260 }}>{r.error}{r.code ? ` [${r.code}]` : ''}</span>}
+        {r.status === 'failed' && <span><button type="button" className="btn btn-sm btn-outline" style={{ marginTop: 2 }} disabled={busy === 'r' + r.id} onClick={() => void retry(r.id)}>Send again</button></span>}
+      </div>
+    );
+  };
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
       <div className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: 10 }}>
@@ -94,7 +121,19 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
         {!o.configured && <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>WhatsApp is not set up on the server (token / phone number id).</div>}
       </div>
 
-      {o.panels.map((p) => (
+      <div className="tf-card" style={{ padding: '0.75rem 1rem', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="meta" style={{ fontSize: '0.78rem', marginRight: 4 }}>Brand:</span>
+        {[{ id: 'all', name: 'All brands', enabled: null as boolean | null }, ...o.panels.map((p) => ({ id: p.id, name: p.name, enabled: p.enabled as boolean | null }))].map((b) => (
+          <button key={b.id} type="button" aria-pressed={panelSel === b.id} onClick={() => setBrand(b.id)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 999, border: '1px solid var(--border-strong, var(--border))', background: panelSel === b.id ? 'var(--primary)' : 'transparent', color: panelSel === b.id ? '#fff' : 'inherit', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer' }}>
+            {b.enabled !== null && <span title={b.enabled ? 'Automation ON' : 'Automation OFF'} style={{ width: 8, height: 8, borderRadius: 999, background: b.enabled ? '#16a34a' : '#9ca3af' }} />}
+            {b.name}
+            <span style={{ fontWeight: 500, opacity: 0.8 }}>{perPanel[b.id] || 0}</span>
+          </button>
+        ))}
+      </div>
+
+      {o.panels.filter((p) => panelSel === 'all' || p.id === panelSel).map((p) => (
         <div key={p.id} className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <strong style={{ fontSize: '1rem' }}>{p.name}</strong>
@@ -134,31 +173,53 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
         </div>
       ))}
 
-      <div className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: 8 }}>
-        <span style={SECTION}>Latest messages</span>
-        {o.recent.length === 0 && <div className="meta" style={{ fontSize: '0.8125rem' }}>Nothing yet. Once a panel is ON, every order and its messages are listed here.</div>}
-        <div style={{ overflowX: 'auto' }}>
-          {o.recent.length > 0 && (
+      <div className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={SECTION}>Orders and their messages{panelSel !== 'all' ? ` · ${o.panels.find((p) => p.id === panelSel)?.name || ''}` : ''}</span>
+          <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid var(--border)', borderRadius: 8, padding: '0 8px', height: 32 }}>
+            <Search size={13} />
+            <input value={q} onChange={(e) => { setQ(e.target.value); setShown(PAGE); }} placeholder="Order, name or last 4 digits" style={{ border: 0, outline: 'none', background: 'transparent', width: 190, fontSize: '0.8125rem', color: 'inherit' }} />
+          </label>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {SHOW_LABELS.map((f) => (
+            <button key={f.key} type="button" className={`btn btn-sm ${show === f.key ? 'btn-primary' : 'btn-outline'}`} onClick={() => { setShow(f.key); setShown(PAGE); }}
+              style={f.key === 'failed' && perShow.failed > 0 && show !== 'failed' ? { color: 'var(--danger, #b91c1c)', borderColor: 'var(--danger, #b91c1c)' } : undefined}>
+              {f.label} <span style={{ opacity: 0.8, marginLeft: 4 }}>{perShow[f.key]}</span>
+            </button>
+          ))}
+        </div>
+        {lines.length === 0 && <div className="meta" style={{ fontSize: '0.8125rem' }}>Nothing yet. Once a panel is ON, every new order and its two messages are listed here.</div>}
+        {lines.length > 0 && list.length === 0 && <div className="meta" style={{ fontSize: '0.8125rem' }}>No order matches these filters.</div>}
+        {list.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', fontSize: '0.8125rem', borderCollapse: 'collapse' }}>
-              <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}><th style={{ padding: '4px 6px' }}>Panel</th><th style={{ padding: '4px 6px' }}>Order</th><th style={{ padding: '4px 6px' }}>Customer</th><th style={{ padding: '4px 6px' }}>Message</th><th style={{ padding: '4px 6px' }}>Status</th><th style={{ padding: '4px 6px' }}>Number</th><th style={{ padding: '4px 6px' }}>When</th><th style={{ padding: '4px 6px' }}>Note</th><th /></tr></thead>
+              <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}>
+                <th style={{ padding: '4px 6px' }}>Order</th><th style={{ padding: '4px 6px' }}>Customer</th>
+                <th style={{ padding: '4px 6px' }}>1 · Order placed</th><th style={{ padding: '4px 6px' }}>2 · Tracking link (48 h)</th>
+              </tr></thead>
               <tbody>
-                {o.recent.map((r) => (
-                  <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '6px' }}>{r.panel}</td>
-                    <td style={{ padding: '6px', fontWeight: 600 }}>{r.order_id}</td>
-                    <td style={{ padding: '6px' }}>{r.name || '—'}</td>
-                    <td style={{ padding: '6px' }}>{r.kind === 'placed' ? 'Order placed' : 'Tracking link'}</td>
-                    <td style={{ padding: '6px' }}><span className={`chip ${STATUS_TONE[r.status] || 'chip-warn'}`}>{r.status}</span></td>
-                    <td style={{ padding: '6px' }}>{r.to || '—'}</td>
-                    <td style={{ padding: '6px' }}>{r.status === 'pending' ? `due ${when(r.due_at)}` : when(r.sent_at || r.due_at)}</td>
-                    <td style={{ padding: '6px', maxWidth: 320, color: r.status === 'failed' ? 'var(--danger, #b91c1c)' : 'var(--fg-muted)' }}>{r.error || ''}{r.code ? ` [${r.code}]` : ''}</td>
-                    <td style={{ padding: '6px' }}>{r.status === 'failed' && <button type="button" className="btn btn-sm btn-outline" disabled={busy === 'r' + r.id} onClick={() => void retry(r.id)}>Send again</button>}</td>
+                {list.slice(0, shown).map((l) => (
+                  <tr key={l.key} style={{ borderTop: '1px solid var(--border)', verticalAlign: 'top' }}>
+                    <td style={{ padding: '8px 6px' }}>
+                      <div style={{ fontWeight: 700 }}>{l.orderId}</div>
+                      {panelSel === 'all' && <div className="meta" style={{ fontSize: '0.72rem' }}>{l.panel}</div>}
+                    </td>
+                    <td style={{ padding: '8px 6px' }}>
+                      <div>{l.name || '—'}</div>
+                      {l.to && <div className="meta" style={{ fontSize: '0.72rem' }}>{l.to}</div>}
+                    </td>
+                    <td style={{ padding: '8px 6px' }}>{cell(l.placed, 'Order placed')}</td>
+                    <td style={{ padding: '8px 6px' }}>{cell(l.tracking, 'Tracking link')}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        )}
+        {list.length > shown && (
+          <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'center' }} onClick={() => setShown((n) => n + PAGE)}>Show {Math.min(PAGE, list.length - shown)} more (of {list.length - shown})</button>
+        )}
       </div>
     </div>
   );

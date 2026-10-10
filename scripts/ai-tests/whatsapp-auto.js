@@ -44,7 +44,7 @@ const db = {
       S.rows.push({ id: String(++S.seq), business_id: p[0], order_id: p[1], kind, status: p[2], to_number: p[3], error: p[4], code: null, attempts: 0, due_at: kind === 'placed' ? new Date(S.nowMs) : p[5], sent_at: null, wa_id: null });
       return { rows: [], rowCount: 1 };
     }
-    if (/ORDER BY w\.updated_at DESC LIMIT 30/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 30).map((r) => ({ ...r, customer_name: (orderOf(r) || {}).customer_name || null })), rowCount: S.rows.length };
+    if (/ORDER BY w\.updated_at DESC LIMIT 300/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 300).map((r) => ({ ...r, customer_name: (orderOf(r) || {}).customer_name || null })), rowCount: S.rows.length };
     if (/FROM wa_auto_sends w LEFT JOIN orders o/.test(sql)) {
       S.trackingFlags = (S.trackingFlags || []).concat([p[1]]);
       const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
@@ -109,6 +109,7 @@ const status = require(path.join(SRC, 'lib/chat/whatsapp-auto-status.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/automation/route.ts'));
 const brandRules = require(path.join(SRC, 'lib/chat/whatsapp-brand-rules.ts'));
 const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
+const view = require(path.join(SRC, 'lib/chat/whatsapp-auto-view.ts'));
 const OWNER = { username: 'owner', role: 'admin', businessIds: null, permissions: [] };
 const AGENT = { username: 'anurag', role: 'agent', businessIds: null, permissions: ['chat.view', 'chat.reply'] };
 const jreq = (user, body, url = 'http://x/api/whatsapp/automation') => ({ __user: user, url, json: async () => body, nextUrl: { searchParams: new URL(url).searchParams } });
@@ -353,6 +354,27 @@ async function t(name, fn) {
     assert.match(sql, /CREATE TABLE IF NOT EXISTS wa_auto_sends/); assert.match(sql, /UNIQUE \(business_id, order_id, kind\)/);
     assert.match(sql, /GRANT SELECT, INSERT, UPDATE ON wa_auto_sends TO tracker_user/); assert.ok(!/\bDELETE\b/.test(sql.replace(/-- never DELETE[^\n]*/, '')));
     assert.ok(!/DROP |TRUNCATE /i.test(sql));
+  });
+
+  await t('the Automation list: one line per order (both messages side by side), brand / filter / search with counts', () => {
+    const R = (id, panel_id, order_id, kind, status, due, extra = {}) => ({ id, panel: panel_id === 'v' ? 'VASTRIKA' : 'kurtiya', panel_id, order_id, name: null, kind, status, to: '••••3210', error: null, code: null, attempts: 0, due_at: due, sent_at: null, ...extra });
+    const rows = [
+      R('1', 'v', '#2473', 'tracking', 'pending', '2026-10-12T10:00:00Z'), R('2', 'v', '#2473', 'placed', 'read', '2026-10-10T13:30:00Z', { name: 'Asmita' }),
+      R('3', 'v', '#2468', 'placed', 'delivered', '2026-10-10T09:00:00Z'), R('4', 'v', '#2468', 'tracking', 'read', '2026-10-12T09:00:00Z'),
+      R('5', 'k', '#2473', 'placed', 'failed', '2026-10-10T14:00:00Z', { error: 'Not a WhatsApp number', name: 'Ravi' }),
+      R('6', 'k', '#2470', 'placed', 'skipped', '2026-10-10T11:00:00Z'),
+    ];
+    const lines = view.groupOrders(rows);
+    deq(lines.map((l) => [l.panelId, l.orderId, l.placed && l.placed.status, l.tracking && l.tracking.status]),
+      [['k', '#2473', 'failed', null], ['v', '#2473', 'read', 'pending'], ['k', '#2470', 'skipped', null], ['v', '#2468', 'delivered', 'read']]);
+    eq(lines[1].name, 'Asmita');
+    const f = (panel, show, q = '') => view.filterOrders(lines, { panel, show, q }).map((l) => l.panelId + l.orderId);
+    deq(f('v', 'all'), ['v#2473', 'v#2468']);
+    deq(f('all', 'failed'), ['k#2473']); deq(f('all', 'waiting'), ['v#2473']); deq(f('all', 'sent'), ['v#2468']); deq(f('all', 'skipped'), ['k#2470']);
+    deq(f('all', 'all', '2473'), ['k#2473', 'v#2473']); deq(f('all', 'all', '#2468'), ['v#2468']); deq(f('all', 'all', 'ravi'), ['k#2473']);
+    eq(f('all', 'all', '3210').length, 4); eq(f('all', 'all', '32').length, 0);
+    deq(view.countByPanel(lines, { show: 'all', q: '' }), { all: 4, v: 2, k: 2 });
+    deq(view.countByShow(lines, { panel: 'k', q: '' }), { all: 2, failed: 1, waiting: 0, sent: 0, skipped: 1 });
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
