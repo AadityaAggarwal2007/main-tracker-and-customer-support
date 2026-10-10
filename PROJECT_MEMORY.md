@@ -122,6 +122,15 @@ Done and live:
   The Today board shows the number's health to the Super Admin: Meta quality, customers messaged in 24 h vs the
   daily limit, failed today, wrote STOP; plus a morning-routine step. The real limit is 2,000 a day (WhatsApp Manager
   > Overview > Limits; Meta keeps it on the portfolio, so the owner types it once in WhatsApp > Setup).
+- **Manager plan (2026-10-10, 8 PRs, plan approved; Sunny = Manager, owns every chargeback):** done so far:
+  1 permissions `team.lead` / `refunds.manage` / `chargebacks.view` (manager preset; reveal stays Super Admin's);
+  2 a member sees only their own + unheld chats, "Team chats", "Send to Manager" (mark + chat to him);
+  3 auto-assign every minute to members on duty (`auto-assign.ts`); 4 no reply in 30 min = the Manager's + red bar
+  (`escalate-late.ts`); 5 the Manager panel in Chat Support: "Manager" group first (Open cases `?lead=open`, Refund,
+  Ship again, Team live, links to Chargebacks / Team score), the Manager opens on Open cases; Team live =
+  `GET /api/chat/team/live` (`team-live.ts`: per member replies per half hour, on duty, held / waiting, 30-min
+  misses; Chikki's row). Next: 6 thread loads fast (`?after=`, 200 newest + Load older, `chat-speed.sql` index
+  needs his yes), 7 one "All panels" setup, 8 Chikki's record and fixes with him.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

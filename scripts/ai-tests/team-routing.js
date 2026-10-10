@@ -1748,6 +1748,17 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const team = db.list.sql.match(/c\.assigned_to IS NOT NULL AND c\.assigned_to IS DISTINCT FROM \$(\d+) AND c\.status <> 'resolved'/);
     ok(team, 'Team chats condition'); eq(db.list.params[Number(team[1]) - 1], ANURAG);
     ok(!/\(c\.assigned_to = \$\d+ OR/.test(db.list.sql), 'Team chats are not limited to my own');
+    // The Manager's Open cases (owner 2026-10-10, step 5): ?lead=open = open chats that are mine, at risk or with a
+    // threat / fraud claim, riskiest first; a member asking for it gets their usual list.
+    r = await list('owner', '?lead=open');
+    status(r, 200);
+    const lead = db.list.sql.match(/c\.status <> 'resolved' AND \(c\.assigned_to = \$(\d+) OR \(COALESCE\(c\.health_score, 0\) >= 65 OR \(COALESCE\(\(c\.health_signals->>'accuse'\)::int, 0\) > 0 OR COALESCE\(\(c\.health_signals->>'threat'\)::int, 0\) > 0\)\)\)/);
+    ok(lead, 'Open cases condition'); eq(db.list.params[Number(lead[1]) - 1], 'owner');
+    ok(db.list.sql.includes(OUTSIDE_SECTION), 'Refund / Ship again chats stay in their own sections');
+    ok(/ORDER BY COALESCE\(g\.health_score, 0\) DESC, g\.last_message_at DESC NULLS LAST, g\.created_at DESC LIMIT \$\d+$/.test(db.list.sql), 'riskiest first');
+    r = await list('anurag', '?lead=open');
+    ok(!/OR \(COALESCE\(c\.health_score, 0\) >= 65/.test(db.list.sql), 'a member never gets the Manager list');
+    eq(r.body.lead_count, null, 'and no Manager number');
     r = await list('owner', '?mine=1');
     deq([r.body.me, db.list.unansweredParams, db.list.heldParams], ['owner', ['owner'], ['owner']]);
     eq(r.body.mine.held, db.convs.filter((c) => c.assigned_to === 'owner' && c.status !== 'resolved' && !c.merged_into).length);

@@ -1305,7 +1305,8 @@ t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that name
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
   // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct).
-  assert.deepStrictEqual(sec.rules.slice(-4).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14']);
+  assert.deepStrictEqual(sec.rules.slice(-5).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15']);
+  assert.ok(/Open cases/.test(rule('7.15').text) && /half hour/.test(rule('7.15').text) && /Chikki/.test(rule('7.15').text));
   assert.ok(/30 minutes/.test(rule('7.14').text) && /red bar/.test(rule('7.14').text));
   assert.ok(/fewest open chats/.test(rule('7.13').text) && /absent/.test(rule('7.13').text));
   assert.ok(rule('7.12').how === 'code' && /Send to Manager/.test(rule('7.12').text) && /Team chats/.test(rule('7.12').text));

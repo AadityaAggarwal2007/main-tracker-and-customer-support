@@ -13,7 +13,7 @@ import { Chip } from './chips';
 // The list's title follows the queue that is open.
 const TAB_TITLES: Partial<Record<InboxTab, string>> = {
   all: 'All customers', visitors: 'Visitors', customers: 'Customers', human_needed: 'Needs you', agent_handling: 'With team',
-  ai_handling: 'With AI', 'case:refund': 'Refund', 'case:reship': 'Ship again', resolved: 'Closed',
+  ai_handling: 'With AI', 'lead:open': 'Open cases', 'case:refund': 'Refund', 'case:reship': 'Ship again', resolved: 'Closed',
 };
 
 export default function ListHeader({ simple, setTab, topicCounts, activeKey, activePanelId, businesses, caseKey, caseSummary, conversations, listTotal, mineTab, myChats, release, releaseAll, searchActive, searchInput, setRelease, setSearchInput, setSearchQ, setUnreadOnly, tab, topicDef, unreadOnly, urgentCount, user }: {

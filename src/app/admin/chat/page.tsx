@@ -30,6 +30,7 @@ import { AddressDialog, ItemsDialog } from './_components/OrderLine';
 import { ReshipDialog } from './_components/ReshipDialog';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
+import TeamLive from './_components/TeamLive';
 import ListHeader from './_components/ListHeader';
 import NextStep from './_components/NextStep';
 import ThreadHeader from './_components/ThreadHeader';
@@ -54,7 +55,11 @@ export default function ChatSupportPage() {
   // reads ?active=open|closed, so the tab has no status or segment of its own.
   const activeKey = tab === 'active:open' ? 'open' : tab === 'active:closed' ? 'closed' : '';
   const [activeCounts, setActiveCounts] = useState<{ open: number; closed: number }>({ open: 0, closed: 0 });
-  const tabDef = topicKey || activeKey ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
+  // The Manager's tabs (owner 2026-10-10, step 5): Open cases (?lead=open) and Team live (its own board, no list).
+  const leadOpen = tab === 'lead:open';
+  const leadTeam = tab === 'lead:team';
+  const [leadCount, setLeadCount] = useState<number | null>(null);
+  const tabDef = topicKey || activeKey || leadOpen || leadTeam ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
   const statusFilter = tabDef.status;
   const segment = tabDef.segment;
   // Open customers per problem tab, from the list's own answer.
@@ -204,6 +209,8 @@ export default function ChatSupportPage() {
     // A team member's inbox is just their Active cases (owner 2026-10-08): the queues, problem
     // filters and the rest are for the Super Admin. Only the menu changes: no permission does.
     if (!isTeamLead(me)) setTab('active:open');
+    // The Manager opens on his Open cases (owner 2026-10-10, step 5); the Super Admin keeps his usual start.
+    else if (!isSuperAdmin(me)) setTab('lead:open');
     setActivePanelId(localStorage.getItem('active_panel_id') || '');
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
@@ -265,6 +272,7 @@ export default function ChatSupportPage() {
         if (unreadOnly && statusFilter !== 'resolved') params.set('unread', '1');
         if (mineTab) params.set('mine', '1');
         if (teamTab) params.set('team', '1');
+        if (leadOpen) params.set('lead', 'open');
       }
       // activeHeaders(): this poll also says the person is here, only while they really use the tab
       // (src/lib/presence-client.ts), so a screen left open does not keep them "around".
@@ -275,6 +283,7 @@ export default function ChatSupportPage() {
       if (res.ok && Array.isArray(data.team)) setTeam(data.team);
       if (res.ok && data.me !== undefined) setMeKey(data.me ?? null);
       if (res.ok && Array.isArray(data.alerts)) setTeamAlerts(data.alerts);
+      if (res.ok && data.lead_count !== undefined) setLeadCount(typeof data.lead_count === 'number' ? data.lead_count : null);
       if (res.ok && data.mine) setMyChats({ open: data.mine.open ?? 0, waiting: data.mine.waiting ?? 0, held: data.mine.held ?? 0 });
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
@@ -287,7 +296,7 @@ export default function ChatSupportPage() {
       }
     } catch { /* keep the last good list */ }
     finally { if (!quiet) setLoadingList(false); }
-  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, activeKey, mineTab, unreadOnly, searchActive, searchQ, listLimit]);
+  }, [token, activePanelId, statusFilter, segment, topicKey, caseKey, activeKey, mineTab, teamTab, leadOpen, unreadOnly, searchActive, searchQ, listLimit]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
@@ -406,7 +415,9 @@ export default function ChatSupportPage() {
       const id = new URLSearchParams(window.location.search).get('open');
       if (id && /^[\w-]{6,80}$/.test(id)) { setActiveId(id); window.history.replaceState(window.history.state, '', '/admin/chat'); return; }
       const last = JSON.parse(localStorage.getItem('chat_last') || 'null') as { id?: unknown; tab?: unknown } | null;
-      if (last && typeof last.tab === 'string' && last.tab) setTab(last.tab as InboxTab);
+      // The Manager's tabs only come back for a login that has them.
+      const lead = isTeamLead(JSON.parse(localStorage.getItem('auth_user') || 'null'));
+      if (last && typeof last.tab === 'string' && last.tab && (lead || !last.tab.startsWith('lead:'))) setTab(last.tab as InboxTab);
       if (last && typeof last.id === 'string' && /^[\w-]{6,80}$/.test(last.id)) setActiveId(last.id);
     } catch { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1162,7 +1173,7 @@ export default function ChatSupportPage() {
     <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-      <InboxSidebar simple={simple} activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} unreadTotal={unreadTotal} user={user} />
+      <InboxSidebar simple={simple} leadCount={leadCount} activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} unreadTotal={unreadTotal} user={user} />
 
       {/* ── Main ── */}
       <main className="main-content chat-main">
@@ -1184,7 +1195,8 @@ export default function ChatSupportPage() {
           )}
         </div>
 
-        <div className={`chat-shell${activeId ? ' thread-open' : ''}`}>
+        {leadTeam && <TeamLive token={token} />}
+        <div className={`chat-shell${activeId ? ' thread-open' : ''}`} style={leadTeam ? { display: 'none' } : undefined}>
           {/* Conversation list */}
           <div className="chat-list">
             <ListHeader simple={simple} setTab={setTab} topicCounts={topicCounts} activeKey={activeKey} activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
