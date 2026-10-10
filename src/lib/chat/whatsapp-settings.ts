@@ -70,3 +70,26 @@ export async function setMessagingId(value: string): Promise<void> {
 export async function templatesAccount(env: NodeJS.ProcessEnv = process.env): Promise<string> {
   return (await messagingId(env)) || (await wabaId(env));
 }
+
+// The daily limit (owner 2026-10-10: the Today board said "limit not known"). Since October 2025 Meta keeps the
+// messaging limit on the business PORTFOLIO, not on the number, so the number's messaging_limit_tier often comes back
+// empty. The owner reads it in WhatsApp Manager > Overview > Limits ("Start 2,000 new unique conversations per day")
+// and types it once in WhatsApp > Setup; the board uses Meta's own tier when the number carries one. Not a secret.
+export const DAILY_LIMIT_KEY = 'whatsapp_daily_limit';
+export async function dailyLimit(): Promise<number | null> {
+  try {
+    const row = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [DAILY_LIMIT_KEY]);
+    const n = Number((row?.value || '').trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch (err) {
+    console.error('[whatsapp] daily limit read failed:', (err as Error)?.message);
+    return null;
+  }
+}
+export async function setDailyLimit(value: number | null): Promise<void> {
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [DAILY_LIMIT_KEY, value ? String(value) : '']
+  );
+}

@@ -125,7 +125,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
             <dl className="pb-wa-nums">
               <div>
                 <dt title="Different customers we started a WhatsApp conversation with in the last 24 hours, against Meta's daily limit">Customers messaged, last 24 h</dt>
-                <dd>{wa.used24h}{wa.limit ? <span className="meta"> / {wa.limit}</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not known'}</span>}</dd>
+                <dd>{wa.used24h}{wa.limit ? <span className="meta" title={wa.limitFrom === 'saved' ? 'The limit typed in WhatsApp > Setup (from WhatsApp Manager)' : "Meta's limit for the number"}> / {wa.limit.toLocaleString('en-IN')}</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not set (WhatsApp > Setup)'}</span>}</dd>
                 {wa.limit ? <div className="pb-wa-bar" aria-hidden="true"><i style={{ width: `${pct}%`, background: pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)' }} /></div> : null}
               </div>
               <div className={wa.failedToday ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.failedToday}</dd></div>

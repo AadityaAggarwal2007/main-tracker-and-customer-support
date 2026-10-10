@@ -10,6 +10,7 @@ export interface WaHealth {
   status: string;             // CONNECTED / FLAGGED / RESTRICTED / ... (Meta's number status)
   tier: string;               // TIER_250 / TIER_1K / ... / UNKNOWN
   limit: number | null;       // customers a day the tier allows; null = unlimited or unknown
+  limitFrom: 'meta' | 'saved' | null; // Meta's number tier, or the limit the owner typed in WhatsApp > Setup
   used24h: number;            // different numbers we started a conversation with (templates) in the last 24 hours
   failedToday: number;        // automation messages that failed today (India day)
   waitingToday: number;       // automation messages waiting to go

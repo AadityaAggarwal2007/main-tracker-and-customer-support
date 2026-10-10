@@ -12,6 +12,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const [waba, setWaba] = useState(s?.waba || '');
   const [appId, setAppId] = useState(s?.appId || '');
   const [messaging, setMessaging] = useState(s?.messaging || '');
+  const [limit, setLimit] = useState(s?.dailyLimit ? String(s.dailyLimit) : '');
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<TokenCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -27,7 +28,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const save = async () => {
     setBusy(true);
     try {
-      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId, messagingId: messaging }) });
+      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId, messagingId: messaging, dailyLimit: limit }) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', j.error || 'Could not save it'); return; }
       onAlert('success', 'Saved'); await reload();
@@ -71,12 +72,13 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
       </div>
 
       <div className="tf-card" style={{ padding: '1.25rem' }}>
-        <div style={{ ...SECTION, marginBottom: '0.5rem' }}>Ids from Meta Business Settings</div>
+        <div style={{ ...SECTION, marginBottom: '0.5rem' }}>Ids and the daily limit from Meta</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(14rem, 1fr))', gap: '0.75rem', alignItems: 'end' }}>
           <label><span style={label}>WhatsApp Business Account id (WhatsApp accounts &gt; Shiptrack)</span><input className="form-input" value={waba} onChange={(e) => setWaba(e.target.value)} placeholder="e.g. 28873951022288651" inputMode="numeric" /></label>
           <label><span style={label}>Messaging account id (Accounts &gt; Messaging accounts &gt; Shiptrack): templates are made and listed here</span><input className="form-input" value={messaging} onChange={(e) => setMessaging(e.target.value)} placeholder="e.g. 28873951022288651" inputMode="numeric" /></label>
           <label><span style={label}>Meta App id (Apps &gt; ship track msg)</span><input className="form-input" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="e.g. 1427249435405269" inputMode="numeric" /></label>
-          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || '') && messaging === (s?.messaging || ''))} style={{ justifySelf: 'start' }}>
+          <label><span style={label}>Daily limit: customers a day (WhatsApp Manager &gt; Overview &gt; Limits, e.g. 2000). The Today board shows it when Meta does not send it</span><input className="form-input" value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="e.g. 2000" inputMode="numeric" /></label>
+          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || '') && messaging === (s?.messaging || '') && limit === (s?.dailyLimit ? String(s.dailyLimit) : ''))} style={{ justifySelf: 'start' }}>
             {busy ? <Loader2 size={14} style={spin} /> : 'Save'}
           </button>
         </div>

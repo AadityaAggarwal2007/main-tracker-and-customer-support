@@ -499,6 +499,14 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     eq((await rSettings.POST(jreq(OWNER, { messagingId: '12' }))).status, 400);
     eq((await rSettings.POST(jreq(AGENT, { messagingId: '28873951022288651' }))).status, 401);
     eq((await rSettings.GET(jreq(OWNER, {}))).body.messaging, '28873951022288651');
+    // the daily limit (Meta keeps it on the portfolio now): typed once, shown on the Today board
+    deq((await rSettings.POST(jreq(OWNER, { dailyLimit: '2,000' }))).body.dailyLimit, 2000);
+    eq(S.settings.whatsapp_daily_limit, '2000');
+    eq((await rSettings.GET(jreq(OWNER, {}))).body.dailyLimit, 2000);
+    eq((await rSettings.POST(jreq(OWNER, { dailyLimit: '10' }))).status, 400);
+    eq((await rSettings.POST(jreq(OWNER, { dailyLimit: 'lots' }))).status, 400);
+    deq((await rSettings.POST(jreq(OWNER, { dailyLimit: '' }))).body.dailyLimit, null);
+    eq((await rSettings.GET(jreq(OWNER, {}))).body.dailyLimit, null);
     S.fetches.length = 0;
     await rTemplates.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/templates'));
     assert.match(S.fetches[0].url, /\/28873951022288651\/message_templates/);

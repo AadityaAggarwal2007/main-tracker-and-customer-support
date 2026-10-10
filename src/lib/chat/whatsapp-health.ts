@@ -9,6 +9,7 @@ import { waConfigured } from './whatsapp';
 import { getPhone } from './whatsapp-profile';
 import { tierLimit, type WaHealth } from './whatsapp-health-rules';
 import { stoppedNumbers } from './whatsapp-stop';
+import { dailyLimit } from './whatsapp-settings';
 
 const PHONE_TTL_MS = 5 * 60_000;
 type PhoneCache = { at: number; quality: string; status: string; tier: string; error: string | null };
@@ -36,7 +37,10 @@ const ignoreMissing = (e: unknown, what: string) => {
 export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
   if (!waConfigured()) return null;
   const phone = await phoneFacts(now);
-  const h: WaHealth = { quality: phone.quality, status: phone.status, tier: phone.tier, limit: tierLimit(phone.tier), used24h: 0, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: phone.error };
+  // Meta's tier when the number carries one; else the limit typed in WhatsApp > Setup (Meta keeps it on the portfolio now)
+  const metaLimit = tierLimit(phone.tier);
+  const saved = metaLimit || phone.tier.toUpperCase() === 'TIER_UNLIMITED' ? null : await dailyLimit();
+  const h: WaHealth = { quality: phone.quality, status: phone.status, tier: phone.tier, limit: metaLimit ?? saved, limitFrom: metaLimit ? 'meta' : saved ? 'saved' : null, used24h: 0, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: phone.error };
   try {
     const r = await query<{ n: number }>(
       `SELECT count(DISTINCT x.digits)::int AS n FROM (

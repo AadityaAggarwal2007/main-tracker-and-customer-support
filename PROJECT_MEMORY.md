@@ -120,7 +120,8 @@ Done and live:
   Automation tab's list is brand-wise: Brand row + one line per order with both messages, filters and search.
   A customer who writes STOP (or "band karo") gets no more automatic messages (`whatsapp-stop.ts`, START undoes it).
   The Today board shows the number's health to the Super Admin: Meta quality, customers messaged in 24 h vs the
-  daily limit (TIER_250 = 250), failed today, wrote STOP; plus a morning-routine step.
+  daily limit, failed today, wrote STOP; plus a morning-routine step. The real limit is 2,000 a day (WhatsApp Manager
+  > Overview > Limits; Meta keeps it on the portfolio, so the owner types it once in WhatsApp > Setup).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
