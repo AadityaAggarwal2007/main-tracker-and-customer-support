@@ -500,3 +500,10 @@ Step 4 (same day): a team member's chat with no reply for 30 office minutes goes
 Needs You; no Manager = Super Admin) and every member's inbox shows a red bar for two hours. Nothing to the customer.
 Rules 11 / 14 / 15 (a waiting customer is never left; threats 1 h, others 2 h): PASS, stricter (30 minutes, a named
 person). Not the Manager's or Super Admin's chats, not Refund / Ship again.
+
+Step 5 (same day): the Manager panel inside Chat Support (rulebook 7.15): a "Manager" group first in the menu for the
+Manager and the Super Admin (the Manager opens on it): Open cases (his chats, customers at risk, threats / fraud claims,
+riskiest first), the Refund and Ship again queues, Team live (each member's replies per half hour today, on duty / away,
+chats held and waiting, 30-minute misses; Chikki's replies, chats alone, hand-overs, marks, whether it answers) and links
+to Chargebacks and Team score. Staff only, read only. Rules 11 / 14 / 15: PASS (the risky chats are in one place for the
+person responsible); nothing reaches a customer: NOT APPLICABLE for the reply rules.

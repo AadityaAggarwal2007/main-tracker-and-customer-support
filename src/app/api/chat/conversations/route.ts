@@ -101,6 +101,11 @@ const KNOWN_CUSTOMER = '(c.verified_order_id IS NOT NULL OR c.phone_match_order_
 const OUTSIDE_SECTION = "(c.case_kind IS NULL OR (c.case_kind = 'reship' AND c.status = 'human_needed'))";
 
 // The SQL that puts an open chat under a problem tab (a = the table alias).
+// At risk or a threat / fraud claim: the chats the Manager watches whoever holds them.
+function leadRiskSql(a: string): string {
+  return `(COALESCE(${a}.health_score, 0) >= ${HEALTH_PIN_MIN} OR ${topicCondition('fraud', [], a)})`;
+}
+
 function topicCondition(key: string, labels: string[], a: string): string {
   if (key === 'risk') return `COALESCE(${a}.health_score, 0) >= ${HEALTH_PIN_MIN}`;
   if (key === 'fraud') {
@@ -144,6 +149,10 @@ export async function GET(request: NextRequest) {
   const me = staffActor(user)?.key ?? null;
   // Team chats (owner 2026-10-10): ?team=1 lists the open chats OTHER people hold, to read and Take over.
   const teamTab = searchParams.get('team') === '1';
+  // The Manager's Open cases (owner 2026-10-10, step 5): ?lead=open, for the Super Admin and the Manager (team.lead)
+  // only: every open chat that is theirs (a forward, a 30-minute move, a transfer), at risk (HEALTH_PIN_MIN+) or with a
+  // threat / fraud claim, riskiest first. Refund / Ship again chats have their own sections (OUTSIDE_SECTION).
+  const leadOpen = searchParams.get('lead') === 'open' && isTeamLead(user);
   // A team member's lists (owner 2026-10-10: "member ko sirf apni chats; dusre ki Team chats mein"): their own
   // chats and the open ones nobody holds yet. The Super Admin and the Manager (team.lead) see every chat.
   // Opening another member's chat by its id is still allowed (they may read it and Take over).
@@ -195,6 +204,10 @@ export async function GET(request: NextRequest) {
     }
     if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (activeKey && !caseKind) conditions.push("c.status = 'agent_handling'");
+    if (leadOpen) {
+      conditions.push(`c.status <> 'resolved' AND (c.assigned_to = $${pi++} OR ${leadRiskSql('c')})`);
+      params.push(me ?? '');
+    }
     if (teamTab) {
       conditions.push(`c.assigned_to IS NOT NULL AND c.assigned_to IS DISTINCT FROM $${pi++} AND c.status <> 'resolved'`);
       params.push(me ?? '');
@@ -249,6 +262,8 @@ export async function GET(request: NextRequest) {
   const orderBy = search.q
     ? `CASE WHEN g.hit_order THEN 0 WHEN g.hit_phone OR g.hit_name THEN 1 ELSE 2 END,
        g.last_message_at DESC NULLS LAST`
+    : leadOpen
+      ? `COALESCE(g.health_score, 0) DESC, g.last_message_at DESC NULLS LAST, g.created_at DESC`
     : caseKind === 'reship'
       ? `(g.reshipped_at IS NOT NULL), g.last_message_at DESC NULLS LAST, g.created_at DESC`
       : `(g.promise_note_at IS NOT NULL) DESC, g.last_message_at DESC NULLS LAST, g.created_at DESC`;
@@ -489,6 +504,18 @@ export async function GET(request: NextRequest) {
     console.error('[inbox] case counts failed:', (err as Error)?.message);
   }
 
+  // The Manager's Open cases number (sidebar), one per customer, in this login's panels.
+  let leadCount: number | null = null;
+  if (isTeamLead(user)) {
+    leadCount = await query<{ n: number }>(
+      `SELECT count(DISTINCT CASE WHEN c.customer_key IS NOT NULL AND c.source = 'chat'
+                                  THEN 'k:' || s.id || ':' || c.customer_key ELSE 'c:' || c.id END)::int AS n
+         FROM conversations c JOIN sites s ON s.id = c.site_id
+        WHERE ${[...scopeConditions, OUTSIDE_SECTION, "c.status <> 'resolved'", `(c.assigned_to = $${scopeParams.length + 1} OR ${leadRiskSql('c')})`].join(' AND ')}`,
+      [...scopeParams, me ?? '']
+    ).then((r) => r.rows[0]?.n ?? 0).catch((err) => { console.error('[inbox] lead count failed:', (err as Error)?.message); return null; });
+  }
+
   const now = Date.now();
   // The red bar for the whole team (owner 2026-10-10): chats moved to the Manager after 30 minutes without a reply.
   const alerts = await lateAlerts(panelScope(user));
@@ -499,5 +526,6 @@ export async function GET(request: NextRequest) {
     me, team: teamDirectory(now), office_open: isOfficeHours(now, holidays),
     mine: { open: unanswered?.mine_open ?? 0, waiting: unanswered?.mine_waiting ?? 0, held },
     active_counts: { open: active?.active_open ?? 0, closed: active?.active_closed ?? 0 },
+    lead_count: leadCount,
   });
 }

@@ -1,16 +1,17 @@
 'use client';
 
 import type { useRouter } from 'next/navigation';
-import { ShoppingBag, LogOut, MessageCircle, UserCheck, MailOpen, CheckCheck } from 'lucide-react';
+import { ShoppingBag, LogOut, MessageCircle, UserCheck, MailOpen, CheckCheck, Siren, Activity, ShieldAlert, Trophy } from 'lucide-react';
 import PanelSwitcher from '@/components/PanelSwitcher';
-import { ROLE_INFO, type Role } from '@/lib/permissions';
+import { ROLE_INFO, canChargebacks, type Role } from '@/lib/permissions';
 import type { AuthUser, Business, InboxTab } from '../_lib/types';
 import { TOPIC_ICONS, INBOX_TABS } from '../_lib/inbox';
 import type { ChipTone } from './chips';
 import { Chip } from './chips';
 
-export default function InboxSidebar({ simple, activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, sidebarOpen, tab, topicCounts, unreadTotal, user }: {
+export default function InboxSidebar({ simple, leadCount, activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, sidebarOpen, tab, topicCounts, unreadTotal, user }: {
   simple: boolean;
+  leadCount: number | null;
   activeCounts: { open: number; closed: number };
   activePanelId: string;
   businesses: Business[];
@@ -34,19 +35,28 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
 }) {
   const base = (v: InboxTab) => INBOX_TABS.find(t => t.v === v)!;
   const caseN = (k: 'refund' | 'reship') => caseCounts[k] ?? { total: 0, unread: 0 };
-  type Item = { v: InboxTab; label: string; icon: typeof UserCheck; n: number; tone: ChipTone; text?: string; hint?: string; sub?: boolean; line?: string };
+  type Item = { v: InboxTab; href?: string; label: string; icon: typeof UserCheck; n: number; tone: ChipTone; text?: string; hint?: string; sub?: boolean; line?: string };
   const caseItem = (k: 'refund' | 'reship'): Item => {
     const c = caseN(k);
     return { v: `case:${k}` as InboxTab, label: base(`case:${k}` as InboxTab).label, icon: base(`case:${k}` as InboxTab).icon, n: c.total, tone: c.unread ? 'danger' : 'muted', text: c.unread ? `${c.unread} waiting` : undefined,
       hint: `${c.total} chat${c.total === 1 ? '' : 's'}${c.unread ? `, ${c.unread} waiting for an answer` : ''}` };
   };
+  // The Manager's group (owner 2026-10-10, step 5: "Manager panel ... sabse pehle Open cases"), first for the Manager
+  // and the Super Admin: the risky chats and the ones given to them, the Refund / Ship again queues, the team's day,
+  // and links to Chargebacks and Team score on the admin page.
   const groups: { title: string; items: Item[] }[] = [
+    { title: 'Manager', items: [
+      { v: 'lead:open', label: 'Open cases', icon: Siren, n: leadCount ?? 0, tone: 'danger', hint: 'Chats given to you (Send to Manager, 30 minutes without a reply, transfers), customers at risk and threats or fraud claims, riskiest first' },
+      caseItem('refund'), caseItem('reship'),
+      { v: 'lead:team', label: 'Team live', icon: Activity, n: 0, tone: 'muted', hint: "Today's work of each team member and of Chikki, half hour by half hour" },
+      ...(canChargebacks(user) ? [{ v: 'lead:open' as InboxTab, href: '/admin?tab=chargebacks', label: 'Chargebacks', icon: ShieldAlert, n: 0, tone: 'muted' as ChipTone, hint: 'Opens the Chargebacks tab' }] : []),
+      { v: 'lead:open', href: '/admin?tab=score', label: 'Team score', icon: Trophy, n: 0, tone: 'muted', hint: 'Opens the Team score tab' },
+    ] },
     { title: 'Do now', items: [
       { v: 'mine', label: 'My chats', icon: base('mine').icon, n: myChats.open, tone: myChats.waiting ? 'danger' : 'muted', hint: `${myChats.open} open chat${myChats.open === 1 ? '' : 's'} you hold${myChats.waiting ? `, ${myChats.waiting} waiting for an answer` : ''}` },
       { v: 'human_needed', label: 'Needs you', icon: base('human_needed').icon, n: 0, tone: 'danger', hint: 'Chats where the AI stopped and a person must answer' },
       { v: 'topic:risk', label: 'At risk', icon: TOPIC_ICONS.risk, n: topicCounts.risk ?? 0, tone: 'danger', hint: 'Frustrated customers who may charge back' },
     ] },
-    { title: 'Cases', items: [caseItem('refund'), caseItem('reship')] },
     { title: 'Team and AI', items: [
       { v: 'agent_handling', label: 'With team', icon: base('agent_handling').icon, n: 0, tone: 'muted' },
       { v: 'active:open', label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger', sub: true, hint: 'The customer wrote and nobody has answered yet' },
@@ -133,10 +143,10 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
               <div className="nav-group">{g.title}</div>
               {g.items.filter(it => it.v !== 'mine' || canReply).map(it => (
                 <button
-                  key={it.v}
+                  key={it.href ?? it.v}
                   title={it.hint}
-                  onClick={() => { setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
-                  className={`nav-btn${tab === it.v ? ' active' : ''}${it.sub ? ' nav-sub' : ''}${it.line ? ' nav-simple' : ''}`}
+                  onClick={() => { if (it.href) { router.push(it.href); return; } setTab(it.v); setSearchInput(''); setSearchQ(''); setActiveId(null); setSidebarOpen(false); }}
+                  className={`nav-btn${tab === it.v && !it.href ? ' active' : ''}${it.sub ? ' nav-sub' : ''}${it.line ? ' nav-simple' : ''}`}
                   style={{ width: '100%' }}
                 >
                   <it.icon size={it.line ? 18 : 16} style={it.v === 'topic:risk' && it.n > 0 && tab !== it.v ? { color: 'var(--danger)' } : undefined} />
