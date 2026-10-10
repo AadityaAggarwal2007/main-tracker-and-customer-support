@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
 import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
+import { runAutoAssign } from '@/lib/chat/auto-assign';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -26,6 +27,9 @@ export async function GET(request: NextRequest) {
   void runWaAutomation().catch((e) => console.error('[wa-auto] run:', (e as Error).message));
   // and once more half a minute later, so a new order's message goes within about 30 seconds, not a minute
   setTimeout(() => { void runWaAutomation().catch((e) => console.error('[wa-auto] run:', (e as Error).message)); }, 30_000);
+  // Chats go to the team members on duty by themselves (owner 2026-10-10, auto-assign.ts): now and again in 30 seconds.
+  void runAutoAssign().catch((e) => console.error('[auto-assign] run:', (e as Error).message));
+  setTimeout(() => { void runAutoAssign().catch((e) => console.error('[auto-assign] run:', (e as Error).message)); }, 30_000);
 
   const client = await getPool().connect();
   try {
