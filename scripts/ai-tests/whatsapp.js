@@ -14,6 +14,7 @@ reset();
 let seq = 0;
 const db = {
   query: async (sql, p = []) => {
+    if (/FROM wa_auto_sends x WHERE x\.status IN/.test(sql)) { S.chatSql = (S.chatSql || []).concat([['sent', p[0]]]); return { rows: [{ id: '9', panel_id: 'bizVast', order_id: '#2462', kind: 'placed', status: 'read', to_number: '919876543210', body_text: 'Order Placed Successfully\nHi Asmita', template: 'order_placed', error: null, sent_at: '2026-10-10T13:33:00Z', at: '2026-10-10T13:33:00Z', customer_name: 'Asmita Bhoir', replied: false }], rowCount: 1 }; }
     if (/count\(c\.id\)::int AS chats/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'bizVast', name: 'vastora', chats: 2, unread: 1, today: 1, waiting: 1 }, { id: 'bizKurt', name: 'kurtiya', chats: 0, unread: 0, today: 0, waiting: 0 }], rowCount: 2 }; }
     if (/\(\$1::text IS NULL OR s\.tracker_business_id/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'c9', name: 'Jatin', phone: '+919876543210', status: 'agent_handling', unread: 2, last_message_at: '2026-10-10T10:00:00Z', last_message: 'Thank you', last_sender: 'visitor', panel_id: 'bizVast', panel: 'vastora', automation: true, customer_msgs: 1, subject: null }], rowCount: 1 }; }
     if (/^INSERT INTO messages[\s\S]*FROM wa_auto_sends w/.test(sql)) { const rows = (S.autoRows || []).filter((r) => r.business_id === p[1] && r.to_number === p[2]); for (const r of rows) S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'system', content: r.body_text, metadata: { automation: true, wa_template: r.template, wa_id: r.wa_id, auto_id: r.id }, ts: null }); return { rows: [], rowCount: rows.length }; }
@@ -273,6 +274,8 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     let g = await rChats.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/chats?panel=bizVast'));
     deq([g.status, g.body.panels.map((x) => [x.name, x.chats, x.unread, x.waiting]), S.chatSql[1]], [200, [['vastora', 2, 1, 1], ['kurtiya', 0, 0, 0]], ['bizVast']]);
     deq(g.body.chats[0], { id: 'c9', name: 'Jatin', phone: '+919876543210', status: 'agent_handling', unread: 2, at: '2026-10-10T10:00:00Z', last: 'Thank you', lastSender: 'visitor', panelId: 'bizVast', panel: 'vastora', automation: true, customerMsgs: 1, subject: null });
+    deq(g.body.sent, [{ id: '9', panelId: 'bizVast', orderId: '#2462', kind: 'placed', status: 'read', phone: '+919876543210', text: 'Order Placed Successfully\nHi Asmita', template: 'order_placed', error: null, at: '2026-10-10T13:33:00Z', name: 'Asmita Bhoir', replied: false }]);
+    deq(S.chatSql.find((x) => x[0] === 'sent'), ['sent', 'bizVast']);
     S.chatSql = []; await rChats.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/chats?panel=all')); deq(S.chatSql[1], [null]);
     S.chatSql = []; await rChats.GET(jreq(OWNER, {}, "http://x/api/whatsapp/chats?panel=x'%3Bdrop")); deq(S.chatSql[1], [null]);
   });

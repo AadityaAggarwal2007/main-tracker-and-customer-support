@@ -44,6 +44,7 @@ const db = {
       S.rows.push({ id: String(++S.seq), business_id: p[0], order_id: p[1], kind, status: p[2], to_number: p[3], error: p[4], code: null, attempts: 0, due_at: kind === 'placed' ? new Date(S.nowMs) : p[5], sent_at: null, wa_id: null });
       return { rows: [], rowCount: 1 };
     }
+    if (/ORDER BY w\.updated_at DESC LIMIT 30/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 30).map((r) => ({ ...r, customer_name: (orderOf(r) || {}).customer_name || null })), rowCount: S.rows.length };
     if (/FROM wa_auto_sends w LEFT JOIN orders o/.test(sql)) {
       S.trackingFlags = (S.trackingFlags || []).concat([p[1]]);
       const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
@@ -69,7 +70,6 @@ const db = {
       const rows = Object.keys(m).map((k) => { const [business_id, kind, status] = k.split('|'); return { business_id, kind, status, n: m[k], n24: m[k] }; });
       return { rows, rowCount: rows.length };
     }
-    if (/FROM wa_auto_sends ORDER BY updated_at DESC LIMIT 30/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 30).map((r) => ({ ...r })), rowCount: S.rows.length };
     if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT 1 FROM businesses WHERE id::text = \$1/.test(sql)) return S.panels.some((x) => x.id === p[0]) ? { rows: [{ x: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
     if (/^SELECT value FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? { rows: [], rowCount: 0 } : { rows: [{ value: v }], rowCount: 1 }; }
@@ -308,6 +308,7 @@ async function t(name, fn) {
     const p = g.body.panels.find((x) => x.id === 'b1');
     deq([p.enabled, p.placed.sent, p.tracking.pending, p.replied], [true, 1, 1, 2]);
     eq(g.body.recent[0].to, '••••3210'); assert.ok(!JSON.stringify(g.body).includes('9876543210'));
+    eq(g.body.recent[0].name, 'AADITYA SHARMA');
   });
   await t('POST: the switch needs the table and an APPROVED order_placed; ON starts the clock; OFF keeps the rows; a viewer is refused', async () => {
     eq((await route.POST(jreq(AGENT, { businessId: 'b1', enabled: true }))).status, 401);
@@ -345,7 +346,7 @@ async function t(name, fn) {
   });
   await t('the minute cron route starts the automation, not awaited, before the mailbox sweep', () => {
     const src = fs.readFileSync(path.join(SRC, 'app/api/cron/chat-email-poll/route.ts'), 'utf8');
-    assert.match(src, /void runWaAutomation\(\)/); assert.ok(src.indexOf('runWaAutomation()') < src.indexOf('pollAllMailboxes()'));
+    assert.match(src, /void runWaAutomation\(\)/); assert.match(src, /setTimeout\(\(\) => \{ void runWaAutomation\(\)[\s\S]*30_000\)/); assert.ok(src.indexOf('runWaAutomation()') < src.indexOf('pollAllMailboxes()'));
   });
   await t('the SQL file is additive: IF NOT EXISTS, a unique key per panel / order / kind, grants without DELETE', () => {
     const sql = fs.readFileSync(path.resolve(__dirname, '../../whatsapp-automation.sql'), 'utf8');
