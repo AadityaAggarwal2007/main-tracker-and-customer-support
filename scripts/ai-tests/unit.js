@@ -215,6 +215,28 @@ t('fixOrderMentions', () => {
   assert.strictEqual(f('Free shipping on a minimum order 299.', ['#4715']), 'Free shipping on a minimum order 299.');
   assert.strictEqual(f('COD works above order 999 in Gujarat.', ['#4715']), 'COD works above order 999 in Gujarat.');
 });
+t('today-promise: an evening or a clock time for the parcel is a promise too (review 10 Oct, A3)', () => {
+  const said = 'Delivery attempts usually happen until the evening, around 7-8 PM. I\'d suggest waiting till then, and keeping your phone reachable so the agent can reach you. Here\'s your tracking link: https://x/track/1';
+  assert.ok(tp.promisesToday(said));
+  assert.strictEqual(tp.dropTodayPromise(said, 'F'), "Here's your tracking link: https://x/track/1");
+  for (const s of ['Parcel shaam tak aa jayega.', 'Your parcel should arrive by 6 pm.', 'Delivery 5 baje tak ho jayegi.'])
+    assert.ok(tp.promisesToday(s), s);
+  for (const s of ['Good evening! How can I help you?', 'Our team will reply here on Monday morning, after 10 AM.', 'Please keep your phone reachable.', 'Team 10 baje ke baad aapko yahin reply karegi.'])
+    assert.ok(!tp.promisesToday(s), s);
+});
+const eauto = load('email-auto');
+t('email-auto: a bounce, an automatic mail or a no-reply sender is never a chat (review 10 Oct, E1)', () => {
+  const m = (from, subject, headers = [], contentType = null) => eauto.automatedMail({ from, subject, headers, contentType });
+  assert.strictEqual(m('mailer-daemon@googlemail.com', 'Delivery Status Notification (Failure)'), 'bounce');
+  assert.strictEqual(m('support@gmail.com', 'Message blocked'), 'bounce');
+  assert.strictEqual(m('x@y.com', 'Undeliverable: Your order', [], 'multipart/report'), 'bounce');
+  assert.strictEqual(m('x@y.com', 'Out of office', [{ key: 'auto-submitted', value: 'auto-replied' }]), 'auto');
+  assert.strictEqual(m('news@shop.com', 'Sale', [{ key: 'precedence', value: 'bulk' }]), 'auto');
+  assert.strictEqual(m('no-reply@accounts.google.com', 'Security alert'), 'no-reply');
+  for (const [f, s, h = []] of [['priya@gmail.com', 'Order not received'], ['customer@yahoo.com', 'Re: Delivery delayed, refund?'], ['x@y.com', 'Where is my order'], ['x@y.com', 'Hi', [{ key: 'auto-submitted', value: 'no' }]]])
+    assert.strictEqual(m(f, s, h), null, f + ' ' + s);
+  assert.ok(/automatedMail\(/.test(fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/email.ts'), 'utf8')));
+});
 t('dropAddressEcho', () => {
   const c = ['address change karna hai, naya address: 12 MG Road, Pune 411001'];
   const d = (r) => rg.dropAddressEcho(r, c).text;
@@ -227,6 +249,12 @@ t('dropAddressEcho', () => {
   assert.strictEqual(d('The new address noted is 12 MG Road, Pune 411001.'), 'The new address noted.');
   assert.strictEqual(d('Your order has reached Pune and is at the local hub.'), 'Your order has reached Pune and is at the local hub.');
   assert.strictEqual(rg.dropAddressEcho('Your order 4715 is in Pune.', ['order 4715 kab aayega?']).changed, false);
+  // Review 10 Oct (H4): a complaint that carries the order number, a date and the address. The order number and the
+  // date in the reply stay; only the address goes.
+  const long = ['Urgent complaint regarding my order #5121 placed on 17 October 2026. Delivery Address: 9/66, 2nd Floor, Ramesh Nagar West Delhi, Delhi 110015'];
+  const r = rg.dropAddressEcho("I've checked your order #5121. The estimated delivery date is 17 October 2026, to 9/66, 2nd Floor, Ramesh Nagar West Delhi.", long);
+  assert.ok(r.changed && r.text.includes('#5121') && r.text.includes('17 October 2026') && !/Ramesh Nagar/.test(r.text), r.text);
+  assert.strictEqual(rg.dropAddressEcho('Your order 5121 is due on 17th October 2026.', long).changed, false);
 });
 t('withCheckAround / saysNotReceived', () => {
   const ctx = (c, d, e = []) => ({ customerLatest: c, orderDelivered: d, earlierAgentReplies: e });

@@ -136,7 +136,10 @@ Done and live:
   plus the brand fix: the locked rules said "Karry from the Vastora team" on EVERY panel; now each panel's own name.
   Live AI test 51/51; made from vastora (5 names -> {brand}, 43 answers); all three panels switched to All panels
   (kurtiya checked live: "Karry from the Kurtiya team"). 8 Chikki's record: `scripts/chikki-review.js` (read only,
-  masked) -> he pastes the output -> fixes one at a time, each with a golden case.
+  masked) -> he pastes the output -> fixes one at a time. First run done (10 Oct): fixed address-echo eating order
+  numbers / dates, the "wait till 7-8 PM" promise, replies to Gmail bounces. Waiting on the owner: Buy 1 Get 1 /
+  pack-of-N answer, "is this site fake?" answer for visitors, vastora WhatsApp automation ON (customers say they never
+  got an order ID), closed-hours note when a customer only asks status; and a second run for "took longer" per day.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

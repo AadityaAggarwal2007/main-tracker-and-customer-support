@@ -3,6 +3,7 @@ import nodemailer from 'nodemailer';
 import { emailReplyHeld, heldKind, heldMovesToNeedsYou } from './email-draft';
 import { emailDraftOnly } from './email-draft-mode';
 import { simpleParser } from 'mailparser';
+import { automatedMail } from './email-auto';
 import { query, queryOne } from '@/lib/db';
 import { getAIResponse } from './ai';
 import { recordBrainUsage } from './brain-usage';
@@ -197,6 +198,13 @@ export async function pollEmailAccount(account: MailboxRow): Promise<number> {
 
         // Skip emails sent by this account (avoid reply loops)
         if (fromAddr === account.email.toLowerCase()) continue;
+        // A bounce, an automatic mail or a no-reply sender (email-auto.ts): no chat, no reply. The Mail tab shows it.
+        const autoKind = automatedMail({
+          from: fromAddr, subject: parsed.subject || '',
+          headers: (parsed.headerLines || []).map((h) => ({ key: h.key, value: String(h.line || '').replace(/^[^:]*:\s*/, '') })),
+          contentType: (parsed.headers?.get('content-type') as { value?: string } | undefined)?.value ?? null,
+        });
+        if (autoKind) { console.log(`[email] ${autoKind} mail from ${fromAddr} on site "${account.site_name}": not a chat, no reply`); continue; }
 
         // A card number in the subject line is hidden too: the subject is stored and
         // becomes the reply's subject.

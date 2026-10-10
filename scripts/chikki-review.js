@@ -41,7 +41,8 @@ const mask = (s) => String(s || '')
 const cut = (s, n = 280) => { const m = mask(s); return m.length > n ? m.slice(0, n - 1) + '…' : m; };
 const who = { visitor: 'Customer', ai: 'Chikki', agent: 'Team', system: 'System' };
 const since = `now() - interval '${DAYS} days'`;
-const AI_MSG = `m.sender = 'ai' AND m.deleted_at IS NULL AND COALESCE(m.metadata->>'withheld', '') = '' AND COALESCE(m.metadata->>'wa_auto_reply', '') <> 'true'`;
+// A reply the customer read: not the hidden tool-call rows (blank, metadata.hidden), not a held draft, not WhatsApp's fixed line.
+const AI_MSG = `m.sender = 'ai' AND m.deleted_at IS NULL AND btrim(m.content) <> '' AND COALESCE(m.metadata->>'hidden', 'false') <> 'true' AND COALESCE(m.metadata->>'withheld', '') = '' AND COALESCE(m.metadata->>'wa_auto_reply', '') <> 'true'`;
 const READABLE = `x.sender IN ('visitor', 'ai', 'agent') AND x.deleted_at IS NULL AND COALESCE(x.metadata->>'hidden', 'false') <> 'true' AND x.content IS NOT NULL AND btrim(x.content) <> ''`;
 
 console.log(`CHIKKI REVIEW · last ${DAYS} days · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`);
@@ -67,6 +68,17 @@ for (const p of per) {
 }
 if (!per.length) console.log('- no Chikki replies in this window');
 
+// "Took longer" = every model failed for that message (ai.ts). Per India day, to see whether it was one outage.
+console.log('\n1b. "TOOK LONGER" PER DAY (India time, all panels)');
+const busy = safe('busy per day', `SELECT COALESCE(json_agg(t ORDER BY t.day), '[]') FROM (
+  SELECT to_char((m.created_at::timestamptz) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day, count(*)::int AS n,
+         count(*) FILTER (WHERE m.content = '${AI_BUSY_REPLY.replace(/'/g, "''")}')::int AS busy
+    FROM messages m WHERE m.sender = 'ai' AND m.created_at > ${since} AND m.deleted_at IS NULL AND btrim(m.content) <> ''
+     AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
+   GROUP BY 1) t`);
+for (const d of busy) if (d.busy) console.log(`- ${d.day}: ${d.busy} of ${d.n} replies`);
+if (!busy.some((d) => d.busy)) console.log('- none');
+
 // ── 2. Why chats were handed over (PM2 log, as far back as it goes) ──
 console.log('\n2. HAND-OVER REASONS (PM2 log)');
 try {
@@ -77,12 +89,21 @@ try {
     for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
       const m = line.match(/handed to a person: (.+)$/);
       if (m) { const k = m[1].trim().replace(/[0-9a-f-]{20,}/gi, '').slice(0, 60); reasons[k] = (reasons[k] || 0) + 1; lines++; }
-      if (/Every model failed/.test(line)) failed++;
     }
   }
   for (const [k, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) console.log(`- ${k}: ${n}`);
   if (!lines) console.log('- none in the log');
-  console.log(`- "every model failed": ${failed}`);
+  // Why the models failed: the error log ([AI] <model> failed: <status> <message>, "Every model failed: <message>").
+  const why = {};
+  for (const f of fs.readdirSync(dir).filter((x) => /^tracker-err/.test(x)).map((x) => path.join(dir, x))) {
+    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+      if (/Every model failed/.test(line)) failed++;
+      const m = line.match(/\[AI\] (\S+) failed: (\d{3})?\s*(.{0,70})/);
+      if (m) { const k = `${m[1]} ${m[2] || ''} ${m[3].replace(/\d{4,}/g, 'N').replace(/sk-\S+/g, '[key]')}`.replace(/\s+/g, ' ').trim(); why[k] = (why[k] || 0) + 1; }
+    }
+  }
+  console.log(`- "every model failed" (error log): ${failed}`);
+  for (const [k, n] of Object.entries(why).sort((a, b) => b[1] - a[1]).slice(0, 8)) console.log(`  · ${k}: ${n}`);
 } catch (e) { console.log(`- could not read the PM2 log: ${e.message}`); }
 
 // ── 3. The last messages before Chikki handed a chat over ──
@@ -110,7 +131,7 @@ const edits = safe('edits', `SELECT COALESCE(json_agg(t ORDER BY t.at DESC), '[]
   WHERE m.sender = 'ai' AND r.action = 'edit' AND r.created_at > ${since}
   ORDER BY r.created_at DESC LIMIT 15) t`);
 edits.forEach((x, i) => {
-  console.log(`[E${i + 1}] ${x.panel}`);
+  console.log(`[E${i + 1}] ${x.panel} · ${String(x.at).slice(0, 10)}`);
   console.log(`   Customer: ${cut(x.asked)}`);
   console.log(`   Chikki:   ${cut(x.before)}`);
   console.log(`   Team:     ${cut(x.after)}`);
@@ -153,14 +174,20 @@ const cbs = safe('chargebacks', `SELECT COALESCE(json_agg(t ORDER BY t.at DESC),
            WHERE x.conversation_id = c.id AND ${READABLE} AND x.created_at <= a.received_at ORDER BY x.created_at DESC LIMIT 6) y))
        FROM conversations c JOIN sites s ON s.id = c.site_id
       WHERE s.tracker_business_id::text = a.business_id AND a.order_id IS NOT NULL
-        AND regexp_replace(c.verified_order_id, '[^0-9]', '', 'g') = regexp_replace(a.order_id, '[^0-9]', '', 'g')
-      ORDER BY c.last_message_at DESC NULLS LAST LIMIT 1) AS chat
+        AND (regexp_replace(COALESCE(c.verified_order_id, ''), '[^0-9]', '', 'g') = regexp_replace(a.order_id, '[^0-9]', '', 'g')
+             OR c.customer_key = o.phone10
+             OR (o.phone10 <> '' AND right(regexp_replace(COALESCE(c.visitor_phone, ''), '[^0-9]', '', 'g'), 10) = o.phone10))
+      ORDER BY c.last_message_at DESC NULLS LAST LIMIT 1) AS chat,
+    o.found AS order_found
   FROM chargeback_alerts a LEFT JOIN businesses b ON b.id::text = a.business_id
+  LEFT JOIN LATERAL (SELECT true AS found, right(regexp_replace(COALESCE(x.customer_mobile, ''), '[^0-9]', '', 'g'), 10) AS phone10
+                       FROM orders x WHERE x.business_id::text = a.business_id AND a.order_id IS NOT NULL
+                        AND regexp_replace(x.order_id, '[^0-9]', '', 'g') = regexp_replace(a.order_id, '[^0-9]', '', 'g') LIMIT 1) o ON true
   WHERE a.received_at > ${since}
     AND (a.subject || ' ' || left(a.snippet, 1500)) ~* '(charge ?back|dispute (raised|notice|initiated|opened)|retrieval request|representment|pre-?arbitration|cardholder has disputed)'
   ORDER BY a.received_at DESC LIMIT 20) t`);
 cbs.forEach((x, i) => {
-  console.log(`[C${i + 1}] ${x.panel || '?'} · ${x.gateway} · ${String(x.at).slice(0, 10)} · ${x.chat ? `${x.chat.source} chat, now ${x.chat.status}${x.chat.case ? ', ' + x.chat.case : ''}` : 'no chat found for the order'}`);
+  console.log(`[C${i + 1}] ${x.panel || '?'} · ${x.gateway} · ${String(x.at).slice(0, 10)} · ${x.chat ? `${x.chat.source} chat, now ${x.chat.status}${x.chat.case ? ', ' + x.chat.case : ''}` : x.order_found ? 'the customer never chatted (order found, no chat by order or phone)' : 'order not found in this panel'}`);
   for (const m of (x.chat && x.chat.msgs) || []) console.log(`   ${who[m.sender] || m.sender}: ${cut(m.content)}`);
 });
 if (!cbs.length) console.log('- none (or no chargeback table yet)');
