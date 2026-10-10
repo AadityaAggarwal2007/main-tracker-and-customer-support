@@ -29,10 +29,19 @@ const db = {
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
     if (/WHERE c\.source = 'whatsapp' AND m\.sender = 'agent'/.test(sql)) { const rows = S.msgs.filter((m) => m.sender === 'agent').map((m) => ({ id: m.id, conversation_id: m.conversation_id, content: m.content, created_at: '2026-10-10T10:00:00Z', metadata: m.metadata, name: 'Jatin', phone: '+919876543210' })); return { rows, rowCount: rows.length }; }
+    if (/^UPDATE messages SET metadata[\s\S]*wa_sent[\s\S]*WHERE id = \$1/.test(sql)) { const m = S.msgs.find((x) => x.id === p[0]); if (m) Object.assign(m.metadata, { wa_sent: p[1] }, p[2] != null ? { wa_id: p[2] } : {}, p[3] != null ? { wa_error: p[3] } : {}); return { rows: [], rowCount: m ? 1 : 0 }; }
     if (/^UPDATE messages/.test(sql)) { const hits = S.msgs.filter((m) => m.metadata && m.metadata.wa_id === p[0]); for (const m of hits) { if (p[1] != null) m.metadata.wa_status = p[1]; if (p[2] != null) m.metadata.wa_error = p[2]; } return { rows: [], rowCount: hits.length }; }
     throw new Error('fake db query: ' + sql.slice(0, 80));
   },
   queryOne: async (sql, p = []) => {
+    // the fixed auto reply (whatsapp-autoreply.ts)
+    if (/FROM conversations c JOIN sites s ON s\.id = c\.site_id WHERE c\.id = \$1/.test(sql)) { const c = S.convs.find((x) => x.id === p[0] && x.source === 'whatsapp'); const s = c && S.sites.find((x) => x.id === c.site_id); return c ? { panel: s ? s.tracker_business_id : null } : null; }
+    if (/FROM wa_auto_sends WHERE business_id = \$1 AND to_number = \$2/.test(sql)) return (S.autoRows || []).some((x) => x.business_id === p[0] && x.to_number === p[1] && ['sent', 'delivered', 'read'].includes(x.status)) ? { '?column?': 1 } : null;
+    if (/FROM orders o WHERE o\.business_id::text = \$1 AND right/.test(sql)) return (S.orderPanels || {})[p[1]] === p[0] ? { '?column?': 1 } : null;
+    if (/^INSERT INTO messages[\s\S]*wa_auto_reply/.test(sql)) {
+      if (S.msgs.some((m) => m.conversation_id === p[0] && m.metadata && m.metadata.wa_auto_reply)) return null;
+      const m = { id: 'm' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: { channel: 'whatsapp', wa_auto_reply: true } }; S.msgs.push(m); return { id: m.id };
+    }
     if (/FROM wa_auto_sends WHERE to_number = \$1/.test(sql)) { const r = (S.autoRows || []).filter((x) => x.to_number === p[0] && ['sent', 'delivered', 'read'].includes(x.status)).pop(); return r ? { business_id: r.business_id } : null; }
     if (/FROM orders o\s+WHERE o\.business_id IS NOT NULL/.test(sql)) { const b = (S.orderPanels || {})[p[0]]; return b ? { business_id: b } : null; }
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
@@ -104,6 +113,7 @@ global.fetch = async (url, init = {}) => {
 const wa = require(path.join(SRC, 'lib/chat/whatsapp.ts'));
 const inbound = require(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/webhook/route.ts'));
+const autoReply = require(path.join(SRC, 'lib/chat/whatsapp-autoreply.ts'));
 const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
 const prof = require(path.join(SRC, 'lib/chat/whatsapp-profile.ts'));
 const rProfile = require(path.join(SRC, 'app/api/whatsapp/profile/route.ts'));
@@ -352,6 +362,36 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       deq([r.status, r.body.stored], [200, 0]);
     } finally { db.queryOne = origQuery; }
   });
+
+  console.log('whatsapp: the fixed auto reply (owner: this number is ShipTrack\'s, help is by email)');
+  const withEnvAR = async (fn) => { const keep = { ...process.env }; Object.assign(process.env, env); try { await fn(); } finally { delete process.env.WHATSAPP_CLOUD_TOKEN; delete process.env.WHATSAPP_PHONE_NUMBER_ID; Object.assign(process.env, keep); } };
+  const freshMsg = (id, body) => ({ ...textMsg(id, body), timestamp: String(Math.floor(Date.now() / 1000)) });
+  await t('autoReplyText: names ShipTrack, never a brand signature; the brand and its email only when known', () => {
+    const k = autoReply.autoReplyText({ name: 'VASTRIKA', email: 'care@vastrika.in' });
+    assert.match(k, /^Hi, this is ShipTrack/); assert.match(k, /your VASTRIKA order, please email us at care@vastrika\.in/);
+    const u = autoReply.autoReplyText(null);
+    assert.match(u, /email the store you ordered from/); assert.doesNotMatch(u + k, /Team [A-Z]|Regards|How can we help/);
+  });
+  await t('webhook: the first message gets ONE reply (sent on WhatsApp, saved as an answer); the next ones in 24 h get none', () => withEnvAR(async () => {
+    S.autoRows = [{ id: '5', business_id: 'bizVast', to_number: '919876543210', status: 'read', body_text: 'Order Placed', template: 'order_placed', wa_id: 'wamid.a' }];
+    const r1 = await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.1', 'test')])) }));
+    eq(r1.status, 200);
+    const ai = S.msgs.filter((m) => m.sender === 'ai');
+    eq(ai.length, 1);
+    assert.match(ai[0].content, /your vastora order, please email us at help@vastora\.in/);
+    deq([ai[0].metadata.wa_auto_reply, ai[0].metadata.wa_sent, ai[0].metadata.wa_id], [true, true, 'wamid.out1']);
+    const sent = S.fetches.filter((f) => /\/messages$/.test(f.url));
+    deq([sent.length, sent[0].init.body.to, sent[0].init.body.text.body], [1, '919876543210', ai[0].content]);
+    await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.2', 'hello?')])) }));
+    deq([S.msgs.filter((m) => m.sender === 'ai').length, S.fetches.filter((f) => /\/messages$/.test(f.url)).length], [1, 1]);
+  }));
+  await t('webhook: a number with no order or automation of the panel gets the general text; a failed send is noted on the message', () => withEnvAR(async () => {
+    S.fetchStatus = 400; S.fetchBody = { error: { message: 'Re-engagement message', code: 131047 } };
+    await route.POST(req('POST', { body: JSON.stringify(webhookBody([freshMsg('wamid.1', 'hi')])) }));
+    const ai = S.msgs.filter((m) => m.sender === 'ai');
+    eq(ai.length, 1); assert.match(ai[0].content, /email the store you ordered from/);
+    deq([ai[0].metadata.wa_sent, !!ai[0].metadata.wa_error], [false, true]);
+  }));
 
   console.log('whatsapp: templates (pure)');
   await t('templateSpec: a good template becomes Meta components; the name is cleaned; examples travel with the body', () => {

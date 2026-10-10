@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseWaWebhook, waSignatureOk } from '@/lib/chat/whatsapp';
 import { storeWaInbound, storeWaStatus } from '@/lib/chat/whatsapp-inbound';
 import { noteWebhookOk, noteWebhookRefused } from '@/lib/chat/whatsapp-webhook-status';
+import { sendWaAutoReply } from '@/lib/chat/whatsapp-autoreply';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,11 +35,18 @@ export async function POST(request: NextRequest) {
   let body: unknown = null;
   try { body = JSON.parse(raw); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   const { messages, statuses } = parseWaWebhook(body);
-  let stored = 0, duplicates = 0, reports = 0;
+  let stored = 0, duplicates = 0, reports = 0, replied = 0;
   for (const m of messages) {
     try {
       const r = await storeWaInbound(m);
-      if (r.outcome === 'stored') stored++;
+      if (r.outcome === 'stored') {
+        stored++;
+        // one fixed reply: this number only sends order updates, help is by email (whatsapp-autoreply.ts)
+        if (r.conversationId && Date.now() - m.timestamp < 6 * 3_600_000) {
+          try { if ((await sendWaAutoReply(r.conversationId, m.from)) === 'sent') replied++; }
+          catch (err) { console.error('[whatsapp] auto reply:', (err as Error).message); }
+        }
+      }
       else if (r.outcome === 'duplicate') duplicates++;
       else console.error('[whatsapp] no panel for the WhatsApp chats: set WHATSAPP_PANEL_ID or a default panel');
     } catch (err) {
@@ -48,6 +56,6 @@ export async function POST(request: NextRequest) {
   for (const s of statuses) {
     try { if (await storeWaStatus(s)) reports++; } catch (err) { console.error('[whatsapp] could not store a delivery report:', (err as Error).message); }
   }
-  if (messages.length || statuses.length) console.log(`[whatsapp] webhook: ${stored} stored, ${duplicates} repeated, ${reports} delivery reports`);
+  if (messages.length || statuses.length) console.log(`[whatsapp] webhook: ${stored} stored, ${replied} auto replies, ${duplicates} repeated, ${reports} delivery reports`);
   return NextResponse.json({ ok: true, stored, duplicates, reports });
 }
