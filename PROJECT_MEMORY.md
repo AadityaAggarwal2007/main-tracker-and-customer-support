@@ -131,7 +131,10 @@ Done and live:
   `GET /api/chat/team/live` (`team-live.ts`: per member replies per half hour, on duty, held / waiting, 30-min
   misses; Chikki's row); 6 the open chat loads fast (`thread-sync.ts`: newest 200 + "Load older", the 3-second
   poll asks only `?after=` what changed, a full load every 30 s); `chat-speed.sql` (one index, CONCURRENTLY, without
-  -1) waits for his yes. Next: 7 one "All panels" setup, 8 Chikki's record and fixes with him.
+  -1) was run by him (valid = t); 7 "All panels" setup (Settings > All panels setup: Make from vastora, then switch
+  each panel to All panels; `{brand}` = each panel's name; storage in chat_settings + site_faqs `site_id '*'`, no SQL),
+  plus the brand fix: the locked rules said "Karry from the Vastora team" on EVERY panel; now each panel's own name.
+  Before switching VASTRIKA / kurtiya on, he runs the live AI test on the VPS. Next: 8 Chikki's record and fixes.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

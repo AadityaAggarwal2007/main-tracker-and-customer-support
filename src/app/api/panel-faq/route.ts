@@ -4,6 +4,7 @@ import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from '@/lib/chat/site';
 import crypto from 'crypto';
 import { can } from '@/lib/permissions';
+import { COMMON_EDIT_ERROR, canEditCommon, setupForSite } from '@/lib/chat/common-setup';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,12 +13,24 @@ export const dynamic = 'force-dynamic';
 // are read fresh on every message in getAIResponse, so an edit here is live
 // on the next reply with no redeploy.
 
-async function siteIdFor(businessId: string, user: { businessIds?: string[] | null }) {
+async function panelSiteId(businessId: string, user: { businessIds?: string[] | null }) {
   if (user.businessIds && user.businessIds.length > 0 && !user.businessIds.includes(businessId)) return null;
   const biz = await queryOne<{ id: string }>(`SELECT id FROM businesses WHERE id = $1`, [businessId]);
   if (!biz) return null;
   const site = await ensureSiteForPanel(businessId);
   return site.id;
+}
+
+// Where this panel's saved answers live (step 7, common-setup.ts): its own site, or '*' while the panel uses the
+// All panels setup (then a change reaches every such panel, so only an admin of every panel may make it).
+type Who = Parameters<typeof can>[0] & { businessIds?: string[] | null; role: string };
+async function siteIdFor(businessId: string, user: Who, write = false): Promise<string | { error: string } | null> {
+  const own = await panelSiteId(businessId, user);
+  if (!own) return null;
+  const setup = await setupForSite(own).catch(() => null);
+  if (setup?.mode !== 'common') return own;
+  if (write && !canEditCommon(user, can(user, 'chikki.edit'))) return { error: COMMON_EDIT_ERROR };
+  return setup.faqSite;
 }
 
 export async function GET(request: NextRequest) {
@@ -28,14 +41,14 @@ export async function GET(request: NextRequest) {
   if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
 
   const siteId = await siteIdFor(businessId, user);
-  if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+  if (!siteId || typeof siteId !== 'string') return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
 
   const rows = await query(
     `SELECT id, question, answer, sort_order, is_enabled
        FROM site_faqs WHERE site_id = $1 ORDER BY sort_order, created_at`,
     [siteId]
   );
-  const res = NextResponse.json({ faqs: rows.rows });
+  const res = NextResponse.json({ faqs: rows.rows, scope: siteId === '*' ? 'common' : 'panel' });
   res.headers.set('Cache-Control', 'no-store');
   return res;
 }
@@ -51,8 +64,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Both a question and an answer are required' }, { status: 400 });
     }
 
-    const siteId = await siteIdFor(businessId, user);
+    const siteId = await siteIdFor(businessId, user, true);
     if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+    if (typeof siteId !== 'string') return NextResponse.json(siteId, { status: 403 });
 
     const next = await queryOne<{ n: number }>(
       `SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM site_faqs WHERE site_id = $1`,
@@ -80,8 +94,9 @@ export async function PATCH(request: NextRequest) {
     const { businessId, id, question, answer, isEnabled } = await request.json();
     if (!businessId || !id) return NextResponse.json({ error: 'businessId and id required' }, { status: 400 });
 
-    const siteId = await siteIdFor(businessId, user);
+    const siteId = await siteIdFor(businessId, user, true);
     if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+    if (typeof siteId !== 'string') return NextResponse.json(siteId, { status: 403 });
 
     const sets: string[] = []; const params: unknown[] = []; let pi = 1;
     if (question !== undefined)  { sets.push(`question = $${pi++}`);   params.push(String(question).trim()); }
@@ -114,8 +129,9 @@ export async function DELETE(request: NextRequest) {
   const id = searchParams.get('id') || '';
   if (!businessId || !id) return NextResponse.json({ error: 'businessId and id required' }, { status: 400 });
 
-  const siteId = await siteIdFor(businessId, user);
+  const siteId = await siteIdFor(businessId, user, true);
   if (!siteId) return NextResponse.json({ error: 'Panel not found' }, { status: 404 });
+  if (typeof siteId !== 'string') return NextResponse.json(siteId, { status: 403 });
 
   await query(`DELETE FROM site_faqs WHERE id = $1 AND site_id = $2`, [id, siteId]);
   return NextResponse.json({ success: true });

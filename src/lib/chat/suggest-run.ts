@@ -4,6 +4,8 @@
 // ask the model, guard the options, record the row (chat-reply-suggestions.sql). Staff only:
 // called by GET /api/chat/conversations/[id]/suggest and POST /api/chat/polish, never by the
 // widget or the AI reply path. Nothing here is ever sent to the customer by itself.
+import { setupFor } from './common-setup';
+import { fillBrand } from './common-setup-rules';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { afterHours, closedWhy } from '@/lib/office-hours';
@@ -104,9 +106,12 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
   const site = await queryOne<{ name: string | null; system_prompt: string | null; cod_available: boolean | null; cod_states: string | null }>(
     `SELECT name, system_prompt, cod_available, cod_states FROM sites WHERE id = $1`, [conv.site_id]
   ).catch(() => null);
+  // The "All panels" setup (step 7, common-setup.ts), exactly as getAIResponse reads it.
+  const setup = await setupFor(conv.site_id, site?.system_prompt || null);
   let faqs: SavedAnswer[] = [];
   try {
-    faqs = (await query<SavedAnswer>(`SELECT question, answer FROM site_faqs WHERE site_id = $1 AND is_enabled = true ORDER BY sort_order, created_at`, [conv.site_id])).rows;
+    faqs = (await query<SavedAnswer>(`SELECT question, answer FROM site_faqs WHERE site_id = $1 AND is_enabled = true ORDER BY sort_order, created_at`, [setup.faqSite])).rows;
+    if (setup.mode === 'common') faqs = faqs.map((f) => ({ question: fillBrand(f.question, setup.brand), answer: fillBrand(f.answer, setup.brand) }));
   } catch (err) { console.error('[suggest] saved answers failed:', (err as Error)?.message); }
   const customerTexts = rows.filter((r) => r.sender === 'visitor').map((r) => r.content || '');
   const asked = customerTexts.slice(-3).join('\n');
@@ -158,7 +163,7 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
       if ((h?.health_score ?? 0) >= CLOSED_NOTE_UPSET_MIN) upsetClosed = why;
     }
   } catch (err) { console.error('[suggest] health read failed:', (err as Error)?.message); }
-  const system = buildSystemPrompt(site?.system_prompt || null, site?.cod_available, 'chat', faqs, site?.cod_states?.trim() || null, asked)
+  const system = buildSystemPrompt(setup.prompt, site?.cod_available, 'chat', faqs, site?.cod_states?.trim() || null, asked, setup.brand)
     + brain + examples
     + suggestInstruction({ lang, after: afterHours(nowMs, holidays), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson, upsetClosed,
       channel: conv.source === 'email' ? 'email' : 'chat', storeName: site?.name ?? null });

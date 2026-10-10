@@ -63,7 +63,7 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.ok(/2 customers waiting under 2 hours/.test(busy[3].text), 'waiting minus overdue');
     assert.ok(/5 orders past the estimated date/.test(busy[7].text));
     const gaps = rules.panelNeeds({ ...base, aiOn: false, hasPrompt: false, supportGmail: false, chargebackGmail: false });
-    assert.deepStrictEqual(gaps.map((x) => x.text), ['Chikki is OFF: every chat waits for a person', 'Chikki has no prompt yet: use Settings > Copy setup', 'No customer-support Gmail connected', 'No chargeback Gmail connected']);
+    assert.deepStrictEqual(gaps.map((x) => x.text), ['Chikki is OFF: every chat waits for a person', 'Chikki has no prompt yet: use Settings > All panels setup (or Copy setup)', 'No customer-support Gmail connected', 'No chargeback Gmail connected']);
     assert.ok(gaps.every((x) => x.go === 'settings' && x.tone === 'warn'));
     assert.ok(/WhatsApp number not set/.test(rules.panelNeeds({ ...base, whatsapp: false }).map((x) => x.text).join()), 'the WhatsApp gap shows only once the chargeback Gmail is there');
     assert.ok(!/WhatsApp/.test(rules.panelNeeds({ ...base, chargebackGmail: false, whatsapp: false }).map((x) => x.text).join()));

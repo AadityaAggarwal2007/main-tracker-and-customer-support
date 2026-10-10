@@ -58,7 +58,7 @@ export function panelNeeds(s: PanelStats): Need[] {
   if (s.reshipToShip > 0) out.push({ tone: 'warn', text: `${n(s.reshipToShip, 'Ship again parcel', 'Ship again parcels')} not sent yet`, go: 'chats' });
   if (s.lateOrders > 0) out.push({ tone: 'warn', text: `${n(s.lateOrders, 'order', 'orders')} past the estimated date`, go: 'orders' });
   if (s.aiOn === false) out.push({ tone: 'warn', text: 'Chikki is OFF: every chat waits for a person', go: 'settings' });
-  if (!s.hasPrompt) out.push({ tone: 'warn', text: 'Chikki has no prompt yet: use Settings > Copy setup', go: 'settings' });
+  if (!s.hasPrompt) out.push({ tone: 'warn', text: 'Chikki has no prompt yet: use Settings > All panels setup (or Copy setup)', go: 'settings' });
   if (!s.supportGmail) out.push({ tone: 'warn', text: 'No customer-support Gmail connected', go: 'settings' });
   if (!s.chargebackGmail) out.push({ tone: 'warn', text: 'No chargeback Gmail connected', go: 'settings' });
   else if (!s.whatsapp) out.push({ tone: 'warn', text: 'Chargeback WhatsApp number not set', go: 'settings' });

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import PanelCopyCard from '@/components/PanelCopyCard';
+import CommonSetupCard from '@/components/CommonSetupCard';
 import GmailAccountsOverview from '@/components/GmailAccountsOverview';
 import AutoProgressionCard from '@/components/AutoProgressionCard';
 import TeamCard from '@/components/TeamCard';
@@ -1213,7 +1214,9 @@ export default function AdminDashboard() {
                               style={{ height: 'auto', resize: 'vertical' }}
                             />
                             <p style={{ fontSize: '0.6875rem', color: 'var(--fg-muted)', marginTop: '0.25rem' }}>
-                              This replaces the standard prompt entirely — anything you leave out, the AI no longer knows to avoid.
+                              {chatSite.setupMode === 'common'
+                                ? <>This is the <b>All panels</b> prompt: saving it changes Chikki on every panel that uses the All panels setup. Write {'{brand}'} where the store&apos;s name goes.</>
+                                : <>This replaces the standard prompt entirely — anything you leave out, the AI no longer knows to avoid.</>}
                             </p>
                           </div>
 
@@ -1238,6 +1241,13 @@ export default function AdminDashboard() {
                 <div id="set-copy" style={{ scrollMarginTop: 76 }}>
                   <PanelCopyCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name}
                     others={businesses.filter(b => b.id !== activeBusiness.id).map(b => ({ id: b.id, name: b.name }))} onAlert={showAlert} />
+                </div>
+              )}
+
+              {/* One Chikki setup for every panel (owner 2026-10-10, step 7) */}
+              {isSuperAdmin(user) && (
+                <div id="set-common" style={{ scrollMarginTop: 76 }}>
+                  <CommonSetupCard token={token} onAlert={showAlert} />
                 </div>
               )}
 

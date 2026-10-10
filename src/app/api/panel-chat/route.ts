@@ -4,6 +4,7 @@ import { queryOne } from '@/lib/db';
 import { ensureSiteForPanel, siteForPanel } from '@/lib/chat/site';
 import { cleanCodStates } from '@/lib/chat/cod';
 import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { COMMON_EDIT_ERROR, canEditCommon, loadCommon, saveCommon, setupForSite } from '@/lib/chat/common-setup';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +29,9 @@ export async function GET(request: NextRequest) {
   const site = await siteForPanel(businessId);
   if (!site) return NextResponse.json({ site: null });
 
+  // Step 7: while the panel uses the All panels setup, the instructions box shows and saves the common prompt.
+  const setup = await setupForSite(site.id).catch(() => null);
+  const common = setup?.mode === 'common' ? await loadCommon(true) : null;
   const counts = await queryOne<{ conversations: string }>(
     `SELECT count(*) AS conversations FROM conversations WHERE site_id = $1`,
     [site.id]
@@ -38,7 +42,9 @@ export async function GET(request: NextRequest) {
       id: site.id,
       widgetKey: site.widget_key,
       aiEnabled: site.ai_enabled,
-      systemPrompt: site.system_prompt,
+      systemPrompt: common ? common.prompt : site.system_prompt,
+      setupMode: setup?.mode ?? 'own',
+      brand: setup?.brand ?? '',
       codAvailable: site.cod_available,
       codStates: site.cod_states,
       domain: site.domain,
@@ -90,7 +96,15 @@ export async function PATCH(request: NextRequest) {
       sets.push(`cod_states = $${pi++}`);
       params.push(cleaned);
     }
-    if (systemPrompt !== undefined) {
+    // The All panels setup (step 7): the box is the common prompt; an empty one would switch every panel back to its
+    // own, so it is refused here (Settings > All panels setup switches a panel).
+    let commonPrompt: string | null = null;
+    if (systemPrompt !== undefined && (await setupForSite(site.id).catch(() => null))?.mode === 'common') {
+      if (!canEditCommon(user, can(user, 'chikki.edit') || isSuperAdmin(user))) return NextResponse.json({ error: COMMON_EDIT_ERROR }, { status: 403 });
+      const text = systemPrompt ? String(systemPrompt) : '';
+      if (!text.trim()) return NextResponse.json({ error: 'The All panels prompt cannot be empty. To give this panel its own prompt, switch it to Own in Settings > All panels setup.' }, { status: 400 });
+      commonPrompt = (await saveCommon({ prompt: text }, user.username)).prompt;
+    } else if (systemPrompt !== undefined) {
       // An empty box means "use the default prompt", not "answer with nothing".
       sets.push(`system_prompt = $${pi++}`);
       params.push(systemPrompt && String(systemPrompt).trim() ? String(systemPrompt) : null);
@@ -99,7 +113,7 @@ export async function PATCH(request: NextRequest) {
     // it only happens when explicitly asked for.
     if (regenerateKey === true) sets.push(`widget_key = gen_random_uuid()::text`);
 
-    if (sets.length === 0) return NextResponse.json({ success: true });
+    if (sets.length === 0) return NextResponse.json({ success: true, ...(commonPrompt !== null ? { site: { id: site.id, widgetKey: site.widget_key, aiEnabled: site.ai_enabled, systemPrompt: commonPrompt, setupMode: 'common', codAvailable: site.cod_available, codStates: site.cod_states } } : {}) });
 
     sets.push(`updated_at = now()`);
     params.push(site.id);
@@ -116,7 +130,8 @@ export async function PATCH(request: NextRequest) {
         id: site.id,
         widgetKey: updated!.widget_key,
         aiEnabled: updated!.ai_enabled,
-        systemPrompt: updated!.system_prompt,
+        systemPrompt: commonPrompt ?? updated!.system_prompt,
+        ...(commonPrompt !== null ? { setupMode: 'common' } : {}),
         codAvailable: updated!.cod_available,
         codStates: updated!.cod_states,
       },

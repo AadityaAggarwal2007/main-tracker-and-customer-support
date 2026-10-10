@@ -8,6 +8,7 @@ import { getLockedRules } from '@/lib/chat/ai';
 import { fillRulebook } from '@/lib/chat/rulebook';
 import { DEFAULT_EFFORT, cleanEffortSettings } from '@/lib/chat/effort';
 import { can } from '@/lib/permissions';
+import { setupForSite } from '@/lib/chat/common-setup';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +55,8 @@ export async function GET(request: NextRequest) {
       `SELECT ${COLS} FROM brain_notes WHERE site_id = $1 OR site_id IS NULL ORDER BY (site_id IS NULL), sort_order, created_at`,
       [siteId]
     );
+    // Step 7: does this panel use the All panels setup (the card says so), and its name in the locked rules.
+    const setup = await setupForSite(siteId).catch(() => null);
     // Chikki's rulebook, with this panel's COD and courier filled in, and the changes the
     // owner asked for (chikki-rule-changes.sql; an empty list until that file is applied).
     const site = await queryOne<{ cod_available: boolean | null; cod_states: string | null }>(
@@ -65,7 +68,9 @@ export async function GET(request: NextRequest) {
     let effortSettings: unknown = null;
     let effortUsage: unknown[] = [];
     try {
-      effortSettings = (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
+      effortSettings = setup?.mode === 'common' && setup.effort
+        ? setup.effort
+        : (await queryOne<{ chikki_effort: unknown }>(`SELECT chikki_effort FROM sites WHERE id = $1`, [siteId]))?.chikki_effort ?? null;
       effortUsage = (await query(
         `SELECT grp, level, count(*)::int AS replies,
                 COALESCE(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens,
@@ -91,7 +96,8 @@ export async function GET(request: NextRequest) {
     const res = NextResponse.json({
       notes: rows.rows,
       topics: BRAIN_TOPICS.map((t) => ({ key: t.key, label: t.label })),
-      locked: getLockedRules(),
+      locked: getLockedRules(setup?.brand ?? null),
+      setup: { mode: setup?.mode ?? 'own', brand: setup?.brand ?? '' },
       rulebook: fillRulebook(
         { codStates: site?.cod_states ?? null, codAvailable: site?.cod_available ?? null },
         biz?.default_courier ?? null,
