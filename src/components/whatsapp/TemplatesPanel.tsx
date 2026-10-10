@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import MetaError from './MetaError';
 import PhonePreview from './PhonePreview';
@@ -17,6 +17,9 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // the form opens right under the list, and the page moves to it so it is never off screen
+  useEffect(() => { if (open) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [open, editId]);
   const [form, setForm] = useState<TemplateForm>(EMPTY_FORM);
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState<TemplateInfo | null>(null);
@@ -88,10 +91,8 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
           </div>
         </div>
 
-        <BrandsCard token={token} brands={brands} onAlert={onAlert} reload={reload} />
-
         {open && (
-          <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: '0.5rem' }}>
+          <form ref={formRef} onSubmit={(e) => { e.preventDefault(); void submit(); }} className="tf-card" style={{ padding: '1.25rem', display: 'grid', gap: '0.5rem' }}>
             <div style={SECTION}>{editId ? `Edit "${form.name}"` : 'New template'}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(10rem, 1fr))', gap: '0.5rem' }}>
               <label><span style={label}>Name{editId ? ' (fixed)' : ''}</span><input className="form-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="order_update" disabled={!!editId} /></label>
@@ -115,6 +116,7 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
                 ))}
               </div>
             )}
+        <BrandsCard token={token} brands={brands} onAlert={onAlert} reload={reload} />
             <label><span style={label}>Footer (optional)</span><input className="form-input" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} maxLength={60} /></label>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-outline" onClick={() => { setOpen(false); setEditId(null); }}>Cancel</button>
