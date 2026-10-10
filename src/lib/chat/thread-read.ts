@@ -2,6 +2,7 @@ import { AuthUser, teamLoaded } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from './display-name';
 import { nameOfKey } from './team-routing';
+import { LIGHT_MAX, THREAD_PAGE } from './thread-sync';
 
 export interface ConversationRow {
   id: string; site_id: string; visitor_name: string | null; display_name: string | null; name_from_order: boolean; visitor_phone: string | null;
@@ -195,20 +196,38 @@ export async function loadCustomerThread(conv: ConversationRow, user: AuthUser):
 }
 
 // Loaders for GET's answer, moved out of the route on 2026-10-02 (pure move): GET awaits each at the same place as before.
-export async function loadThreadMessages(id: string) {
+// Since 2026-10-10 (step 6, thread-sync.ts) a full load brings the newest THREAD_PAGE messages and how many are older
+// (`older`); `before` = "Load older" (the page before that message); `after` = the 3-second poll (what was written,
+// edited or deleted since, at most LIGHT_MAX).
+export async function loadThreadMessages(id: string, opts: { after?: string | null; before?: { at: string; id: string } | null } = {}) {
   // tool_result rows and the hidden tool bookkeeping are context for the model,
   // not part of the conversation a person reads. Deleted messages stay in the
   // list, marked, so the team can see what was removed and by whom.
   // `brain` = the Brain notes the agent was shown for that reply (brain_usage, staff only).
   // Before chat-brain-usage.sql is applied the table is missing: read without it then.
-  const messagesSql = (withBrain: boolean) => `SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by${
-    withBrain ? `, (SELECT u.notes FROM brain_usage u WHERE u.message_id = messages.id) AS brain` : ''}
-       FROM messages
-      WHERE conversation_id = $1
-        AND ${STAFF_MESSAGE_SQL}
-      ORDER BY created_at ASC`;
-  const messages = await query(messagesSql(true), [id]).catch(() => query(messagesSql(false), [id]));
-  return messages;
+  const params: unknown[] = [id];
+  let cond = '';
+  if (opts.after) {
+    params.push(opts.after);
+    cond = ` AND (created_at > $2::timestamptz OR edited_at > $2::timestamptz OR deleted_at > $2::timestamptz)`;
+  } else if (opts.before) {
+    params.push(opts.before.at, opts.before.id);
+    cond = ` AND (created_at, id::text) < ($2::timestamptz, $3::text)`;
+  }
+  const limit = opts.after ? LIGHT_MAX : THREAD_PAGE;
+  const messagesSql = (withBrain: boolean) => `SELECT m.id, m.sender, m.content, m.metadata, m.created_at, m.edited_at, m.edited_by, m.deleted_at, m.deleted_by${
+    withBrain ? `, (SELECT u.notes FROM brain_usage u WHERE u.message_id = m.id) AS brain` : ''}, m.match_total
+       FROM (SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by, count(*) OVER ()::int AS match_total
+               FROM messages
+              WHERE conversation_id = $1
+                AND ${STAFF_MESSAGE_SQL}${cond}
+              ORDER BY created_at DESC, id::text DESC
+              LIMIT ${limit}) m
+      ORDER BY m.created_at ASC, m.id::text ASC`;
+  const messages = await query<Record<string, unknown>>(messagesSql(true), params).catch(() => query<Record<string, unknown>>(messagesSql(false), params));
+  const total = Number(messages.rows[0]?.match_total ?? 0);
+  for (const m of messages.rows) delete m.match_total;
+  return { rows: messages.rows, older: Math.max(0, total - messages.rows.length) };
 }
 
 export async function loadWriters(agentIds: string[]) {

@@ -102,7 +102,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'reship',
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'reship',
   'effort', 'closed-hours', 'closed-hours-run']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
@@ -461,9 +461,20 @@ async function handle(q, p, tx) {
     for (const col of ['assigned_to', 'assigned_at', 'merged_into']) if (!q.includes('c.' + col)) delete r[col];
     return rows([r]);
   }
-  if (/^SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by, \(SELECT u\.notes FROM brain_usage u WHERE u\.message_id = messages\.id\) AS brain FROM messages WHERE conversation_id = \$1 AND /.test(q)) {
-    return rows(db.messages.filter((x) => x.conversation_id === p[0] && x.sender !== 'tool_result' && !(x.metadata && x.metadata.hidden))
-      .map((x) => ({ ...pick(x, ['id', 'sender', 'content', 'metadata', 'created_at', 'edited_at', 'edited_by', 'deleted_at', 'deleted_by']), brain: null })));
+  // The open chat's messages (thread-read.ts, step 6): the newest page, "Load older" (before) or the poll (after).
+  if (/^SELECT m\.id, m\.sender, m\.content, m\.metadata, m\.created_at, m\.edited_at, m\.edited_by, m\.deleted_at, m\.deleted_by, \(SELECT u\.notes FROM brain_usage u WHERE u\.message_id = m\.id\) AS brain, m\.match_total FROM \(SELECT .* FROM messages WHERE conversation_id = \$1 AND /.test(q)) {
+    db.threadSql = q; db.threadParams = p;
+    const ms = (v) => (v ? Date.parse(v) : NaN);
+    let all = db.messages.filter((x) => x.conversation_id === p[0] && x.sender !== 'tool_result' && !(x.metadata && x.metadata.hidden));
+    if (/\(created_at > \$2::timestamptz OR edited_at > \$2::timestamptz OR deleted_at > \$2::timestamptz\)/.test(q)) {
+      const t = ms(p[1]); all = all.filter((x) => ms(x.created_at) > t || ms(x.edited_at) > t || ms(x.deleted_at) > t);
+    } else if (/AND \(created_at, id::text\) < \(\$2::timestamptz, \$3::text\)/.test(q)) {
+      const t = ms(p[1]); all = all.filter((x) => ms(x.created_at) < t || (ms(x.created_at) === t && String(x.id) < p[2]));
+    }
+    const cmp = (a, b) => ms(a.created_at) - ms(b.created_at) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
+    const limit = Number(q.match(/LIMIT (\d+)\) m/)[1]);
+    const page = [...all].sort(cmp).slice(-limit);
+    return rows(page.map((x) => ({ ...pick(x, ['id', 'sender', 'content', 'metadata', 'created_at', 'edited_at', 'edited_by', 'deleted_at', 'deleted_by']), brain: null, match_total: all.length })));
   }
   if (/^WITH older AS \( SELECT c\.id, c\.created_at, c\.status, /.test(q)) {
     // The same customer's other chats on the site, with their messages (enough for the authors).
@@ -3876,6 +3887,48 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     known({ id: 'r70z', status: 'resolved', assigned_to: ANURAG });
     eq((await patch('anurag', 'r70z', { forward: 'refund', note: 'wants money back' })).status, 400);
     eq((await patch('viewer', 'r70c', { forward: 'refund', note: 'wants money back' })).status, 403);
+  });
+
+  // ── R71: the open chat loads fast (owner 2026-10-10, step 6) ───
+  await t('R71 the thread: the newest 200 messages + how many are older; Load older; the poll brings only what changed, with the chat row and the staff block', async () => {
+    at(ist(16, 0, 2));
+    known({ id: 'r71', status: 'agent_handling', assigned_to: ANURAG, unread_count: 3 });
+    const base = Date.parse('2026-10-02T08:00:00.000Z');
+    for (let i = 1; i <= 250; i++) {
+      db.messages.push({ id: 'm' + String(i).padStart(3, '0'), conversation_id: 'r71', sender: i % 2 ? 'visitor' : 'agent', content: 'msg ' + i,
+        metadata: i % 2 ? null : { agent: 'anurag' }, created_at: new Date(base + i * 1000).toISOString() });
+    }
+    const threadQ = (who, id, qs) => mod.thread.GET(req(who, undefined, { method: 'GET', active: true, url: 'http://x/api/chat/conversations/' + id + qs }), { params: { id } });
+    let r = await thread('anurag', 'r71');
+    status(r, 200);
+    eq(r.body.messages.length, 200);
+    deq([r.body.messages[0].id, r.body.messages[199].id, r.body.older_count], ['m051', 'm250', 50], 'the newest 200, oldest first');
+    ok(typeof r.body.as_of === 'string' && 'order_facts' in r.body && 'earlier' in r.body);
+    eq(r.body.messages[199].author, 'Anurag');
+    // Load older: the 50 before the first one on screen.
+    r = await threadQ('anurag', 'r71', '?before=' + encodeURIComponent(r.body.messages[0].created_at) + '&before_id=m051');
+    deq([r.body.messages.length, r.body.messages[0].id, r.body.messages[49].id, r.body.older_count], [50, 'm001', 'm050', 0]);
+    deq(Object.keys(r.body).sort(), ['messages', 'older_count'], 'only the page');
+    // The poll: a new message and an edit since the cursor; nothing heavy.
+    const cursor = new Date(base + 300 * 1000).toISOString();
+    db.messages.push({ id: 'm251', conversation_id: 'r71', sender: 'visitor', content: 'hello?', metadata: null, created_at: new Date(base + 400 * 1000).toISOString() });
+    Object.assign(db.messages.find((x) => x.id === 'm010'), { content: 'edited', edited_at: new Date(base + 500 * 1000).toISOString() });
+    C('r71').unread_count = 2;
+    r = await threadQ('anurag', 'r71', '?after=' + encodeURIComponent(cursor));
+    status(r, 200);
+    deq(r.body.messages.map((x) => x.id), ['m010', 'm251']);
+    deq(Object.keys(r.body).sort(), ['as_of', 'conversation', 'hot_lock', 'light', 'messages', 'staff']);
+    deq([r.body.light, r.body.conversation.id, r.body.staff.me, r.body.conversation.unread_count, C('r71').unread_count], [true, 'r71', ANURAG, 0, 0]);
+    ok(/created_at > \$2::timestamptz OR edited_at > \$2::timestamptz OR deleted_at > \$2::timestamptz/.test(db.threadSql));
+    // A cursor that is no time, or days old, is a full load.
+    r = await threadQ('anurag', 'r71', '?after=yesterday');
+    ok(!r.body.light && r.body.messages.length === 200);
+    // A login without the chat's panel gets the same refusal from the poll as from a full load.
+    known({ id: 'r71p', site_id: 'S1', status: 'agent_handling' });
+    const full = await thread('priya', 'r71p');
+    eq(full.status, 404, 'Priya works only in P2');
+    eq((await threadQ('priya', 'r71p', '?after=' + encodeURIComponent(cursor))).status, full.status);
+    eq((await threadQ('priya', 'r71p', '?before=' + encodeURIComponent(cursor) + '&before_id=m1')).status, full.status);
   });
 
   Object.assign(console, realConsole);

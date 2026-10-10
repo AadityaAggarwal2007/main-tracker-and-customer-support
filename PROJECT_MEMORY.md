@@ -129,8 +129,9 @@ Done and live:
   (`escalate-late.ts`); 5 the Manager panel in Chat Support: "Manager" group first (Open cases `?lead=open`, Refund,
   Ship again, Team live, links to Chargebacks / Team score), the Manager opens on Open cases; Team live =
   `GET /api/chat/team/live` (`team-live.ts`: per member replies per half hour, on duty, held / waiting, 30-min
-  misses; Chikki's row). Next: 6 thread loads fast (`?after=`, 200 newest + Load older, `chat-speed.sql` index
-  needs his yes), 7 one "All panels" setup, 8 Chikki's record and fixes with him.
+  misses; Chikki's row); 6 the open chat loads fast (`thread-sync.ts`: newest 200 + "Load older", the 3-second
+  poll asks only `?after=` what changed, a full load every 30 s); `chat-speed.sql` (one index, CONCURRENTLY, without
+  -1) waits for his yes. Next: 7 one "All panels" setup, 8 Chikki's record and fixes with him.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

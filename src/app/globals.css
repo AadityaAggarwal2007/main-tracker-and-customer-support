@@ -2713,3 +2713,6 @@ a {
 .tl-dot { display: inline-flex; align-items: center; justify-content: center; min-width: 1.75rem; height: 1.5rem; padding: 0 0.25rem; border-radius: 0.375rem; background: var(--primary); color: #fff; font-weight: 700; font-size: 0.75rem; }
 .tl-ai-row td { background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
 .tl-ai-row .tl-name { background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+
+/* "Load older" above the open chat's first message (step 6, owner 2026-10-10) */
+.chat-older { display: flex; justify-content: center; padding: 0.5rem 0 0.75rem; }
