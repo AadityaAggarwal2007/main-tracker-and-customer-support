@@ -12,11 +12,12 @@ import SetupPanel from './SetupPanel';
 import ProfilePanel from './ProfilePanel';
 import TemplatesPanel from './TemplatesPanel';
 import SendPanel from './SendPanel';
+import TestPanel from './TestPanel';
 import ActivityPanel from './ActivityPanel';
 import { spin, type Alert, type WaActivity, type WaLists, type WaProfileData, type WaSettings, type WaTab } from './types';
 
 const TABS: { id: WaTab; label: string }[] = [
-  { id: 'setup', label: 'Setup' }, { id: 'profile', label: 'Number & profile' }, { id: 'templates', label: 'Templates' }, { id: 'send', label: 'Send' }, { id: 'activity', label: 'Activity' },
+  { id: 'setup', label: 'Setup' }, { id: 'test', label: 'Test' }, { id: 'profile', label: 'Number & profile' }, { id: 'templates', label: 'Templates' }, { id: 'send', label: 'Send' }, { id: 'activity', label: 'Activity' },
 ];
 
 export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: string; onAlert: Alert; onOpenChat: (conversationId: string) => void }) {
@@ -67,6 +68,7 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
         {TABS.map((t) => <button key={t.id} type="button" role="tab" className="seg-btn" aria-pressed={tab === t.id} onClick={() => pick(t.id)}>{t.label}</button>)}
       </div>
       {tab === 'setup' && <SetupPanel key={`${s?.waba}|${s?.appId}`} token={token} s={s} lists={lists} onAlert={onAlert} reload={load} />}
+      {tab === 'test' && <TestPanel token={token} s={s} prof={prof} act={act} onAlert={onAlert} goSend={() => pick('send')} goActivity={() => pick('activity')} />}
       {tab === 'profile' && <ProfilePanel token={token} s={s} prof={prof} onAlert={onAlert} reload={load} />}
       {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} onAlert={onAlert} reload={load} />}
       {tab === 'send' && <SendPanel token={token} s={s} lists={lists} prof={prof} onAlert={onAlert} onOpenChat={onOpenChat} />}
