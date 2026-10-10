@@ -39,6 +39,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Hand-over and failure replies are fixed lines in plain words, never "AI failed", "system", "database" or "error".' },
       { id: '1.7', how: 'auto', from: '', title: 'Chat and email, same rules',
         text: 'The same Chikki answers the chat box and the connected email inboxes, with the same rules. In email the default (switch in Panel Settings > Email Support, per panel) is that Chikki writes a DRAFT and the team sends it; the fixed hand-over replies for a fraud claim or a refund / payment request still go out on their own, and a threat (chargeback, police, court) gets no automatic reply at all (it goes straight to the team, rule 15).' },
+      { id: '1.8', how: 'code', from: 'Your decision, 10 Oct', title: 'When the AI is down',
+        text: 'If every AI model fails (OpenRouter out of credits or over its monthly limit), a visitor is no longer told "Sorry, that took longer, send that again" (new customers read it as a fake site): they get "Thanks for writing to <store>! Please share your order ID and the complete phone number on the order, and we\'ll help you right here", in Hinglish when they write Hinglish; one who already typed both is told to send "hi" again in a little while. A verified customer goes to your team as before. The Today board shows a red banner while it lasts.' },
     ],
   },
   {

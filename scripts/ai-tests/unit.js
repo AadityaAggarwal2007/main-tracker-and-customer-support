@@ -1389,6 +1389,19 @@ t('closed-hours: who gets the note and when (Critical: weekend 1st / night 2nd m
   assert.strictEqual(step({ teamActiveMin: 30 }), 'full');
   assert.deepStrictEqual([ch.CLOSED_NOTE_CRITICAL_MIN, ch.CLOSED_NOTE_UPSET_MIN, ch.TEAM_ACTIVE_MIN, ch.CLOSED_NOTE_KEY], [75, 50, 30, 'closed_note']);
 });
+const aidown = load('ai-down');
+t('ai-down (owner 10 Oct): every model down, a visitor gets the store name and what to share, never "took longer"; one who typed both is not asked again', () => {
+  assert.strictEqual(aidown.aiDownVisitorReply('Kurtiya', ['Is it scam??']), "Thanks for writing to Kurtiya! Please share your order ID and the complete phone number on the order, and we'll help you right here.");
+  assert.strictEqual(aidown.aiDownVisitorReply('VASTRIKA', ['mera order kab aayega']), 'VASTRIKA ko message karne ke liye shukriya! Apna order ID aur order par diya hua poora phone number bhejiye, hum yahin aapki madad karenge.');
+  assert.ok(/We have your order ID and phone number/.test(aidown.aiDownVisitorReply('Vastora', ['order #5121', 'my number is 9876543210'])));
+  assert.ok(!aidown.typedBoth(['9876543210']) && !aidown.typedBoth(['#5121']) && aidown.typedBoth(['#5121 9876543210']));
+  const all = [aidown.aiDownVisitorReply('Vastora', ['hi']), aidown.aiDownVisitorReply('Vastora', ['kya hai']), aidown.aiDownVisitorReply('Vastora', ['#5121 9876543210']), aidown.aiDownVisitorReply('Vastora', ['mera order 5121 hai, 9876543210'])];
+  const re = new RegExp(waiting.AI_NOT_AN_ANSWER_REGEX, 'i');
+  for (const x of all) { assert.ok(re.test(x) && aidown.isAiDownLine(x), x); assert.ok(!tp.promisesToday(x), x); }
+  assert.ok(waiting.AI_NOT_AN_ANSWER_REGEX.endsWith('|' + aidown.AI_DOWN_REGEX), 'the waiting rule carries the same phrase');
+  assert.ok(!/AI_BUSY_REPLY/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/widget/message/route.ts'), 'utf8')), 'the widget never sends "took longer" any more');
+  assert.ok(fs.readFileSync(path.resolve(__dirname, '../chikki-review.js'), 'utf8').includes(`const AI_DOWN_REGEX = '${aidown.AI_DOWN_REGEX}'`), 'the review counts these lines too');
+});
 t('closed-hours (owner 10 Oct): the status first for a message that only asks where the order is; anger, refund or a threat is never only that', () => {
   for (const x of ['#5121', '5121', 'Order no 5121', '?', 'Please reply', 'where is my order', 'Mera order kahan hai?', 'Still my parcel has not delivered', 'hello sir', 'kab aayega mera order'])
     assert.ok(ch.asksStatusOnly(x), x);
@@ -1429,7 +1442,8 @@ t('closed-hours: the notes are fixed text in English and Hinglish, honest about 
   assert.ok(ch.closedNote(EN, 'night', 'tomorrow', 'full').includes('10 AM to 7:30 PM'));
   assert.ok(ch.closedNote(HI, 'weekend', 'monday', 'full').includes('Monday subah 10 baje ke baad hamari team sabse pehle aapka case lekar baithegi'));
   // waiting.ts carries the same phrase (the SQL regex): a change to one must change the other.
-  assert.ok(waiting.AI_NOT_AN_ANSWER_REGEX.endsWith('|' + ch.CLOSED_NOTE_REGEX));
+  // The closed-hours phrase is one alternative of the waiting rule (since 10 Oct the AI-down lines follow it, ai-down.ts).
+  assert.ok(waiting.AI_NOT_AN_ANSWER_REGEX.includes('|' + ch.CLOSED_NOTE_REGEX + '|'));
   // The reply with the note as its only promise: the fixed team lines and hour promises go, the AI's facts stay.
   const note = ch.closedNote(EN, 'weekend', 'monday', 'full');
   assert.strictEqual(ch.withoutTeamLines(`Your order is In Transit.\n\n${esc.teamWillReplyLine(EN, 'monday')}`, [esc.teamWillReplyLine(EN, 'monday')]), 'Your order is In Transit.');

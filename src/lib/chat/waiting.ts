@@ -44,7 +44,10 @@ export const AI_NOT_AN_ANSWER_REGEX =
   '^sorry, that took longer than expected|(get|have|let me|will|can)[^.]{0,30}confirm[a-z]*[^.]{0,30}(team|colleague)' +
   '|(naya|new|नया) (tracking link|ट्रैकिंग लिंक)[^.]{0,80}24-48' +
   '|processing your refund|refund process kar rah|रिफंड प्रोसेस कर रह' +
-  '|(sit down with|take up) your case|sabse pehle aapka case';
+  '|(sit down with|take up) your case|sabse pehle aapka case' +
+  // Since 2026-10-10 (owner, Chikki review: every model down, a visitor gets ai-down.ts aiDownVisitorReply instead of
+  // "took longer"): the same as AI_DOWN_REGEX there (unit.js compares them). Nobody has answered such a visitor yet.
+  '|thanks for writing to [^!]{1,60}! (please share your order id|we have your order id)|ko message karne ke liye shukriya!';
 
 export type WaitingLevel = 'fresh' | 'soon' | 'overdue';
 

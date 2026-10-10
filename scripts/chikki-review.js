@@ -14,6 +14,9 @@ const path = require('path');
 
 const DAYS = Math.max(1, Math.min(90, parseInt(process.argv[2] || '30', 10) || 30));
 const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. Could you send that again?';
+// Since 10 Oct a visitor gets src/lib/chat/ai-down.ts's line instead when every model is down: counted the same.
+const AI_DOWN_REGEX = 'thanks for writing to [^!]{1,60}! (please share your order id|we have your order id)|ko message karne ke liye shukriya!';
+const BUSY = (a) => `(${a}.content = '${AI_BUSY_REPLY.replace(/'/g, "''")}' OR ${a}.content ~* '${AI_DOWN_REGEX}')`;
 
 // psql: the server's database as postgres (like scripts/ai-tests/run.js), or REVIEW_PSQL_URL for a test database.
 function sql(text) {
@@ -57,7 +60,7 @@ const per = safe('numbers', `SELECT COALESCE(json_agg(t ORDER BY t.ai_replies DE
         AND c.status IN ('ai_handling', 'resolved')
         AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.conversation_id = c.id AND a.sender = 'agent' AND a.created_at > ${since}))::int AS alone,
     (SELECT count(DISTINCT e.conversation_id) FROM chat_events e WHERE e.site_id = s.id::text AND e.kind = 'status' AND e.to_status = 'human_needed' AND e.actor IN ('ai', 'system') AND e.created_at > ${since})::int AS handed,
-    (SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.site_id = s.id AND m.sender = 'ai' AND m.created_at > ${since} AND m.content = '${AI_BUSY_REPLY.replace(/'/g, "''")}')::int AS busy,
+    (SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.site_id = s.id AND m.sender = 'ai' AND m.created_at > ${since} AND ${BUSY('m')})::int AS busy,
     (SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.site_id = s.id AND m.sender = 'ai' AND m.created_at > ${since} AND COALESCE(m.metadata->>'withheld', '') <> '')::int AS held,
     (SELECT count(DISTINCT r.message_id) FROM message_revisions r JOIN messages m ON m.id = r.message_id JOIN conversations c ON c.id = m.conversation_id WHERE c.site_id = s.id AND m.sender = 'ai' AND r.action = 'edit' AND r.created_at > ${since})::int AS team_edited,
     (SELECT count(DISTINCT r.message_id) FROM message_revisions r JOIN messages m ON m.id = r.message_id JOIN conversations c ON c.id = m.conversation_id WHERE c.site_id = s.id AND m.sender = 'ai' AND r.action = 'delete' AND r.created_at > ${since})::int AS team_deleted
@@ -72,7 +75,7 @@ if (!per.length) console.log('- no Chikki replies in this window');
 console.log('\n1b. "TOOK LONGER" PER DAY (India time, all panels)');
 const busy = safe('busy per day', `SELECT COALESCE(json_agg(t ORDER BY t.day), '[]') FROM (
   SELECT to_char((m.created_at::timestamptz) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day, count(*)::int AS n,
-         count(*) FILTER (WHERE m.content = '${AI_BUSY_REPLY.replace(/'/g, "''")}')::int AS busy
+         count(*) FILTER (WHERE ${BUSY('m')})::int AS busy
     FROM messages m WHERE m.sender = 'ai' AND m.created_at > ${since} AND m.deleted_at IS NULL AND btrim(m.content) <> ''
      AND COALESCE(m.metadata->>'hidden', 'false') <> 'true'
    GROUP BY 1) t`);

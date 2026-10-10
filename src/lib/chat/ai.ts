@@ -34,6 +34,7 @@ import { CATEGORIZE_TOOL, ESCALATE_TOOL, ORDER_LOOKUP_TOOL } from './ai-tools';
 import { UNPROVEN_LOOKUP, VERIFICATION_DEPLOYED_AT, courierAsksSoFar, couriersInLookups, dropOrphanedToolCalls, isProvenLookup, type StoredMessage } from './ai-history';
 import { setupFor } from './common-setup';
 import { fillBrand } from './common-setup-rules';
+import { isAiDownLine } from './ai-down';
 
 // Moved out of this file on 2026-10-02 (pure move); re-exported so no importer changes.
 export { AI_MODELS, attemptOrder, getActiveModel, getChain, getClient, getModelList, isRetryable, loadActiveModelFromDb, persistActiveModel, setActiveModel, sideAttemptOrder, sideModel } from './ai-models';
@@ -518,7 +519,7 @@ export async function getAIResponse(
   // reply that still is not a real lookup goes to a person (see lookup-guard.ts).
   // The busy apology and the empty-reply filler ask for nothing, so they must
   // not hide the question the customer is still answering.
-  const guardRows = recent.rows.slice(-GUARD_WINDOW).filter((r) => r.content !== AI_BUSY_REPLY && r.content !== EMPTY_REPLY);
+  const guardRows = recent.rows.slice(-GUARD_WINDOW).filter((r) => r.content !== AI_BUSY_REPLY && r.content !== EMPTY_REPLY && !isAiDownLine(r.content));
   const pending = findPendingLookup(guardRows);
   // Per model: runWithModel resets them, and executeTool records cached
   // lookups again, so a fallback model is judged on what its own run used.
