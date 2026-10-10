@@ -139,8 +139,10 @@ function metaError(status: number, json: unknown): string {
   if (err?.code === 10) return (/^\(#10\)/.test(msg) ? msg : `(#10) ${msg || 'Application does not have permission for this action'}`).slice(0, 220);
   if (err?.code === 100 && /does not exist|cannot be loaded|missing permissions/i.test(msg)) return 'Meta does not know this WhatsApp Business Account id, or the token has no rights on it';
   // Meta's own code (and subcode) go after the words, so a refusal can be looked up exactly
+  const details = str(rec(err?.error_data)?.details);
   const tag = err?.code ? ` [Meta code ${String(err.code)}${err.error_subcode ? `/${String(err.error_subcode)}` : ''}]` : '';
-  return msg ? msg.slice(0, 200) + tag : `WhatsApp answered ${status}${tag}`;
+  const more = details && !msg.includes(details) ? ` ${details.slice(0, 160)}` : '';
+  return msg ? msg.slice(0, 200) + more + tag : `WhatsApp answered ${status}${more}${tag}`;
 }
 
 async function call<T>(path: string, init: RequestInit, env: NodeJS.ProcessEnv, fetchImpl: typeof fetch, read: (json: unknown) => T): Promise<TemplateApiResult<T>> {
