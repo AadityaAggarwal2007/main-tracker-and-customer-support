@@ -13,6 +13,7 @@ import { ensureSiteForPanel } from './site';
 import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import type { WaInbound, WaStatus } from './whatsapp';
+import { noteAutoStatus } from './whatsapp-auto-status';
 
 // The panel WhatsApp chats belong to: WHATSAPP_PANEL_ID, else the default panel. One number, one panel,
 // until the owner wants a number per panel.
@@ -83,5 +84,7 @@ export async function storeWaStatus(s: WaStatus): Promise<boolean> {
       WHERE metadata->>'wa_id' = $1`,
     [s.id, s.status, s.error]
   );
-  return (r.rowCount ?? 0) > 0;
+  // the automation's own messages (WhatsApp > Automation) have no chat message: their row takes the report
+  const auto = await noteAutoStatus(s.id, s.status, s.error);
+  return (r.rowCount ?? 0) > 0 || auto;
 }

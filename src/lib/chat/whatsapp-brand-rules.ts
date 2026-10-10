@@ -15,6 +15,17 @@ export const ORDER_PLACED_PRESET = {
   footer: '',
   examples: ['Rahul', '#1042', 'Your Brand', 'help@yourbrand.com'],
 };
+// The tracking-link message that follows 48 hours later (owner 2026-10-10). {{1}} customer, {{2}} order, {{3}} brand,
+// {{4}} the customer's tracking link, {{5}} support email. Edit every word before sending it to Meta for review.
+export const ORDER_TRACKING_PRESET = {
+  name: 'order_tracking',
+  language: 'en_US',
+  category: 'UTILITY',
+  header: 'Your Tracking Link',
+  body: 'Hi {{1}}, your order {{2}} from {{3}} is on its way. You can track it anytime here: {{4}} . For any confusion, please email us at {{5}} and our team will help you.',
+  footer: '',
+  examples: ['Rahul', '#1042', 'Your Brand', 'https://shiptrack.store/track/abc123', 'help@yourbrand.com'],
+};
 // Which variable of an order-placed template is which (0-based), used by the Send screen to fill them per brand.
 export const ORDER_PLACED_SLOTS = { customer: 0, order: 1, brand: 2, email: 3 };
 export const isOrderPlaced = (templateName: string) => templateName.startsWith('order_placed');

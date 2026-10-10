@@ -100,6 +100,20 @@ Done and live:
   without a template. Screenshot of `.env` was shown once in chat: DB password, OpenRouter key, Gmail app password,
   Shopify secrets, admin password are exposed there; rotate them (OpenRouter key and Gmail app password first).
 
+  **Order placed template + brands (evening):** presets `order_placed` (header, 4 values) and `order_tracking` (header,
+  5 values) with "Each brand's own words" (per-panel brand name + support email, `chat_settings wa_brand:<panel>`).
+  Creating a template on the WhatsApp account answered code 100/2388339 "WhatsApp accounts cannot be used with this
+  API": Meta keeps templates on the MESSAGING account (28873951022288651), so Setup has a "Messaging account id"
+  field and every template call uses it. `order_placed` is now PENDING at Meta.
+  **Automation (owner: "har naye order par apne aap, on/off, kitne bheje kitne fail, 48 ghante baad tracking link"):**
+  WhatsApp > Automation tab. Per panel ON / OFF (default OFF, ON needs an APPROVED `order_placed` and the table),
+  ON starts the clock (only orders placed after it, within 24 h; Shopify and CSV alike, no Shopify code touched).
+  Worker `whatsapp-auto.ts` rides on the minute cron (`chat-email-poll` route, no new crontab line); rows in
+  `wa_auto_sends` (**`whatsapp-automation.sql`, waits for the owner's yes**), tracking link 48 h later only in office
+  hours, retries for hiccups, delivery reports by wamid. Open: the owner makes + gets `order_tracking` approved (button
+  "Tracking link template"), runs the SQL (his yes), switches one panel ON. Webhook signature (WHATSAPP_APP_SECRET)
+  still not set (red line in Setup): after the automation, one step at a time.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
