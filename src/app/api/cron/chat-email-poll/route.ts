@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
+import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -19,6 +20,10 @@ export async function GET(request: NextRequest) {
   if (secret !== (process.env.CRON_SECRET || 'shiptrack-cron')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  // WhatsApp automation (owner 2026-10-10): rides on this minute, before the mailbox sweep so a slow Gmail never
+  // holds it back. Not awaited; it has its own one-at-a-time guard and never throws.
+  void runWaAutomation().catch((e) => console.error('[wa-auto] run:', (e as Error).message));
 
   const client = await getPool().connect();
   try {

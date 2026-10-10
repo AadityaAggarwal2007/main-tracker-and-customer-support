@@ -12,12 +12,13 @@ import SetupPanel from './SetupPanel';
 import ProfilePanel from './ProfilePanel';
 import TemplatesPanel from './TemplatesPanel';
 import SendPanel from './SendPanel';
+import AutomationPanel from './AutomationPanel';
 import TestPanel from './TestPanel';
 import ActivityPanel from './ActivityPanel';
 import { spin, type Alert, type Brand, type WaActivity, type WaLists, type WaProfileData, type WaSettings, type WaTab } from './types';
 
 const TABS: { id: WaTab; label: string }[] = [
-  { id: 'setup', label: 'Setup' }, { id: 'test', label: 'Test' }, { id: 'profile', label: 'Number & profile' }, { id: 'templates', label: 'Templates' }, { id: 'send', label: 'Send' }, { id: 'activity', label: 'Activity' },
+  { id: 'setup', label: 'Setup' }, { id: 'test', label: 'Test' }, { id: 'profile', label: 'Number & profile' }, { id: 'templates', label: 'Templates' }, { id: 'automation', label: 'Automation' }, { id: 'send', label: 'Send' }, { id: 'activity', label: 'Activity' },
 ];
 
 export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: string; onAlert: Alert; onOpenChat: (conversationId: string) => void }) {
@@ -73,6 +74,7 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
       {tab === 'test' && <TestPanel token={token} s={s} prof={prof} act={act} onAlert={onAlert} goSend={() => pick('send')} goActivity={() => pick('activity')} />}
       {tab === 'profile' && <ProfilePanel token={token} s={s} prof={prof} onAlert={onAlert} reload={load} />}
       {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} reload={load} />}
+      {tab === 'automation' && <AutomationPanel token={token} onAlert={onAlert} />}
       {tab === 'send' && <SendPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} onOpenChat={onOpenChat} />}
       {tab === 'activity' && <ActivityPanel act={act} onOpenChat={onOpenChat} />}
     </div>
