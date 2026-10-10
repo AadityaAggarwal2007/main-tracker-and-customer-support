@@ -3,7 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
 import { waConfigured } from '@/lib/chat/whatsapp';
 import { webhookStatus } from '@/lib/chat/whatsapp-webhook-status';
-import { appId, messagingId, setAppId, setMessagingId, setWabaId, wabaId } from '@/lib/chat/whatsapp-settings';
+import { appId, dailyLimit, messagingId, setAppId, setDailyLimit, setMessagingId, setWabaId, wabaId } from '@/lib/chat/whatsapp-settings';
 import { getPhone } from '@/lib/chat/whatsapp-profile';
 import { waPanelId } from '@/lib/chat/whatsapp-inbound';
 import { queryOne } from '@/lib/db';
@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
     waba: await wabaId(),
     messaging: await messagingId(),
+    dailyLimit: await dailyLimit(),
     wabaFromEnv: !!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID,
     panel: panel ? { id: panelId, name: panel.name } : null,
     webhookUrl: '/api/whatsapp/webhook',
@@ -39,9 +40,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || !isSuperAdmin(user)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: { waba?: unknown; appId?: unknown; messagingId?: unknown };
+  let body: { waba?: unknown; appId?: unknown; messagingId?: unknown; dailyLimit?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
-  const out: Record<string, string> = {};
+  const out: Record<string, string | number | null> = {};
   try {
     if (body.waba !== undefined) {
       const waba = String(body.waba ?? '').replace(/\D/g, '');
@@ -52,6 +53,12 @@ export async function POST(request: NextRequest) {
       const id = String(body.messagingId ?? '').replace(/\D/g, '');
       if (id && !/^\d{6,30}$/.test(id)) return NextResponse.json({ error: 'The messaging account id is a number of 6 to 30 digits' }, { status: 400 });
       await setMessagingId(id); out.messaging = id;
+    }
+    if (body.dailyLimit !== undefined) {
+      const raw = String(body.dailyLimit ?? '').replace(/[,\s]/g, '');
+      const n = raw ? Number(raw) : null;
+      if (n !== null && (!Number.isInteger(n) || n < 50 || n > 10_000_000)) return NextResponse.json({ error: 'The daily limit is a number like 250, 1000, 2000, 10000 or 100000' }, { status: 400 });
+      await setDailyLimit(n); out.dailyLimit = n;
     }
     if (body.appId !== undefined) {
       const id = String(body.appId ?? '').replace(/\D/g, '');

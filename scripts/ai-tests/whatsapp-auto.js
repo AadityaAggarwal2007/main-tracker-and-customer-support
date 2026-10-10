@@ -248,7 +248,7 @@ async function t(name, fn) {
     deq([stop.parseStop('{"stopped":true}'), stop.parseStop('{"stopped":false}'), stop.parseStop('junk')], [true, false, false]);
   });
   await t('number health: what the quality, the status, the daily limit and the failures mean', () => {
-    const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'TIER_250', limit: 250, used24h: 12, failedToday: 0, waitingToday: 3, stopped: 0, phoneError: null };
+    const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'TIER_250', limit: 250, limitFrom: 'meta', used24h: 12, failedToday: 0, waitingToday: 3, stopped: 0, phoneError: null };
     deq([health.tierLimit('TIER_250'), health.tierLimit('tier_1k'), health.tierLimit('TIER_UNLIMITED'), health.tierLimit('junk')], [250, 1000, null, null]);
     deq(health.waHealthLines(base), []);
     deq(health.waHealthLines({ ...base, quality: 'YELLOW' }).map((l) => l.tone), ['warn']);
