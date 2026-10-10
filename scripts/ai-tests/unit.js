@@ -898,6 +898,22 @@ t('rulebook: 6.6 and 9.14 (owner 2 Oct 18:45) at the ends of their sections, and
 });
 // ── Chargeback / dispute advice guard (dispute-advice.ts, 2026-10-03, from the chat report) ──
 const da = load('dispute-advice');
+const ah = load('ai-health');
+t('ai-health: the provider\'s failure read into one word, a safe detail, and the banner that lifts with the next reply (owner 2026-10-10: three hours of 402 and nobody knew)', () => {
+  const msg402 = '402 This request requires more credits, or fewer max_tokens. You requested up to 1500 tokens, but can only afford 1. To increase, visit https://openrouter.ai/workspaces/default/keys/84c138abc and adjust the key\'s monthly limit';
+  assert.strictEqual(ah.aiReasonOf(402, msg402), 'credits'); assert.strictEqual(ah.aiReasonOf(undefined, 'Insufficient credits'), 'credits');
+  assert.strictEqual(ah.aiReasonOf(401, 'x'), 'auth'); assert.strictEqual(ah.aiReasonOf(429, 'x'), 'rate'); assert.strictEqual(ah.aiReasonOf(undefined, 'Request timed out'), 'timeout'); assert.strictEqual(ah.aiReasonOf(500, 'boom'), 'down');
+  const d = ah.aiDetailOf(msg402); assert.ok(!/http|84c138/.test(d), 'no link, no key id'); assert.ok(/requires more credits/.test(d)); assert.ok(d.length <= 140);
+  ah.resetAiHealth();
+  assert.deepStrictEqual(ah.aiHealth(1000), { ok: true, reason: null, detail: '', lastFailAt: null, lastOkAt: null, failsLastHour: 0 });
+  ah.noteAiFailure(402, msg402, 1000); ah.noteAiFailure(402, msg402, 2000);
+  let h = ah.aiHealth(2500); assert.strictEqual(h.ok, false); assert.strictEqual(h.reason, 'credits'); assert.strictEqual(h.failsLastHour, 2); assert.strictEqual(h.lastFailAt, 2000);
+  ah.noteAiSuccess(3000);
+  h = ah.aiHealth(3500); assert.strictEqual(h.ok, true, 'a reply after the failures lifts the banner'); assert.strictEqual(h.reason, null); assert.strictEqual(h.failsLastHour, 2, 'the hour count stays for the line');
+  assert.strictEqual(ah.aiHealth(2000 + 3_600_001).failsLastHour, 0, 'an hour later the count is empty');
+  assert.ok(/credits|monthly limit/.test(ah.AI_REASON_TEXT.credits) && /AI_API_KEY/.test(ah.AI_REASON_TEXT.auth));
+  ah.resetAiHealth();
+});
 t('dispute-advice: the real 1-3 Oct advice sentences are caught, in English, Hinglish and Hindi', () => {
   for (const s of [
     'raising a complaint with your bank (HDFC) for a chargeback could be a valid next step.',

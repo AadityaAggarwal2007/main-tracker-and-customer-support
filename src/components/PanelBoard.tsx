@@ -13,7 +13,7 @@ import { morningRoutine, panelNeeds, sortPanels, summarize, type PanelStats, typ
 import { agoText } from '@/app/admin/_lib/format';
 
 type Panel = PanelStats & { needs: Need[] };
-interface Day { date: string; officeOpen: boolean; online: string[] }
+interface Day { date: string; officeOpen: boolean; online: string[]; ai?: { ok: boolean; reason: string | null; text: string | null; detail: string; lastFailAt: number | null; failsLastHour: number } }
 
 const dateText = (iso: string) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -63,7 +63,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
   }, [load]);
 
   const totals = panels ? summarize(panels) : null;
-  const routine = totals ? morningRoutine(totals) : [];
+  const routine = totals ? morningRoutine(totals, !!(day?.ai && !day.ai.ok)) : [];
   const left = routine.filter(s => !s.done).length;
   // A step's screen opens on the panel with the most of that thing.
   const panelFor = (go: NonNullable<Need['go']>) => {
@@ -90,6 +90,17 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
         <button type="button" className="btn btn-outline btn-sm" onClick={load} disabled={loading} aria-label="Refresh">{loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh</button>
       </div>
       {error && <div className="mail-warn" style={{ margin: '0 0 0.5rem' }}>{error}</div>}
+      {day?.ai && !day.ai.ok && (
+        <div className="pb-ai-down" role="alert">
+          <ShieldAlert size={18} />
+          <div>
+            <b>Chikki cannot answer customers right now</b> — {day.ai.text || 'every model failed'}.
+            <div className="meta" style={{ color: 'inherit', opacity: 0.85 }}>
+              {day.ai.failsLastHour} failed {day.ai.failsLastHour === 1 ? 'reply' : 'replies'} in the last hour{day.ai.lastFailAt ? `, last ${agoText(day.ai.lastFailAt)}` : ''}{day.ai.detail ? ` · "${day.ai.detail}"` : ''}. Customers get "Sorry, that took longer than expected" until it works again; verified customers go to Needs you.
+            </div>
+          </div>
+        </div>
+      )}
       {!panels && !error && <div className="meta" style={{ padding: '0.5rem 0' }}>Reading every panel…</div>}
 
       {totals && (
