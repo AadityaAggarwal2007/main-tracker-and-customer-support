@@ -1402,6 +1402,21 @@ t('ai-down (owner 10 Oct): every model down, a visitor gets the store name and w
   assert.ok(!/AI_BUSY_REPLY/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/widget/message/route.ts'), 'utf8')), 'the widget never sends "took longer" any more');
   assert.ok(fs.readFileSync(path.resolve(__dirname, '../chikki-review.js'), 'utf8').includes(`const AI_DOWN_REGEX = '${aidown.AI_DOWN_REGEX}'`), 'the review counts these lines too');
 });
+t('ai-down (owner 11 Oct): the order ID + phone the visitor typed, the found / no-match lines', () => {
+  assert.deepStrictEqual(aidown.orderAndPhone(['order #5121', 'my number is +91 98765 43210']), { order: '5121', phone: '9876543210' });
+  assert.deepStrictEqual(aidown.orderAndPhone(['mera order 1553 hai 9876543210']), { order: '1553', phone: '9876543210' });
+  assert.deepStrictEqual(aidown.orderAndPhone(['9876543210 order id: 77001']), { order: '77001', phone: '9876543210' });
+  assert.strictEqual(aidown.orderAndPhone(['9876543210']), null, 'a phone alone is not both');
+  assert.strictEqual(aidown.orderAndPhone(['#5121']), null);
+  const found = aidown.aiDownFoundReply('Asha', 'Your order #5121 is at the "In Transit" stage.', ['order #5121 9876543210']);
+  assert.strictEqual(found, 'Thank you Asha, I found your order. Your order #5121 is at the "In Transit" stage. If you need anything else, just write here: our team can see this chat too.');
+  assert.ok(!aidown.isAiDownLine(found) && !tp.promisesToday(found), 'an answer, not the waiting line');
+  const miss = [aidown.aiDownNoMatchReply('Kurtiya', ['order 1 9876543210']), aidown.aiDownNoMatchReply('Kurtiya', ['mera order 1 hai 9876543210'])];
+  for (const x of miss) assert.ok(aidown.isAiDownLine(x) && new RegExp(waiting.AI_NOT_AN_ANSWER_REGEX, 'i').test(x), x);
+  assert.ok(/ai-down-check/.test(fs.readFileSync(path.resolve(__dirname, '../../src/app/api/widget/message/route.ts'), 'utf8')), 'the widget route runs the check');
+  const chk = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/ai-down-check.ts'), 'utf8');
+  assert.ok(/verifyOrderByPhone/.test(chk) && /LIMITS\.visitor/.test(chk) && /LIMITS\.ip/.test(chk) && /LIMITS\.order/.test(chk) && /LIMITS\.phone/.test(chk), 'the verify form\'s check and all four limits');
+});
 t('closed-hours (owner 10 Oct): the status first for a message that only asks where the order is; anger, refund or a threat is never only that', () => {
   for (const x of ['#5121', '5121', 'Order no 5121', '?', 'Please reply', 'where is my order', 'Mera order kahan hai?', 'Still my parcel has not delivered', 'hello sir', 'kab aayega mera order'])
     assert.ok(ch.asksStatusOnly(x), x);

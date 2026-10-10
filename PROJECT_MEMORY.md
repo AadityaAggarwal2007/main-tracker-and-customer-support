@@ -158,6 +158,10 @@ Done and live:
   owner's alert number + up to 5 more numbers (WhatsApp > Setup; a WhatsApp group is not possible: Meta allows groups
   only for green-tick accounts), Today "Chargeback risk" box + routine step. Owner must: type his number and Sunny's in
   WhatsApp > Setup, have `shiptrack_alert` approved, send the Study screenshot (weights still untuned).
+- **11 Oct (night):** Study showed 3 real chargebacks (VASTRIKA PayU x2, vastora Easebuzz), all "Order not found": the
+  mails carry no order number / customer email / phone of ours. Added "Link order" on an alert (Super Admin / Manager)
+  + what the mail mentions in Study. Owner ticked Sunny's 3 permissions. AI down + visitor typed order ID + phone: the
+  code verifies it itself (`ai-down-check.ts`, rulebook 1.8).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
