@@ -507,3 +507,8 @@ riskiest first), the Refund and Ship again queues, Team live (each member's repl
 chats held and waiting, 30-minute misses; Chikki's replies, chats alone, hand-overs, marks, whether it answers) and links
 to Chargebacks and Team score. Staff only, read only. Rules 11 / 14 / 15: PASS (the risky chats are in one place for the
 person responsible); nothing reaches a customer: NOT APPLICABLE for the reply rules.
+
+Step 6 (same day): the open chat in Chat Support loads fast: the newest 200 messages with "Load older", and the
+3-second refresh asks only for what changed. Staff screens only; every message is still there (Load older), nothing
+deleted or hidden. One additive index (`chat-speed.sql`) waits for the owner's yes. Rules 11 / 14: PASS (a new
+customer message shows within 3 seconds as before); the rest NOT APPLICABLE.

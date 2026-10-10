@@ -20,6 +20,7 @@ import {
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, checkBrowserFile,
 } from '@/lib/chat/attachment-rules';
 import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems } from './_lib/types';
+import { FULL_EVERY_MS, afterFor, keepOlder, mergeMessages } from '@/lib/chat/thread-sync';
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
 import { ForwardDialog } from './_components/ForwardDialog';
@@ -301,19 +302,41 @@ export default function ChatSupportPage() {
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 
   /* ═══ OPEN THREAD ═══ */
-  const fetchThread = useCallback(async (id: string, quiet = false) => {
+  // Step 6 (owner 2026-10-10, thread-sync.ts): the poll (light = true) asks only for what changed since the last
+  // answer; a full load (open, an action, every 30 s) brings the newest 200 messages and the rest of the thread.
+  const syncRef = useRef<{ id: string; asOf: string; fullAt: number } | null>(null);
+  const sameChatRef = useRef<string | null>(null);
+  const [olderCount, setOlderCount] = useState(0);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const fetchThread = useCallback(async (id: string, quiet = false, light = false) => {
     if (!token) return;
+    const sync = syncRef.current;
+    const lightNow = light && !!sync && sync.id === id && Date.now() - sync.fullAt < FULL_EVERY_MS;
     try {
-      const res = await fetch(`/api/chat/conversations/${id}`, {
+      const res = await fetch(`/api/chat/conversations/${id}${lightNow && sync ? `?after=${encodeURIComponent(afterFor(sync.asOf))}` : ''}`, {
         headers: { Authorization: `Bearer ${token}`, ...activeHeaders() },
       });
       const data = await res.json();
       if (!res.ok) { if (!quiet) showAlert('error', data.error || 'Could not open that conversation'); return; }
+      if (activeIdRef.current !== id) return;
+      if (data.light) {
+        if (syncRef.current?.id === id && typeof data.as_of === 'string') syncRef.current = { ...syncRef.current, asOf: data.as_of };
+        setActiveConv(c => (c && c.id === id ? { ...data.conversation, chargeback_open: !!c.chargeback_open } : c));
+        setThreadTeam(t => (t && t.id === id ? { ...t, staff: data.staff ?? null, hotLock: data.hot_lock ?? null } : t));
+        setMessages(list => mergeMessages(list, (data.messages || []) as ChatMessage[]));
+        return;
+      }
+      syncRef.current = { id, asOf: typeof data.as_of === 'string' ? data.as_of : new Date().toISOString(), fullAt: Date.now() };
+      setOlderCount(typeof data.older_count === 'number' ? data.older_count : 0);
       setActiveConv({ ...data.conversation, chargeback_open: !!data.chargeback_open });
       setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [], hotLock: data.hot_lock ?? null });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable, items: data.order_items ?? null, itemsEditable: !!data.items_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });
-      setMessages(data.messages || []);
+      // The older messages "Load older" put on screen stay; a different chat starts clean.
+      const keep = sameChatRef.current === id;
+      sameChatRef.current = id;
+      const page = (data.messages || []) as ChatMessage[];
+      setMessages(list => (keep ? keepOlder(list, page) : page));
       const older = data.earlier ?? data.conversation?.earlier;
       setEarlier(Array.isArray(older) ? older : []);
       setEarlierTotal(typeof data.earlier_total === 'number' ? data.earlier_total : 0);
@@ -321,7 +344,27 @@ export default function ChatSupportPage() {
     } catch { /* keep what is on screen */ }
   }, [token]);
 
+  // "Load older": the page of 200 before the first message on screen.
+  const loadOlder = async () => {
+    const id = activeIdRef.current;
+    const first = messages[0];
+    if (!id || !first || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const res = await fetch(`/api/chat/conversations/${id}?before=${encodeURIComponent(first.created_at)}&before_id=${encodeURIComponent(first.id)}`, {
+        headers: { Authorization: `Bearer ${token}`, ...activeHeaders() },
+      });
+      const data = await res.json();
+      if (res.ok && activeIdRef.current === id) {
+        setMessages(list => mergeMessages(list, (data.messages || []) as ChatMessage[]));
+        setOlderCount(typeof data.older_count === 'number' ? data.older_count : 0);
+      }
+    } catch { /* keep what is on screen */ }
+    finally { setLoadingOlder(false); }
+  };
+
   useEffect(() => {
+    syncRef.current = null; sameChatRef.current = null; setOlderCount(0);
     if (activeId) fetchThread(activeId);
     else { setActiveConv(null); setOrderInfo(null); setThreadTeam(null); setThreadRefund(null); setMessages([]); setEarlier([]); setEarlierTotal(0); setNewerChat(null); }
   }, [activeId, fetchThread]);
@@ -343,7 +386,7 @@ export default function ChatSupportPage() {
       // A search is not re-run every few seconds; the open chat still is. After "Show more" (up to
       // 1000 rows) the list is asked for every 15 s instead of every 3 s, so the poll stays light.
       if (!searchActiveRef.current && (listLimit <= 200 || n % 5 === 0)) fetchConversations(true);
-      if (activeIdRef.current) fetchThread(activeIdRef.current, true);
+      if (activeIdRef.current) fetchThread(activeIdRef.current, true, true);
     };
     const id = setInterval(tick, POLL_MS);
     return () => clearInterval(id);
@@ -351,10 +394,12 @@ export default function ChatSupportPage() {
 
   const pinUntilRef = useRef(0);
   const earlierCount = earlier.reduce((n, e) => n + (e.messages?.length || 0), 0);
+  // A new last message scrolls down; "Load older" adds at the top and leaves the view where it is.
+  const lastMessageId = messages.length ? messages[messages.length - 1].id : '';
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     pinUntilRef.current = Date.now() + 2000;
-  }, [messages.length, earlierCount]);
+  }, [lastMessageId, earlierCount]);
 
   // Opened from a search: go to the newest place the search text appears,
   // once per chat and search (the poll must not pull the thread back to it).
@@ -1356,6 +1401,14 @@ export default function ChatSupportPage() {
                     </Fragment>
                   ))}
                   {earlier.length > 0 && <ThreadDivider>{newerChat ? 'This chat' : 'Latest chat'}</ThreadDivider>}
+                  {olderCount > 0 && (
+                    <div className="chat-older">
+                      <button type="button" className="btn btn-outline btn-sm" onClick={loadOlder} disabled={loadingOlder}>
+                        {loadingOlder ? <Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> : null}
+                        Load older ({olderCount} more)
+                      </button>
+                    </div>
+                  )}
                   {messages.map(msg => <MessageRow key={msg.id} msg={msg} activeConv={activeConv} copyMessage={copyMessage} editing={editing} keepThreadPinned={keepThreadPinned} meKey={meKey} menu={menu} messageText={messageText} openDetails={openDetails} saveEdit={saveEdit} searchTerm={searchTerm} setDeleting={setDeleting} setEditing={setEditing} setMenu={setMenu} staff={staff} startEdit={startEdit} toggleMenu={toggleMenu} user={user} />)}
                   <div ref={bottomRef} />
                 </div>

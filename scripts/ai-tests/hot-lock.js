@@ -73,7 +73,7 @@ const compile = (from, to) => {
 };
 for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
-for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer']) compile(`lib/chat/${f}.ts`, f);
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
 
@@ -209,8 +209,10 @@ async function handle(q, p, tx) {
     if (db.afterRead) { const f = db.afterRead; db.afterRead = null; f(c); }
     return out;
   }
-  if (/^SELECT id, sender, content, metadata, created_at, edited_at, edited_by, deleted_at, deleted_by, \(SELECT u\.notes FROM brain_usage u WHERE u\.message_id = messages\.id\) AS brain FROM messages WHERE conversation_id = \$1 AND /.test(q)) {
-    return rows(db.messages.filter((x) => x.conversation_id === p[0]).map((x) => ({ ...clone(x), brain: null })));
+  // The open chat's newest page (thread-read.ts, step 6).
+  if (/^SELECT m\.id, m\.sender, m\.content, m\.metadata, m\.created_at, m\.edited_at, m\.edited_by, m\.deleted_at, m\.deleted_by, \(SELECT u\.notes FROM brain_usage u WHERE u\.message_id = m\.id\) AS brain, m\.match_total FROM \(SELECT .* FROM messages WHERE conversation_id = \$1 AND /.test(q)) {
+    const ms = db.messages.filter((x) => x.conversation_id === p[0]);
+    return rows(ms.map((x) => ({ ...clone(x), brain: null, match_total: ms.length })));
   }
   if (/^WITH older AS \( SELECT c\.id, c\.created_at, c\.status, /.test(q)) return rows([]);
   if (/^SELECT c\.id AS conversation_id, c\.created_at, c\.last_message_at, c\.status FROM conversations c /.test(q)) return rows([]);

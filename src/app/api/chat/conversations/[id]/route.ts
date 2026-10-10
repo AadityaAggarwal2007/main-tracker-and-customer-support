@@ -21,6 +21,7 @@ import {
 } from '@/lib/chat/team-routing';
 import { loadCustomerThread, loadForUser, loadTeamLog, loadThreadMessages, loadWriters, type ConversationRow } from '@/lib/chat/thread-read';
 import { staffBlock } from '@/lib/chat/thread-staff';
+import { parseAfter, parseBefore } from '@/lib/chat/thread-sync';
 import { transfer } from '@/lib/chat/thread-transfer';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +36,36 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
   const conversation = await loadForUser(params.id, user);
   if (!conversation) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  // Step 6 (owner 2026-10-10, thread-sync.ts): "Load older" (?before=<time>&before_id=<id>) answers only the page of
+  // messages before that one; the 3-second poll (?after=<time>) only what changed since, with the chat's own row and
+  // what this login may do. Everything else (earlier chats, the order, the team log) comes with the full load.
+  const { searchParams } = new URL(request.url);
+  const asOf = new Date().toISOString();
+  const before = parseBefore(searchParams.get('before'), searchParams.get('before_id'));
+  const after = before ? null : parseAfter(searchParams.get('after'));
+  if (before || after) {
+    const page = await loadThreadMessages(params.id, { before, after });
+    const ids = page.rows.filter((m) => m.sender === 'agent' && m.id != null).map((m) => String(m.id));
+    const writers = await loadWriters(ids);
+    const author = authorNamer();
+    const rows = page.rows.map((m) => {
+      const r = m as { id?: unknown; sender: string; metadata: unknown; content: string };
+      const w = r.sender === 'agent' ? writers.get(String(r.id)) : undefined;
+      const named = r.sender !== 'agent' ? r : w ? { ...r, author: w.name, author_key: w.key }
+        : { ...r, author: author((r.metadata as { agent?: unknown } | null)?.agent), author_key: null };
+      return /refund/i.test(named.content ?? '') ? { ...named, content: maskRefundLinks(named.content) } : named;
+    });
+    if (before) return NextResponse.json({ messages: rows, older_count: page.older });
+    if (conversation.unread_count > 0) {
+      await query(`UPDATE conversations SET unread_count = 0, updated_at = now() WHERE id = $1`, [params.id]);
+      conversation.unread_count = 0;
+    }
+    return NextResponse.json({
+      light: true, as_of: asOf, conversation, messages: rows,
+      staff: await staffBlock(conversation, user), hot_lock: hotLockBlock(conversation, user),
+    });
+  }
 
   const messages = await loadThreadMessages(params.id);
 
@@ -111,6 +142,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const chargebackOpen = (await openChargebackKeys([{ business_id: cbBiz, order_id: conversation.verified_order_id }])).has(chargebackKey(cbBiz, conversation.verified_order_id));
 
   return NextResponse.json({
+    as_of: asOf,
+    older_count: messages.older,
     conversation,
     messages: messages.rows.map((m) => unlink(withAuthor(m as { sender: string; metadata: unknown; content: string }))),
     earlier,

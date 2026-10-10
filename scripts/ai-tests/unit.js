@@ -914,6 +914,25 @@ t('ai-health: the provider\'s failure read into one word, a safe detail, and the
   assert.ok(/credits|monthly limit/.test(ah.AI_REASON_TEXT.credits) && /AI_API_KEY/.test(ah.AI_REASON_TEXT.auth));
   ah.resetAiHealth();
 });
+
+const tsync = load('thread-sync');
+t('thread-sync: the poll\'s cursor, Load older, and merging changes into the open chat (owner 2026-10-10, step 6)', () => {
+  const now = Date.parse('2026-10-12T10:00:00.000Z');
+  assert.strictEqual(tsync.parseAfter('2026-10-12T09:59:00.000Z', now), '2026-10-12T09:59:00.000Z');
+  for (const bad of [null, '', 'yesterday', '2026-10-10T09:00:00.000Z', '2026-10-12T10:05:00.000Z']) assert.strictEqual(tsync.parseAfter(bad, now), null, String(bad));
+  assert.deepStrictEqual(tsync.parseBefore('2026-10-12T09:00:00Z', 'm1'), { at: '2026-10-12T09:00:00.000Z', id: 'm1' });
+  assert.strictEqual(tsync.parseBefore('2026-10-12T09:00:00Z', null), null);
+  assert.strictEqual(tsync.afterFor('2026-10-12T10:00:00.000Z'), '2026-10-12T09:59:45.000Z', '15 s overlap');
+  const m = (id, s, content = id) => ({ id, created_at: `2026-10-12T09:00:${String(s).padStart(2, '0')}.000Z`, content });
+  const list = [m('a', 1), m('b', 2), m('c', 3)];
+  assert.strictEqual(tsync.mergeMessages(list, []), list, 'nothing changed: the same list');
+  assert.deepStrictEqual(tsync.mergeMessages(list, [m('d', 4), m('b', 2, 'edited'), m('c', 3)]).map((x) => x.id + ':' + x.content), ['a:a', 'b:edited', 'c:c', 'd:d']);
+  assert.deepStrictEqual(tsync.mergeMessages(list, [m('z', 0)]).map((x) => x.id), ['z', 'a', 'b', 'c'], 'Load older goes on top');
+  // A full reload keeps what Load older brought (before the page), the page is the server's.
+  assert.deepStrictEqual(tsync.keepOlder([m('o1', 0), ...list], [m('b', 2, 'new'), m('c', 3), m('d', 4)]).map((x) => x.id + ':' + x.content), ['o1:o1', 'a:a', 'b:new', 'c:c', 'd:d']);
+  assert.deepStrictEqual(tsync.keepOlder(list, []), []);
+  assert.deepStrictEqual([tsync.THREAD_PAGE, tsync.FULL_EVERY_MS], [200, 30000]);
+});
 t('dispute-advice: the real 1-3 Oct advice sentences are caught, in English, Hinglish and Hindi', () => {
   for (const s of [
     'raising a complaint with your bank (HDFC) for a chargeback could be a valid next step.',
