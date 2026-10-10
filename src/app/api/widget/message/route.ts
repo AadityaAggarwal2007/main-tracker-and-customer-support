@@ -3,7 +3,7 @@ import { recordChikkiRun } from '@/lib/chat/chikki-runs';
 import type { EffortUsage } from '@/lib/chat/effort';
 import { NextRequest } from 'next/server';
 import { query, queryOne } from '@/lib/db';
-import { AI_BUSY_REPLY, getAIResponse } from '@/lib/chat/ai';
+import { getAIResponse } from '@/lib/chat/ai';
 import { updateConversationSubject } from '@/lib/chat/subject';
 import { updateConversationHealth } from '@/lib/chat/health';
 import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat/sensitive';
@@ -17,6 +17,8 @@ import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
 import { addressConflict, addressConflictReply } from '@/lib/chat/address-conflict';
 import { recentVisitorMessages } from '@/lib/chat/chat-history';
+import { aiDownVisitorReply } from '@/lib/chat/ai-down';
+import { brandOf } from '@/lib/chat/common-setup-rules';
 import {
   earlierVisitorMessages, refundFollowUp, refundThreatTurn, reshipFollowUp, trackingClaimTurn, type ClaimTurn, type RefundThreatTurn,
 } from '@/lib/chat/case-auto';
@@ -111,6 +113,12 @@ export async function POST(request: NextRequest) {
     // has the chat, so a failed update must not go unnoticed.
     const handOver = (why: string) => handOverToPerson(conversationId, why);
     const saveAiMessage = (text: string, metadata?: Record<string, string> | null) => saveAiMessageTo(conversationId, text, metadata);
+    // Every model down, a visitor (ai-down.ts): the store's name and what to share; never throws.
+    const aiDownText = async (): Promise<string> => {
+      const texts = await recentVisitorMessages(conversationId, 6).catch(() => [] as string[]);
+      // recentVisitorMessages is newest first; the reply reads them oldest first.
+      return aiDownVisitorReply(brandOf(site.name), texts.length ? texts.slice().reverse() : [String(masked.text)]);
+    };
     let aiMessage: StoredMessage | null = null;
     // Owner 2026-10-05: while the office is closed, an upset VERIFIED customer's reply ends in the
     // closed-hours note (why nobody can confirm anything now, the team sits down with their case first
@@ -374,8 +382,9 @@ export async function POST(request: NextRequest) {
               text = await handoffReplyWithLink(conversationId, said, site.tracker_business_id);
               await handOver('AI failure');
             } else {
-              // A visitor stays a visitor: the plain apology, nobody is told a team has it.
-              text = AI_BUSY_REPLY;
+              // A visitor stays a visitor: nobody is told a team has it. Owner 2026-10-10: not "took longer, send that
+              // again" (read as "fake" by new customers) but the store's name and what to share (ai-down.ts).
+              text = await aiDownText();
             }
           } else if (!verified) {
             // A visitor: whatever the message was about (a refund, a threat, a fraud
@@ -447,7 +456,7 @@ export async function POST(request: NextRequest) {
         console.error('[widget] AI error:', (aiErr as Error).message);
         if (verified) await handOver('AI error');
         try {
-          aiMessage = await saveAiMessage(aiReply(verified ? await handoffReplyWithLink(conversationId, said, site.tracker_business_id) : AI_BUSY_REPLY));
+          aiMessage = await saveAiMessage(aiReply(verified ? await handoffReplyWithLink(conversationId, said, site.tracker_business_id) : await aiDownText()));
         } catch (saveErr) {
           console.error('[widget] fallback save failed:', (saveErr as Error).message);
         }

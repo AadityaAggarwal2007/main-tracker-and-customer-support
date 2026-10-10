@@ -102,7 +102,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'reship',
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'ai-down', 'common-setup-rules', 'reship',
   'effort', 'closed-hours', 'closed-hours-run']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
@@ -3782,6 +3782,18 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       ok(out.endsWith(WEEKEND_EN), out);
       eq(C('r66w').status, 'human_needed');
     } finally { delete global.__orderFacts; }
+  });
+  await t('R66b owner 10 Oct: every model down, a visitor gets the store name and what to share (never "took longer"); the chat stays a visitor chat', async () => {
+    const send = async (id, said, ms) => {
+      at(ms); global.__ai.next = { content: 'unused', allFailed: true };
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    newConv({ id: 'r66d' });
+    eq(await send('r66d', 'Is it scam??', ist(12, 0, 6)), "Thanks for writing to Vastora! Please share your order ID and the complete phone number on the order, and we'll help you right here.");
+    eq(C('r66d').status, 'ai_handling');
+    ok(!/took longer/.test(await send('r66d', 'order #5121 phone 9876543210', ist(12, 5, 6))));
   });
   await t('R66 the list: a promised chat carries promise_due_at (Monday 10:00 IST after a weekend note) and office_open follows the week; the holidays row is read once a minute', async () => {
     at(ist(12, 0, 4));

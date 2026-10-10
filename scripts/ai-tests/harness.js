@@ -9,7 +9,7 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tests-'));
 // The compiled copies are deleted when the run ends.
 process.on('exit', () => { try { fs.rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ } });
 
-const FILES = ['ai', 'ai-health', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain', 'brain-learn', 'brain-examples', 'health-rules', 'order-mention', 'address-conflict', 'reply-guards', 'effort', 'self-check', 'ai-models', 'ai-prompt', 'ai-tools', 'ai-history', 'dispute-advice', 'common-setup', 'common-setup-rules'];
+const FILES = ['ai', 'ai-health', 'lookup-guard', 'introduction', 'plain-text', 'cod', 'delay-ladder', 'escalation', 'today-promise', 'brain', 'brain-learn', 'brain-examples', 'health-rules', 'order-mention', 'address-conflict', 'reply-guards', 'effort', 'self-check', 'ai-models', 'ai-prompt', 'ai-tools', 'ai-history', 'dispute-advice', 'common-setup', 'common-setup-rules', 'ai-down'];
 for (const f of FILES) {
   if (!fs.existsSync(path.join(SRC, 'lib/chat', f + '.ts'))) continue; // an older checkout may lack a newer file
   const src = fs.readFileSync(path.join(SRC, 'lib/chat', f + '.ts'), 'utf8');
