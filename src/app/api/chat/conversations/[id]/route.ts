@@ -11,12 +11,12 @@ import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import { maskRefundLinks } from '@/lib/refund/link-mask';
 import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
 import {
-  canAct, claimsOnAct, hotChat, hotLockMessage, hotLockNote, hotLocked,
+  canAct, canTransfer, claimsOnAct, cleanTransferNote, hotChat, hotLockMessage, hotLockNote, hotLocked,
   type Actor, type HotKind, type TakeKind,
 } from '@/lib/chat/team-rules';
 import {
   BUSY_MESSAGE, CASE_GATE_MESSAGE, ChatActionError, STARTING_MESSAGE, actionError, actionsReady, authorNamer, caseMarkState, heldMessage, holderOf,
-  isKnownCustomer, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,
+  isKnownCustomer, lockChatGroup, logChatEvent, nameOfKey, pickManager, setActor, staffActor, takeFor,
   type LockedChat,
 } from '@/lib/chat/team-routing';
 import { loadCustomerThread, loadForUser, loadTeamLog, loadThreadMessages, loadWriters, type ConversationRow } from '@/lib/chat/thread-read';
@@ -183,7 +183,10 @@ function hotLockBlock(conv: ConversationRow, user: AuthUser) {
 //                              "Take from X": the Super Admin from anyone, a senior from a junior,
 //                              anyone from a member away 30+ min (office hours) while the customer waits.
 //   { transferTo, note }       Transfer, with a one-line note only the team sees.
-//   { caseKind }               Refund / Ship again (a senior or the Super Admin marks; setCase).
+//   { caseKind }               Refund / Ship again (a senior, the Manager or the Super Admin marks; setCase).
+//   { forward, note }          Forward to Manager (owner 2026-10-10): any member who may act on the chat marks it
+//                              Refund / Ship again AND gives it to the Manager (pickManager; nobody = Super Admin)
+//                              with a one-line note, in one transaction. The customer is told nothing.
 // Each runs in ONE transaction with the chat and the customer's other open chats locked
 // (lockChatGroup), and every statement goes through that transaction's client. Someone else's chat
 // is a 409 naming them, and nothing is saved.
@@ -206,6 +209,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const has = (key: string) => !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, key);
 
     if (has('transferTo')) return await transfer(conversation, staff, body.transferTo, body.note);
+    // Forward to Manager (owner 2026-10-10): { forward: 'refund' | 'reship', note }.
+    if (has('forward')) return await forward(conversation, user, staff, body.forward, body.note);
 
     // Refund / Ship again (chat-cases.sql, owner 2026-10-01): { caseKind: 'refund' | 'reship' | null }.
     if (has('caseKind')) {
@@ -350,8 +355,49 @@ async function changeStatus(conversation: ConversationRow, user: AuthUser, staff
 // Marking never needs or changes the holder. Returns the answer and the line to log after commit.
 const CASE_KINDS = ['refund', 'reship'];
 
+// Forward to Manager (owner 2026-10-10: "support team refund / reship ke case manager ko forward karegi, fir manager
+// handle karega"; answer: the chat gets the mark AND becomes the Manager's). The same mark as the buttons (setCase,
+// logged override 'forward', no senior needed) and the same holder change as a transfer (the customer's other open
+// chats with the same holder move too; the note lives only in chat_events). Verified customers only (setCase).
+async function forward(conversation: ConversationRow, user: AuthUser, staff: Actor, rawKind: unknown, rawNote: unknown) {
+  if (!can(user, 'chat.cases')) return NextResponse.json({ error: 'You cannot mark Refund / Ship again' }, { status: 403 });
+  const kind = rawKind === 'refund' || rawKind === 'reship' ? rawKind : null;
+  if (!kind) return NextResponse.json({ error: 'Pick Refund or Ship again' }, { status: 400 });
+  const note = cleanTransferNote(rawNote);
+  if (!note) return NextResponse.json({ error: 'Write one line for the Manager: what does the customer need?' }, { status: 400 });
+  const panel = conversation.tracker_business_id;
+  const out = await withTransaction(async (client) => {
+    const now = Date.now();
+    const { chat, siblings } = await lockChatGroup(client, conversation.id, conversation.site_id, conversation.customer_key);
+    if (chat.status === 'resolved') throw new ChatActionError(400, 'This chat is Closed. Forward it when the customer writes again.');
+    const h = holderOf(chat.assigned_to, panel, now);
+    if (!canTransfer(staff, h)) throw new ChatActionError(409, heldMessage(h!, null));
+    const marked = await setCase(client, chat, kind, user, staff, 'forward');
+    if (marked.res.status !== 200) return { res: marked.res, log: null };
+    const to = await pickManager(client, panel, now);
+    if (to !== chat.assigned_to) {
+      await setActor(client, staff, 'transfer');
+      await client.query(`UPDATE conversations SET assigned_to = $2::text, assigned_at = now(), updated_at = now() WHERE id = $1`, [chat.id, to]);
+      const group = siblings.filter((x) => x.assigned_to === chat.assigned_to).map((x) => x.id);
+      if (group.length > 0) {
+        await client.query(`UPDATE conversations SET assigned_to = $1::text, assigned_at = now() WHERE id = ANY($2::text[])`, [to, group]);
+      }
+      await logChatEvent(client, staff, {
+        conversationId: chat.id, siteId: chat.site_id, kind: 'transfer', fromOwner: chat.assigned_to, toOwner: to,
+        fromStatus: chat.status, toStatus: 'agent_handling', reason: 'forward', note, meta: { forward: kind, group },
+      }, { required: true });
+    }
+    return {
+      res: NextResponse.json({ success: true, case_kind: kind, assigned_to: to, holder_name: nameOfKey(to) ?? 'Super Admin' }),
+      log: `[chat] conv ${chat.id} forwarded (${kind}) to ${to} by ${staff.key}`,
+    };
+  });
+  if (out.log) console.log(out.log);
+  return out.res;
+}
+
 async function setCase(
-  client: PoolClient, chat: LockedChat, kind: string | null, user: AuthUser, staff: Actor, override: boolean,
+  client: PoolClient, chat: LockedChat, kind: string | null, user: AuthUser, staff: Actor, override: boolean | 'forward',
 ): Promise<{ res: NextResponse; log: string | null }> {
   const actor = (user.displayName || user.username || '').trim() || 'support';
   const orderId = chat.verified_order_id || chat.phone_match_order_id || null;
@@ -397,9 +443,9 @@ async function setCase(
     const row = r.rows[0];
     await logChatEvent(client, staff, {
       conversationId: chat.id, siteId: chat.site_id, kind: 'case_mark', fromStatus: chat.status, toStatus: row?.status ?? null,
-      reason: 'case', meta: { case: kind, ...(chat.case_kind ? { from_case: chat.case_kind } : {}), ...(override ? { override: 'senior_away' } : {}) },
+      reason: 'case', meta: { case: kind, ...(chat.case_kind ? { from_case: chat.case_kind } : {}), ...(override ? { override: override === 'forward' ? 'forward' : 'senior_away' } : {}) },
     });
-    return { res: NextResponse.json({ success: true, ...row }), log: `[chat] conv ${chat.id} marked ${kind} by ${actor}${override ? ' (no senior around)' : ''}` };
+    return { res: NextResponse.json({ success: true, ...row }), log: `[chat] conv ${chat.id} marked ${kind} by ${actor}${override === true ? ' (no senior around)' : override === 'forward' ? ' (forward)' : ''}` };
   }
 
   if (!chat.case_kind) return { res: NextResponse.json({ success: true, case_kind: null }), log: null };

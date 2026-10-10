@@ -483,3 +483,9 @@ his panels; the full UPI / bank details (reveal) stay the Super Admin's (owner a
 Manager's too. The team score is the Manager's and the Super Admin's only (Chat Support members no longer see "My
 score"). Rules 17 / 18 (refunds): PASS (same form, same checks, one more trusted person). 24 / 27 / 43 (chargebacks):
 PASS (more eyes, nothing deleted). SHIPTRACK_MASTER_RULES.md itself is not edited.
+
+Step 2 (same day): a team member's inbox holds only their own chats and the open ones nobody holds; other people's chats
+are under "Team chats" (read, Take over; owner answer). Members send a refund / reship to the Manager with "Send to
+Manager" (the mark AND the chat go to him, one line for the team, nothing to the customer); with no Manager login it goes
+to the Super Admin. The Manager counts as a senior. Rules 11 / 14 (nobody hidden): PASS, an unheld chat stays visible to
+every member, the Manager and the Super Admin see everything; 17 (refund recorded, Needs you / team): PASS.

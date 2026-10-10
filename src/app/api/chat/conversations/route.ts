@@ -7,7 +7,7 @@ import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics'
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
-import { can } from '@/lib/permissions';
+import { can, isTeamLead } from '@/lib/permissions';
 import { isOfficeHours, nextOpenMs } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
 import { staffActor, teamDirectory } from '@/lib/chat/team-routing';
@@ -141,6 +141,15 @@ export async function GET(request: NextRequest) {
   // refuses; a login with no key yet simply has no chats of its own).
   const mine = searchParams.get('mine') === '1';
   const me = staffActor(user)?.key ?? null;
+  // Team chats (owner 2026-10-10): ?team=1 lists the open chats OTHER people hold, to read and Take over.
+  const teamTab = searchParams.get('team') === '1';
+  // A team member's lists (owner 2026-10-10: "member ko sirf apni chats; dusre ki Team chats mein"): their own
+  // chats and the open ones nobody holds yet. The Super Admin and the Manager (team.lead) see every chat.
+  // Opening another member's chat by its id is still allowed (they may read it and Take over).
+  const memberOnly = !isTeamLead(user);
+  const memberCond = (n: number | null) => n === null
+    ? "(c.assigned_to IS NULL AND c.status <> 'resolved')"
+    : `(c.assigned_to = $${n} OR (c.assigned_to IS NULL AND c.status <> 'resolved'))`;
 
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -162,9 +171,14 @@ export async function GET(request: NextRequest) {
   // never listed, so a customer is one row and one chat.
   conditions.push('c.merged_into IS NULL');
 
-  // The panel scope alone, for the topic counts (positions $1.. are the same).
+  // The panel scope alone, for the topic counts (positions $1.. are the same). For a team member every count
+  // (the badge, Open / Closed case, the problem tabs) is over their own chats too.
   const scopeConditions = [...conditions];
   const scopeParams = [...params];
+  if (memberOnly) {
+    if (me) { scopeParams.push(me); scopeConditions.push(memberCond(scopeParams.length)); }
+    else scopeConditions.push(memberCond(null));
+  }
 
   // A search looks at every chat in the scope above; the tabs do not narrow it.
   const search = parseInboxSearch(searchParams.get('q'), pi);
@@ -180,6 +194,13 @@ export async function GET(request: NextRequest) {
     }
     if (status && !caseKind) { conditions.push(`c.status = $${pi++}`); params.push(status); }
     if (activeKey && !caseKind) conditions.push("c.status = 'agent_handling'");
+    if (teamTab) {
+      conditions.push(`c.assigned_to IS NOT NULL AND c.assigned_to IS DISTINCT FROM $${pi++} AND c.status <> 'resolved'`);
+      params.push(me ?? '');
+    } else if (memberOnly) {
+      if (me) { conditions.push(memberCond(pi++)); params.push(me); }
+      else conditions.push(memberCond(null));
+    }
     if (mine) {
       if (me) {
         conditions.push(`c.assigned_to = $${pi++} AND c.status IN ('human_needed', 'agent_handling')`);

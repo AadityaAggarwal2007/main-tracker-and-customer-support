@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone } from 'lucide-react';
+import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone, Send } from 'lucide-react';
 import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
@@ -20,7 +20,7 @@ import CustomerEmails from './CustomerEmails';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, setForwardEdit, simple, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
@@ -51,6 +51,9 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   setAddrEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
   setTeamLogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setTransferEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
+  // Forward to Manager (owner 2026-10-10), and whether this login has the team member's short inbox.
+  setForwardEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
+  simple: boolean;
   showAlert: (type: 'success' | 'error', message: string) => void;
   staff: StaffBlock | null;
   takeLabel: string;
@@ -154,7 +157,15 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
             {/* Refund / Ship again: verified customers only; internal, the customer is told nothing.
                 One group. Who may mark is the server's call (staff.can_mark_case: a senior or Super
                 Admin; a junior only while every senior is away). Off: the reason on hover. */}
-            {canCases && !isVisitorChat(activeConv) && (
+            {/* A team member sends a refund / reship to the Manager (owner 2026-10-10): the mark AND the chat go
+                to the Manager. The Manager and the Super Admin mark it themselves with the buttons below. */}
+            {simple && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && activeConv.status !== 'resolved' && staff && (staff.can_act || staff.transfer_to.length > 0) && (
+              <button className="btn btn-outline btn-sm" onClick={() => setForwardEdit({ convId: activeConv.id, busy: false, error: '' })}
+                title="Refund or Ship again: the Manager decides and handles it. The customer is not told anything.">
+                <Send size={13} /> Send to Manager
+              </button>
+            )}
+            {!simple && canCases && !isVisitorChat(activeConv) && (
               <div className="th-group">
                 {activeConv.case_kind ? (
                   <button className="btn btn-outline btn-sm" title="Take it out of this list: the chat goes back to where it was" onClick={() => markCase(null)}>Remove</button>

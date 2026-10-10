@@ -7,7 +7,7 @@ import {
   MessageCircle, Inbox,
   Menu,
 } from 'lucide-react';
-import { can, isSuperAdmin } from '@/lib/permissions';
+import { can, isSuperAdmin, isTeamLead } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
@@ -22,6 +22,7 @@ import {
 import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems } from './_lib/types';
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
+import { ForwardDialog } from './_components/ForwardDialog';
 import { TemplateDialog } from './_components/TemplateDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
@@ -62,6 +63,7 @@ export default function ChatSupportPage() {
   const caseKey = tab.startsWith('case:') ? tab.slice(5) : '';
   // My chats: the list asks for ?mine=1 (this login's own chats in Needs you and With team).
   const mineTab = tab === 'mine';
+  const teamTab = tab === 'team';
   const [caseCounts, setCaseCounts] = useState<Record<string, { total: number; unread: number }>>({});
   const [caseSummary, setCaseSummary] = useState<{ marked_by: string; day: string; n: number }[]>([]);
 
@@ -119,6 +121,8 @@ export default function ChatSupportPage() {
   const [threadRefund, setThreadRefund] = useState<{ id: string; state: RefundThreadState | null } | null>(null);
   const [teamLogOpen, setTeamLogOpen] = useState(false);
   const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // Forward to Manager (owner 2026-10-10): the dialog's state.
+  const [forwardEdit, setForwardEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // A WhatsApp template to send in this chat (owner 2026-10-10): the only message after 24 h of silence.
   const [templateEdit, setTemplateEdit] = useState<{ convId: string; busy: boolean } | null>(null);
   // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
@@ -196,7 +200,7 @@ export default function ChatSupportPage() {
     setUser(me);
     // A team member's inbox is just their Active cases (owner 2026-10-08): the queues, problem
     // filters and the rest are for the Super Admin. Only the menu changes: no permission does.
-    if (!isSuperAdmin(me)) setTab('active:open');
+    if (!isTeamLead(me)) setTab('active:open');
     setActivePanelId(localStorage.getItem('active_panel_id') || '');
     // An expired token, or one from before tokens were signed, is refused by
     // every API — send the person to log in again instead of showing nothing.
@@ -257,6 +261,7 @@ export default function ChatSupportPage() {
         // Closed chats never wait for an answer: Unread does not apply there.
         if (unreadOnly && statusFilter !== 'resolved') params.set('unread', '1');
         if (mineTab) params.set('mine', '1');
+        if (teamTab) params.set('team', '1');
       }
       // activeHeaders(): this poll also says the person is here, only while they really use the tab
       // (src/lib/presence-client.ts), so a screen left open does not keep them "around".
@@ -440,6 +445,35 @@ export default function ChatSupportPage() {
 
   // Transfer (the dialog): to a member who can reply in this panel or the Super Admin ("Nobody" for
   // the Super Admin), with a one-line note only the team sees.
+  // Forward to Manager (owner 2026-10-10): the Refund / Ship again mark AND the chat goes to the Manager.
+  const sendForward = async (kind: 'refund' | 'reship', note: string) => {
+    if (!forwardEdit || !token) return;
+    const convId = forwardEdit.convId;
+    setForwardEdit({ convId, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ forward: kind, note }),
+      });
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) {
+        const why = (d.error as string) || 'Could not send it to the Manager';
+        if (res.status === 409) { setForwardEdit(null); showAlert('error', why); }
+        else setForwardEdit({ convId, busy: false, error: why });
+        fetchThread(convId, true);
+        fetchConversations(true);
+        return;
+      }
+      setForwardEdit(null);
+      showAlert('success', `Sent to ${(d.holder_name as string | null | undefined) || 'the Manager'} as ${kind === 'refund' ? 'Refund' : 'Ship again'}`);
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch {
+      setForwardEdit({ convId, busy: false, error: 'Could not send it to the Manager' });
+    }
+  };
+
   const sendTransfer = async (to: TransferTarget, note: string) => {
     if (!transferEdit || !token) return;
     const convId = transferEdit.convId;
@@ -963,7 +997,8 @@ export default function ChatSupportPage() {
   // What this login may do here (src/lib/permissions.ts; the API checks the same).
   const canReply = can(user, 'chat.reply');
   // The team's simple inbox (Active cases only); the Super Admin sees every queue.
-  const simple = !isSuperAdmin(user);
+  // The Manager (team.lead) gets the full menu like the Super Admin (owner 2026-10-10).
+  const simple = !isTeamLead(user);
   const canCases = can(user, 'chat.cases');
   // The panel's name on each row only when this login has more than one panel.
   const showPanelName = businesses.length > 1;
@@ -1276,7 +1311,7 @@ export default function ChatSupportPage() {
                 {/* Thread header */}
                 {/* The top of the chat (header, address, items, what to do next) scrolls on its own, so the messages keep their room (owner 2026-10-08) */}
                 <div className="chat-top">
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
 
                 <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} />
                 </div>
@@ -1363,6 +1398,9 @@ export default function ChatSupportPage() {
         ))}
         {templateEdit && activeConv?.id === templateEdit.convId && (
           <TemplateDialog token={token} busy={templateEdit.busy} onCancel={() => setTemplateEdit(null)} onSend={sendTemplate} />
+        )}
+        {forwardEdit && activeConv?.id === forwardEdit.convId && (
+          <ForwardDialog busy={forwardEdit.busy} error={forwardEdit.error} onCancel={() => setForwardEdit(null)} onSend={sendForward} />
         )}
         {transferEdit && staff && activeConv?.id === transferEdit.convId && (
           <TransferDialog targets={staff.transfer_to} team={team} me={staff.me} busy={transferEdit.busy} error={transferEdit.error}

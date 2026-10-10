@@ -5,7 +5,7 @@
 // wants and up to three steps. Pure, no imports, STAFF SCREEN ONLY: never read by the AI, never in
 // a /api/widget/* answer. It teaches nothing new: every line restates a rule that is already in
 // SHIPTRACK_MASTER_RULES.md / AGENTS.md (verify with order ID + full phone first; the refund form
-// is sent by the Super Admin only; never promise an amount or a time; check with family /
+// is sent by the Manager / Super Admin only; never promise an amount or a time; check with family /
 // neighbours when a Delivered order did not reach them). Change a line here, nowhere else.
 
 export type NextStepTone = 'danger' | 'warn' | 'primary' | 'ok' | 'muted';
@@ -67,7 +67,7 @@ function bySubject(subject: string, i: NextStepInput): { wants: string; steps: s
         wants: 'Refund or cancellation',
         steps: [
           'Check the order stage in the header.',
-          'Press Refund so the Super Admin can send the refund form.',
+          'Send it to the Manager as Refund (Send to Manager): the Manager sends the refund form.',
           'Do not promise an amount or a time in the chat.',
         ],
       };
@@ -150,7 +150,7 @@ export function nextStep(i: NextStepInput): NextStep {
 
   // A chargeback mail has arrived for this order (owner 2026-10-08): calm, honest, no promises, no advice about it.
   if (i.chargeback) {
-    add('A chargeback mail arrived for this order. The Super Admin handles it with the gateway.');
+    add('A chargeback mail arrived for this order. The Manager handles it with the gateway.');
     add('Stay calm and polite. Do not advise the customer on chargebacks or complaints, and promise nothing.');
     add('Answer from the order facts in the header.');
     return { tone: 'danger', wants: 'Chargeback on this order', steps };
@@ -160,7 +160,7 @@ export function nextStep(i: NextStepInput): NextStep {
   if (i.caseKind === 'refund') {
     add(i.caseByChikki
       ? 'Chikki told the customer the refund is being processed and a form will come in this chat.'
-      : 'Marked Refund: the Super Admin sends the refund form.');
+      : 'Marked Refund: the Manager sends the refund form.');
     add('Do not promise an amount or a time; keep the customer updated here.');
     return { tone: upset || overdue ? 'danger' : 'warn', wants: 'Refund case', steps };
   }

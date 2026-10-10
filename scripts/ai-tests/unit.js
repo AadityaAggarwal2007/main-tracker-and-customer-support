@@ -1304,7 +1304,9 @@ t('H7: a message that is only a phone number (lookup-guard.ts isBarePhone)', () 
 t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that names the closed-hours note; 7.6 names the week', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
-  assert.strictEqual(sec.rules[sec.rules.length - 1].id, '7.11');
+  // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct).
+  assert.deepStrictEqual(sec.rules.slice(-2).map((r) => r.id), ['7.11', '7.12']);
+  assert.ok(rule('7.12').how === 'code' && /Send to Manager/.test(rule('7.12').text) && /Team chats/.test(rule('7.12').text));
   assert.ok(rule('7.11').how === 'code' && /Promised Mon 10 AM/.test(rule('7.11').text) && /never says the courier is closed/.test(rule('7.11').text));
   assert.ok(/Saturday is a half day/.test(rule('7.6').text) && /on Monday morning, after 10 AM/.test(rule('7.6').text));
 });
@@ -1434,10 +1436,10 @@ t('next-step: a visitor is told to verify (order ID + full phone) and nothing ab
   assert.strictEqual(ns.nextStep({ ...base, status: 'ai_handling' }).tone, 'muted');
   assert.strictEqual(ns.nextStep({ ...base, status: 'resolved', known: true }).wants, 'Chat is closed');
 });
-t('next-step: known customers get the rule-backed steps (refund form is the Super Admin\'s, no promises, family check for Delivered, Ship again, address in Details), at most 3 steps, upset or overdue is red', () => {
+t('next-step: known customers get the rule-backed steps (refund form is the Manager\'s since 10 Oct, no promises, family check for Delivered, Ship again, address in Details), at most 3 steps, upset or overdue is red', () => {
   const k = { status: 'agent_handling', known: true, verified: true, subject: null, caseKind: null, caseByChikki: false, reshipped: false, threat: false, accuse: false, health: 10, waitingMs: null, returned: false, promiseDue: false, order: { delivered: false, mode: 'normal' }, heldBy: null, heldByMe: true, canReply: true };
   const refund = ns.nextStep({ ...k, subject: 'Refund / Cancellation' });
-  assert.ok(/Super Admin/.test(refund.steps.join(' ')) && /Do not promise an amount or a time/.test(refund.steps.join(' ')));
+  assert.ok(/Send to Manager/.test(refund.steps.join(' ')) && /Manager sends the refund form/.test(refund.steps.join(' ')) && /Do not promise an amount or a time/.test(refund.steps.join(' ')));
   assert.ok(/family, neighbours/.test(ns.nextStep({ ...k, subject: 'Not received', order: { delivered: true, mode: 'normal' } }).steps.join(' ')));
   assert.ok(/Never promise arrival today/.test(ns.nextStep({ ...k, subject: 'Delivery delay' }).steps.join(' ')));
   assert.ok(/Ship again/.test(ns.nextStep({ ...k, subject: 'Wrong tracking link' }).steps.join(' ')));
