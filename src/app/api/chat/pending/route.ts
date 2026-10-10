@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { can } from '@/lib/permissions';
+import { can, isTeamLead } from '@/lib/permissions';
+import { staffActor } from '@/lib/chat/team-routing';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,13 @@ export async function GET(request: NextRequest) {
   } else if (user.businessIds && user.businessIds.length > 0) {
     conditions.push(`s.tracker_business_id::text = ANY($${pi++}::text[])`);
     params.push(user.businessIds);
+  }
+
+  // A team member counts their own chats and the ones nobody holds (owner 2026-10-10), as their inbox lists them.
+  if (!isTeamLead(user)) {
+    const me = staffActor(user)?.key ?? null;
+    if (me) { conditions.push(`(c.assigned_to = $${pi++} OR c.assigned_to IS NULL)`); params.push(me); }
+    else conditions.push('c.assigned_to IS NULL');
   }
 
   const row = await query<{ human_needed: string; email_waiting: string }>(

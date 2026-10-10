@@ -1,4 +1,4 @@
-import { AlertCircle, Bot, Check, Clock, Flame, Inbox, Link2, MapPin, PackageX, RefreshCw, ShieldAlert, Truck, Undo2, User, UserCheck, UserRoundCheck, Users } from 'lucide-react';
+import { AlertCircle, Bot, Check, Clock, Flame, Inbox, Link2, MapPin, PackageX, RefreshCw, ShieldAlert, Truck, Undo2, User, UserCheck, UserRoundCheck, Users, UsersRound } from 'lucide-react';
 import type { Conversation, InboxTab, NameSrc, TeamLogEntry } from './types';
 
 // "away 40 min", "seen 3 min ago", "seen 2 h ago" beside a name in the transfer list.
@@ -95,6 +95,8 @@ export const INBOX_TABS: { v: InboxTab; label: string; icon: typeof Inbox; statu
   { v: 'customers', label: 'Customers', icon: UserCheck, status: '', segment: 'customers' },
   { v: 'human_needed', label: 'Needs you', icon: AlertCircle, status: 'human_needed', segment: '' },
   { v: 'mine', label: 'My chats', icon: UserRoundCheck, status: '', segment: '' },
+  // Team chats (owner 2026-10-10): the open chats other people hold (?team=1), to read and Take over.
+  { v: 'team', label: 'Team chats', icon: UsersRound, status: '', segment: '' },
   { v: 'agent_handling', label: 'With team', icon: User, status: 'agent_handling', segment: '' },
   { v: 'ai_handling', label: 'With AI', icon: Bot, status: 'ai_handling', segment: '' },
   // Refund / Ship again (owner, 2026-10-01): a marked chat shows only here; no status of its own.

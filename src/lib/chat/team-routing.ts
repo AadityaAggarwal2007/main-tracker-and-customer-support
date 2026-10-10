@@ -64,6 +64,10 @@ export async function actionsReady(timeoutMs = 3000): Promise<boolean> {
   return teamLoaded();
 }
 
+// Senior (owner 2026-10-01: the Senior tick) or the Manager (owner 2026-10-10: team.lead runs the team: he marks
+// Refund / Ship again and takes a junior's chat like a senior).
+const seniorOf = (u: Parameters<typeof can>[0]) => can(u, 'chat.senior') || can(u, 'team.lead');
+
 // ── Who is acting, who holds the chat ───────────────────────────
 // The person acting, as team-rules.ts sees them. The Super Admin is 'owner' (he has no team_users
 // row) and counts as Senior. null: a member whose login carries no member id (a token from before
@@ -76,7 +80,7 @@ export function staffActor(user: AuthUser | null | undefined): Actor | null {
   if (!user.id) return null;
   return {
     key: user.id, name: user.displayName || user.username, superAdmin: false,
-    senior: can(user, 'chat.senior'), canReply: can(user, 'chat.reply'), canCases: can(user, 'chat.cases'),
+    senior: seniorOf(user), canReply: can(user, 'chat.reply'), canCases: can(user, 'chat.cases'),
   };
 }
 
@@ -104,13 +108,33 @@ export function holderOf(raw: string | null | undefined, panelId: string | null,
   }
   const e = teamEntries().find((m) => m.id === raw);
   if (!e || !e.active || !can(e, 'chat.reply') || !canAccessPanel(e, panelId)) return null;
-  return { key: e.id, name: e.name, superAdmin: false, senior: can(e, 'chat.senior'), awayMin: awayOf(e.id, now) };
+  return { key: e.id, name: e.name, superAdmin: false, senior: seniorOf(e), awayMin: awayOf(e.id, now) };
+}
+
+// "Forward to Manager" (owner 2026-10-10): who gets a forwarded Refund / Ship again chat. Active members with the
+// Manager tick (team.lead) who may reply in the chat's panel; one who is around first (not away 30+ min), then the one
+// holding the fewest open chats, then by name. Nobody = the Super Admin (OWNER_KEY), as before a Manager existed.
+export async function pickManager(client: PoolClient, panelId: string | null, now = Date.now()): Promise<string> {
+  const leads = teamEntries().filter((e) => e.active && can(e, 'team.lead') && can(e, 'chat.reply') && canAccessPanel(e, panelId));
+  if (leads.length === 0) return OWNER_KEY;
+  const load = new Map<string, number>();
+  try {
+    const r = await client.query<{ assigned_to: string; n: number }>(
+      `SELECT assigned_to, count(*)::int AS n FROM conversations
+        WHERE assigned_to = ANY($1::text[]) AND status <> 'resolved' AND merged_into IS NULL GROUP BY assigned_to`,
+      [leads.map((e) => e.id)]
+    );
+    for (const row of r.rows) load.set(row.assigned_to, row.n);
+  } catch { /* no counts: by presence and name */ }
+  const away = (id: string) => { const m = awayOf(id, now); return m !== null && m >= AWAY_AFTER_MIN ? 1 : 0; };
+  leads.sort((a, b) => away(a.id) - away(b.id) || (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0) || a.name.localeCompare(b.name));
+  return leads[0].id;
 }
 
 // Every team member, for the transfer list (team-rules.ts transferTargets filters it).
 export function membersFor(panelId: string | null, now = Date.now()): Member[] {
   return teamEntries().map((e) => ({
-    key: e.id, name: e.name, active: e.active, canReply: can(e, 'chat.reply'), senior: can(e, 'chat.senior'),
+    key: e.id, name: e.name, active: e.active, canReply: can(e, 'chat.reply'), senior: seniorOf(e),
     panelOk: canAccessPanel(e, panelId), awayMin: awayOf(e.id, now),
   }));
 }
@@ -126,7 +150,7 @@ const minutesSince = (ms: number | null, now: number) => (ms === null ? null : M
 
 function activeSeniors(now: number) {
   return teamEntries()
-    .filter((e) => e.active && can(e, 'chat.senior'))
+    .filter((e) => e.active && seniorOf(e))
     .map((e) => ({ key: e.id, name: e.name, lastSeen: lastSeenMs(e.id), awayMin: awayOf(e.id, now) }));
 }
 
@@ -160,7 +184,7 @@ export function teamDirectory(now = Date.now()): DirectoryEntry[] {
   const out: DirectoryEntry[] = teamEntries()
     .filter((e) => e.active && can(e, 'chat.reply'))
     .map((e) => ({
-      key: e.id, name: e.name, senior: can(e, 'chat.senior'), owner: false,
+      key: e.id, name: e.name, senior: seniorOf(e), owner: false,
       away_min: shownAway(awayOf(e.id, now)), seen_min: minutesSince(lastSeenMs(e.id), now),
     }));
   out.push({

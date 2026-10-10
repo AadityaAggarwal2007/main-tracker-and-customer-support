@@ -59,16 +59,18 @@ export default function InboxSidebar({ simple, activeCounts, activePanelId, busi
       { v: 'resolved', label: 'Closed', icon: base('resolved').icon, n: 0, tone: 'muted' },
     ] },
   ];
-  // A team member's menu (owner 2026-10-08): their Active cases, Needs you, the Refund / Ship again
-  // cases and the customers who open chats. The rest is the Super Admin's.
+  // A team member's menu (owner 2026-10-10: "Chat Support walo ko bas All chats, Need you, Open case, Closed case"):
+  // only their own chats (and the ones nobody holds yet). Other people's chats are under Team chats, to read and Take
+  // over. Refund / Ship again go to the Manager ("Send to Manager" in the chat); the rest is the Manager's and the
+  // Super Admin's.
   const simpleGroups: { title: string; items: Item[] }[] = [
     { title: 'Your chats', items: [
       { v: 'active:open', label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger', line: 'Customer wrote. Reply to them.' },
-      { v: 'active:closed', label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted', line: 'You answered. It comes back to Open case if they write again.' },
       { v: 'human_needed', label: 'Needs you', icon: base('human_needed').icon, n: 0, tone: 'danger', line: 'The AI stopped. A person must answer.' },
+      { v: 'active:closed', label: 'Closed case', icon: CheckCheck, n: activeCounts.closed, tone: 'muted', line: 'You answered. It comes back to Open case if they write again.' },
+      { v: 'all', label: 'All chats', icon: base('all').icon, n: 0, tone: 'muted', line: 'All your customers.' },
     ] },
-    { title: 'Cases', items: [caseItem('refund'), caseItem('reship')] },
-    { title: 'Customers', items: [{ v: 'all', label: 'All customers', icon: base('all').icon, n: 0, tone: 'muted', line: 'Everyone who opened a chat.' }] },
+    { title: 'Team', items: [{ v: 'team', label: 'Team chats', icon: base('team').icon, n: 0, tone: 'muted', line: "Your team's chats. Read them, or Take over." }] },
   ];
   const view = simple ? simpleGroups : groups;
   return (

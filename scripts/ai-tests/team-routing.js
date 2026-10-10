@@ -514,6 +514,21 @@ async function handle(q, p, tx) {
     setRow(tx, c, { assigned_to: p[1], assigned_at: p[1] == null ? null : nowIso(), status: p[2], auto_closed_at: null });
     return rows([pick(c, ['status', 'assigned_to'])]);
   }
+  // Forward to Manager (owner 2026-10-10): the holder moves to the Manager (or the Super Admin), status kept.
+  if (q === 'UPDATE conversations SET assigned_to = $2::text, assigned_at = now(), updated_at = now() WHERE id = $1') {
+    need(tx, q);
+    setRow(tx, await rowFor(tx, p[0]), { assigned_to: p[1], assigned_at: nowIso() });
+    return rows([]);
+  }
+  if (q === 'UPDATE conversations SET assigned_to = $1::text, assigned_at = now() WHERE id = ANY($2::text[])') {
+    need(tx, q);
+    for (const id of p[1]) setRow(tx, await rowFor(tx, id), { assigned_to: p[0], assigned_at: nowIso() });
+    return rows([]);
+  }
+  if (q === "SELECT assigned_to, count(*)::int AS n FROM conversations WHERE assigned_to = ANY($1::text[]) AND status <> 'resolved' AND merged_into IS NULL GROUP BY assigned_to") {
+    const by = {}; for (const c of db.convs) if (p[0].includes(c.assigned_to) && c.status !== 'resolved' && !c.merged_into) by[c.assigned_to] = (by[c.assigned_to] || 0) + 1;
+    return rows(Object.entries(by).map(([assigned_to, n]) => ({ assigned_to, n })));
+  }
   if (q === 'UPDATE conversations SET assigned_to = $1::text, assigned_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END WHERE id = ANY($2::text[])') {
     need(tx, q);
     for (const id of p[1]) setRow(tx, await rowFor(tx, id), { assigned_to: p[0], assigned_at: p[0] == null ? null : nowIso() });
@@ -1715,11 +1730,22 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(!db.stmts.some((x) => x.q.startsWith('SELECT count(*)::int AS n FROM conversations WHERE assigned_to')), 'held is asked for the Super Admin only');
     deq(r.body.team.map((x) => [x.key, x.name, x.senior, x.owner]), [[RAHUL, 'Rahul', true, false], [ANURAG, 'Anurag', false, false], [PRIYA, 'Priya', false, false], ['owner', 'Super Admin', false, true]]);
     for (const e of r.body.team) deq(Object.keys(e).sort(), ['away_min', 'key', 'name', 'owner', 'seen_min', 'senior']);
-    // Without mine, and in a search, no holder condition.
+    // Owner 2026-10-10: a team member's lists hold only their own chats and the open ones nobody holds (counts too);
+    // a search still looks at every chat of the panels; the Super Admin's lists have no holder condition.
     r = await list('anurag');
-    ok(!/c\.assigned_to = \$/.test(db.list.sql));
+    const own = db.list.sql.match(/\(c\.assigned_to = \$(\d+) OR \(c\.assigned_to IS NULL AND c\.status <> 'resolved'\)\)/);
+    ok(own, 'a member sees their own chats and the unheld ones');
+    eq(db.list.params[Number(own[1]) - 1], ANURAG);
+    ok(db.list.unansweredSql.includes("(c.assigned_to = $") && db.list.unansweredSql.includes("c.assigned_to IS NULL AND c.status <> 'resolved'"), 'the badge counts the same chats');
     r = await list('anurag', '?mine=1&q=order%201234');
-    ok(!/c\.assigned_to = \$/.test(db.list.sql));
+    ok(!/c\.assigned_to = \$/.test(db.list.sql), 'a search: no holder condition');
+    r = await list('owner');
+    ok(!/c\.assigned_to = \$/.test(db.list.sql) && !/c\.assigned_to IS NULL AND/.test(db.list.sql), 'the Super Admin sees every chat');
+    // Team chats (?team=1): the open chats somebody else holds.
+    r = await list('anurag', '?team=1');
+    const team = db.list.sql.match(/c\.assigned_to IS NOT NULL AND c\.assigned_to IS DISTINCT FROM \$(\d+) AND c\.status <> 'resolved'/);
+    ok(team, 'Team chats condition'); eq(db.list.params[Number(team[1]) - 1], ANURAG);
+    ok(!/\(c\.assigned_to = \$\d+ OR/.test(db.list.sql), 'Team chats are not limited to my own');
     r = await list('owner', '?mine=1');
     deq([r.body.me, db.list.unansweredParams, db.list.heldParams], ['owner', ['owner'], ['owner']]);
     eq(r.body.mine.held, db.convs.filter((c) => c.assigned_to === 'owner' && c.status !== 'resolved' && !c.merged_into).length);
@@ -3798,6 +3824,45 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     db.list = {};
     status(await list('anurag', '?active=open&q=1040'), 200);
     ok(!db.list.sql.includes("c.status = 'agent_handling'") && !/WHERE b\.waiting_since IS (NOT )?NULL\s+\), grouped AS/.test(db.list.sql), 'a search ignores Active');
+  });
+
+  // ── R70: Forward to Manager (owner 2026-10-10) ────────────────
+  await t('R70 a member forwards a verified customer to the Manager: the mark AND the chat go to him, one note, the customer told nothing; no Manager = the Super Admin', async () => {
+    await restart();
+    at(ist(15, 0, 6));
+    // No Manager login yet: the forwarded chat goes to the Super Admin.
+    known({ id: 'r70a', status: 'agent_handling', assigned_to: ANURAG });
+    let r = await patch('anurag', 'r70a', { forward: 'refund', note: 'Wants refund, parcel 9 days late' });
+    status(r, 200);
+    deq([r.body.case_kind, r.body.assigned_to], ['refund', 'owner']);
+    deq([C('r70a').case_kind, C('r70a').assigned_to, C('r70a').status], ['refund', 'owner', 'agent_handling']);
+    const tr = evs('r70a', 'transfer').pop();
+    deq([tr.from_owner, tr.to_owner, tr.reason, tr.note], [ANURAG, 'owner', 'forward', 'Wants refund, parcel 9 days late']);
+    deq(evs('r70a', 'case_mark')[0].meta.override, 'forward');
+    eq(agentMsgs('r70a').length, 0, 'nothing is sent to the customer');
+    // With a Manager (team.lead) on the team: he gets it, even when a member forwards it and a senior exists.
+    const saved = db.team;
+    db.team = [...saved, member('77777777-7777-4777-8777-777777777777', 'sunny', 'Sunny', 'manager', null)];
+    await mod.auth.refreshTeamCache(true); makeTokens();
+    try {
+      known({ id: 'r70b', status: 'human_needed', assigned_to: null });
+      r = await patch('anurag', 'r70b', { forward: 'reship', note: 'Tracking link fake says customer' });
+      status(r, 200);
+      deq([C('r70b').case_kind, C('r70b').assigned_to, r.body.holder_name], ['reship', '77777777-7777-4777-8777-777777777777', 'Sunny']);
+      // The Manager marks himself like a senior (team.lead).
+      known({ id: 'r70m', status: 'agent_handling' });
+      status(await patch('sunny', 'r70m', { caseKind: 'refund' }), 200);
+    } finally { db.team = saved; await mod.auth.refreshTeamCache(true); makeTokens(); }
+    // Refused: no note, an unknown kind, a visitor, a Closed chat, a viewer.
+    known({ id: 'r70c', status: 'agent_handling', assigned_to: ANURAG });
+    eq((await patch('anurag', 'r70c', { forward: 'refund', note: '' })).status, 400);
+    eq((await patch('anurag', 'r70c', { forward: 'gift', note: 'please' })).status, 400);
+    newConv({ id: 'r70v', status: 'agent_handling', assigned_to: ANURAG });
+    eq((await patch('anurag', 'r70v', { forward: 'refund', note: 'wants money back' })).body.error, 'Only a verified customer can be marked for a refund or to ship again');
+    eq(C('r70v').assigned_to, ANURAG, 'a refused forward moves nothing');
+    known({ id: 'r70z', status: 'resolved', assigned_to: ANURAG });
+    eq((await patch('anurag', 'r70z', { forward: 'refund', note: 'wants money back' })).status, 400);
+    eq((await patch('viewer', 'r70c', { forward: 'refund', note: 'wants money back' })).status, 403);
   });
 
   Object.assign(console, realConsole);
