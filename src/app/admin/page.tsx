@@ -416,6 +416,20 @@ export default function AdminDashboard() {
   useEffect(() => { if (user && activeTab === 'refunds' && !superAdmin) setActiveTab('orders'); }, [user, activeTab, superAdmin]);
   // The tab is remembered for the next refresh (owner 2026-10-10).
   useEffect(() => { try { localStorage.setItem('admin_tab', activeTab); } catch { /* ignore */ } }, [activeTab]);
+  // A remembered tab this login may not see (a member after the owner changed their ticks) goes to Today. This hook
+  // must stay ABOVE the `if (!user) return` below: a hook after an early return crashed the whole page (2026-10-10 morning).
+  useEffect(() => {
+    if (!user) return;
+    const ok = activeTab === 'today' || activeTab === 'orders' ? hasPermission('view_orders') || activeTab === 'today'
+      : activeTab === 'upload' ? hasPermission('upload_csv')
+      : activeTab === 'settings' ? hasPermission('manage_businesses')
+      : activeTab === 'team' ? hasPermission('manage_team')
+      : activeTab === 'score' ? isSuperAdmin(user) || can(user, 'chat.reply')
+      : activeTab === 'refunds' || activeTab === 'chargebacks' ? isSuperAdmin(user)
+      : activeTab === 'mail' ? can(user, 'mail.view') : true;
+    if (!ok) setActiveTab('today');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, activeTab]);
   // Auto-refresh email stats every 30 seconds
   useEffect(() => {
     if (!token) return;
@@ -990,8 +1004,6 @@ export default function AdminDashboard() {
     // Owner 2026-10-08: chargeback mails from every panel's chargeback Gmail, with a red badge. Super Admin only.
     { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
-  // A remembered tab this login may not see (a member after the owner changed their ticks) goes to Today.
-  useEffect(() => { if (user && !navItems.some(i => i.id === activeTab)) setActiveTab('today'); }, [user, activeTab, navItems]);
 
   return (
     <div className="admin-layout">
