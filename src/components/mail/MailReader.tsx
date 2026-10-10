@@ -11,9 +11,9 @@ import type { Att, Box, Full, ThreadItem, Ver } from './types';
 const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // The open mail: who, the verification bar, actions, the body in a sandboxed frame, the reply box (owner 2026-10-08).
-export default function MailReader({ token, box, mail, versions, thread, threadLoading, canReply, onAlert, onBack, wide, onToggleWide, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, canReply, onAlert, onBack, wide, onToggleWide, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
-  thread: ThreadItem[] | null; threadLoading: boolean;
+  thread: ThreadItem[] | null; threadLoading: boolean; threadFailed?: boolean; onRetryThread?: () => void;
   onAlert: (type: string, message: string) => void;
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   // Full width (the list and filters hidden) or next to the list (owner 2026-10-09).
@@ -169,7 +169,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       </div>
 
       {mail.cut && <div className="mail-warn" style={{ margin: '0 0 0.5rem' }}>This mail is very large, so only its first part is shown here. Open it in Gmail to see everything. Its files can still be downloaded.</div>}
-      <MailThread token={token} boxId={box?.id || ''} currentUid={mail.uid} items={thread} loading={threadLoading} />
+      <MailThread token={token} boxId={box?.id || ''} currentUid={mail.uid} items={thread} loading={threadLoading} failed={threadFailed} onRetry={onRetryThread} />
 
       {/* Scripts, forms and remote pictures are blocked twice: the sandbox and the policy inside the frame. */}
       <iframe className="mail-frame" title="Mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={mail.frame} />

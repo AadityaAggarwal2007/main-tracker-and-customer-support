@@ -20,11 +20,13 @@ export async function GET(request: NextRequest) {
     // peek=1 is the read-ahead and the conversation: they use their own connection, so a slow background mail can never hold
     // up the one the person clicked (imap-pool.ts).
     const peek = sp.get('peek') === '1';
+    // via=thread: an older message opened inside the conversation (its own connection, owner 2026-10-10).
+    const slot = sp.get('via') === 'thread' ? 'thread' as const : peek ? 'bg' as const : 'read' as const;
     // An INBOX mail comes from the server's copy when it was opened or read ahead before (mail-cache.ts); a sent one is
     // read live (the conversation view only).
     const mail = folder === 'sent'
-      ? await readMail(a.box, uid, { markRead: false, images: sp.get('images') === '1', folder, slot: peek ? 'bg' : 'read' })
-      : await readMailCached(a.box, uid, { markRead: !peek, images: sp.get('images') === '1', slot: peek ? 'bg' : 'read' });
+      ? await readMail(a.box, uid, { markRead: false, images: sp.get('images') === '1', folder, slot })
+      : await readMailCached(a.box, uid, { markRead: !peek, images: sp.get('images') === '1', slot });
     // A mail we SENT (the conversation view) is only shown: nothing to verify and nobody to mark read.
     if (mail && folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
     if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });

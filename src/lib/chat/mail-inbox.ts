@@ -309,7 +309,7 @@ export async function listThread(box: MailBoxSecret, address: string, now = Date
     await grab(c, 'INBOX', 'inbox', { since, from: address });
     const sent = await sentPath(c, box.id);
     if (sent) await grab(c, sent, 'sent', { since, to: address });
-}, 'bg');
+  }, 'thread');
   return out.sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0)).slice(-40);
 }
 

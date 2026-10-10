@@ -56,6 +56,9 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   const [opening, setOpening] = useState(false);
   const [thread, setThread] = useState<ThreadItem[] | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  // The conversation could not be read (owner 2026-10-10: it used to spin): a line with "Try again" instead.
+  const [threadFailed, setThreadFailed] = useState(false);
+  const threadSeq = useRef(0);
   const [, tick] = useState(0);
   const initialDone = useRef(false);
   const listSeq = useRef(0);
@@ -236,13 +239,19 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     const k = threadKey(id, address);
     const cached = mailCache.threads.get(k);
     if (cached && !force) { setThread(cached); return; }
-    setThread(cached ?? null); setThreadLoading(true);
+    const seq = ++threadSeq.current;
+    setThread(cached ?? null); setThreadLoading(true); setThreadFailed(false);
+    // Never longer than 40 s: then it says so and offers "Try again".
+    const ctl = new AbortController();
+    const cut = setTimeout(() => ctl.abort(), 40_000);
     try {
-      const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}`, { headers: auth, cache: 'no-store' });
+      const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}${force ? '&fresh=1' : ''}`, { headers: auth, cache: 'no-store', signal: ctl.signal });
       const d = await r.json().catch(() => ({}));
+      if (seq !== threadSeq.current) return;
       if (r.ok && Array.isArray(d.items)) { mailCache.threads.set(k, d.items); if (boxRef.current === id) setThread(d.items); }
-    } catch { /* the conversation is a bonus: the mail itself is already open */ }
-    finally { setThreadLoading(false); }
+      else if (!cached) setThreadFailed(true);
+    } catch { if (seq === threadSeq.current && !cached) setThreadFailed(true); }
+    finally { clearTimeout(cut); if (seq === threadSeq.current) setThreadLoading(false); }
   }, [auth]);
   const openAddress = mail?.fromAddress;
   useEffect(() => {
@@ -382,7 +391,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           <MailReader
             token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
             versions={verified[mail.fromAddress] || []}
-            thread={thread} threadLoading={threadLoading}
+            thread={thread} threadLoading={threadLoading} threadFailed={threadFailed}
+            onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true); }}
             onBack={() => { setOpenUid(null); setMail(null); }}
             wide={wide} onToggleWide={toggleWide}
             onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
