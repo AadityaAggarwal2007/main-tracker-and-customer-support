@@ -98,6 +98,7 @@ const rPicture = require(path.join(SRC, 'app/api/whatsapp/profile/picture/route.
 const rName = require(path.join(SRC, 'app/api/whatsapp/display-name/route.ts'));
 const errs = require(path.join(SRC, 'lib/chat/whatsapp-errors.ts'));
 const rActivity = require(path.join(SRC, 'app/api/whatsapp/activity/route.ts'));
+const diag = require(path.join(SRC, 'lib/chat/whatsapp-diagnose.ts'));
 const rTemplates = require(path.join(SRC, 'app/api/whatsapp/templates/route.ts'));
 const rSettings = require(path.join(SRC, 'app/api/whatsapp/settings/route.ts'));
 const rStart = require(path.join(SRC, 'app/api/whatsapp/start/route.ts'));
@@ -523,6 +524,40 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       ['m3', 'Anurag', 'hello_world', false, null, 'The WhatsApp token was refused (expired or revoked)'],
     ]);
   }));
+
+  console.log('whatsapp: check the token');
+  await t('checkToken: debug_token scopes and granular targets, the saved account and the phone read; verdicts name what is missing', async () => {
+    const answers = {
+      'debug_token': { data: { is_valid: true, type: 'SYSTEM_USER', app_id: '1427249435405269', application: 'ship track msg', expires_at: 0, scopes: ['whatsapp_business_messaging', 'business_management'], granular_scopes: [{ scope: 'whatsapp_business_messaging', target_ids: ['971683758658688'] }, { scope: 'business_management', target_ids: ['1590833022761407'] }] } },
+      '28873951022288651?fields=id,name': { error: { message: 'Unsupported get request. Object with ID \'28873951022288651\' does not exist', code: 100 } },
+      '1335396902996145?fields=display_phone_number': { display_phone_number: '+91 87964 14056' },
+    };
+    const f = async (url) => { const k = Object.keys(answers).find((x) => url.includes(x)); const ok = k && !answers[k].error; return { ok, status: ok ? 200 : 400, json: async () => (k ? answers[k] : { error: { message: 'nope' } }) }; };
+    const c = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
+    deq([c.valid, c.type, c.appId, c.appName, c.expires, c.scopes, c.waba.error, c.phone.ok], [true, 'SYSTEM_USER', '1427249435405269', 'ship track msg', 'never', ['whatsapp_business_messaging', 'business_management'], "Unsupported get request. Object with ID '28873951022288651' does not exist", true]);
+    deq(c.verdicts, [
+      'The token has no "whatsapp_business_management" permission. Generate a new token with it ticked.',
+      "Reading the saved WhatsApp Business Account 28873951022288651 failed: Unsupported get request. Object with ID '28873951022288651' does not exist",
+    ]);
+    assert.ok(!JSON.stringify(c).includes('tok-secret'));
+    // All fine.
+    answers.debug_token.data.scopes.push('whatsapp_business_management');
+    answers.debug_token.data.granular_scopes.push({ scope: 'whatsapp_business_management', target_ids: ['28873951022288651'] });
+    answers['28873951022288651?fields=id,name'] = { id: '28873951022288651', name: 'Shiptrack' };
+    const ok = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
+    deq([ok.waba.name, ok.verdicts], ['Shiptrack', ['The token is fine: valid, the needed permissions, the account and the number readable.']]);
+    // The token manages another account than the saved id.
+    answers.debug_token.data.granular_scopes[2].target_ids = ['971683758658688'];
+    const other = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
+    assert.match(other.verdicts[0], /manages WhatsApp account\(s\) 971683758658688, not the saved id 28873951022288651/);
+    // Wrong app id saved, a person's token, no token.
+    const app = await diag.checkToken('28873951022288651', '999', env, f);
+    assert.match(app.verdicts.join(' '), /belongs to app 1427249435405269, the saved Meta App id is 999/);
+    answers.debug_token.data.type = 'USER';
+    assert.match((await diag.checkToken('28873951022288651', '1427249435405269', env, f)).verdicts.join(' '), /a USER token/);
+    const none = await diag.checkToken('28873951022288651', '', {}, f);
+    deq(none.verdicts, ['Meta would not describe the token: No WHATSAPP_CLOUD_TOKEN on the server']);
+  });
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

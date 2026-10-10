@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, XCircle, Stethoscope } from 'lucide-react';
+import type { TokenCheck } from '@/lib/chat/whatsapp-diagnose';
 import MetaError from './MetaError';
 import { SECTION, label, spin, type Alert, type WaSettings, type WaLists } from './types';
 
@@ -11,6 +12,17 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const [waba, setWaba] = useState(s?.waba || '');
   const [appId, setAppId] = useState(s?.appId || '');
   const [busy, setBusy] = useState(false);
+  const [check, setCheck] = useState<TokenCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const runCheck = async () => {
+    setChecking(true);
+    try {
+      const r = await fetch('/api/whatsapp/token-check', { headers: auth, cache: 'no-store' });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j) { onAlert('error', (j && j.error) || 'Could not check the token'); return; }
+      setCheck(j);
+    } finally { setChecking(false); }
+  };
   const save = async () => {
     setBusy(true);
     try {
@@ -54,6 +66,31 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
             {busy ? <Loader2 size={14} style={spin} /> : 'Save'}
           </button>
         </div>
+      </div>
+
+      <div className="tf-card" style={{ padding: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          <span style={SECTION}>Check the token</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>Asks Meta what the token on the server can do and which accounts it sees</span>
+          <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={() => void runCheck()} disabled={checking}>
+            {checking ? <Loader2 size={14} style={spin} /> : <Stethoscope size={14} />} Check token
+          </button>
+        </div>
+        {check && (
+          <div style={{ display: 'grid', gap: 6, fontSize: '0.8125rem' }}>
+            {check.verdicts.map((v, i) => (
+              <div key={i} className={/is fine/.test(v) ? '' : 'wa-hint'} style={/is fine/.test(v) ? { color: 'var(--success, #15803d)', fontWeight: 600 } : undefined}>{v}</div>
+            ))}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.25rem 1rem', color: 'var(--fg-secondary)' }}>
+              <div>Token: <strong>{check.valid === null ? 'could not be read' : check.valid ? 'valid' : 'NOT valid'}</strong>{check.type ? ` · ${check.type.toLowerCase().replace('_', ' ')}` : ''}{check.expires ? ` · expires ${check.expires === 'never' ? 'never' : new Date(check.expires).toLocaleDateString()}` : ''}</div>
+              <div>App: <strong>{check.appName || check.appId || '—'}</strong>{check.appName && check.appId ? ` (${check.appId})` : ''}</div>
+              <div>Permissions: <strong>{check.scopes.length ? check.scopes.join(', ') : '—'}</strong></div>
+              {check.granular.map((g) => <div key={g.scope}>{g.scope} on: <strong>{g.targets.length ? g.targets.join(', ') : 'every asset'}</strong></div>)}
+              <div>Saved account {check.waba.id || '—'}: <strong>{check.waba.name ? `readable ("${check.waba.name}")` : check.waba.error ? `NOT readable: ${check.waba.error}` : 'not saved'}</strong></div>
+              <div>Phone number {check.phone.id || '—'}: <strong>{check.phone.ok ? 'readable' : check.phone.error ? `NOT readable: ${check.phone.error}` : 'not set'}</strong></div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="tf-card" style={{ padding: '1.25rem', fontSize: '0.8125rem', color: 'var(--fg-muted)', display: 'grid', gap: 4 }}>
