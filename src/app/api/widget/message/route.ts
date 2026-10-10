@@ -10,8 +10,8 @@ import { maskSensitive, withSensitiveWarning, type MaskResult } from '@/lib/chat
 import { handoffReply, isCourtesyOnly, looksHinglish, isRepeatedReply, routineHandOverKind, urgentAck, urgentKind, withHandOverLine } from '@/lib/chat/escalation';
 import { afterHours, closedWhy } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
-import { CLOSED_NOTE_KEY } from '@/lib/chat/closed-hours';
-import { closedHoursTurn, withClosedNote } from '@/lib/chat/closed-hours-run';
+import { CLOSED_NOTE_KEY, closedNote } from '@/lib/chat/closed-hours';
+import { closedHoursTurn, closedStatusText, withClosedNote } from '@/lib/chat/closed-hours-run';
 import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
@@ -191,7 +191,21 @@ export async function POST(request: NextRequest) {
       try {
         if (await chatIsVerified(conversationId)) {
           const ct = await closedHoursTurn({ convId: conversationId, said: String(masked.text), now: nowMs, holidays, after });
-          if (ct?.text) {
+          // Owner 2026-10-10: a customer who only asks where the order is gets its status first (closed-hours.ts
+          // statusLine, the tracking page's words); the note comes with their next message.
+          const statusText = ct?.step === 'status' ? await closedStatusText(conversationId, String(masked.text), site.tracker_business_id) : null;
+          if (ct?.step === 'status' && statusText) {
+            aiMessage = await saveAiMessage(aiReply(statusText));
+            await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
+            console.log(`[widget] conv ${conversationId}: closed hours, the order status first`);
+          } else if (ct?.step === 'status') {
+            // No order to read: the note, as before.
+            const note = closedNote(String(masked.text), why, after, 'full');
+            if (note) {
+              aiMessage = await saveAiMessage(aiReply(note), { [CLOSED_NOTE_KEY]: 'full' });
+              await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
+            }
+          } else if (ct?.text) {
             aiMessage = await saveAiMessage(aiReply(ct.text), { [CLOSED_NOTE_KEY]: ct.step });
             await query(`UPDATE conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`, [conversationId]);
             console.log(`[widget] conv ${conversationId}: closed-hours note (${ct.step})`);

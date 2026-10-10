@@ -50,7 +50,7 @@ module.exports = {
 const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body);
 stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.__emails.push(a); } };');
 stub('whatsapp', 'module.exports = { sendWhatsAppText: async (to, text) => { (global.__wa = global.__wa || []).push([to, text]); return { ok: true, id: "wamid.test" }; }, sendWhatsAppTemplate: async (to, name, lang, params) => { (global.__wa = global.__wa || []).push([to, "template:" + name, lang, params]); return { ok: true, id: "wamid.tpl" }; } };');
-stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
+stub('order-facts', 'module.exports = { loadOrderFacts: async (...a) => (global.__orderFacts ? global.__orderFacts(...a) : null) };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
 // The reply route records which suggested draft a reply came from (suggest-run.ts): a record only.
@@ -3749,6 +3749,39 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     known({ id: 'r66r', health_score: 85, status: 'agent_handling', case_kind: 'refund', case_marked_by: 'Rahul' }); order('#r66r', 'In Transit');
     eq(await send('r66r', 'where is my refund??', { content: 'x' }, ist(12, 0, 4)), null);
     ok(!db.messages.some((x) => x.conversation_id === 'r66r' && x.metadata && x.metadata.closed_note));
+  });
+  await t('R66 owner 10 Oct: a customer who only asks where the order is gets its status first (in a chat the team holds too), the weekend note with their next message', async () => {
+    const send = async (id, said, ai, ms) => {
+      at(ms); global.__ai.next = ai;
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    const asked = [];
+    global.__orderFacts = async (orderId, biz, source) => { asked.push([orderId, biz, source]); return { order_id: orderId, status: 'Reached City', eta: '2026-10-14', late: null, tracking_link: 'https://shiptrack.store/track/r66s' }; };
+    try {
+      // Critical, Sunday, in Needs you: just an order number -> the status of the VERIFIED order, no note, no marker.
+      known({ id: 'r66s', health_score: 85, status: 'human_needed', verified_order_id: '#r66s' }); order('#r66s', 'In Transit');
+      eq(await send('r66s', '#5121', { content: 'x' }, ist(12, 0, 4)), 'Your order #r66s is at the "Reached City" stage, estimated delivery 14 October 2026. You can follow it here: https://shiptrack.store/track/r66s');
+      deq(asked, [['#r66s', 'P1', 'verified']]);
+      ok(!db.messages.some((x) => x.conversation_id === 'r66s' && x.metadata && x.metadata.closed_note), 'no note yet');
+      // Next message ("please reply"): now the weekend note.
+      eq(await send('r66s', 'Please reply', { content: 'x' }, ist(12, 10, 4)), WEEKEND_EN);
+      // A late order: no date, the stage and the link.
+      global.__orderFacts = async (orderId) => ({ order_id: orderId, status: 'Out for Delivery', eta: '2026-10-01', late: { daysPast: 3, stage: 2, reason: 'x' }, tracking_link: null });
+      known({ id: 'r66t', health_score: 85, status: 'human_needed', verified_order_id: '#r66t' }); order('#r66t', 'Out for Delivery');
+      eq(await send('r66t', 'mera order kahan hai?', { content: 'x' }, ist(12, 0, 4)), 'Aapka order #r66t abhi "Out for Delivery" stage par hai.');
+      // An angry first message ("refund", "fraud") is not a status ask: the note at once, as before.
+      known({ id: 'r66u', health_score: 85, status: 'human_needed', verified_order_id: '#r66u' }); order('#r66u', 'In Transit');
+      eq(await send('r66u', 'where is my order, this is fraud', { content: 'x' }, ist(12, 0, 4)), WEEKEND_EN);
+      // AI handling: the AI's own reply (with the status) goes alone, no note, no hand-over; the next message gets the note.
+      known({ id: 'r66w', health_score: 85, verified_order_id: '#r66w' }); order('#r66w', 'In Transit');
+      eq(await send('r66w', 'where is my order?', { content: 'Your order #r66w is In Transit, estimated 14 October.' }, ist(12, 0, 4)), 'Your order #r66w is In Transit, estimated 14 October.');
+      eq(C('r66w').status, 'ai_handling');
+      const out = await send('r66w', 'It is already very late', { content: 'I understand. Our team will look into this.' }, ist(12, 10, 4));
+      ok(out.endsWith(WEEKEND_EN), out);
+      eq(C('r66w').status, 'human_needed');
+    } finally { delete global.__orderFacts; }
   });
   await t('R66 the list: a promised chat carries promise_due_at (Monday 10:00 IST after a weekend note) and office_open follows the week; the holidays row is read once a minute', async () => {
     at(ist(12, 0, 4));

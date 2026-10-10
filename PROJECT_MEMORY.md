@@ -139,7 +139,8 @@ Done and live:
   masked) -> he pastes the output -> fixes one at a time. First run done (10 Oct): fixed address-echo eating order
   numbers / dates, the "wait till 7-8 PM" promise, replies to Gmail bounces. Waiting on the owner: Buy 1 Get 1 /
   pack-of-N answer, "is this site fake?" answer for visitors, vastora WhatsApp automation ON (customers say they never
-  got an order ID), closed-hours note when a customer only asks status; and a second run for "took longer" per day.
+  got an order ID). Second run: all "took longer" = OpenRouter credits / monthly key limit (6 days). Owner answers:
+  status first, then the weekend note (done); "site genuine?" = a saved answer he adds; BOGO and automation later.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
