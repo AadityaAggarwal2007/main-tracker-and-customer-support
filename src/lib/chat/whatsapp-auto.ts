@@ -11,6 +11,7 @@ import { listTemplates, renderTemplate, type TemplateInfo } from './whatsapp-tem
 import { templatesAccount } from './whatsapp-settings';
 import { loadBrands } from './whatsapp-brands';
 import { loadHolidays } from './holidays';
+import { isOfficeHours } from '@/lib/office-hours';
 import {
   AUTO_PREFIX, BATCH, FRESH_MS, MAX_ATTEMPTS, PLACED_TEMPLATE, RETRY_MS, SKIP, TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
   autoKey, autoValue, dueNow, eligibleFrom, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
@@ -32,9 +33,15 @@ export async function loadAutoSettings(): Promise<Map<string, AutoSetting>> {
   return out;
 }
 
-// ON starts the clock: only orders placed from this moment on are ever messaged. OFF keeps the clock for the record.
+// ON starts the clock: only orders placed from this moment on are ever messaged. OFF drops the panel's waiting
+// messages (Skipped), so switching it on again later never sends anything old.
 export async function saveAuto(panelId: string, enabled: boolean, nowMs = Date.now()): Promise<AutoSetting> {
   const value = autoValue(enabled, nowMs);
+  if (!enabled) {
+    try {
+      await query(`UPDATE wa_auto_sends SET status = 'skipped', error = 'Automation was switched off', updated_at = now() WHERE business_id = $1 AND status = 'pending'`, [panelId]);
+    } catch (e) { if (!missingTable(e)) throw e; }
+  }
   await query(
     `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
@@ -65,6 +72,7 @@ interface DueRow {
 
 export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number }
 
+const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
 
 export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
@@ -94,7 +102,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         `SELECT o.order_id, o.customer_mobile, o.created_at
            FROM orders o
           WHERE o.business_id::text = $1 AND o.created_at >= $2 AND o.is_cancelled IS NOT TRUE
-            AND NOT EXISTS (SELECT 1 FROM wa_auto_sends w WHERE w.business_id = $1 AND w.order_id = o.order_id AND w.kind = 'placed')
+            AND (NOT EXISTS (SELECT 1 FROM wa_auto_sends w WHERE w.business_id = $1 AND w.order_id = o.order_id AND w.kind = 'placed')
+                 OR NOT EXISTS (SELECT 1 FROM wa_auto_sends w WHERE w.business_id = $1 AND w.order_id = o.order_id AND w.kind = 'tracking'))
           ORDER BY o.created_at ASC LIMIT 100`,
         [panelId, from]
       );
@@ -114,7 +123,9 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         out.queued++;
       }
 
-      // 2. due rows, oldest first, a few a minute
+      // 2. due rows, a few a minute: order-placed first; tracking rows only while the office is open and Meta has
+      // approved that template (a pile of waiting tracking rows must never hold back today's order-placed messages)
+      const trackingCanGo = isOfficeHours(nowMs, holidays) && !!approved(list, TRACKING_TEMPLATE);
       const due = await query<DueRow>(
         `SELECT w.id::text AS id, w.order_id, w.kind, w.attempts, w.due_at,
                 (o.order_id IS NULL) AS gone, o.customer_name, o.customer_mobile, o.created_at, o.is_cancelled,
@@ -122,9 +133,9 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
            FROM wa_auto_sends w
            LEFT JOIN orders o ON o.business_id::text = w.business_id AND o.order_id = w.order_id
            LEFT JOIN businesses b ON b.id = o.business_id
-          WHERE w.business_id = $1 AND w.status = 'pending' AND w.due_at <= now()
-          ORDER BY w.due_at ASC LIMIT 40`,
-        [panelId]
+          WHERE w.business_id = $1 AND w.status = 'pending' AND w.due_at <= now() AND (w.kind = 'placed' OR $2::boolean)
+          ORDER BY (w.kind = 'placed') DESC, w.due_at ASC LIMIT 40`,
+        [panelId, trackingCanGo]
       );
       const brand: BrandWords = brands.get(panelId) || { name: '', email: '' };
       for (const r of due.rows) {
@@ -152,6 +163,16 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, `The template "${tpl.name}" has ${tpl.vars} values but the automation fills ${params.length}. Make the template again from its preset button.`]);
           out.failed++; continue;
         }
+        if (!brand.email) {
+          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
+            [r.id, 'This brand has no support email for the message: set it in WhatsApp > Templates > "Each brand\'s own words", then Send again']);
+          out.failed++; continue;
+        }
+        // The server runs two processes: claim the row first (only one of them gets it) so nobody is messaged twice.
+        const claim = await query(
+          `UPDATE wa_auto_sends SET due_at = now() + interval '30 minutes', updated_at = now()
+            WHERE id = $1 AND status = 'pending' AND due_at <= now() RETURNING id`, [r.id]);
+        if (!claim.rowCount) continue;
         budget--;
         const res = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params.slice(0, tpl.vars));
         if (!('error' in res)) {
@@ -161,6 +182,11 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, res.id, digits, tpl.name, renderTemplate(tpl, params.slice(0, tpl.vars))]
           );
           out.sent++;
+        } else if (res.error === TIMED_OUT) {
+          // Meta may have taken it before the answer was lost: never sent again by itself
+          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
+            [r.id, 'WhatsApp did not answer in time: it may still have been delivered. Check with the customer before Send again.']);
+          out.failed++;
         } else if (retryable(res.code) && r.attempts + 1 < MAX_ATTEMPTS) {
           await query(`UPDATE wa_auto_sends SET attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
             [r.id, res.error, res.code, new Date(nowMs + RETRY_MS)]);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ExternalLink, Loader2, RefreshCw, Send } from 'lucide-react';
 import PhoneThread, { type ThreadMessage } from './PhoneThread';
 import { SECTION, spin, type Alert } from './types';
@@ -24,13 +24,17 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
   const [loadingThread, setLoadingThread] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const openRef = useRef<string | null>(null);
+  const lastErr = useRef('');
+  const warn = (msg: string) => { if (msg !== lastErr.current) { lastErr.current = msg; onAlert('error', msg); } };
+  useEffect(() => { openRef.current = open; }, [open]);
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/whatsapp/chats?panel=${encodeURIComponent(panel)}`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => null);
-      if (!r.ok || !j) { onAlert('error', j?.error || 'Could not read the chats'); return; }
+      if (!r.ok || !j) { warn(j?.error || 'Could not read the chats'); return; }
       setPanels(j.panels || []); setChats(j.chats || []);
-      if (j.error) onAlert('error', j.error);
+      if (j.error) warn(j.error); else lastErr.current = '';
     } catch { /* offline: the next refresh tries again */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, panel]);
@@ -46,6 +50,7 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
     try {
       const r = await fetch(`/api/whatsapp/thread?conversation=${encodeURIComponent(id)}&read=1`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => null);
+      if (openRef.current !== id) return;            // another chat was opened meanwhile
       if (r.ok && j && Array.isArray(j.messages)) setMsgs(j.messages);
     } catch { /* the next try */ } finally { if (first) setLoadingThread(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps

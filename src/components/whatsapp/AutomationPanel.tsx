@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Power, RefreshCw } from 'lucide-react';
 import { SECTION, spin, type Alert, type AutoOverview } from './types';
 
@@ -18,6 +18,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [o, setO] = useState<AutoOverview | null>(null);
   const [busy, setBusy] = useState('');
+  const lastErr = useRef('');
   const [testTo, setTestTo] = useState(() => { try { return localStorage.getItem('wa_test_to') || ''; } catch { return ''; } });
   const [testName, setTestName] = useState('');
   const [testOut, setTestOut] = useState<Record<string, { kind: string; ok: boolean; text: string; error: string | null }[]>>({});
@@ -25,7 +26,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
     try {
       const r = await fetch(`/api/whatsapp/automation${fresh ? '?fresh=1' : ''}`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => null);
-      if (r.ok && j) setO(j); else if (j?.error) onAlert('error', j.error);
+      if (r.ok && j) { setO(j); lastErr.current = ''; } else if (j?.error && j.error !== lastErr.current) { lastErr.current = j.error; onAlert('error', j.error); }
     } catch { /* offline: the next refresh tries again */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);

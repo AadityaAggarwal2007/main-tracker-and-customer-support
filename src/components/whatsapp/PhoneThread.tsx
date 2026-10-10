@@ -16,6 +16,11 @@ export function tickOf(m: ThreadMessage): { mark: string; color: string; label: 
   return { mark: '·', color: '#8696a0', label: '' };
 }
 
+const dayOf = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toDateString() === new Date().toDateString() ? 'Today' : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+};
 const clock = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
@@ -38,11 +43,13 @@ export default function PhoneThread({ name, phone, picture, messages, loading, c
         </div>
       </div>
       <div className="wa-chat" style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 420 }}>
-        <div className="wa-day">Today</div>
+        {messages.length === 0 && <div className="wa-day">Today</div>}
         {messages.length === 0 && <div style={{ textAlign: 'center', color: '#667781', fontSize: '0.75rem', marginTop: '2rem' }}>No messages with this number yet</div>}
-        {messages.map((m) => {
+        {messages.map((m, i) => {
           const t = tickOf(m);
-          return m.from === 'customer' ? (
+          const day = dayOf(m.at);
+          const newDay = day && (i === 0 || dayOf(messages[i - 1].at) !== day) ? <div key={'d' + m.id} className="wa-day">{day}</div> : null;
+          return [newDay, m.from === 'customer' ? (
             <div key={m.id} className="wa-bubble wa-in"><div>{waText(m.text)}</div><div className="wa-meta">{clock(m.at)}</div></div>
           ) : (
             <div key={m.id} className="wa-bubble">
@@ -51,7 +58,7 @@ export default function PhoneThread({ name, phone, picture, messages, loading, c
               <div className="wa-meta">{clock(m.at)} <span style={{ color: t.color, fontWeight: 700 }}>{t.mark}</span></div>
               {(t.label === 'Not sent' || m.error) && <div style={{ color: '#d92d20', fontSize: '0.68rem', marginTop: 2 }}>{m.error || 'Not sent'}</div>}
             </div>
-          );
+          )];
         })}
         <div ref={end} />
       </div>

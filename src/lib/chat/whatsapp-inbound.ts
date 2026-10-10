@@ -44,7 +44,7 @@ export async function waPanelFor(digits: string, env: NodeJS.ProcessEnv = proces
   try {
     const o = await queryOne<{ business_id: string }>(
       `SELECT o.business_id::text AS business_id FROM orders o
-        WHERE o.business_id IS NOT NULL AND right(regexp_replace(o.customer_mobile, '\D', '', 'g'), 10) = $1
+        WHERE o.business_id IS NOT NULL AND right(regexp_replace(o.customer_mobile, '\\D', '', 'g'), 10) = $1
         ORDER BY o.created_at DESC LIMIT 1`,
       [digits.slice(-10)]
     );
