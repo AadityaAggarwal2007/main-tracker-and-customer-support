@@ -7,7 +7,14 @@ export interface MetaHint { what: string; fix: string }
 export function metaHint(error: string | null | undefined): MetaHint | null {
   const e = (error || '').trim();
   if (!e) return null;
-  const code = (e.match(/^\(#(\d+)\)/) || e.match(/\b(\d{3,6})\b/))?.[1];
+  const code = (e.match(/\(#(\d+)\)/) || e.match(/\b(\d{3,6})\b/))?.[1];
+  const paid = e.match(/Paid Message Account\s+(\d{6,30})/i);
+  if (paid) {
+    return {
+      what: `The token's System User can use the number, but not the account that pays for the messages (${paid[1]}, the one with your funds in Billing & payments). Meta refuses to send until that user can see it.`,
+      fix: `Meta Business Settings > Users > System users > shiptrack-server > Add assets > WhatsApp accounts > tick the account with id ${paid[1]} (open it in "WhatsApp accounts": its address bar ends with selected_asset_id=${paid[1]}) > Full control > Save. Then press Send again. No new token is needed; if it still fails, make a new token with the same 3 permissions.`,
+    };
+  }
   if (code === '10' || /does not have permission for this action/i.test(e)) {
     return {
       what: 'The token is not allowed to do this. It belongs to a System User that has no rights on the app or the WhatsApp account, or it was made without the whatsapp_business_management permission.',

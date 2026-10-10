@@ -50,6 +50,7 @@ export function waErrorText(httpStatus: number, body: unknown): { text: string; 
   if (code === 131026 || code === 131030) return { text: 'This number cannot receive WhatsApp messages from us', code };
   if (code === 190 || httpStatus === 401) return { text: 'The WhatsApp token was refused (expired or revoked)', code };
   if (code === 131031 || code === 131056) return { text: 'WhatsApp has limited this business number right now', code };
+  if (code === 10) return { text: `WhatsApp refused the message: ${(err?.message || 'permission denied').slice(0, 160)}`, code };
   if (code === 100 || httpStatus === 400) return { text: `WhatsApp refused the message${err?.message ? ` (${err.message.slice(0, 120)})` : ''}`, code };
   return { text: `WhatsApp answered ${httpStatus}`, code };
 }
