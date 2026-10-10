@@ -179,3 +179,10 @@ export async function deleteTemplate(waba: string, name: string, env: NodeJS.Pro
   if (!NAME_RE.test(name)) return { ok: false, error: 'Not a template name' };
   return call(`${waba}/message_templates?name=${encodeURIComponent(name)}`, { method: 'DELETE' }, env, fetchImpl, (json) => rec(json)?.success === true);
 }
+
+// Edits an existing template (Meta allows it for APPROVED / REJECTED / PAUSED ones, a few times a day; an
+// approved one goes back to review). Name and language cannot change: a new one is made for that.
+export async function updateTemplate(id: string, spec: Pick<TemplateSpec, 'components' | 'category'>, env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): Promise<TemplateApiResult<boolean>> {
+  if (!/^\d{6,30}$/.test(id)) return { ok: false, error: 'Not a template id' };
+  return call(id, { method: 'POST', body: JSON.stringify({ components: spec.components, category: spec.category }) }, env, fetchImpl, (json) => rec(json)?.success === true);
+}

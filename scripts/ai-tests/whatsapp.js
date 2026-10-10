@@ -8,7 +8,7 @@ require.extensions['.ts'] = (m, filename) => m._compile(
 
 const S = {};
 function reset() {
-  Object.assign(S, { convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] }, settings: {}, metaTemplates: null });
+  Object.assign(S, { convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] }, settings: {}, metaTemplates: null, profile: { about: 'Order help', description: 'Vastora support', address: '', email: '', websites: ['https://vastora.in'], vertical: 'RETAIL', profile_picture_url: 'https://pps.whatsapp.net/old.jpg' }, profileWrites: [], phone: { display_phone_number: '+91 87964 14056', verified_name: 'Shiptrack', name_status: 'PENDING_REVIEW', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_250', code_verification_status: 'VERIFIED' }, nameAsks: [], uploadStart: null, uploadBytes: null, uploadHeaders: null });
 }
 reset();
 let seq = 0;
@@ -63,7 +63,21 @@ Module._load = function (request, parent, ...rest) {
   return origLoad.call(this, request, parent, ...rest);
 };
 global.fetch = async (url, init = {}) => {
-  S.fetches.push({ url, method: init.method, init: { ...init, body: init.body ? JSON.parse(init.body) : undefined }, auth: init.headers && init.headers.Authorization });
+  S.fetches.push({ url, method: init.method, init: { ...init, body: typeof init.body === 'string' ? JSON.parse(init.body) : init.body }, auth: init.headers && init.headers.Authorization });
+  if (/whatsapp_business_profile/.test(url)) {
+    if (init.method === 'GET') return { ok: true, status: 200, json: async () => ({ data: [S.profile] }) };
+    const b = JSON.parse(init.body); S.profileWrites.push(b); if (b.about !== undefined) Object.assign(S.profile, b); if (b.profile_picture_handle) S.profile.profile_picture_url = 'https://pps.whatsapp.net/new.jpg';
+    return { ok: true, status: 200, json: async () => ({ success: true }) };
+  }
+  if (/\/1335396902996145\?fields=/.test(url)) return { ok: true, status: 200, json: async () => S.phone };
+  if (/\/1335396902996145$/.test(url) && init.method === 'POST') { S.nameAsks.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ success: true }) }; }
+  if (/\/1427249435405269\/uploads\?/.test(url)) { S.uploadStart = url; return { ok: true, status: 200, json: async () => ({ id: 'upload:MTph' }) }; }
+  if (/\/upload:MTph$/.test(url)) { S.uploadBytes = init.body; S.uploadHeaders = init.headers; return { ok: true, status: 200, json: async () => ({ h: 'HANDLE123' }) }; }
+  if (/\/\d{6,}$/.test(url) && init.method === 'POST' && S.metaTemplates && !/messages$/.test(url)) {
+    const id = url.split('/').pop(); const t = S.metaTemplates.find((x) => x.id === id);
+    if (!t) return { ok: false, status: 400, json: async () => ({ error: { message: 'Unsupported post request', code: 100 } }) };
+    Object.assign(t, JSON.parse(init.body), { status: 'PENDING' }); return { ok: true, status: 200, json: async () => ({ success: true }) };
+  }
   if (/message_templates/.test(url) && S.metaTemplates) {
     if (init.method === 'GET') return { ok: true, status: 200, json: async () => ({ data: S.metaTemplates }) };
     if (init.method === 'POST') { const b = JSON.parse(init.body); S.metaTemplates.push({ id: 't' + S.metaTemplates.length, status: 'PENDING', ...b }); return { ok: true, status: 200, json: async () => ({ id: 'tnew', status: 'PENDING', category: b.category }) }; }
@@ -76,6 +90,10 @@ const wa = require(path.join(SRC, 'lib/chat/whatsapp.ts'));
 const inbound = require(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/webhook/route.ts'));
 const tpl = require(path.join(SRC, 'lib/chat/whatsapp-templates.ts'));
+const prof = require(path.join(SRC, 'lib/chat/whatsapp-profile.ts'));
+const rProfile = require(path.join(SRC, 'app/api/whatsapp/profile/route.ts'));
+const rPicture = require(path.join(SRC, 'app/api/whatsapp/profile/picture/route.ts'));
+const rName = require(path.join(SRC, 'app/api/whatsapp/display-name/route.ts'));
 const rTemplates = require(path.join(SRC, 'app/api/whatsapp/templates/route.ts'));
 const rSettings = require(path.join(SRC, 'app/api/whatsapp/settings/route.ts'));
 const rStart = require(path.join(SRC, 'app/api/whatsapp/start/route.ts'));
@@ -85,7 +103,7 @@ const VIEWER = { username: 'v', displayName: 'V', role: 'viewer', businessIds: n
 const jreq = (user, body, url = 'http://x/api') => ({ __user: user, url, json: async () => body, headers: { get: () => null }, nextUrl: { searchParams: new URL(url).searchParams } });
 const META = () => [
   { id: 'a1', name: 'hello_world', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'HEADER', format: 'TEXT', text: 'Hello World' }, { type: 'BODY', text: 'Welcome and congratulations!!' }, { type: 'FOOTER', text: 'WhatsApp Business Platform sample message' }] },
-  { id: 'a2', name: 'order_update', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, about your order {{2}}: we are looking into it and will update you here.', example: { body_text: [['Rahul', '#1042']] } }] },
+  { id: '200002', name: 'order_update', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, about your order {{2}}: we are looking into it and will update you here.', example: { body_text: [['Rahul', '#1042']] } }] },
   { id: 'a3', name: 'offer', language: 'en', category: 'MARKETING', status: 'REJECTED', rejected_reason: 'INVALID_FORMAT', components: [{ type: 'BODY', text: 'Sale!' }] },
   { id: 'a4', name: 'pending_one', language: 'hi', category: 'UTILITY', status: 'PENDING', components: [{ type: 'BODY', text: 'Namaste {{1}}' }] },
 ];
@@ -109,7 +127,7 @@ const req = (method, { query = '', body = '', headers = {} } = {}) => ({
 let pass = 0, fail = 0;
 async function t(name, fn) {
   reset();
-  try { await fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e).toString().split('\n').slice(0, 4).join('\n       ')); }
+  try { await fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e).toString().split('\n').slice(0, 14).join('\n       ')); }
 }
 const eq = assert.strictEqual, deq = assert.deepStrictEqual;
 
@@ -402,6 +420,78 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       deq([r.status, r.body.error], [502, 'WhatsApp did not take it: This number cannot receive WhatsApp messages from us']);
       deq(S.msgs[0].metadata, { agent: 'Super Admin', wa_template: 'hello_world', wa_sent: false, wa_error: 'This number cannot receive WhatsApp messages from us' });
     } finally { global.fetch = realFetch; }
+  }));
+
+  console.log('whatsapp: business profile and the number');
+  await t('profileSpec: the form becomes Meta\'s profile body; empty fields clear; every refusal is one sentence', () => {
+    const r = prof.profileSpec({ about: ' Order help ', description: 'We ship kurtis', address: 'Jaipur', email: 'help@vastora.in', websites: ['https://vastora.in', ''], vertical: 'retail' });
+    deq(r, { ok: true, body: { messaging_product: 'whatsapp', about: 'Order help', description: 'We ship kurtis', address: 'Jaipur', email: 'help@vastora.in', websites: ['https://vastora.in'], vertical: 'RETAIL' } });
+    deq(prof.profileSpec({}).body, { messaging_product: 'whatsapp', about: '', description: '', address: '', email: '', websites: [], vertical: 'UNDEFINED' });
+    const bad = (i) => { const x = prof.profileSpec(i); eq(x.ok, false); return x.error; };
+    assert.match(bad({ about: 'x'.repeat(140) }), /over 139/);
+    assert.match(bad({ description: 'x'.repeat(513) }), /over 512/);
+    assert.match(bad({ email: 'nope' }), /email address/);
+    assert.match(bad({ websites: ['vastora.in'] }), /start with https/);
+    assert.match(bad({ websites: ['https://a.in', 'https://b.in', 'https://c.in'] }), /At most 2/);
+    assert.match(bad({ vertical: 'SPACE' }), /category/);
+  });
+  await t('readProfile / readPhone: Meta rows become ours; junk is null', () => {
+    deq(prof.readProfile({ data: [S.profile] }), { about: 'Order help', description: 'Vastora support', address: '', email: '', websites: ['https://vastora.in'], vertical: 'RETAIL', pictureUrl: 'https://pps.whatsapp.net/old.jpg' });
+    eq(prof.readProfile('x'), null);
+    deq(prof.readPhone(S.phone), { displayPhoneNumber: '+91 87964 14056', verifiedName: 'Shiptrack', nameStatus: 'PENDING_REVIEW', qualityRating: 'GREEN', status: 'CONNECTED', messagingLimit: 'TIER_250', codeVerification: 'VERIFIED' });
+    eq(prof.readPhone({}), null);
+    deq([prof.pictureMime(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), prof.pictureMime(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0])), prof.pictureMime(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]))], ['image/jpeg', 'image/png', null]);
+  });
+  await t('profile routes: GET reads it, POST writes it (Super Admin only); a bad form is a 400', () => withEnv(async () => {
+    eq((await rProfile.GET(jreq(AGENT, {}))).status, 401);
+    const g = await rProfile.GET(jreq(OWNER, {}));
+    deq([g.status, g.body.profile.about, g.body.verticals.length > 5], [200, 'Order help', true]);
+    const bad = await rProfile.POST(jreq(OWNER, { email: 'nope' }));
+    eq(bad.status, 400);
+    const ok = await rProfile.POST(jreq(OWNER, { about: 'Order help, Mon-Sat', description: 'd', address: 'Jaipur', email: 'help@vastora.in', websites: ['https://vastora.in'], vertical: 'APPAREL' }));
+    deq([ok.status, ok.body], [200, { ok: true }]);
+    deq(S.profileWrites[0], { messaging_product: 'whatsapp', about: 'Order help, Mon-Sat', description: 'd', address: 'Jaipur', email: 'help@vastora.in', websites: ['https://vastora.in'], vertical: 'APPAREL' });
+    eq(S.fetches.find((f) => /whatsapp_business_profile$/.test(f.url)).auth, 'Bearer tok-secret');
+  }));
+  await t('the picture: resumable upload on the Meta app (OAuth auth, file_offset 0), then the handle goes on the profile; JPG / PNG only; needs the app id', () => withEnv(async () => {
+    const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    const r = await prof.uploadProfilePicture('1427249435405269', jpg, 'image/jpeg', env, global.fetch);
+    deq(r, { ok: true, value: 'HANDLE123' });
+    assert.match(S.uploadStart, /\/1427249435405269\/uploads\?file_length=7&file_type=image%2Fjpeg$/);
+    deq([S.uploadHeaders.Authorization, S.uploadHeaders.file_offset], ['OAuth tok-secret', '0']);
+    eq(S.uploadBytes, jpg);
+    deq(S.profileWrites.pop(), { messaging_product: 'whatsapp', profile_picture_handle: 'HANDLE123' });
+    deq(await prof.uploadProfilePicture('', jpg, 'image/jpeg', env, global.fetch), { ok: false, error: 'Set the Meta App id first (Settings > WhatsApp)' });
+    deq(await prof.uploadProfilePicture('1427249435405269', new Uint8Array(0), 'image/jpeg', env, global.fetch), { ok: false, error: 'That file is empty' });
+    // The route: multipart with a PNG, the app id from settings.
+    S.settings.whatsapp_app_id = '1427249435405269';
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const file = { size: png.length, arrayBuffer: async () => png.buffer.slice(0) };
+    const req = (f) => ({ __user: OWNER, formData: async () => ({ get: () => f }) });
+    deq((await rPicture.POST(req(file))).body, { ok: true });
+    deq((await rPicture.POST(req({ size: 3, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }))).body.error, 'JPG or PNG only');
+    eq((await rPicture.POST(req(null))).status, 400);
+    eq((await rPicture.POST({ __user: AGENT, formData: async () => ({ get: () => file }) })).status, 401);
+    delete S.settings.whatsapp_app_id;
+    deq((await rPicture.POST(req(file))).status, 400);
+  }));
+  await t('display name: Meta is asked (3 to 75 characters), Super Admin only; settings GET shows the number\'s live state and both ids', () => withEnv(async () => {
+    deq((await rName.POST(jreq(OWNER, { name: 'Vastora' }))).body, { ok: true });
+    deq(S.nameAsks, [{ new_display_name: 'Vastora' }]);
+    eq((await rName.POST(jreq(OWNER, { name: 'ab' }))).status, 400);
+    eq((await rName.POST(jreq(AGENT, { name: 'Vastora' }))).status, 401);
+    await rSettings.POST(jreq(OWNER, { appId: '1427249435405269' }));
+    const g = await rSettings.GET(jreq(OWNER, {}));
+    deq([g.body.appId, g.body.phone.verifiedName, g.body.phone.nameStatus, g.body.phone.messagingLimit], ['1427249435405269', 'Shiptrack', 'PENDING_REVIEW', 'TIER_250']);
+  }));
+  await t('template edit: POST with an id changes the components on that template (name / language stay) and it goes back to review', () => withEnv(async () => {
+    S.metaTemplates = META(); S.settings.whatsapp_waba_id = '28873951022288651';
+    const r = await rTemplates.POST(jreq(OWNER, { id: '200002', name: 'order_update', language: 'en_US', category: 'UTILITY', body: 'Hi {{1}}, your order {{2}} is on its way.', examples: ['Rahul', '#1042'] }));
+    deq([r.status, r.body], [200, { ok: true, id: '200002', status: 'PENDING', name: 'order_update', edited: true }]);
+    const t2 = S.metaTemplates.find((x) => x.id === '200002');
+    deq([t2.status, t2.components[0].text, S.metaTemplates.length], ['PENDING', 'Hi {{1}}, your order {{2}} is on its way.', 4]);
+    deq((await tpl.updateTemplate('abc', { components: [], category: 'UTILITY' }, env, global.fetch)), { ok: false, error: 'Not a template id' });
+    deq((await tpl.updateTemplate('999999', { components: [], category: 'UTILITY' }, env, global.fetch)), { ok: false, error: 'Unsupported post request' });
   }));
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);

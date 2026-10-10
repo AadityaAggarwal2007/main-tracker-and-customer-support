@@ -82,6 +82,10 @@ Done and live:
   "Message a number" = first message by approved template, opens the chat); inbox "Template" button on a WhatsApp
   chat. Routes `/api/whatsapp/templates|settings|start`. Live test with the owner's own number 9289144767 worked
   (inbound showed in Open case as "Aaditya Aggarwal"). WABA id = 28873951022288651 (he types it in the card).
+  **Profile (same day):** the card also shows the number's live state (name + review status, quality, limit),
+  asks Meta for a display-name change, edits the business profile (about, description, address, email, websites,
+  category) and the profile picture (needs the Meta App id 1427249435405269 typed in the card), and edits a
+  template. Business hours are not in Meta's API. Owner typed the WABA id and made a template (awaiting approval).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
