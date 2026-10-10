@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
 import { waConfigured } from '@/lib/chat/whatsapp';
-import { appId, setAppId, setWabaId, wabaId } from '@/lib/chat/whatsapp-settings';
+import { appId, messagingId, setAppId, setMessagingId, setWabaId, wabaId } from '@/lib/chat/whatsapp-settings';
 import { getPhone } from '@/lib/chat/whatsapp-profile';
 import { waPanelId } from '@/lib/chat/whatsapp-inbound';
 import { queryOne } from '@/lib/db';
@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
     appSecretSet: !!process.env.WHATSAPP_APP_SECRET,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
     waba: await wabaId(),
+    messaging: await messagingId(),
     wabaFromEnv: !!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID,
     panel: panel ? { id: panelId, name: panel.name } : null,
     webhookUrl: '/api/whatsapp/webhook',
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || !isSuperAdmin(user)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: { waba?: unknown; appId?: unknown };
+  let body: { waba?: unknown; appId?: unknown; messagingId?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   const out: Record<string, string> = {};
   try {
@@ -44,6 +45,11 @@ export async function POST(request: NextRequest) {
       const waba = String(body.waba ?? '').replace(/\D/g, '');
       if (waba && !/^\d{6,30}$/.test(waba)) return NextResponse.json({ error: 'The account id is a number of 6 to 30 digits' }, { status: 400 });
       await setWabaId(waba); out.waba = waba;
+    }
+    if (body.messagingId !== undefined) {
+      const id = String(body.messagingId ?? '').replace(/\D/g, '');
+      if (id && !/^\d{6,30}$/.test(id)) return NextResponse.json({ error: 'The messaging account id is a number of 6 to 30 digits' }, { status: 400 });
+      await setMessagingId(id); out.messaging = id;
     }
     if (body.appId !== undefined) {
       const id = String(body.appId ?? '').replace(/\D/g, '');

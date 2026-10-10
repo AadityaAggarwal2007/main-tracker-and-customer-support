@@ -11,6 +11,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [waba, setWaba] = useState(s?.waba || '');
   const [appId, setAppId] = useState(s?.appId || '');
+  const [messaging, setMessaging] = useState(s?.messaging || '');
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<TokenCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -26,7 +27,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const save = async () => {
     setBusy(true);
     try {
-      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId }) });
+      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId, messagingId: messaging }) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', j.error || 'Could not save it'); return; }
       onAlert('success', 'Saved'); await reload();
@@ -50,6 +51,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
         <Row ok={s ? s.appSecretSet : null} text="Webhook calls signature-checked" note={s?.appSecretSet ? 'WHATSAPP_APP_SECRET is set' : 'Not yet: put the Meta app secret (App settings > Basic) in /etc/tracker/.env as WHATSAPP_APP_SECRET before real customers'} />
         <Row ok={s ? !!s.panel : null} text={s?.panel ? `WhatsApp chats go to the panel "${s.panel.name}"` : 'No panel for WhatsApp chats'} note="One number for the whole install; WHATSAPP_PANEL_ID in .env picks another panel" />
         <Row ok={s ? !!s.waba : null} text="WhatsApp Business Account id saved" note="Needed for templates (below)" />
+        <Row ok={s ? !!s.messaging : null} text="Messaging account id saved" note="Templates live on the Messaging account (Meta refuses to make one on the WhatsApp account)" />
         <Row ok={s ? !!s.appId : null} text="Meta App id saved" note="Needed for the profile picture (below)" />
         <Row ok={s ? !!s.phone : null} text={s?.phone ? `Number ${s.phone.displayPhoneNumber} is ${s.phone.status.toLowerCase()}` : 'Meta could not be asked about the number'} note={s?.phone ? `Name "${s.phone.verifiedName}" (${s.phone.nameStatus.toLowerCase().replace(/_/g, ' ')}), quality ${s.phone.qualityRating.toLowerCase()}` : s?.phoneError || undefined} />
         <Row ok={lists ? hasTemplates : null} text="Templates readable from Meta" note={lists?.error || `${lists?.templates.length ?? 0} on the account`} />
@@ -61,8 +63,9 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
         <div style={{ ...SECTION, marginBottom: '0.5rem' }}>Ids from Meta Business Settings</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(14rem, 1fr))', gap: '0.75rem', alignItems: 'end' }}>
           <label><span style={label}>WhatsApp Business Account id (WhatsApp accounts &gt; Shiptrack)</span><input className="form-input" value={waba} onChange={(e) => setWaba(e.target.value)} placeholder="e.g. 28873951022288651" inputMode="numeric" /></label>
+          <label><span style={label}>Messaging account id (Accounts &gt; Messaging accounts &gt; Shiptrack): templates are made and listed here</span><input className="form-input" value={messaging} onChange={(e) => setMessaging(e.target.value)} placeholder="e.g. 28873951022288651" inputMode="numeric" /></label>
           <label><span style={label}>Meta App id (Apps &gt; ship track msg)</span><input className="form-input" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="e.g. 1427249435405269" inputMode="numeric" /></label>
-          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || ''))} style={{ justifySelf: 'start' }}>
+          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || '') && messaging === (s?.messaging || ''))} style={{ justifySelf: 'start' }}>
             {busy ? <Loader2 size={14} style={spin} /> : 'Save'}
           </button>
         </div>
