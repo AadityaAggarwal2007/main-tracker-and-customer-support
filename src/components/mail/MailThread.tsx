@@ -9,7 +9,7 @@ const when = (iso: string) => new Date(iso).toLocaleString('en-IN', { day: 'nume
 
 // The conversation with this sender, like Gmail's thread (owner 2026-10-08): what they sent and what we sent them, oldest
 // first, every message folded to one line; a click opens its body in a safe frame. The mail already open below is marked.
-export default function MailThread({ token, boxId, currentUid, items, loading }: { token: string; boxId: string; currentUid: number; items: ThreadItem[] | null; loading: boolean }) {
+export default function MailThread({ token, boxId, currentUid, items, loading, failed, onRetry }: { token: string; boxId: string; currentUid: number; items: ThreadItem[] | null; loading: boolean; failed?: boolean; onRetry?: () => void }) {
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [bodies, setBodies] = useState<Record<string, Full | 'loading' | 'error'>>({});
@@ -23,7 +23,8 @@ export default function MailThread({ token, boxId, currentUid, items, loading }:
     setBodies(b => ({ ...b, [k]: 'loading' }));
     try {
       // peek=1: looking at an old mail here never marks it read in Gmail
-      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(boxId)}&uid=${m.uid}&peek=1${m.folder === 'sent' ? '&folder=sent' : ''}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      // via=thread: its own Gmail connection, never behind the read-ahead (owner 2026-10-10)
+      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(boxId)}&uid=${m.uid}&peek=1&via=thread${m.folder === 'sent' ? '&folder=sent' : ''}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.mail) { setBodies(b => ({ ...b, [k]: 'error' })); return; }
       mailCache.mails.set(k, d.mail);
@@ -32,6 +33,16 @@ export default function MailThread({ token, boxId, currentUid, items, loading }:
   };
 
   const others = (items ?? []).length;
+  if (failed && !items) {
+    return (
+      <section className="mail-thread">
+        <div className="mail-thread-head" role="status">
+          Conversation · <span className="meta">could not be read from Gmail just now.</span>
+          {onRetry && <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry} style={{ marginLeft: 'auto' }}>Try again</button>}
+        </div>
+      </section>
+    );
+  }
   if (!loading && others <= 1) return null;   // nothing but this very mail: no section
   return (
     <section className="mail-thread">

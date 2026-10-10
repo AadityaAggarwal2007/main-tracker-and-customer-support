@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { listMails, readMail, setSeen, type MailBoxSecret, type MailFull } from './mail-inbox';
+import { listMails, listThread, readMail, setSeen, type MailBoxSecret, type MailFull, type ThreadItem } from './mail-inbox';
 import type { MailListItem } from './mail-view';
 import type { PoolSlot } from './imap-pool';
 import { autoVerifySenders } from './mail-auto-verify';
@@ -204,8 +204,38 @@ export async function warmMailbox(box: MailBoxSecret, now = Date.now()): Promise
   return { refreshed, preread, left: Math.max(0, todo.length - preread) };
 }
 
+// ── The open mail's conversation (owner 2026-10-10: "Conversation" kept spinning) ──
+// Kept in memory per mailbox + address: a copy younger than THREAD_FRESH_MS is answered at once; an older one is answered
+// at once AND read again behind the screen; none = read now (one read per address at a time). fresh = read now (after a
+// reply). Memory only, at most THREAD_MAX conversations; never written to disk.
+export const THREAD_FRESH_MS = 60_000;
+const THREAD_MAX = 300;
+const threads = new Map<string, { at: number; items: ThreadItem[] }>();
+const threadReads = new Map<string, Promise<ThreadItem[]>>();
+export async function threadFor(box: MailBoxSecret, address: string, opts: { fresh?: boolean } = {}, now = Date.now()): Promise<{ items: ThreadItem[]; cached: boolean }> {
+  const key = `${box.id}|${address.toLowerCase()}`;
+  const read = () => {
+    let p = threadReads.get(key);
+    if (!p) {
+      p = listThread(box, address).then((items) => {
+        threads.delete(key); threads.set(key, { at: Date.now(), items });
+        while (threads.size > THREAD_MAX) threads.delete(threads.keys().next().value as string);
+        return items;
+      }).finally(() => threadReads.delete(key));
+      threadReads.set(key, p);
+    }
+    return p;
+  };
+  const have = threads.get(key);
+  if (have && !opts.fresh) {
+    if (now - have.at > THREAD_FRESH_MS) read().catch((e) => console.error(`[mail-cache] thread ${box.email}:`, (e as Error).message));
+    return { items: have.items, cached: true };
+  }
+  return { items: await read(), cached: false };
+}
+
 // For the tests and a sign-out of every mailbox: forget everything.
-export function clearMailServerCache(): void { lists.clear(); inflight.clear(); mails.clear(); mailBytes = 0; dirty = false; loaded = true; }
+export function clearMailServerCache(): void { lists.clear(); inflight.clear(); mails.clear(); threads.clear(); threadReads.clear(); mailBytes = 0; dirty = false; loaded = true; }
 // For the tests: forget that the file was read, so the next use reads it again.
 export function forgetDiskLoad(): void { loaded = false; }
 export function mailCacheStats(): { lists: number; mails: number; bytes: number } { return { lists: lists.size, mails: mails.size, bytes: mailBytes }; }

@@ -634,6 +634,23 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     authState.user = null; assert.strictEqual((await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).status, 401);
   });
 
+  await t('conversation (owner 10 Oct, it kept spinning): its own Gmail connection, never behind the read-ahead; the server keeps a copy (instant the second time); fresh=1 reads Gmail again; an older message opened from it uses the same connection', async () => {
+    let d = await (await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com'))).json();
+    assert.strictEqual(d.cached, false);
+    const conns = S.connects.length, searches = S.searches.length;
+    // The read-ahead (peek) signs in on its own connection: the conversation's connection is a different one.
+    await message.GET(req('GET', '/api/mail/message?box=boxV&uid=13&peek=1'));
+    assert.strictEqual(S.connects.length, conns + 1, 'the read-ahead has its own connection');
+    d = await (await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=Cust@Example.com'))).json();
+    assert.deepStrictEqual([d.cached, S.searches.length], [true, searches], 'the copy answers, Gmail is not searched again');
+    d = await (await thread.GET(req('GET', '/api/mail/thread?box=boxV&address=cust@example.com&fresh=1'))).json();
+    assert.ok(d.cached === false && S.searches.length > searches, 'fresh=1 reads Gmail again');
+    const before = S.connects.length;
+    const sm = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=501&folder=sent&peek=1&via=thread'));
+    assert.strictEqual(sm.status, 200); assert.strictEqual(S.connects.length, before, 'an older message rides the conversation\'s connection');
+    const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-inbox.ts'), 'utf8');
+    assert.ok(/\}, 'thread'\);/.test(src), 'listThread runs on the thread slot');
+  });
   await t('speed: phase=fast asks Gmail only for who / subject / date / flags (no structure, no headers) and writes nothing; the full list adds them and runs the automatic verification', async () => {
     S.pass = { 13: true }; S.orderEmails = [{ email: 'cust@example.com', order_id: '#1553' }];
     const fast = await (await messages.GET(req('GET', '/api/mail/messages?box=boxV&phase=fast'))).json();

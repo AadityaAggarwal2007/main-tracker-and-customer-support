@@ -13,8 +13,10 @@ import { ImapFlow } from 'imapflow';
 
 interface Entry { client: ImapFlow; pass: string; ready: Promise<ImapFlow>; idle?: ReturnType<typeof setTimeout> }
 export interface PoolBox { id: string; email: string; appPassword: string }
-// 'list' = the list, 'read' = opening a mail the person clicked, 'bg' = read-ahead and the conversation (never in the way of a click)
-export type PoolSlot = 'list' | 'read' | 'bg';
+// 'list' = the list, 'read' = opening a mail the person clicked, 'bg' = read-ahead (never in the way of a click),
+// 'thread' = the open mail's conversation and its older messages (owner 2026-10-10: "Conversation" kept spinning while
+// the server's read-ahead of big mails held 'bg'; now each mailbox has at most 4 connections per process, Gmail allows ~15)
+export type PoolSlot = 'list' | 'read' | 'bg' | 'thread';
 
 const IDLE_MS = 4 * 60_000;
 const G = globalThis as unknown as { __imapPool?: Map<string, Entry> };
