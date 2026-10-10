@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { authReady, getAuthFromRequest } from '@/lib/auth';
-import { isSuperAdmin } from '@/lib/permissions';
+import { canRefunds, panelScope } from '@/lib/permissions';
 import { ajson } from '@/lib/refund/public';
 import { adminFailure, refundCounts, refundCountsByPanel } from '@/lib/refund/server';
 
@@ -16,9 +16,9 @@ export async function GET(request: NextRequest) {
   await authReady();
   const user = getAuthFromRequest(request);
   if (!user) return ajson({ error: 'Please log in again' }, 401);
-  if (!isSuperAdmin(user)) return ajson({ error: 'Only the Super Admin can see refund requests' }, 403);
+  if (!canRefunds(user)) return ajson({ error: 'Only the Super Admin and the Manager can see refund requests' }, 403);
   try {
-    const r = new URL(request.url).searchParams.get('byPanel') === '1' ? await refundCountsByPanel() : await refundCounts();
+    const r = new URL(request.url).searchParams.get('byPanel') === '1' ? await refundCountsByPanel(panelScope(user)) : await refundCounts(panelScope(user));
     return ajson(r.body, r.status);
   } catch (e) {
     const r = adminFailure('counts', e);

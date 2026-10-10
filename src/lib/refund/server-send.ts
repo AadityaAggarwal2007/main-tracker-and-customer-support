@@ -10,6 +10,7 @@ import { chatMessage, formatDateTime, formatDayMonth, type Lang } from './texts'
 import { newToken, refundFormsState } from './crypto';
 import { REFUND_LINK_MASK, maskRefundLinks } from './link-mask';
 import {
+  byMeta,
   type Db, type Res, type Row, H, NOT_INSTALLED, baseUrl, chatLang, deliverEmail, isMissingTable, iso, last4, logRefundEvent, ms, num, obj,
   orderKey, pickLang, pool, postRefundMessage, res, stateOf, targetConversation, tx,
 } from './server-shared';
@@ -328,7 +329,7 @@ export async function sendRefundForm(user: AuthUser, convId: string, body: unkno
       );
       await logRefundEvent(db, {
         link_id: active.id, conversation_id: chat.id, kind: 'link_revoked', actor: 'owner',
-        meta: { reason: 'reissued', replaced_by: linkId, expired: activeState !== 'open' },
+        meta: { reason: 'reissued', replaced_by: linkId, expired: activeState !== 'open', ...byMeta(user) },
       });
     }
     const snapshot = await snapshotOf(db, o);
@@ -344,7 +345,7 @@ export async function sendRefundForm(user: AuthUser, convId: string, body: unkno
     );
     await logRefundEvent(db, {
       link_id: linkId, conversation_id: chat.id, kind: 'link_sent', actor: 'owner',
-      meta: { message_id: msg.id, channel, lang: L, ...(active ? { replaced: active.id } : {}) },
+      meta: { message_id: msg.id, channel, lang: L, ...(active ? { replaced: active.id } : {}), ...byMeta(user) },
     });
     return { sent: { linkId, msg, text, channel, siteId: locked.site_id, chatId: chat.id } };
   });
@@ -383,7 +384,7 @@ export async function cancelRefundLink(convId: string, user?: AuthUser | null): 
     );
     const id = r.rows[0]?.id;
     if (!id) return null;
-    await logRefundEvent(db, { link_id: id, conversation_id: c.id, kind: 'link_revoked', actor: 'owner', meta: { reason: 'cancelled' } });
+    await logRefundEvent(db, { link_id: id, conversation_id: c.id, kind: 'link_revoked', actor: 'owner', meta: { reason: 'cancelled', ...byMeta(user) } });
     return String(id);
   });
   if (!done) return res(404, { error: 'No open form link for this chat' });

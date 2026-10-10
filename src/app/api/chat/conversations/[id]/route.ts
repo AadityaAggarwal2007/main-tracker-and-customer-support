@@ -7,7 +7,7 @@ import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { loadOrderItems } from '@/lib/chat/order-items-db';
-import { can, isSuperAdmin } from '@/lib/permissions';
+import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import { maskRefundLinks } from '@/lib/refund/link-mask';
 import { refundMarkLocked, refundThreadState } from '@/lib/refund/server';
 import {
@@ -127,7 +127,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     hot_lock: hotLockBlock(conversation, user),
     // The refund form chip (owner 2026-10-02): only the Super Admin, only in a Refund chat. Staff never
     // get this key. A read error leaves it null (the chip then hides); it never fails the thread.
-    ...(isSuperAdmin(user) && conversation.case_kind === 'refund' ? { refund_form: await refundThreadState(conversation).catch(() => null) } : {}),
+    ...(canRefunds(user) && conversation.case_kind === 'refund' ? { refund_form: await refundThreadState(conversation).catch(() => null) } : {}),
   });
 }
 

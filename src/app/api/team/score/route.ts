@@ -35,6 +35,8 @@ async function viewer(request: NextRequest, superOnly: boolean): Promise<Viewer>
   if (!user) return refuse('Please log in again', 401);
   if (isSuperAdmin(user)) return { deny: null, self: null };
   if (superOnly) return refuse('Only the Super Admin can change the team score', 403);
+  // The Manager sees the whole team (owner 2026-10-10: "Team score Manager Panel par"); changing it stays the Super Admin's.
+  if (can(user, 'team.lead')) return { deny: null, self: null };
   if (!can(user, 'chat.reply')) return refuse('Only team members who reply to chats have a score', 403);
   if (!user.id) return refuse('Please log in again', 401);
   return { deny: null, self: String(user.id) };

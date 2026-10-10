@@ -22,11 +22,12 @@ export interface AlertRow {
   alt_panels?: { id: string; name: string }[];
 }
 
-export async function alertCounts(): Promise<{ installed: boolean; new: number; open: number }> {
+// scope: the panels the login may see (null = every panel; the Manager limited to some panels, owner 2026-10-10).
+export async function alertCounts(scope: string[] | null = null): Promise<{ installed: boolean; new: number; open: number }> {
   try {
     // The open rows are few (a chargeback is rare, and Done takes it out); their words decide what counts.
     const r = await query<{ status: string; subject: string; snippet: string }>(
-      `SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done'`);
+      `SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done' AND ($1::text[] IS NULL OR business_id = ANY($1::text[]))`, [scope]);
     const real = r.rows.filter(a => chargebackKind(a.subject, a.snippet) === 'chargeback');
     return { installed: true, new: real.filter(a => a.status === 'new').length, open: real.length };
   } catch (e) {
@@ -42,6 +43,7 @@ const LIST_SQL = (cols: string) => `SELECT a.id, a.business_id, b.name AS panel_
                 ORDER BY (c.source = 'chat') DESC, c.last_message_at DESC NULLS LAST LIMIT 1) AS chat_id
          FROM chargeback_alerts a LEFT JOIN businesses b ON b.id::text = a.business_id
         WHERE ($1 IN ('all', 'other') OR ($1 = 'open' AND a.status <> 'done') OR ($1 = 'done' AND a.status = 'done'))
+          AND ($3::text[] IS NULL OR a.business_id = ANY($3::text[]))
         ORDER BY (a.status = 'new') DESC, a.received_at DESC
         LIMIT $2`;
 
@@ -58,8 +60,8 @@ async function sharingMap(): Promise<Record<string, { id: string; name: string }
 
 export type AlertView = 'open' | 'done' | 'all' | 'other';
 // Open / Done / All list the real chargebacks; Other lists the gateway's other mail from the same Gmail (any status).
-export async function listAlerts(view: AlertView, limit = 100): Promise<{ installed: boolean; alerts: AlertRow[] }> {
-  const args = [view, Math.min(Math.max(limit, 1), 200)];
+export async function listAlerts(view: AlertView, limit = 100, scope: string[] | null = null): Promise<{ installed: boolean; alerts: AlertRow[] }> {
+  const args = [view, Math.min(Math.max(limit, 1), 200), scope];
   try {
     let rows: AlertRow[];
     try { rows = (await query<AlertRow>(LIST_SQL(', a.routed_by'), args)).rows; }
@@ -96,11 +98,11 @@ export async function setAlertPanel(id: string, businessId: string): Promise<{ o
 }
 
 // Opening an alert marks it seen (once); "Done" closes it with an optional note. The red tag in the chat goes with Done.
-export async function setAlertStatus(id: string, status: 'seen' | 'done', byName: string, note?: string): Promise<boolean> {
+export async function setAlertStatus(id: string, status: 'seen' | 'done', byName: string, note?: string, scope: string[] | null = null): Promise<boolean> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return false;
   const r = status === 'seen'
-    ? await query(`UPDATE chargeback_alerts SET status = 'seen', seen_by_name = $2, seen_at = now() WHERE id = $1 AND status = 'new'`, [id, byName])
-    : await query(`UPDATE chargeback_alerts SET status = 'done', done_by_name = $2, done_at = now(), note = NULLIF($3, '') WHERE id = $1 AND status <> 'done'`, [id, byName, (note || '').slice(0, 500)]);
+    ? await query(`UPDATE chargeback_alerts SET status = 'seen', seen_by_name = $2, seen_at = now() WHERE id = $1 AND status = 'new' AND ($3::text[] IS NULL OR business_id = ANY($3::text[]))`, [id, byName, scope])
+    : await query(`UPDATE chargeback_alerts SET status = 'done', done_by_name = $2, done_at = now(), note = NULLIF($3, '') WHERE id = $1 AND status <> 'done' AND ($4::text[] IS NULL OR business_id = ANY($4::text[]))`, [id, byName, (note || '').slice(0, 500), scope]);
   return (r.rowCount ?? 0) > 0;
 }
 

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { authReady, getAuthFromRequest } from '@/lib/auth';
-import { isSuperAdmin } from '@/lib/permissions';
+import { canRefunds, panelScope } from '@/lib/permissions';
 import { ajson } from '@/lib/refund/public';
 import { adminFailure, listRefunds } from '@/lib/refund/server';
 
@@ -17,10 +17,11 @@ export async function GET(request: NextRequest) {
   await authReady();
   const user = getAuthFromRequest(request);
   if (!user) return ajson({ error: 'Please log in again' }, 401);
-  if (!isSuperAdmin(user)) return ajson({ error: 'Only the Super Admin can see refund requests' }, 403);
+  // The Super Admin and the Manager (refunds.manage, owner 2026-10-10), the Manager only for their panels.
+  if (!canRefunds(user)) return ajson({ error: 'Only the Super Admin and the Manager can see refund requests' }, 403);
   try {
     const sp = new URL(request.url).searchParams;
-    const r = await listRefunds(sp.get('view'), sp.get('before'));
+    const r = await listRefunds(sp.get('view'), sp.get('before'), panelScope(user));
     return ajson(r.body, r.status);
   } catch (e) {
     const r = adminFailure('list', e);

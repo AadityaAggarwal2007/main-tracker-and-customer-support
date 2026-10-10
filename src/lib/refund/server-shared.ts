@@ -80,6 +80,12 @@ export interface RefundEvent {
   from_status?: string | null; to_status?: string | null; note?: string | null; ip_hash?: string | null;
   meta?: Record<string, unknown> | null;   // ids, counts, step, device: NEVER payout, token or details
 }
+// Refund events keep actor 'owner' for the staff side (the table's CHECK); a Manager's own action also names
+// them in meta (owner 2026-10-10: the Manager sends forms and decides requests too). Null for the Super Admin.
+export function byMeta(user?: { role: string; displayName?: string; username?: string; id?: string } | null): Record<string, unknown> | null {
+  if (!user || user.role === 'admin') return null;
+  return { by: user.displayName || user.username || 'team member', by_key: user.id ?? null };
+}
 export async function logRefundEvent(db: Db, ev: RefundEvent): Promise<void> {
   await db.query(
     `INSERT INTO refund_events (link_id, request_id, conversation_id, kind, actor, from_status, to_status, note, ip_hash, meta)

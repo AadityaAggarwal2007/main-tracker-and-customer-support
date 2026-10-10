@@ -472,24 +472,26 @@ on(/^UPDATE refund_requests SET ack_message_id = \$2 WHERE id = \$1$/, async ([i
   const r = reqById(id); await updRequest(tx, r, { ack_message_id: m }); return { rows: [], rowCount: 1 };
 });
 // server.ts: Super Admin side
-on(/^SELECT count\(\*\) FILTER \(WHERE status = 'new'(?: AND seen_at IS NULL)?\)::int AS (?:new|unseen), .* FROM refund_requests$/, () => {
+// (owner 2026-10-10) every Super Admin / Manager read carries the login's panels ($n = null: every panel)
+const inSc = (sc, b) => sc == null || sc.includes(b);
+on(/^SELECT count\(\*\) FILTER \(WHERE status = 'new'(?: AND seen_at IS NULL)?\)::int AS (?:new|unseen), .* FROM refund_requests WHERE \(\$1::text\[\] IS NULL OR business_id = ANY\(\$1::text\[\]\)\)$/, ([sc]) => {
   if (db.missingTables) throw pgErr('42P01', 'relation "refund_requests" does not exist');
-  const c = (f) => T.refund_requests.filter(f).length;
+  const c = (f) => T.refund_requests.filter((r) => inSc(sc, r.business_id) && f(r)).length;
   return rows([{ new: c((r) => r.status === 'new'), unseen: c((r) => r.status === 'new' && !r.seen_at), approved: c((r) => r.status === 'approved'),
     rejected: c((r) => r.status === 'rejected'), refunded: c((r) => r.status === 'refunded'), cancelled: c((r) => r.status === 'cancelled') }]);
 });
-on(/^SELECT business_id, count\(\*\)::int AS n FROM refund_requests WHERE status = 'new' GROUP BY business_id$/, () => {
+on(/^SELECT business_id, count\(\*\)::int AS n FROM refund_requests WHERE status = 'new' AND \(\$1::text\[\] IS NULL OR business_id = ANY\(\$1::text\[\]\)\) GROUP BY business_id$/, ([sc]) => {
   if (db.missingTables) throw pgErr('42P01', 'relation "refund_requests" does not exist');
-  const by = {}; for (const r of T.refund_requests) if (r.status === 'new') by[r.business_id] = (by[r.business_id] || 0) + 1;
+  const by = {}; for (const r of T.refund_requests) if (r.status === 'new' && inSc(sc, r.business_id)) by[r.business_id] = (by[r.business_id] || 0) + 1;
   return rows(Object.entries(by).map(([business_id, n]) => ({ business_id, n })));
 });
-on(/^SELECT count\(\*\)::int AS n FROM refund_links WHERE status = 'active' AND created_at > now\(\) - interval '14 days'$/,
-  () => rows([{ n: T.refund_links.filter((l) => l.status === 'active' && tms(l.created_at) > NOW - 14 * DAY).length }]));
-on(/^SELECT l\.id, l\.order_id, l\.order_snapshot, s\.name AS panel, l\.status, l\.revoked_reason, l\.created_at, l\.expires_at, l\.opened_count, l\.last_opened_at, l\.conversation_id FROM refund_links l LEFT JOIN sites s ON s\.id = l\.site_id WHERE l\.status = 'active' AND l\.created_at > now\(\) - interval '14 days' ORDER BY l\.created_at DESC LIMIT 100$/,
-  () => rows(T.refund_links.filter((l) => l.status === 'active' && tms(l.created_at) > NOW - 14 * DAY).sort((a, b) => tms(b.created_at) - tms(a.created_at)).slice(0, 100)
+on(/^SELECT count\(\*\)::int AS n FROM refund_links WHERE status = 'active' AND created_at > now\(\) - interval '14 days' AND \(\$1::text\[\] IS NULL OR business_id = ANY\(\$1::text\[\]\)\)$/,
+  ([sc]) => rows([{ n: T.refund_links.filter((l) => l.status === 'active' && inSc(sc, l.business_id) && tms(l.created_at) > NOW - 14 * DAY).length }]));
+on(/^SELECT l\.id, l\.order_id, l\.order_snapshot, s\.name AS panel, l\.status, l\.revoked_reason, l\.created_at, l\.expires_at, l\.opened_count, l\.last_opened_at, l\.conversation_id FROM refund_links l LEFT JOIN sites s ON s\.id = l\.site_id WHERE l\.status = 'active' AND l\.created_at > now\(\) - interval '14 days' AND \(\$1::text\[\] IS NULL OR l\.business_id = ANY\(\$1::text\[\]\)\) ORDER BY l\.created_at DESC LIMIT 100$/,
+  ([sc]) => rows(T.refund_links.filter((l) => l.status === 'active' && inSc(sc, l.business_id) && tms(l.created_at) > NOW - 14 * DAY).sort((a, b) => tms(b.created_at) - tms(a.created_at)).slice(0, 100)
     .map((l) => ({ ...pick(l, ['id', 'order_id', 'order_snapshot', 'status', 'revoked_reason', 'created_at', 'expires_at', 'opened_count', 'last_opened_at', 'conversation_id']), panel: site(l.site_id)?.name ?? null }))));
-on(/^SELECT r\.id, r\.ref_code, r\.status, r\.seen_at, r\.created_at, r\.status_at, r\.order_id, r\.reason, r\.sub_reason, r\.order_snapshot, r\.payout_method, r\.payout_mask, r\.holder_matches, r\.return_needed, r\.conversation_id, r\.ack_message_id, s\.name AS panel, EXISTS \(SELECT 1 FROM refund_requests o WHERE o\.payout_fp = r\.payout_fp AND o\.id <> r\.id AND NOT \(o\.business_id = r\.business_id AND o\.order_id = r\.order_id\)\) AS payout_reused, \(SELECT count\(\*\) FROM refund_requests p WHERE r\.phone_fp IS NOT NULL AND p\.phone_fp = r\.phone_fp AND p\.created_at > now\(\) - interval '90 days'\)::int AS phone_count FROM refund_requests r LEFT JOIN sites s ON s\.id = r\.site_id WHERE \(\$1::text = 'all' OR r\.status = \$1::text\) AND \(\$2::timestamptz IS NULL OR r\.created_at < \$2::timestamptz\) ORDER BY r\.created_at DESC LIMIT 101$/,
-  ([view, before]) => rows(T.refund_requests.filter((r) => (view === 'all' || r.status === view) && (before == null || tms(r.created_at) < tms(before)))
+on(/^SELECT r\.id, r\.ref_code, r\.status, r\.seen_at, r\.created_at, r\.status_at, r\.order_id, r\.reason, r\.sub_reason, r\.order_snapshot, r\.payout_method, r\.payout_mask, r\.holder_matches, r\.return_needed, r\.conversation_id, r\.ack_message_id, s\.name AS panel, EXISTS \(SELECT 1 FROM refund_requests o WHERE o\.payout_fp = r\.payout_fp AND o\.id <> r\.id AND NOT \(o\.business_id = r\.business_id AND o\.order_id = r\.order_id\)\) AS payout_reused, \(SELECT count\(\*\) FROM refund_requests p WHERE r\.phone_fp IS NOT NULL AND p\.phone_fp = r\.phone_fp AND p\.created_at > now\(\) - interval '90 days'\)::int AS phone_count FROM refund_requests r LEFT JOIN sites s ON s\.id = r\.site_id WHERE \(\$1::text = 'all' OR r\.status = \$1::text\) AND \(\$2::timestamptz IS NULL OR r\.created_at < \$2::timestamptz\) AND \(\$3::text\[\] IS NULL OR r\.business_id = ANY\(\$3::text\[\]\)\) ORDER BY r\.created_at DESC LIMIT 101$/,
+  ([view, before, sc]) => rows(T.refund_requests.filter((r) => (view === 'all' || r.status === view) && inSc(sc, r.business_id) && (before == null || tms(r.created_at) < tms(before)))
     .sort((a, b) => tms(b.created_at) - tms(a.created_at)).slice(0, 101).map((r) => ({
       ...pick(r, ['id', 'ref_code', 'status', 'seen_at', 'created_at', 'status_at', 'order_id', 'reason', 'sub_reason', 'order_snapshot', 'payout_method', 'payout_mask', 'holder_matches', 'return_needed', 'conversation_id', 'ack_message_id']),
       panel: site(r.site_id)?.name ?? null,
@@ -666,11 +668,15 @@ const R = {
 // ══ Data ════════════════════════════════════════════════════════
 const BIZ = '7b1c0e4a-1111-4111-8111-000000000001';
 const SITE1 = 'site-vastora', SITE2 = 'site-vastora-mail', SITE3 = 'site-no-panel';
-const IDS = { neha: 'a0000000-0000-4000-8000-00000000000a', rahul: 'b0000000-0000-4000-8000-00000000000b', anurag: 'c0000000-0000-4000-8000-00000000000c' };
+const IDS = { neha: 'a0000000-0000-4000-8000-00000000000a', rahul: 'b0000000-0000-4000-8000-00000000000b', anurag: 'c0000000-0000-4000-8000-00000000000c',
+  sunny: 'd0000000-0000-4000-8000-00000000000d', sunny2: 'e0000000-0000-4000-8000-00000000000e' };
 T.team_users = [
   { id: IDS.neha, username: 'neha', display_name: 'Neha', role: 'panel_admin', is_active: true, business_ids: null, permissions: null, session_version: 1 },
   { id: IDS.rahul, username: 'rahul', display_name: 'Rahul', role: 'agent', is_active: true, business_ids: null, permissions: ['orders.view', 'chat.view', 'chat.reply', 'chat.cases', 'chat.edit', 'chat.senior'], session_version: 1 },
   { id: IDS.anurag, username: 'anurag', display_name: 'Anurag', role: 'agent', is_active: true, business_ids: null, permissions: null, session_version: 1 },
+  // the Manager (owner 2026-10-10): refunds.manage from the role preset; sunny2 is limited to another panel
+  { id: IDS.sunny, username: 'sunny', display_name: 'Sunny', role: 'manager', is_active: true, business_ids: null, permissions: null, session_version: 1 },
+  { id: IDS.sunny2, username: 'sunny2', display_name: 'Sunny Two', role: 'manager', is_active: true, business_ids: ['99999999-9999-4999-8999-999999999999'], permissions: null, session_version: 1 },
 ];
 T.admin_login = [{ username: 'jatin.owner', password_hash: 'not-used', session_version: 2, updated_at: new Date(BASE_NOW - DAY) }];
 T.sites = [{ id: SITE1, name: 'Vastora', tracker_business_id: BIZ }, { id: SITE2, name: 'Vastora', tracker_business_id: BIZ }, { id: SITE3, name: 'Loose site', tracker_business_id: null }];
@@ -678,7 +684,7 @@ T.businesses = [{ id: BIZ, logo_url: 'https://cdn.example.test/vastora.png' }];
 T.site_emails = [{ site_id: SITE2, email: 'support@example.test', app_password: 'app-pass-x' }];
 
 const owner = () => auth.generateToken('jatin.owner', 'admin', null, { name: 'Super Admin', sv: 2 });
-const member = (u) => auth.generateToken(u, T.team_users.find((x) => x.username === u).role, null, { name: u, uid: IDS[u], sv: 1 });
+const member = (u) => { const m = T.team_users.find((x) => x.username === u); return auth.generateToken(u, m.role, m.business_ids, { name: u, uid: IDS[u], sv: 1 }); };
 const UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
 const ORIGIN = 'https://shiptrack.store';
 let seq = 0, itemSeq = 0;
@@ -823,6 +829,29 @@ t('R1 every Super Admin route: 401 without a login, 403 for staff (panel admin, 
   eq((await formGet(c.convId, owner())).status, 200);
   const tamper = owner().replace(/.$/, (ch) => (ch === 'A' ? 'B' : 'A'));
   eq((await counts(tamper)).status, 401, 'a tampered token');
+});
+
+t('R1m the Manager (owner 2026-10-10): sends the form, lists, opens and changes requests of their panels; never the full bank / UPI details', async () => {
+  const c = await withRequest();
+  const sunny = member('sunny');
+  eq((await list('', sunny)).status, 200, 'list');
+  eq((await counts(sunny)).status, 200, 'counts');
+  const d = await detail(c.id, sunny);
+  eq(d.status, 200, 'detail'); eq(d.body.can_reveal, false, 'the drawer hides Show full details');
+  eq((await detail(c.id, owner())).body.can_reveal, true, 'the Super Admin keeps it');
+  eq((await formGet(c.convId, sunny)).status, 200, 'refund form dialog');
+  eq((await patch(c.id, { action: 'note', note: 'checked by the manager' }, sunny)).status, 200, 'a note');
+  const ev = T.refund_events.filter((e) => e.request_id === c.id && e.kind === 'note').pop();
+  const meta = typeof ev.meta === 'string' ? JSON.parse(ev.meta) : ev.meta;
+  eq(ev.actor, 'owner'); eq(meta && meta.by, 'Sunny', 'the history names the Manager');
+  const rv = await reveal(c.id, sunny);
+  eq(rv.status, 403, 'reveal stays the Super Admin\'s'); ok(!/upi|account|ifsc/i.test(rv.text.replace(/Super Admin/g, '')), 'no details in the refusal');
+  // A Manager limited to another panel sees nothing of this one.
+  const other = member('sunny2');
+  eq((await detail(c.id, other)).status, 404, 'another panel: not found');
+  const l2 = await list('', other); eq(l2.status, 200); ok(!(l2.body.items || []).some((x) => x.id === c.id), 'not listed');
+  eq((await counts(other)).body.new, 0, 'not counted');
+  eq((await formGet(c.convId, other)).status, 404, 'its chats are not found');
 });
 
 // ══ R2: Send gates ══════════════════════════════════════════════
@@ -1563,7 +1592,7 @@ t('R14 refundThreadState: block, link and request for the chip; no table yet = s
 t('R14 the thread route (slice D): refund_form only for the Super Admin in a Refund chat; messages and earlier chats masked', async () => {
   if (!sliceD) { out('SKIP R14 thread route: slice D has not landed yet (no refundThreadState in the thread route)'); return; }
   const src = read(THREAD);
-  ok(/isSuperAdmin\(user\) && conversation\.case_kind === 'refund' \? \{ refund_form: await refundThreadState\(conversation\)/.test(src), 'the Super Admin + Refund gate on refund_form');
+  ok(/canRefunds\(user\) && conversation\.case_kind === 'refund' \? \{ refund_form: await refundThreadState\(conversation\)/.test(src), 'the Super Admin / Manager + Refund gate on refund_form');
   ok(/messages\.rows\.map\(\(m\) => unlink\(/.test(src), 'thread messages masked');
   ok(/c\.messages\.map\(\(m\) => unlink\(/.test(src), 'earlier chats masked');
   ok(/maskRefundLinks/.test(src));

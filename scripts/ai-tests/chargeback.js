@@ -186,6 +186,17 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
       assert.strictEqual((await routePanel.DELETE(req('DELETE', '/api/panel-chargeback?businessId=bizVast'))).status, 401);
     }
   });
+  await t('routes: the Manager (owner 2026-10-10, chargebacks.view) sees the alerts of their panels and marks them done; the Gmail settings and moving an alert stay the Super Admin\'s', async () => {
+    authState.user = { role: 'manager', username: 'sunny', displayName: 'Sunny', businessIds: null, permissions: ['chat.view', 'chat.reply', 'chargebacks.view'] };
+    assert.strictEqual((await routeCb.GET(req('GET', '/api/chargebacks?counts=1'))).status, 200);
+    const l = await routeCb.GET(req('GET', '/api/chargebacks?view=all'));
+    assert.strictEqual(l.status, 200);
+    assert.ok((l.body.alerts || []).every((a) => (a.alt_panels || []).length === 0), 'no panel to move to');
+    assert.strictEqual((await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: '00000000-0000-4000-8000-000000000001', businessId: 'bizKurt' }))).status, 403);
+    assert.strictEqual((await routePanel.GET(req('GET', '/api/panel-chargeback?businessId=bizVast'))).status, 401);
+    authState.user = { role: 'agent', username: 'rahul', displayName: 'Rahul', businessIds: null, permissions: ['chat.view', 'chat.reply'] };
+    assert.strictEqual((await routeCb.GET(req('GET', '/api/chargebacks?counts=1'))).status, 401, 'a plain member never');
+  });
   await t('routes: counts and list work before the SQL is applied (installed:false, no error), PATCH validates its body', async () => {
     S.missing = true;
     let d = await (await routeCb.GET(req('GET', '/api/chargebacks?counts=1'))).json(); assert.deepStrictEqual(d, { installed: false, new: 0, open: 0 });

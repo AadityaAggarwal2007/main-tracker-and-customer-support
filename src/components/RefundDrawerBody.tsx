@@ -145,6 +145,8 @@ export default function RefundDrawerBody({
               <button type="button" onClick={hideReveal} style={{ border: 'none', background: 'none', padding: 0, color: 'var(--primary)', cursor: 'pointer', font: 'inherit' }}>Hide</button>
             </div>
           </div>
+        ) : detail.can_reveal === false ? (
+          <div className="rf-noprint" style={{ ...small, marginTop: 8 }}>The full details are shown to the Super Admin only.</div>
         ) : (
           <button type="button" className="btn btn-sm rf-noprint" style={{ ...muted, marginTop: 8 }} onClick={reveal} disabled={revealing}>
             {revealing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Eye size={12} />} Show full details

@@ -15,7 +15,7 @@ import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
 import WhatsAppPage from '@/components/whatsapp/WhatsAppPage';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
-import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
+import { can, canChargebacks, canRefunds, isSuperAdmin, isTeamLead, type Permission } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
 import { useRouter } from 'next/navigation';
 import {
@@ -355,43 +355,44 @@ export default function AdminDashboard() {
 
   // Refund requests badge (Super Admin only): every 60 s and when the window gets focus. Advisory: a
   // failed poll keeps the last number. Counts only, never a request's details.
-  const superAdmin = isSuperAdmin(user);
+  // The Manager too (owner 2026-10-10): refund requests and chargebacks, their panels only (the routes scope them).
+  const refundsOk = canRefunds(user), chargebacksOk = canChargebacks(user);
   const refreshRefundCounts = useCallback(async () => {
-    if (!token || !superAdmin) return;
+    if (!token || !refundsOk) return;
     try {
       const r = await fetch('/api/refunds/counts', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
       if (!r.ok) return;
       const d = await r.json();
       setRefundUnseen(Number(d?.unseen) || 0);
     } catch { /* the badge is advisory */ }
-  }, [token, superAdmin]);
+  }, [token, refundsOk]);
   // Chargeback badge (owner 2026-10-08), Super Admin only: new = chargeback mails not opened yet. Same rhythm as the
   // refund badge: every 60 s and on window focus; advisory, a failed poll keeps the last number.
   const refreshChargebackCounts = useCallback(async () => {
-    if (!token || !superAdmin) return;
+    if (!token || !chargebacksOk) return;
     try {
       const r = await fetch('/api/chargebacks?counts=1', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
       if (!r.ok) return;
       const d = await r.json();
       setChargebackNew(Number(d?.new) || 0);
     } catch { /* the badge is advisory */ }
-  }, [token, superAdmin]);
+  }, [token, chargebacksOk]);
   useEffect(() => {
-    if (!token || !superAdmin) return;
+    if (!token || !chargebacksOk) return;
     void refreshChargebackCounts();
     const t = setInterval(() => { void refreshChargebackCounts(); }, 60000);
     const onFocus = () => { void refreshChargebackCounts(); };
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
-  }, [token, superAdmin, refreshChargebackCounts]);
+  }, [token, chargebacksOk, refreshChargebackCounts]);
   useEffect(() => {
-    if (!token || !superAdmin) return;
+    if (!token || !refundsOk) return;
     void refreshRefundCounts();
     const t = setInterval(() => { void refreshRefundCounts(); }, 60000);
     const onFocus = () => { void refreshRefundCounts(); };
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
-  }, [token, superAdmin, refreshRefundCounts]);
+  }, [token, refundsOk, refreshRefundCounts]);
   // Deep link from a Refund chat ("Open request"): /admin?tab=refunds&open=<request id>. Read once, then
   // the address bar goes back to /admin (same pattern as the inbox's ?open=).
   useEffect(() => {
@@ -415,7 +416,7 @@ export default function AdminDashboard() {
     } catch { /* ignore */ }
   }, []);
   // Anyone else who lands on that link gets the normal start tab.
-  useEffect(() => { if (user && activeTab === 'refunds' && !superAdmin) setActiveTab('orders'); }, [user, activeTab, superAdmin]);
+  useEffect(() => { if (user && activeTab === 'refunds' && !refundsOk) setActiveTab('orders'); }, [user, activeTab, refundsOk]);
   // The tab is remembered for the next refresh (owner 2026-10-10).
   useEffect(() => { try { localStorage.setItem('admin_tab', activeTab); } catch { /* ignore */ } }, [activeTab]);
   // A remembered tab this login may not see (a member after the owner changed their ticks) goes to Today. This hook
@@ -426,8 +427,10 @@ export default function AdminDashboard() {
       : activeTab === 'upload' ? hasPermission('upload_csv')
       : activeTab === 'settings' ? hasPermission('manage_businesses')
       : activeTab === 'team' ? hasPermission('manage_team')
-      : activeTab === 'score' ? isSuperAdmin(user) || can(user, 'chat.reply')
-      : activeTab === 'refunds' || activeTab === 'chargebacks' || activeTab === 'whatsapp' ? isSuperAdmin(user)
+      : activeTab === 'score' ? isTeamLead(user)
+      : activeTab === 'refunds' ? canRefunds(user)
+      : activeTab === 'chargebacks' ? canChargebacks(user)
+      : activeTab === 'whatsapp' ? isSuperAdmin(user)
       : activeTab === 'mail' ? can(user, 'mail.view') : true;
     if (!ok) setActiveTab('today');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -999,12 +1002,13 @@ export default function AdminDashboard() {
     { id: 'upload' as TabType, label: 'Upload CSV', icon: Upload, show: hasPermission('upload_csv') },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
-    { id: 'score' as TabType, label: isSuperAdmin(user) ? 'Team score' : 'My score', icon: Trophy, show: isSuperAdmin(user) || can(user, 'chat.reply') },
-    { id: 'refunds' as TabType, label: 'Refund requests', icon: Undo2, show: isSuperAdmin(user) },
+    // Owner 2026-10-10: the team score is the Manager's and the Super Admin's; Chat Support members do not see it.
+    { id: 'score' as TabType, label: 'Team score', icon: Trophy, show: isTeamLead(user) },
+    { id: 'refunds' as TabType, label: 'Refund requests', icon: Undo2, show: canRefunds(user) },
     // Owner 2026-10-08: the real Gmail inbox. The Super Admin always; a member only with the Mail tick.
     { id: 'mail' as TabType, label: 'Mail', icon: Mail, show: can(user, 'mail.view') },
     // Owner 2026-10-08: chargeback mails from every panel's chargeback Gmail, with a red badge. Super Admin only.
-    { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: isSuperAdmin(user) },
+    { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: canChargebacks(user) },
     // Owner 2026-10-10: the WhatsApp business number: setup, profile, templates, a test send, activity. Super Admin only.
     { id: 'whatsapp' as TabType, label: 'WhatsApp', icon: MessageSquareText, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
@@ -1022,7 +1026,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? (isSuperAdmin(user) ? 'Team score' : 'My score') : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? 'Team score' : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1652,15 +1656,15 @@ export default function AdminDashboard() {
                 onLoginChanged={(t, u) => { setToken(t); setUser(u as AuthUser); }} />
             </div>
           )}
-          {activeTab === 'score' && (isSuperAdmin(user) || can(user, 'chat.reply')) && (
-            <div className="animate-fade-in-up"><TeamScoreCard token={token} onAlert={showAlert} mine={!isSuperAdmin(user)} /></div>
+          {activeTab === 'score' && isTeamLead(user) && (
+            <div className="animate-fade-in-up"><TeamScoreCard token={token} onAlert={showAlert} mine={false} /></div>
           )}
           {/* ════════ MAIL (Super Admin, or a member with the Mail tick) ════════ */}
           {activeTab === 'mail' && can(user, 'mail.view') && (
             <div className="animate-fade-in-up"><MailCard token={token} onAlert={showAlert} activePanelId={activePanelId} initialBox={mailLink?.box ?? null} initialUid={mailLink?.uid ?? null} /></div>
           )}
           {/* ════════ CHARGEBACKS (Super Admin only) ════════ */}
-          {activeTab === 'chargebacks' && isSuperAdmin(user) && (
+          {activeTab === 'chargebacks' && canChargebacks(user) && (
             <div className="animate-fade-in-up"><ChargebacksCard token={token} onAlert={showAlert} onChanged={() => { void refreshChargebackCounts(); }} /></div>
           )}
           {/* ════════ WHATSAPP (Super Admin only) ════════ */}
@@ -1668,7 +1672,7 @@ export default function AdminDashboard() {
             <WhatsAppPage token={token} onAlert={showAlert} onOpenChat={(id) => router.push(`/admin/chat?open=${encodeURIComponent(id)}`)} />
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
-          {activeTab === 'refunds' && isSuperAdmin(user) && (
+          {activeTab === 'refunds' && canRefunds(user) && (
             <div className="animate-fade-in-up">
               <RefundRequestsCard token={token} onAlert={showAlert} openId={refundOpenId} onSeen={() => { void refreshRefundCounts(); }} />
             </div>
