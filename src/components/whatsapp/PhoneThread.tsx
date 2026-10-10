@@ -4,9 +4,9 @@
 // messages white on the left, ours green on the right with WhatsApp's ticks: ✓ sent, ✓✓ delivered, blue ✓✓ read,
 // red "!" failed). Pure drawing; the Test panel feeds it.
 import { waText } from './PhonePreview';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
-export interface ThreadMessage { id: string; from: 'customer' | 'us'; text: string; at: string; template: string | null; sent: boolean | null; status: string | null; error: string | null }
+export interface ThreadMessage { id: string; from: 'customer' | 'us'; auto?: boolean; text: string; at: string; template: string | null; sent: boolean | null; status: string | null; error: string | null }
 
 export function tickOf(m: ThreadMessage): { mark: string; color: string; label: string } {
   if (m.sent === false || m.status === 'failed') return { mark: '!', color: '#d92d20', label: 'Not sent' };
@@ -21,7 +21,7 @@ const clock = (iso: string) => {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
-export default function PhoneThread({ name, phone, picture, messages, loading }: { name: string; phone: string; picture: string | null; messages: ThreadMessage[]; loading?: boolean }) {
+export default function PhoneThread({ name, phone, picture, messages, loading, composer }: { name: string; phone: string; picture: string | null; messages: ThreadMessage[]; loading?: boolean; composer?: ReactNode }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
   return (
@@ -46,7 +46,7 @@ export default function PhoneThread({ name, phone, picture, messages, loading }:
             <div key={m.id} className="wa-bubble wa-in"><div>{waText(m.text)}</div><div className="wa-meta">{clock(m.at)}</div></div>
           ) : (
             <div key={m.id} className="wa-bubble">
-              {m.template && <div style={{ fontSize: '0.65rem', color: '#667781', marginBottom: 2 }}>template {m.template}</div>}
+              {(m.template || m.auto) && <div style={{ fontSize: '0.65rem', color: '#667781', marginBottom: 2 }}>{m.auto ? 'automatic · ' : ''}{m.template ? `template ${m.template}` : 'message'}</div>}
               <div>{waText(m.text)}</div>
               <div className="wa-meta">{clock(m.at)} <span style={{ color: t.color, fontWeight: 700 }}>{t.mark}</span></div>
               {(t.label === 'Not sent' || m.error) && <div style={{ color: '#d92d20', fontSize: '0.68rem', marginTop: 2 }}>{m.error || 'Not sent'}</div>}
@@ -55,7 +55,7 @@ export default function PhoneThread({ name, phone, picture, messages, loading }:
         })}
         <div ref={end} />
       </div>
-      <div className="wa-compose"><span>Message</span><span className="wa-mic">🎤</span></div>
+      {composer || <div className="wa-compose"><span>Message</span><span className="wa-mic">🎤</span></div>}
     </div>
   );
 }
