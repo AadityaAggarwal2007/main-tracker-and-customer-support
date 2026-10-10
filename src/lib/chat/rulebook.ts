@@ -279,6 +279,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Write what should change next to a rule. It is applied after testing; until then the rule stays as it is.' },
       { id: '12.4', how: 'setting', from: 'Your decision, 10 Oct', title: 'One setup for every panel',
         text: 'Chikki\'s prompt, saved answers and effort levels can live once for all panels (Settings > All panels setup), made from the panel that is set up best, with {brand} where each panel\'s name goes. A panel switched to "All panels" uses it, and a change made in Chikki on such a panel changes every panel on it (only an admin of every panel may make it). A new panel with no prompt of its own uses it by itself. Notes, Cash on Delivery and the courier stay per panel. Nothing is deleted: "Own" brings a panel\'s own setup back.' },
+      { id: '12.5', how: 'auto', from: 'Your decision, 10 Oct', title: 'AI money is watched',
+        text: 'Every 10 minutes ShipTrack asks OpenRouter how much is left: the account credits and the AI key\'s own limit, and how many days that lasts at last week\'s spend. The Today board shows it; when it is running low (under 5 days or $8) or about to run out (under 2 days or $2) the box turns amber / red, the morning routine says so, and one WhatsApp alert goes to your number (WhatsApp > Setup, template "shiptrack_alert"), again after 12 hours or at once if it gets worse. Recharge or turn on Auto top-up at openrouter.ai before Chikki stops.' },
     ],
   },
   {

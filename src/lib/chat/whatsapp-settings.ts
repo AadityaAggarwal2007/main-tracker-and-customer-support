@@ -93,3 +93,23 @@ export async function setDailyLimit(value: number | null): Promise<void> {
     [DAILY_LIMIT_KEY, value ? String(value) : '']
   );
 }
+
+// The owner's own WhatsApp number for ShipTrack's alerts (owner 2026-10-10: the AI's OpenRouter credits run low, see
+// ai-credit.ts). Saved in WhatsApp > Setup; the alert goes as the approved template "shiptrack_alert". Not a secret.
+export const ALERT_TO_KEY = 'whatsapp_alert_to';
+export async function alertTo(): Promise<string> {
+  try {
+    const row = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [ALERT_TO_KEY]);
+    return (row?.value || '').replace(/\D/g, '');
+  } catch (err) {
+    console.error('[whatsapp] alert number read failed:', (err as Error)?.message);
+    return '';
+  }
+}
+export async function setAlertTo(digits: string): Promise<void> {
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [ALERT_TO_KEY, digits]
+  );
+}

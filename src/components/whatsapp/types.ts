@@ -4,7 +4,7 @@ import type { PhoneInfo, Profile } from '@/lib/chat/whatsapp-profile';
 export interface WaSettings {
   configured: boolean; verifyTokenSet: boolean; appSecretSet: boolean;
   webhook?: { lastOk: number | null; lastRefused: number | null; refusedReason: string | null; refusedSinceOk: number }; phoneNumberId: string;
-  waba: string; messaging: string; dailyLimit?: number | null; wabaFromEnv: boolean; appId: string; panel: { id: string; name: string } | null; webhookUrl: string;
+  waba: string; messaging: string; dailyLimit?: number | null; alertTo?: string; wabaFromEnv: boolean; appId: string; panel: { id: string; name: string } | null; webhookUrl: string;
   phone: PhoneInfo | null; phoneError: string | null;
 }
 export interface WaLists { templates: TemplateInfo[]; waba: string; error?: string; categories?: string[]; languages?: { code: string; label: string }[] }

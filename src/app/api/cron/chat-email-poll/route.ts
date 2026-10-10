@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { aiCreditAlert } from '@/lib/chat/ai-credit';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
 import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
@@ -32,6 +33,9 @@ export async function GET(request: NextRequest) {
   // A member's chat with no reply for 30 office minutes goes to the Manager first (escalate-late.ts), then the queue is given out.
   void runLateEscalation().then(() => runAutoAssign()).catch((e) => console.error('[auto-assign] run:', (e as Error).message));
   setTimeout(() => { void runAutoAssign().catch((e) => console.error('[auto-assign] run:', (e as Error).message)); }, 30_000);
+  // The AI's OpenRouter money (owner 2026-10-10, ai-credit.ts): a WhatsApp alert to the owner before it runs out (read every
+  // 10 minutes at most, one alert per 12 hours per level). Not awaited; never throws.
+  void aiCreditAlert().catch(() => {});
 
   const client = await getPool().connect();
   try {
