@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { query, queryOne, withTransaction } from '@/lib/db';
 import { sendAgentEmailReply } from '@/lib/chat/email';
+import { sendWhatsAppText, type WaSendResult } from '@/lib/chat/whatsapp';
 import { stripMarkdownEmphasis } from '@/lib/chat/plain-text';
 import { stripLinkJunk } from '@/lib/chat/reply-guards';
 import { hasFormLink } from '@/lib/refund/link-mask';
@@ -75,9 +76,9 @@ export async function POST(request: NextRequest) {
     const ids = fileIds as string[];
 
     const conversation = await queryOne<{
-      id: string; source: string; tracker_business_id: string | null; site_id: string; customer_key: string | null;
+      id: string; source: string; tracker_business_id: string | null; site_id: string; customer_key: string | null; visitor_id: string;
     }>(
-      `SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key
+      `SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key, c.visitor_id
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
         WHERE c.id = $1`,
@@ -236,7 +237,24 @@ export async function POST(request: NextRequest) {
       ).catch(err => console.error('[chat] could not record email status:', (err as Error).message));
     }
 
-    return NextResponse.json({ message, emailed });
+    // A WhatsApp chat (whatsapp-inbound.ts): the text goes to the customer's number through the Cloud API.
+    // Files are not sent on WhatsApp yet (owner: first a test with one person). The message is saved
+    // either way; Meta's answer (the wamid, or why it refused) is kept on it for "View details".
+    let whatsapp: { ok: boolean; error: string | null } | null = null;
+    if (conversation.source === 'whatsapp') {
+      const to = conversation.visitor_id.replace(/^wa:/, '');
+      const r: WaSendResult = hasText ? await sendWhatsAppText(to, message.content) : { ok: false, error: 'Files are not sent on WhatsApp yet; type a message', code: null };
+      const waId = r.ok ? r.id : null, waError = 'error' in r ? r.error : null;
+      whatsapp = { ok: r.ok, error: waError };
+      await query(
+        `UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text))
+          WHERE id = $1`,
+        [message.id, r.ok, waId, waError]
+      ).catch(err => console.error('[chat] could not record WhatsApp status:', (err as Error).message));
+      if (waError) console.error('[whatsapp] reply not sent:', waError);
+    }
+
+    return NextResponse.json({ message, emailed, whatsapp });
   } catch (err) {
     if (err instanceof ReplyError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

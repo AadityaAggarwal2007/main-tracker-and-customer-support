@@ -792,6 +792,9 @@ export default function ChatSupportPage() {
       if (data.emailed === false) {
         showAlert('error', 'Saved, but the email did not go out — check the mailbox settings');
       }
+      if (data.whatsapp && data.whatsapp.ok === false) {
+        showAlert('error', `Saved, but WhatsApp did not take it: ${data.whatsapp.error || 'unknown reason'}`);
+      }
       await fetchThread(activeId, true);
       fetchConversations(true);
     } catch { showAlert('error', 'Could not send that reply'); }

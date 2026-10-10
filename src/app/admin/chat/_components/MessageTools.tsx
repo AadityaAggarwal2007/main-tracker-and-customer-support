@@ -181,6 +181,7 @@ export function MessageDetailsDialog({ details, error, onClose }: {
     const m = details.message;
     const who = senderLabel(m);
     const email = m.source === 'email';
+    const wa = m.source === 'whatsapp';
     const withheld = m.metadata?.withheld;
     const files = Array.isArray(m.metadata?.attachments) ? m.metadata!.attachments!.length : 0;
 
@@ -188,6 +189,8 @@ export function MessageDetailsDialog({ details, error, onClose }: {
     const delivery = withheld ? 'Never reached the customer'
       : m.deleted_at ? (email ? 'The customer still has it by email (an email cannot be taken back)' : 'Removed from the customer’s chat')
       : email ? (m.metadata?.emailed === true ? 'Sent by email' : m.metadata?.emailed === false ? 'The email did not go out' : 'Email result not recorded')
+      : wa ? (m.metadata?.wa_sent === true ? `Sent on WhatsApp${m.metadata?.wa_status ? ` · ${m.metadata.wa_status}` : ''}${m.metadata?.wa_error ? ` · ${m.metadata.wa_error}` : ''}`
+              : m.metadata?.wa_sent === false ? `WhatsApp did not take it: ${m.metadata?.wa_error || 'unknown reason'}` : 'Received on WhatsApp')
       : 'Shown in the customer’s chat';
 
     body = (

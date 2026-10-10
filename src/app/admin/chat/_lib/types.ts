@@ -42,7 +42,7 @@ export interface Conversation {
   merged_into?: string | null;
   visitor_phone: string | null;
   status: 'ai_handling' | 'agent_handling' | 'resolved' | 'human_needed';
-  source: 'chat' | 'email';
+  source: 'chat' | 'email' | 'whatsapp';
   category: 'wrong_tracking' | 'refund' | 'cancellation' | 'others';
   unread_count: number;
   last_message_at: string | null;
@@ -132,6 +132,7 @@ export interface ChatMessage {
   content: string;
   metadata: {
     withheld?: string; emailed?: boolean; agent?: string; hidden?: boolean;
+    wa_sent?: boolean; wa_status?: string; wa_error?: string;
     attachments?: StoredAttachment[]; captionless?: boolean;
   } | null;
   created_at: string;

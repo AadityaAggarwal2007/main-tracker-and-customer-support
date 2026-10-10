@@ -161,7 +161,7 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                         className="form-input"
                         rows={2}
                         placeholder={replyOpen
-                          ? (activeConv.source === 'email' ? 'Type your reply — it goes out by email…' : 'Type your reply…')
+                          ? (activeConv.source === 'email' ? 'Type your reply — it goes out by email…' : activeConv.source === 'whatsapp' ? 'Type your reply — it goes out on WhatsApp…' : 'Type your reply…')
                           : readOnlyReply || 'Take over to reply…'}
                         value={draft}
                         disabled={!replyOpen || sending || !!polishing}

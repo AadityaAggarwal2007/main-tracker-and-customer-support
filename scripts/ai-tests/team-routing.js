@@ -49,6 +49,7 @@ module.exports = {
 };`);
 const stub = (name, body) => fs.writeFileSync(path.join(dir, name + '.js'), body);
 stub('email', 'module.exports = { sendAgentEmailReply: async (...a) => { global.__emails.push(a); } };');
+stub('whatsapp', 'module.exports = { sendWhatsAppText: async (to, text) => { (global.__wa = global.__wa || []).push([to, text]); return { ok: true, id: "wamid.test" }; } };');
 stub('order-facts', 'module.exports = { loadOrderFacts: async () => null };');
 stub('order-address-db', 'module.exports = { loadOrderAddress: async () => null };');
 stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };');
@@ -414,9 +415,9 @@ async function handle(q, p, tx) {
   }
 
   // ── Reply (/api/chat/messages) ──
-  if (q === 'SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1') {
+  if (q === 'SELECT c.id, c.source, s.tracker_business_id, c.site_id, c.customer_key, c.visitor_id FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1') {
     const c = conv(p[0]);
-    return rows(c ? [{ id: c.id, source: c.source, tracker_business_id: siteOf(c.site_id).panel, site_id: c.site_id, customer_key: c.customer_key }] : []);
+    return rows(c ? [{ id: c.id, source: c.source, tracker_business_id: siteOf(c.site_id).panel, site_id: c.site_id, customer_key: c.customer_key, visitor_id: c.visitor_id }] : []);
   }
   if (q === 'SELECT id, file_name, mime_type, size_bytes, kind FROM chat_attachments WHERE id = ANY($1::text[]) AND conversation_id = $2 AND message_id IS NULL FOR UPDATE') {
     need(tx, q);
@@ -440,6 +441,11 @@ async function handle(q, p, tx) {
   }
   if (q === "UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('emailed', $2::boolean) WHERE id = $1") {
     const msg = db.messages.find((x) => x.id === p[0]); if (msg) msg.metadata = { ...(msg.metadata || {}), emailed: p[1] };
+    return rows([]);
+  }
+  if (q === "UPDATE messages SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('wa_sent', $2::boolean, 'wa_id', $3::text, 'wa_error', $4::text)) WHERE id = $1") {
+    const msg = db.messages.find((x) => x.id === p[0]);
+    if (msg) { const add = { wa_sent: p[1], wa_id: p[2], wa_error: p[3] }; for (const k of Object.keys(add)) if (add[k] == null) delete add[k]; msg.metadata = { ...(msg.metadata || {}), ...add }; }
     return rows([]);
   }
 
@@ -997,6 +1003,15 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     status(r, 200);
     deq([r.body.emailed, C('r1e').assigned_to, global.__emails.length], [true, ANURAG, 1]);
     deq(agentMsgs('r1e')[0].metadata, { agent: 'anurag', emailed: true });
+  });
+
+  await t('R68 a WhatsApp chat (owner 2026-10-10): the reply is saved, then the text goes to the customer\'s number', async () => {
+    newConv({ id: 'r1w', source: 'whatsapp', status: 'agent_handling', visitor_id: 'wa:919876543210' });
+    global.__wa = [];
+    const r = await reply('anurag', 'r1w', 'Hi, we have checked your order.');
+    status(r, 200);
+    deq([r.body.whatsapp, global.__wa], [{ ok: true, error: null }, [['919876543210', 'Hi, we have checked your order.']]]);
+    deq(agentMsgs('r1w')[0].metadata, { agent: 'anurag', wa_sent: true, wa_id: 'wamid.test' });
   });
 
   await t('R2 the customer\'s other open chats nobody holds come along (one claim event); others stay', async () => {
