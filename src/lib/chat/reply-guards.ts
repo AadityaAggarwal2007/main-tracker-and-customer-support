@@ -27,6 +27,12 @@ function tokens(text: string): Tok[] {
   return out;
 }
 
+// Words of a date ("17", "17th", "october", "2026") and a number written as an order number ("#5121", "order 5121").
+const MONTH = /^(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)$/;
+const dateWord = (w: string) => MONTH.test(w) || /^20\d\d$/.test(w) || /^\d{1,2}(?:st|nd|rd|th)?$/.test(w);
+const orderNumberAt = (text: string, t: Tok) => /^\d+$/.test(t.w)
+  && (text[t.start - 1] === '#' || /\b(?:order|id|no|number)\s*(?:no\.?|number|id)?\s*[:#.]?\s*$/i.test(text.slice(Math.max(0, t.start - 20), t.start)));
+
 export function dropAddressEcho(reply: string, customerTexts: string[]): { text: string; changed: boolean } {
   if (!reply || !customerTexts.length) return { text: reply, changed: false };
   const addresses = customerTexts
@@ -52,6 +58,9 @@ export function dropAddressEcho(reply: string, customerTexts: string[]): { text:
       while (b >= a && !specific(rt[b].w)) b--;
       const run = a <= b ? rt.slice(a, b + 1).map((x) => x.w) : [];
       if (!run.length) continue;
+      // A date or an order number the customer also typed is not their address (review 10 Oct: "I've checked your
+      // order #the address you shared", "the estimated delivery date is 17 the address you shared").
+      if (rt.slice(a, b + 1).every((x) => !specific(x.w) || dateWord(x.w) || orderNumberAt(reply, x))) { i = j - 1; continue; }
       const hasPlace = run.some(placeWord);
       const hasDigit = run.some(digits);
       const hasHint = run.some((w) => ADDRESS_HINT.test(w));

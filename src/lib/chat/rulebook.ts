@@ -197,6 +197,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'Chats are never deleted. A deleted message keeps its old text in the history.' },
       { id: '8.8', how: 'auto', from: '', title: 'Coming back',
         text: 'Writing again in a Closed chat reopens it; customers get a "Came back" tag.' },
+      { id: '8.9', how: 'code', from: 'Chikki review, 10 Oct', title: 'Mails no person wrote',
+        text: 'A bounce ("Message blocked", "Delivery Status Notification", mailer-daemon), an automatic mail (out of office, bulk mail) or a no-reply sender never becomes a chat and never gets a reply from Chikki (a reply to a bounce can loop). The Mail tab still shows it.' },
     ],
   },
   {

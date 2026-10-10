@@ -7,7 +7,9 @@
 // also checked here, without the model: a sentence that promises or hints at arrival
 // today, tonight or tomorrow is dropped. No imports; pure.
 
-const TIME_WORD = /\b(?:today|tonight|tomorrow|aaj|aaj\s+hi|aaj\s+raat|abhi\s+aaj)\b|आज|कल तक/i;
+// Review 10 Oct (A3): "Delivery attempts usually happen until the evening, around 7-8 PM. I'd suggest waiting till then"
+// promised the same evening without the word "today": an evening or a clock time with the parcel is a promise too.
+const TIME_WORD = /\b(?:today|tonight|tomorrow|aaj|aaj\s+hi|aaj\s+raat|abhi\s+aaj|evening|shaam|wait(?:ing)?\s+(?:till|until)\s+then)\b|\b\d{1,2}(?:\s*[-–]\s*\d{1,2})?\s*(?:pm|p\.m\.|baje)\b|आज|कल तक|शाम/i;
 // Words that make the time word about the parcel arriving.
 const ARRIVAL = /\b(?:deliver(?:y|ed|ing)?|arriv\w*|reach\w*|receive\w*|come|comes|came|coming|doorstep|aayega|aayegi|aa\s*jayega|aa\s*jaayega|ayega|milega|mil\s*jayega|mil\s*jaayega|pahunch\w*|pohonch\w*|hone\s+wali|hone\s+wala|hoga|ho\s*jayega|ho\s*jaayega|nahi\s+aaya|nhi\s+aaya|parcel|courier)\b|पहुँच|पहुंच|मिल/i;
 // A greeting or an offer of help that happens to say "today" is not a promise.
