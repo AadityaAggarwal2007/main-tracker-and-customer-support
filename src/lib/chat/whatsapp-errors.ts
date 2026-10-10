@@ -15,6 +15,12 @@ export function metaHint(error: string | null | undefined): MetaHint | null {
       fix: `Meta Business Settings > Users > System users > shiptrack-server > Add assets > WhatsApp accounts > tick the account with id ${paid[1]} (open it in "WhatsApp accounts": its address bar ends with selected_asset_id=${paid[1]}) > Full control > Save. Then press Send again. No new token is needed; if it still fails, make a new token with the same 3 permissions.`,
     };
   }
+  if (/cannot be used with this API/i.test(e)) {
+    return {
+      what: 'Meta says the account id saved here is not a WhatsApp Business Account that this API can make templates on (for example the payment-only "Messaging account", or an account from another app).',
+      fix: 'Setup tab > Check token: the saved account id must be the WhatsApp Business Account that holds +91 87964 14056 (Meta Business Settings > Accounts > WhatsApp accounts > the one with the number; its id is in the address bar). Fix the id there, then send the template again. If it is already that id, send the code in [brackets] to your developer.',
+    };
+  }
   if (code === '10' || /does not have permission for this action/i.test(e)) {
     return {
       what: 'The token is not allowed to do this. It belongs to a System User that has no rights on the app or the WhatsApp account, or it was made without the whatsapp_business_management permission.',
