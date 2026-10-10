@@ -91,6 +91,14 @@ Done and live:
   answered "(#10) Application does not have permission": the System User token lacks rights -> Business
   Settings > System users > Assign assets (app + WABA, full control), new token with whatsapp_business_management,
   .env, deploy (= the token rotation). The screen explains this under the error.
+  **Later same day:** token rotated by the owner (new System User token), WABA id corrected to 971683758658688 (the
+  billing page's 28873951022288651 was a different asset); Setup > Check token (debug_token) says all fine: valid,
+  all permissions, account + number readable and the number is in the account. Profile still answers (#10) while
+  the display name "Shiptrack" is under Meta review (not our bug; retry after approval). No template exists on
+  this account yet: the owner makes one (Templates tab), waits for Meta. New **Test** tab: send a text to a number
+  and watch the conversation with ticks on a phone, live. Reply test within 24 h of the owner's own message works
+  without a template. Screenshot of `.env` was shown once in chat: DB password, OpenRouter key, Gmail app password,
+  Shopify secrets, admin password are exposed there; rotate them (OpenRouter key and Gmail app password first).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

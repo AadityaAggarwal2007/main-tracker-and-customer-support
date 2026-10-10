@@ -2673,3 +2673,4 @@ a {
 .wa-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 1rem; }
 .wa-hint { border-left: 3px solid var(--warning); background: hsl(38, 95%, 95%); padding: 0.5rem 0.75rem; border-radius: 0 8px 8px 0; font-size: 0.8125rem; display: grid; gap: 2px; }
 .wa-err { color: var(--danger); font-size: 0.8125rem; margin: 0; word-break: break-word; }
+.wa-bubble.wa-in { background: #fff; border-radius: 0 8px 8px 8px; margin-left: 0; margin-right: 40px; }

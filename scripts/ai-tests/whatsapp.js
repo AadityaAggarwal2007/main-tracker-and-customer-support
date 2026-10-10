@@ -14,7 +14,8 @@ reset();
 let seq = 0;
 const db = {
   query: async (sql, p = []) => {
-    if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
+    if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: /'agent'/.test(sql) ? 'agent' : 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
+    if (/FROM messages m\s+WHERE m\.conversation_id = \$1 AND m\.deleted_at IS NULL AND m\.sender IN/.test(sql)) { const rows = S.msgs.filter((m) => m.conversation_id === p[0]).slice().reverse().map((m, i) => ({ id: m.id, sender: m.sender, content: m.content, created_at: '2026-10-10T10:0' + (9 - Math.min(i, 9)) + ':00Z', metadata: m.metadata })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
@@ -26,6 +27,7 @@ const db = {
   queryOne: async (sql, p = []) => {
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
     if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
+    if (/SELECT c\.id, c\.visitor_name AS name FROM conversations c/.test(sql)) { const c = S.convs.filter((x) => x.source === 'whatsapp' && x.visitor_id === p[0] && !x.merged_into).pop(); return c ? { id: c.id, name: c.visitor_name } : null; }
     if (/metadata->>'wa_id' = \$1 LIMIT 1/.test(sql)) { const m = S.msgs.find((x) => x.metadata && x.metadata.wa_id === p[0]); return m ? { id: m.id } : null; }
     if (/FROM businesses WHERE id::text = \$1/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { id: b.id } : null; }
     if (/FROM businesses ORDER BY is_default DESC/.test(sql)) { const b = [...S.panels].sort((a, c) => (c.is_default ? 1 : 0) - (a.is_default ? 1 : 0))[0]; return b ? { id: b.id } : null; }
@@ -99,6 +101,8 @@ const rName = require(path.join(SRC, 'app/api/whatsapp/display-name/route.ts'));
 const errs = require(path.join(SRC, 'lib/chat/whatsapp-errors.ts'));
 const rActivity = require(path.join(SRC, 'app/api/whatsapp/activity/route.ts'));
 const diag = require(path.join(SRC, 'lib/chat/whatsapp-diagnose.ts'));
+const rThread = require(path.join(SRC, 'app/api/whatsapp/thread/route.ts'));
+const rTestSend = require(path.join(SRC, 'app/api/whatsapp/test-send/route.ts'));
 const rTemplates = require(path.join(SRC, 'app/api/whatsapp/templates/route.ts'));
 const rSettings = require(path.join(SRC, 'app/api/whatsapp/settings/route.ts'));
 const rStart = require(path.join(SRC, 'app/api/whatsapp/start/route.ts'));
@@ -564,6 +568,40 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const none = await diag.checkToken('28873951022288651', '', {}, f);
     deq(none.verdicts, ['Meta would not describe the token: No WHATSAPP_CLOUD_TOKEN on the server']);
   });
+
+  console.log('whatsapp: the Test screen');
+  await t('test-send: a plain text goes through the Cloud API, the chat is made (With team) and the record keeps Meta\'s answer; Super Admin only', () => withEnv(async () => {
+    eq((await rTestSend.POST(jreq(AGENT, { to: '9289144767', text: 'hi' }))).status, 401);
+    eq((await rTestSend.POST(jreq(OWNER, { to: '123', text: 'hi' }))).status, 400);
+    eq((await rTestSend.POST(jreq(OWNER, { to: '9289144767', text: '   ' }))).status, 400);
+    const r = await rTestSend.POST(jreq(OWNER, { to: '+91 92891 44767', text: 'Test reply from ShipTrack' }));
+    deq([r.status, r.body.ok, r.body.id], [200, true, 'wamid.out1']);
+    deq([S.convs.length, S.convs[0].visitor_id, S.convs[0].status], [1, 'wa:919289144767', 'agent_handling']);
+    const sent = S.fetches.find((f) => /\/messages$/.test(f.url));
+    deq(sent.init.body, { messaging_product: 'whatsapp', recipient_type: 'individual', to: '919289144767', type: 'text', text: { preview_url: false, body: 'Test reply from ShipTrack' } });
+    deq(S.msgs.map((m) => [m.sender, m.content, m.metadata]), [['agent', 'Test reply from ShipTrack', { agent: 'Super Admin', wa_sent: true, test: true, wa_id: 'wamid.out1' }]]);
+  }));
+  await t('test-send: Meta refuses (24 hours) -> 502 with the reason and the code, and the record says Not sent', () => withEnv(async () => {
+    const real = global.fetch;
+    global.fetch = async (url, init) => /\/messages$/.test(url) ? { ok: false, status: 400, json: async () => ({ error: { code: 131047, message: 'Re-engagement message' } }) } : real(url, init);
+    try {
+      const r = await rTestSend.POST(jreq(OWNER, { to: '9289144767', text: 'hi' }));
+      deq([r.status, r.body.error, r.body.code], [502, 'The customer last wrote over 24 hours ago: WhatsApp only allows a template message now', 131047]);
+      deq(S.msgs[0].metadata, { agent: 'Super Admin', wa_sent: false, test: true, wa_error: 'The customer last wrote over 24 hours ago: WhatsApp only allows a template message now' });
+    } finally { global.fetch = real; }
+  }));
+  await t('thread: the conversation with a number, oldest first, ours with Meta\'s report, the customer\'s as theirs; an unknown number is empty; Super Admin only', () => withEnv(async () => {
+    const q = (user, to) => jreq(user, {}, 'http://x/api/whatsapp/thread?to=' + encodeURIComponent(to));
+    eq((await rThread.GET(q(AGENT, '9289144767'))).status, 401);
+    eq((await rThread.GET(q(OWNER, '12'))).status, 400);
+    deq((await rThread.GET(q(OWNER, '9289144767'))).body, { conversationId: null, name: null, messages: [] });
+    await inbound.storeWaInbound({ id: 'wamid.in1', from: '919289144767', name: 'Aaditya', text: 'Helliooo', type: 'text', timestamp: Date.now(), phoneNumberId: null }, {});
+    await rTestSend.POST(jreq(OWNER, { to: '9289144767', text: 'Test reply' }));
+    await inbound.storeWaStatus({ id: 'wamid.out1', status: 'read', error: null, recipient: null });
+    const r = await rThread.GET(q(OWNER, '9289144767'));
+    eq(r.status, 200);
+    deq([r.body.name, r.body.messages.map((m) => [m.from, m.text, m.sent, m.status, m.error])], ['Aaditya', [['customer', 'Helliooo', null, null, null], ['us', 'Test reply', true, 'read', null]]]);
+  }));
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
