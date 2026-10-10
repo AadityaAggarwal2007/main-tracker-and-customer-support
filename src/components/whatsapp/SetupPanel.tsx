@@ -45,7 +45,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   // Meta's last webhook calls since the server started (a wrong WHATSAPP_APP_SECRET refuses every one of them)
   const hook = s?.webhook;
   const ago = (ms: number | null) => (ms ? `${Math.max(1, Math.round((Date.now() - ms) / 60000))} min ago` : '');
-  const refusedLast = !!hook?.lastRefused && (!hook.lastOk || hook.lastRefused > hook.lastOk);
+  const refusedLast = !!hook && hook.refusedSinceOk > 0;   // an accepted call resets the count, so >0 = the latest call was refused
   const hookOk = !!hook?.lastOk && !refusedLast;
   const hookText = !hook || (!hook.lastOk && !hook.lastRefused) ? 'Webhook calls: none since the last deploy yet'
     : refusedLast ? `Webhook calls are being REFUSED (${hook.refusedSinceOk} so far)` : `Webhook calls arriving: last one accepted ${ago(hook.lastOk)}`;
