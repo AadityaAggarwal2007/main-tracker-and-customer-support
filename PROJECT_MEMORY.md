@@ -134,7 +134,9 @@ Done and live:
   -1) was run by him (valid = t); 7 "All panels" setup (Settings > All panels setup: Make from vastora, then switch
   each panel to All panels; `{brand}` = each panel's name; storage in chat_settings + site_faqs `site_id '*'`, no SQL),
   plus the brand fix: the locked rules said "Karry from the Vastora team" on EVERY panel; now each panel's own name.
-  Before switching VASTRIKA / kurtiya on, he runs the live AI test on the VPS. Next: 8 Chikki's record and fixes.
+  Live AI test 51/51; made from vastora (5 names -> {brand}, 43 answers); all three panels switched to All panels
+  (kurtiya checked live: "Karry from the Kurtiya team"). 8 Chikki's record: `scripts/chikki-review.js` (read only,
+  masked) -> he pastes the output -> fixes one at a time, each with a golden case.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

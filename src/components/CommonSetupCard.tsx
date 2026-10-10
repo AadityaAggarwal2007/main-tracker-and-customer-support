@@ -98,6 +98,7 @@ export default function CommonSetupCard({ token, onAlert }: { token: string; onA
             </div>
           )}
 
+          {!c?.ready && <div className="meta" style={{ marginBottom: '0.5rem' }}>The &ldquo;All panels&rdquo; buttons turn on once the All panels setup is made above.</div>}
           <div className="cs-panels">
             {data.panels.map((p) => (
               <div key={p.businessId} className="cs-row">
