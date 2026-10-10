@@ -531,6 +531,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       'debug_token': { data: { is_valid: true, type: 'SYSTEM_USER', app_id: '1427249435405269', application: 'ship track msg', expires_at: 0, scopes: ['whatsapp_business_messaging', 'business_management'], granular_scopes: [{ scope: 'whatsapp_business_messaging', target_ids: ['971683758658688'] }, { scope: 'business_management', target_ids: ['1590833022761407'] }] } },
       '28873951022288651?fields=id,name': { error: { message: 'Unsupported get request. Object with ID \'28873951022288651\' does not exist', code: 100 } },
       '1335396902996145?fields=display_phone_number': { display_phone_number: '+91 87964 14056' },
+      '28873951022288651/phone_numbers': { data: [{ id: '1335396902996145', display_phone_number: '+91 87964 14056' }] },
     };
     const f = async (url) => { const k = Object.keys(answers).find((x) => url.includes(x)); const ok = k && !answers[k].error; return { ok, status: ok ? 200 : 400, json: async () => (k ? answers[k] : { error: { message: 'nope' } }) }; };
     const c = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
@@ -545,7 +546,12 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     answers.debug_token.data.granular_scopes.push({ scope: 'whatsapp_business_management', target_ids: ['28873951022288651'] });
     answers['28873951022288651?fields=id,name'] = { id: '28873951022288651', name: 'Shiptrack' };
     const ok = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
-    deq([ok.waba.name, ok.verdicts], ['Shiptrack', ['The token is fine: valid, the needed permissions, the account and the number readable.']]);
+    deq([ok.waba.name, ok.phone.inWaba, ok.verdicts], ['Shiptrack', true, ['The token is fine: valid, the needed permissions, the account and the number readable.']]);
+    // The number lives in another account than the saved one.
+    answers['28873951022288651/phone_numbers'] = { data: [{ id: '999', display_phone_number: '+1 555 648 9377' }] };
+    const elsewhere = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
+    assert.match(elsewhere.verdicts[0], /phone number 1335396902996145 is NOT in the saved account 28873951022288651 \("Shiptrack"\): that account holds \+1 555 648 9377/);
+    answers['28873951022288651/phone_numbers'] = { data: [{ id: '1335396902996145', display_phone_number: '+91 87964 14056' }] };
     // The token manages another account than the saved id.
     answers.debug_token.data.granular_scopes[2].target_ids = ['971683758658688'];
     const other = await diag.checkToken('28873951022288651', '1427249435405269', env, f);
