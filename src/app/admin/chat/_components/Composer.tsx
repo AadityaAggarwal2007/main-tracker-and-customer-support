@@ -1,11 +1,11 @@
 'use client';
 
-import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck } from 'lucide-react';
+import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck, LayoutTemplate } from 'lucide-react';
 import { ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, formatFileSize } from '@/lib/chat/attachment-rules';
 import type { Conversation, PendingFile } from '../_lib/types';
 import { draggingFiles } from '../_lib/inbox';
 
-export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver }: {
+export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver, openTemplate }: {
   activeConv: Conversation | null;
   addFiles: (files: File[]) => void;
   composerHint: string;
@@ -20,6 +20,8 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
   // "Sudharo" (owner 2026-10-04): the typed draft comes back with its spelling and grammar fixed.
   // Chat conversations only; absent = the button is not drawn.
   polishDraft?: () => Promise<void>;
+  // WhatsApp chat (owner 2026-10-10): opens the template picker (the only message after 24 h of silence).
+  openTemplate?: () => void;
   polishing?: boolean;
   readOnlyReply: string;
   removeFile: (key: string) => void;
@@ -171,6 +173,20 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                         }}
                         style={{ flex: 1, height: 'auto', resize: 'vertical', minHeight: 44 }}
                       />
+                      {openTemplate && (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Send an approved WhatsApp template (needed when the customer last wrote over 24 hours ago)"
+                          aria-label="Send a WhatsApp template"
+                          disabled={!replyOpen || sending}
+                          onClick={openTemplate}
+                          style={{ padding: '0 0.625rem', flexShrink: 0, gap: '0.25rem' }}
+                        >
+                          <LayoutTemplate size={15} />
+                          <span className="chat-polish-label">Template</span>
+                        </button>
+                      )}
                       {polishDraft && (
                         <button
                           type="button"

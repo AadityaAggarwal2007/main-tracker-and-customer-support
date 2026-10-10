@@ -12,6 +12,7 @@ import MailCard from '@/components/MailCard';
 import { clearMailCache } from '@/components/mail/cache';
 import ChargebacksCard from '@/components/ChargebacksCard';
 import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
+import WhatsAppCard from '@/components/WhatsAppCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { can, isSuperAdmin, type Permission } from '@/lib/permissions';
@@ -1396,6 +1397,14 @@ export default function AdminDashboard() {
                   <ChargebackSettingsCard key={activeBusiness.id} token={token} businessId={activeBusiness.id} panelName={activeBusiness.name} onAlert={showAlert} />
                 </div>
               )}
+
+                  <div id="set-whatsapp" style={{ scrollMarginTop: 76 }} />
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '0.75rem 0 -0.25rem' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>WhatsApp</span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>One number for every panel: templates and the first message to a customer</span>
+                  </div>
+                  {/* WhatsApp (owner 2026-10-10): setup status, the account id, message templates, message a number */}
+                  <WhatsAppCard token={token} onAlert={showAlert} onOpenChat={(id) => router.push(`/admin/chat?open=${encodeURIComponent(id)}`)} />
 
 
                   <div id="set-shopify" style={{ scrollMarginTop: 76 }} />

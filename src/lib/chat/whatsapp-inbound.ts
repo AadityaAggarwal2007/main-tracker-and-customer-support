@@ -26,30 +26,34 @@ export async function waPanelId(env: NodeJS.ProcessEnv = process.env): Promise<s
 
 export type InboundOutcome = 'stored' | 'duplicate' | 'no_panel';
 
-export async function storeWaInbound(m: WaInbound, env: NodeJS.ProcessEnv = process.env): Promise<{ outcome: InboundOutcome; conversationId: string | null }> {
-  const dup = await queryOne<{ id: string }>(`SELECT id FROM messages WHERE metadata->>'wa_id' = $1 LIMIT 1`, [m.id]);
-  if (dup) return { outcome: 'duplicate', conversationId: null };
-
+// The customer's WhatsApp chat on the WhatsApp panel's site: the latest one for that number, else a new one
+// (With team). Also used when the TEAM starts the conversation with a template (whatsapp-templates.ts).
+export async function waConversationFor(digits: string, name: string | null, env: NodeJS.ProcessEnv = process.env): Promise<{ id: string; status: string } | null> {
   const panel = await waPanelId(env);
-  if (!panel) return { outcome: 'no_panel', conversationId: null };
+  if (!panel) return null;
   const site = await ensureSiteForPanel(panel, 'whatsapp');
-  const visitorId = `wa:${m.from}`;
-
-  let conv = await queryOne<{ id: string; status: string }>(
+  const visitorId = `wa:${digits}`;
+  const found = await queryOne<{ id: string; status: string }>(
     `SELECT id, status FROM conversations
       WHERE site_id = $1 AND source = 'whatsapp' AND visitor_id = $2 AND merged_into IS NULL
       ORDER BY created_at DESC LIMIT 1`,
     [site.id, visitorId]
   );
-  if (!conv) {
-    conv = await queryOne<{ id: string; status: string }>(
-      `INSERT INTO conversations
-         (id, site_id, visitor_id, visitor_name, visitor_phone, status, source, unread_count, last_message_at, created_at, updated_at)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 'agent_handling', 'whatsapp', 0, now(), now(), now())
-       RETURNING id, status`,
-      [site.id, visitorId, m.name, '+' + m.from]
-    );
-  }
+  if (found) return found;
+  return queryOne<{ id: string; status: string }>(
+    `INSERT INTO conversations
+       (id, site_id, visitor_id, visitor_name, visitor_phone, status, source, unread_count, last_message_at, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 'agent_handling', 'whatsapp', 0, now(), now(), now())
+     RETURNING id, status`,
+    [site.id, visitorId, name, '+' + digits]
+  );
+}
+
+export async function storeWaInbound(m: WaInbound, env: NodeJS.ProcessEnv = process.env): Promise<{ outcome: InboundOutcome; conversationId: string | null }> {
+  const dup = await queryOne<{ id: string }>(`SELECT id FROM messages WHERE metadata->>'wa_id' = $1 LIMIT 1`, [m.id]);
+  if (dup) return { outcome: 'duplicate', conversationId: null };
+
+  const conv = await waConversationFor(m.from, m.name, env);
   if (!conv) return { outcome: 'no_panel', conversationId: null };
 
   await query(

@@ -78,6 +78,10 @@ Done and live:
   WHATSAPP_API_BASE (default v25.0), WHATSAPP_PANEL_ID (default: the default panel). The owner's setup file
   (uploaded, CONFIDENTIAL) holds a permanent System User token that was shared in chat: he must rotate it;
   never commit or echo it. Test: `scripts/ai-tests/whatsapp.js` (in test:ai) + R68 in team-routing.js.
+  **Templates (same day):** Settings > WhatsApp card (WABA id saved in chat_settings, templates list / new / delete,
+  "Message a number" = first message by approved template, opens the chat); inbox "Template" button on a WhatsApp
+  chat. Routes `/api/whatsapp/templates|settings|start`. Live test with the owner's own number 9289144767 worked
+  (inbound showed in Open case as "Aaditya Aggarwal"). WABA id = 28873951022288651 (he types it in the card).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
