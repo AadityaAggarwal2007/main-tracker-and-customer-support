@@ -2686,3 +2686,9 @@ a {
 .wa-hint { border-left: 3px solid var(--warning); background: hsl(38, 95%, 95%); padding: 0.5rem 0.75rem; border-radius: 0 8px 8px 0; font-size: 0.8125rem; display: grid; gap: 2px; }
 .wa-err { color: var(--danger); font-size: 0.8125rem; margin: 0; word-break: break-word; }
 .wa-bubble.wa-in { background: #fff; border-radius: 0 8px 8px 8px; margin-left: 0; margin-right: 40px; }
+
+/* The team's red bar (owner 2026-10-10): a chat moved to the Manager after 30 minutes without a reply. */
+.team-alerts { position: fixed; left: 50%; bottom: 0.75rem; transform: translateX(-50%); z-index: 60; display: grid; gap: 0.375rem; width: min(42rem, calc(100vw - 2rem)); }
+.team-alert { display: flex; align-items: center; gap: 0.5rem; background: var(--danger); color: #fff; border-radius: var(--radius-lg); padding: 0.5rem 0.75rem; box-shadow: var(--shadow-md); font-size: 0.8125rem; }
+.team-alert .btn-icon { color: #fff; }
+.team-alert-text { flex: 1; min-width: 0; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }

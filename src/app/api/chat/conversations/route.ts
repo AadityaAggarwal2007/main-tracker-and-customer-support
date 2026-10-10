@@ -7,7 +7,8 @@ import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics'
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
-import { can, isTeamLead } from '@/lib/permissions';
+import { can, isTeamLead, panelScope } from '@/lib/permissions';
+import { lateAlerts } from '@/lib/chat/escalate-late';
 import { isOfficeHours, nextOpenMs } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
 import { staffActor, teamDirectory } from '@/lib/chat/team-routing';
@@ -489,7 +490,10 @@ export async function GET(request: NextRequest) {
   }
 
   const now = Date.now();
+  // The red bar for the whole team (owner 2026-10-10): chats moved to the Manager after 30 minutes without a reply.
+  const alerts = await lateAlerts(panelScope(user));
   return NextResponse.json({
+    alerts,
     conversations: result.rows, total, unanswered_total: unansweredTotal,
     topic_counts: counts, case_counts: caseCounts, case_summary: caseSummary,
     me, team: teamDirectory(now), office_open: isOfficeHours(now, holidays),

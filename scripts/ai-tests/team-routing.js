@@ -78,6 +78,8 @@ stub('ai', `module.exports = {
   getAIResponse: async (...a) => { global.__ai.calls.push(a); if (global.__ai.next.onCall) global.__ai.next.onCall(); return { content: global.__ai.next.content, escalated: !!global.__ai.next.escalated, allFailed: !!global.__ai.next.allFailed, toolCallMeta: global.__ai.next.toolCallMeta || null }; },
 };`);
 stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: false, block: "setup" }), refundMarkLocked: async () => false };');
+// The 30-minute move's red bar (escalate-late.ts, owner 2026-10-10): its own suite; the list only carries its answer here.
+stub('escalate-late', 'module.exports = { lateAlerts: async () => [] };');
 global.__emails = [];
 global.__ai = { calls: [], next: { content: '' } };
 global.__orders = {};
