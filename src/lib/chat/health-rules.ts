@@ -315,3 +315,9 @@ export function parseHealthReply(text: string | null | undefined): { score: numb
   }
   return null;
 }
+
+// One customer message's words, for the chargeback risk engine (src/lib/chargeback/risk-rules.ts): the same lists.
+export function textFlags(text: string): { accuse: boolean; abuse: boolean; refund: boolean } {
+  const t = String(text || '').slice(0, 1500);
+  return { accuse: any(ACCUSE, t), abuse: any(ABUSE, t), refund: any(REFUND, t) };
+}

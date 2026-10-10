@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ExternalLink, Loader2, MessageCircle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
+import RiskPanel from '@/components/chargeback/RiskPanel';
+import StudyPanel from '@/components/chargeback/StudyPanel';
 
 interface Alert {
   id: string; business_id: string; panel_name: string | null; received_at: string; from_address: string; from_name: string;
@@ -19,7 +21,31 @@ const VIEWS: { key: View; label: string }[] = [{ key: 'open', label: 'Open' }, {
 
 const notifyText = (s: string) => s === 'not_chargeback' ? 'Not a chargeback: nothing sent' : s === 'sent' ? 'WhatsApp sent' : s === 'no_number' ? 'No WhatsApp number' : s === 'not_configured' ? 'WhatsApp not set up' : s === 'pending' ? 'WhatsApp pending' : s.replace(/^failed: ?/, 'WhatsApp failed: ');
 
-export default function ChargebacksCard({ token, onAlert, onChanged }: { token: string; onAlert: (type: string, message: string) => void; onChanged?: () => void }) {
+// Chargeback Shield (owner 2026-10-10): the tab opens on "Stop them" (the orders at risk now), then the chargebacks that
+// came, then the study of all of them. Remembered in localStorage `cb_mode`.
+type Mode = 'risk' | 'alerts' | 'study';
+const MODES: { key: Mode; label: string }[] = [{ key: 'risk', label: 'Stop them (at risk)' }, { key: 'alerts', label: 'Chargebacks' }, { key: 'study', label: 'Study' }];
+const readMode = (): Mode => { try { const m = localStorage.getItem('cb_mode'); return m === 'alerts' || m === 'study' ? m : 'risk'; } catch { return 'risk'; } };
+
+export default function ChargebacksCard(props: { token: string; onAlert: (type: string, message: string) => void; onChanged?: () => void }) {
+  const [mode, setModeState] = useState<Mode>('risk');
+  useEffect(() => { setModeState(readMode()); }, []);
+  const setMode = (m: Mode) => { setModeState(m); try { localStorage.setItem('cb_mode', m); } catch { /* private window */ } };
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+        <ShieldAlert size={20} style={{ color: 'var(--danger)' }} />
+        <h2 style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0, flex: 1 }}>Chargeback Shield</h2>
+        {MODES.map(m => <button key={m.key} type="button" className="seg-btn" aria-pressed={mode === m.key} onClick={() => setMode(m.key)}>{m.label}</button>)}
+      </div>
+      {mode === 'risk' && <RiskPanel token={props.token} onAlert={props.onAlert} />}
+      {mode === 'study' && <StudyPanel token={props.token} onAlert={props.onAlert} />}
+      {mode === 'alerts' && <AlertsPanel {...props} />}
+    </div>
+  );
+}
+
+function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (type: string, message: string) => void; onChanged?: () => void }) {
   const [view, setView] = useState<View>('open');
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [installed, setInstalled] = useState(true);
@@ -66,8 +92,7 @@ export default function ChargebacksCard({ token, onAlert, onChanged }: { token: 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-        <ShieldAlert size={20} style={{ color: 'var(--danger)' }} />
-        <h2 style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0, flex: 1 }}>Chargebacks</h2>
+        <span style={{ flex: 1 }} />
         {VIEWS.map(v => <button key={v.key} type="button" className="seg-btn" aria-pressed={view === v.key} onClick={() => setView(v.key)}>{v.label}</button>)}
         <button type="button" className="btn btn-outline btn-sm" onClick={load} disabled={loading}>{loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh</button>
       </div>
