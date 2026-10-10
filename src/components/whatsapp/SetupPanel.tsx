@@ -14,6 +14,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const [messaging, setMessaging] = useState(s?.messaging || '');
   const [limit, setLimit] = useState(s?.dailyLimit ? String(s.dailyLimit) : '');
   const [alertNo, setAlertNo] = useState(s?.alertTo || '');
+  const [mgrNo, setMgrNo] = useState(s?.extraAlertTo || '');
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<TokenCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -29,7 +30,7 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
   const save = async () => {
     setBusy(true);
     try {
-      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId, messagingId: messaging, dailyLimit: limit, alertTo: alertNo }) });
+      const r = await fetch('/api/whatsapp/settings', { method: 'POST', headers: auth, body: JSON.stringify({ waba, appId, messagingId: messaging, dailyLimit: limit, alertTo: alertNo, extraAlertTo: mgrNo }) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', j.error || 'Could not save it'); return; }
       onAlert('success', 'Saved'); await reload();
@@ -79,8 +80,9 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
           <label><span style={label}>Messaging account id (Accounts &gt; Messaging accounts &gt; Shiptrack): templates are made and listed here</span><input className="form-input" value={messaging} onChange={(e) => setMessaging(e.target.value)} placeholder="e.g. 28873951022288651" inputMode="numeric" /></label>
           <label><span style={label}>Meta App id (Apps &gt; ship track msg)</span><input className="form-input" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="e.g. 1427249435405269" inputMode="numeric" /></label>
           <label><span style={label}>Daily limit: customers a day (WhatsApp Manager &gt; Overview &gt; Limits, e.g. 2000). The Today board shows it when Meta does not send it</span><input className="form-input" value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="e.g. 2000" inputMode="numeric" /></label>
-          <label><span style={label}>Your WhatsApp number for ShipTrack alerts (AI credits running low). Needs the approved template &quot;shiptrack_alert&quot; (Templates tab &gt; ShipTrack alert template)</span><input className="form-input" value={alertNo} onChange={(e) => setAlertNo(e.target.value)} placeholder="e.g. 919876543210" inputMode="tel" /></label>
-          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || '') && messaging === (s?.messaging || '') && limit === (s?.dailyLimit ? String(s.dailyLimit) : '') && alertNo === (s?.alertTo || ''))} style={{ justifySelf: 'start' }}>
+          <label><span style={label}>Your WhatsApp number for ShipTrack alerts (AI credits running low, Critical chargeback risk). Needs the approved template &quot;shiptrack_alert&quot; (Templates tab &gt; ShipTrack alert template)</span><input className="form-input" value={alertNo} onChange={(e) => setAlertNo(e.target.value)} placeholder="e.g. 919876543210" inputMode="tel" /></label>
+          <label><span style={label}>More numbers for the Critical chargeback-risk alerts (Sunny, team): up to 5, separated by commas. A WhatsApp group cannot be used: Meta allows groups only for green-tick business accounts</span><input className="form-input" value={mgrNo} onChange={(e) => setMgrNo(e.target.value)} placeholder="e.g. 919876543210, 918765432109" inputMode="tel" /></label>
+          <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy || (waba === (s?.waba || '') && appId === (s?.appId || '') && messaging === (s?.messaging || '') && limit === (s?.dailyLimit ? String(s.dailyLimit) : '') && alertNo === (s?.alertTo || '') && mgrNo === (s?.extraAlertTo || ''))} style={{ justifySelf: 'start' }}>
             {busy ? <Loader2 size={14} style={spin} /> : 'Save'}
           </button>
         </div>

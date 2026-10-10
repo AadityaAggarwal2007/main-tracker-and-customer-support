@@ -6,6 +6,7 @@ import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 import { aiHealth, AI_REASON_TEXT, type AiHealth } from '@/lib/chat/ai-health';
 import { loadHolidays } from '@/lib/chat/holidays';
 import { loadWaHealth } from '@/lib/chat/whatsapp-health';
+import { loadRiskList } from '@/lib/chargeback/risk';
 import { loadAiCredit } from '@/lib/chat/ai-credit';
 import type { AiCredit } from '@/lib/chat/ai-credit-rules';
 import type { WaHealth } from '@/lib/chat/whatsapp-health-rules';
@@ -134,7 +135,9 @@ function gmailStatus(list: (ReturnType<typeof getMailboxStatus>)[]): { status: G
 // The day itself: India's date, whether the office is open now and who is in ShipTrack right now (seen in the
 // last 5 minutes, like the inbox's team list). Names only; nothing else about a person.
 export interface BoardAi extends AiHealth { text: string | null }
-export async function loadBoardDay(superAdmin = false): Promise<{ date: string; officeOpen: boolean; online: string[]; ai: BoardAi; whatsapp: WaHealth | null; aiCredit: AiCredit | null }> {
+export interface BoardRisk { critical: number; high: number; watch: number; movedToday: number }
+// riskScope: the panels of a login that may see the Chargeback Shield (canChargebacks; null = every panel), undefined = may not.
+export async function loadBoardDay(superAdmin = false, riskScope?: string[] | null): Promise<{ date: string; officeOpen: boolean; online: string[]; ai: BoardAi; whatsapp: WaHealth | null; aiCredit: AiCredit | null; risk: BoardRisk | null }> {
   const now = Date.now();
   // Chikki's health (ai-health.ts): a red banner while every model fails (credits, key, rate limit, timeouts).
   const h = aiHealth(now);
@@ -148,5 +151,16 @@ export async function loadBoardDay(superAdmin = false): Promise<{ date: string; 
   const whatsapp = superAdmin ? await loadWaHealth(now).catch((e) => { console.error('[panel-board] whatsapp:', (e as Error).message); return null; }) : null;
   // The AI's OpenRouter money (ai-credit.ts, owner 2026-10-10): the Super Admin's only; never the key.
   const aiCredit = superAdmin ? await loadAiCredit(false, now).catch(() => null) : null;
-  return { date: istDate(now), officeOpen: isOfficeHours(now, holidays), online, ai, whatsapp, aiCredit };
+  // Chargeback Shield (owner 2026-10-10): the risk list's counts and the chats moved to the Manager today.
+  const risk = riskScope === undefined ? null : await (async (): Promise<BoardRisk | null> => {
+    try {
+      const l = await loadRiskList(riskScope, now);
+      const moved = await safe('risk moves', async () => (await query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM chat_events e LEFT JOIN sites s ON s.id::text = e.site_id
+          WHERE e.reason = 'chargeback_risk' AND e.created_at > now() - interval '1 day'
+            AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))`, [riskScope])).rows[0]?.n ?? 0, 0);
+      return { ...l.counts, movedToday: moved };
+    } catch (e) { console.error('[panel-board] risk:', (e as Error).message); return null; }
+  })();
+  return { date: istDate(now), officeOpen: isOfficeHours(now, holidays), online, ai, whatsapp, aiCredit, risk };
 }

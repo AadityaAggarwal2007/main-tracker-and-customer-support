@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { aiCreditAlert } from '@/lib/chat/ai-credit';
+import { runRiskEscalation } from '@/lib/chargeback/risk-escalate';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
 import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
@@ -36,6 +37,9 @@ export async function GET(request: NextRequest) {
   // The AI's OpenRouter money (owner 2026-10-10, ai-credit.ts): a WhatsApp alert to the owner before it runs out (read every
   // 10 minutes at most, one alert per 12 hours per level). Not awaited; never throws.
   void aiCreditAlert().catch(() => {});
+  // Chargeback Shield step 2 (owner 2026-10-10): a Critical chargeback-risk chat goes to the Manager, the team gets the
+  // red bar, the owner and the Manager a WhatsApp (risk-escalate.ts; at most every 5 minutes; never throws).
+  void runRiskEscalation().catch(() => {});
 
   const client = await getPool().connect();
   try {

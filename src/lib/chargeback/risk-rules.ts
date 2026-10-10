@@ -210,4 +210,16 @@ export const SIGNAL_NAME: Record<SignalKey, string> = {
   high_value: 'Big order', calmed: 'Said it is solved', reshipped: 'New parcel sent', delivered: 'Delivered',
 };
 
+// The WhatsApp alert's one line (a template variable: no line breaks, no tabs, no long runs of spaces; Meta refuses them).
+export function riskAlertText(i: { score: number; orderId: string; panelName: string; customerName?: string; signals: RiskSignal[]; action: RiskAction }): string {
+  const why = i.signals.filter((s) => s.points > 0).slice(0, 3).map((s) => s.text).join('; ');
+  const t = `Chargeback risk CRITICAL (${i.score}): order ${i.orderId} on ${i.panelName}${i.customerName ? `, ${i.customerName}` : ''}. ${why}. Next step: ${i.action.text}`;
+  return t.replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').slice(0, 600);
+}
+// WhatsApp alerts go out 09:00-22:00 India time only (the owner's phone at night stays quiet; the list keeps them).
+export function alertHourOk(now: number): boolean {
+  const h = Math.floor(((now + 330 * 60_000) % 86_400_000) / 3_600_000);
+  return h >= 9 && h < 22;
+}
+
 export const LEVEL_TEXT: Record<RiskLevel, string> = { low: 'Low', watch: 'Watch', high: 'High', critical: 'Critical' };

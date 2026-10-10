@@ -113,3 +113,28 @@ export async function setAlertTo(digits: string): Promise<void> {
     [ALERT_TO_KEY, digits]
   );
 }
+
+// More numbers for the alerts (owner 2026-10-10, Chargeback Shield step 2: "Sunny ke paas ... Super Admin ko bhi pata chale";
+// then "group chat add karne ka option": the official Cloud API cannot post into an ordinary WhatsApp group (Meta's Groups
+// API needs the green-tick Official Business Account, groups made by the API, 8 people), so the alert goes to up to 5
+// numbers, the same message each). Stored as digits separated by commas; [] = none. Not a secret.
+export const EXTRA_ALERT_KEY = 'whatsapp_alert_extra';
+export const EXTRA_ALERT_MAX = 5;
+export const parseAlertNumbers = (stored: string): string[] =>
+  Array.from(new Set(String(stored || '').split(',').map((x) => x.replace(/\D/g, '')).filter((x) => x.length >= 10))).slice(0, EXTRA_ALERT_MAX);
+export async function extraAlertTo(): Promise<string[]> {
+  try {
+    const row = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [EXTRA_ALERT_KEY]);
+    return parseAlertNumbers(row?.value || '');
+  } catch (err) {
+    console.error('[whatsapp] extra alert numbers read failed:', (err as Error)?.message);
+    return [];
+  }
+}
+export async function setExtraAlertTo(numbers: string[]): Promise<void> {
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [EXTRA_ALERT_KEY, numbers.join(',')]
+  );
+}

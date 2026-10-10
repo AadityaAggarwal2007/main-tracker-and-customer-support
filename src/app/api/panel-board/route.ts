@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
-import { isSuperAdmin } from '@/lib/permissions';
+import { canChargebacks, isSuperAdmin, panelScope } from '@/lib/permissions';
 import { loadBoardDay, loadPanelBoard } from '@/lib/panel-board-server';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
-    const [panels, day] = await Promise.all([loadPanelBoard(user.businessIds, isSuperAdmin(user)), loadBoardDay(isSuperAdmin(user))]);
+    const [panels, day] = await Promise.all([loadPanelBoard(user.businessIds, isSuperAdmin(user)), loadBoardDay(isSuperAdmin(user), canChargebacks(user) ? panelScope(user) : undefined)]);
     return NextResponse.json({ panels, day, superAdmin: isSuperAdmin(user), at: new Date().toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {
     console.error('[panel-board]', (e as Error).message);

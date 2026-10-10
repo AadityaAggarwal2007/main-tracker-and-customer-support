@@ -153,8 +153,11 @@ Done and live:
   charged back before; minus solved / reshipped / delivered; ONE next step), `risk.ts` (loader, 2 min cache; the
   chargeback mail -> order by email / phone when it names no order number, also in `poll.ts` for new mails; the
   study), `GET /api/chargebacks/risk[?view=study]`, Chargebacks tab = "Chargeback Shield" with Stop them / Chargebacks
-  / Study (`src/components/chargeback/*`). Rulebook 9.15. Step 2 (next): Critical -> the chat goes to the Manager by
-  itself + red bar + WhatsApp to owner / Sunny, a Today line, weights tuned from the owner's Study screenshot.
+  / Study (`src/components/chargeback/*`). Rulebook 9.15. **Step 2 done (`risk-escalate.ts`, rulebook 9.16):** Critical -> the chat goes
+  to the Manager by itself (office hours, once in 7 days), red bar for the team, ONE WhatsApp per Critical order to the
+  owner's alert number + up to 5 more numbers (WhatsApp > Setup; a WhatsApp group is not possible: Meta allows groups
+  only for green-tick accounts), Today "Chargeback risk" box + routine step. Owner must: type his number and Sunny's in
+  WhatsApp > Setup, have `shiptrack_alert` approved, send the Study screenshot (weights still untuned).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

@@ -101,12 +101,14 @@ export function summarize(panels: PanelStats[]): BoardSummary {
 export interface RoutineStep { text: string; count: number; done: boolean; go: NonNullable<Need['go']> }
 // waProblems: the WhatsApp number's open problems (whatsapp-health-rules.ts waHealthLines), null = not shown (a team
 // member, or WhatsApp not set up).
-export function morningRoutine(t: BoardSummary, aiDown = false, waProblems: number | null = null, creditLow = false): RoutineStep[] {
+export function morningRoutine(t: BoardSummary, aiDown = false, waProblems: number | null = null, creditLow = false, riskCritical: number | null = null): RoutineStep[] {
   const steps: RoutineStep[] = [];
   // creditLow (owner 2026-10-10): OpenRouter credits or the key's limit about to run out (ai-credit-rules.ts warn / danger).
   steps.push({ text: 'Chikki is answering customers (OpenRouter credits and key fine)', count: (aiDown ? 1 : 0) + (creditLow ? 1 : 0), done: !aiDown && !creditLow, go: 'settings' });
   if (waProblems !== null) steps.push({ text: 'WhatsApp number healthy (quality, daily limit, no failed messages)', count: waProblems, done: waProblems === 0, go: 'whatsapp' });
   if (t.chargebacks !== null) steps.push({ text: 'Answer every open chargeback', count: t.chargebacks, done: t.chargebacks === 0, go: 'chargebacks' });
+  // Chargeback Shield (owner 2026-10-10): orders whose customer sounds like a chargeback is coming, Critical level.
+  if (riskCritical !== null) steps.push({ text: 'No Critical chargeback risk left (Chargebacks > Stop them)', count: riskCritical, done: riskCritical === 0, go: 'chargebacks' });
   steps.push({ text: 'Both Gmails of every panel are being read', count: t.gmailErrors, done: t.gmailErrors === 0, go: 'settings' });
   steps.push({ text: 'No customer waiting over 2 hours', count: t.overdue, done: t.overdue === 0, go: 'chats' });
   steps.push({ text: 'Needs you is empty', count: t.needsYou, done: t.needsYou === 0, go: 'chats' });

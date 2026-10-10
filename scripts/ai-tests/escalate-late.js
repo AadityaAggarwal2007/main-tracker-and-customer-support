@@ -124,8 +124,13 @@ async function t(name, fn) {
     eq(b.assigned_to, 'u-anurag');
   });
   await t('the red bar: the last 2 hours of these moves in the login\'s panels, with who had it, who got it and how long', async () => {
-    S.alertsRows = [{ id: '7', conversation_id: 'c9', at: new Date(IST(12, 11)), meta: { from_name: 'Rahul', to_name: 'Sunny', waited_min: 34 }, customer: 'Asmita' }];
-    deq(await late.lateAlerts(['P1']), [{ id: '7', conversation_id: 'c9', at: iso(IST(12, 11)), from_name: 'Rahul', to_name: 'Sunny', waited_min: 34, customer: 'Asmita' }]);
+    S.alertsRows = [{ id: '7', conversation_id: 'c9', at: new Date(IST(12, 11)), meta: { from_name: 'Rahul', to_name: 'Sunny', waited_min: 34 }, customer: 'Asmita', reason: 'no_reply_30' },
+      // Chargeback Shield step 2 (2026-10-10): a Critical chargeback-risk move rides on the same bar.
+      { id: '8', conversation_id: 'c8', at: new Date(IST(12, 11)), meta: { from_name: 'nobody', to_name: 'Sunny', order: '#4411', reasons: ['Talked about a chargeback / bank dispute', '6 days late'] }, customer: 'Priya', reason: 'chargeback_risk' }];
+    deq(await late.lateAlerts(['P1']), [
+      { id: '7', conversation_id: 'c9', at: iso(IST(12, 11)), from_name: 'Rahul', to_name: 'Sunny', waited_min: 34, customer: 'Asmita', kind: 'late', order: null, why: null },
+      { id: '8', conversation_id: 'c8', at: iso(IST(12, 11)), from_name: 'nobody', to_name: 'Sunny', waited_min: 30, customer: 'Priya', kind: 'risk', order: '#4411', why: 'Talked about a chargeback / bank dispute' },
+    ]);
     deq(S.alertArgs, [['P1']]);
     db.query = (q => async (raw, p) => { throw Object.assign(new Error('x'), { code: '42P01' }); })(db.query);
     deq(await late.lateAlerts(null), [], 'a failure is no bar, never an error');
