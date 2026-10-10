@@ -489,3 +489,9 @@ are under "Team chats" (read, Take over; owner answer). Members send a refund / 
 Manager" (the mark AND the chat go to him, one line for the team, nothing to the customer); with no Manager login it goes
 to the Super Admin. The Manager counts as a senior. Rules 11 / 14 (nobody hidden): PASS, an unheld chat stays visible to
 every member, the Manager and the Super Admin see everything; 17 (refund recorded, Needs you / team): PASS.
+
+Step 3 (same day): chats that need a person and that nobody holds go by themselves (every minute) to a team member on
+duty: logged in today since 10 AM, around, office open, the chat's panel; the one with the fewest open chats first.
+Nobody logged in = nobody gets a chat (they stay visible to everyone). Never Chikki's chats, a Refund / Ship again chat,
+or the Manager. Rules 11 / 14 (a waiting customer always has a person): PASS, better (a named person within a minute);
+nothing is closed or hidden.
