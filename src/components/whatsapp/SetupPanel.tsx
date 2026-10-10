@@ -87,7 +87,8 @@ export default function SetupPanel({ token, s, lists, onAlert, reload }: { token
               <div>Permissions: <strong>{check.scopes.length ? check.scopes.join(', ') : '—'}</strong></div>
               {check.granular.map((g) => <div key={g.scope}>{g.scope} on: <strong>{g.targets.length ? g.targets.join(', ') : 'every asset'}</strong></div>)}
               <div>Saved account {check.waba.id || '—'}: <strong>{check.waba.name ? `readable ("${check.waba.name}")` : check.waba.error ? `NOT readable: ${check.waba.error}` : 'not saved'}</strong></div>
-              <div>Phone number {check.phone.id || '—'}: <strong>{check.phone.ok ? 'readable' : check.phone.error ? `NOT readable: ${check.phone.error}` : 'not set'}</strong></div>
+              <div>Phone number {check.phone.id || '—'}: <strong>{check.phone.ok ? 'readable' : check.phone.error ? `NOT readable: ${check.phone.error}` : 'not set'}</strong>{check.phone.inWaba === true ? ' · in the saved account' : check.phone.inWaba === false ? ' · NOT in the saved account' : ''}</div>
+              {check.waba.phones && <div>Numbers in the saved account: <strong>{check.waba.phones.length ? check.waba.phones.map((p) => p.number || p.id).join(', ') : 'none'}</strong></div>}
             </div>
           </div>
         )}

@@ -17,8 +17,8 @@ export interface TokenCheck {
   expires: string | null;             // 'never' or an ISO date
   scopes: string[];
   granular: { scope: string; targets: string[] }[];
-  waba: { id: string; name: string | null; error: string | null };
-  phone: { id: string; ok: boolean; error: string | null };
+  waba: { id: string; name: string | null; error: string | null; phones: { id: string; number: string }[] | null };
+  phone: { id: string; ok: boolean; error: string | null; inWaba: boolean | null };
   debugError: string | null;
   verdicts: string[];
 }
@@ -36,6 +36,9 @@ export function tokenVerdicts(c: Omit<TokenCheck, 'verdicts'>, savedAppId: strin
       out.push(`The token manages WhatsApp account(s) ${mgmt.targets.join(', ')}, not the saved id ${c.waba.id}. Either the saved id is another account, or the System User has no access to this one (Assign assets).`);
     }
     if (c.waba.id && c.waba.error && !out.some((v) => /manages WhatsApp account/.test(v))) out.push(`Reading the saved WhatsApp Business Account ${c.waba.id} failed: ${c.waba.error}`);
+    if (c.phone.inWaba === false && c.waba.phones) {
+      out.push(`The phone number ${c.phone.id} is NOT in the saved account ${c.waba.id}${c.waba.name ? ` ("${c.waba.name}")` : ''}: that account holds ${c.waba.phones.length ? c.waba.phones.map((p) => p.number || p.id).join(', ') : 'no number'}. Templates made on it cannot be sent from this number. Save the account that holds the number (Meta Business Settings > WhatsApp accounts: the entry whose Phone numbers tab lists it).`);
+    }
     if (!c.phone.ok && c.phone.error) out.push(`Reading the phone number ${c.phone.id} failed: ${c.phone.error}`);
     if (c.appId && savedAppId && c.appId !== savedAppId) out.push(`The token belongs to app ${c.appId}, the saved Meta App id is ${savedAppId}. Use the id of the app the token was made for.`);
     if (c.type && c.type !== 'SYSTEM_USER') out.push(`This is a ${c.type} token (a person's, which expires), not a System User token.`);
@@ -65,7 +68,7 @@ export async function checkToken(savedWaba: string, savedAppId: string, env: Nod
 
   const c: Omit<TokenCheck, 'verdicts'> = {
     valid: null, type: null, appId: null, appName: null, expires: null, scopes: [], granular: [],
-    waba: { id: savedWaba, name: null, error: null }, phone: { id: phoneId, ok: false, error: null }, debugError: null,
+    waba: { id: savedWaba, name: null, error: null, phones: null }, phone: { id: phoneId, ok: false, error: null, inWaba: null }, debugError: null,
   };
   if (!token) { c.debugError = 'No WHATSAPP_CLOUD_TOKEN on the server'; return { ...c, verdicts: tokenVerdicts(c, savedAppId) }; }
 
@@ -88,8 +91,16 @@ export async function checkToken(savedWaba: string, savedAppId: string, env: Nod
   }
   if (savedWaba) {
     const w = await get(`${encodeURIComponent(savedWaba)}?fields=id,name`);
-    if (w.ok) c.waba.name = str(rec(w.json)?.name) || '(no name)';
-    else c.waba.error = errText(w);
+    if (w.ok) {
+      c.waba.name = str(rec(w.json)?.name) || '(no name)';
+      // Which numbers the account holds: the saved phone number id must be one of them.
+      const ph = await get(`${encodeURIComponent(savedWaba)}/phone_numbers?fields=id,display_phone_number`);
+      const data = rec(ph.json)?.data;
+      if (ph.ok && Array.isArray(data)) {
+        c.waba.phones = data.map((d) => ({ id: str(rec(d)?.id), number: str(rec(d)?.display_phone_number) })).filter((d) => d.id);
+        if (phoneId) c.phone.inWaba = c.waba.phones.some((d) => d.id === phoneId);
+      }
+    } else c.waba.error = errText(w);
   }
   if (phoneId) {
     const p = await get(`${encodeURIComponent(phoneId)}?fields=display_phone_number`);
