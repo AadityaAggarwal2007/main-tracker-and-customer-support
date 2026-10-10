@@ -8,12 +8,15 @@ require.extensions['.ts'] = (m, filename) => m._compile(
 
 const S = {};
 function reset() {
-  Object.assign(S, { convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] }, settings: {}, metaTemplates: null, profile: { about: 'Order help', description: 'Vastora support', address: '', email: '', websites: ['https://vastora.in'], vertical: 'RETAIL', profile_picture_url: 'https://pps.whatsapp.net/old.jpg' }, profileWrites: [], phone: { display_phone_number: '+91 87964 14056', verified_name: 'Shiptrack', name_status: 'PENDING_REVIEW', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_250', code_verification_status: 'VERIFIED' }, nameAsks: [], uploadStart: null, uploadBytes: null, uploadHeaders: null });
+  Object.assign(S, { autoRows: [], orderPanels: {}, convs: [], msgs: [], panels: [{ id: 'bizVast', is_default: true }, { id: 'bizKurt', is_default: false }], sites: [{ id: 'site1', tracker_business_id: 'bizVast' }], updates: [], subject: [], health: [], fetches: [], fetchStatus: 200, fetchBody: { messages: [{ id: 'wamid.out1' }] }, settings: {}, metaTemplates: null, profile: { about: 'Order help', description: 'Vastora support', address: '', email: '', websites: ['https://vastora.in'], vertical: 'RETAIL', profile_picture_url: 'https://pps.whatsapp.net/old.jpg' }, profileWrites: [], phone: { display_phone_number: '+91 87964 14056', verified_name: 'Shiptrack', name_status: 'PENDING_REVIEW', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_250', code_verification_status: 'VERIFIED' }, nameAsks: [], uploadStart: null, uploadBytes: null, uploadHeaders: null });
 }
 reset();
 let seq = 0;
 const db = {
   query: async (sql, p = []) => {
+    if (/count\(c\.id\)::int AS chats/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'bizVast', name: 'vastora', chats: 2, unread: 1, today: 1, waiting: 1 }, { id: 'bizKurt', name: 'kurtiya', chats: 0, unread: 0, today: 0, waiting: 0 }], rowCount: 2 }; }
+    if (/\(\$1::text IS NULL OR s\.tracker_business_id/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'c9', name: 'Jatin', phone: '+919876543210', status: 'agent_handling', unread: 2, last_message_at: '2026-10-10T10:00:00Z', last_message: 'Thank you', last_sender: 'visitor', panel_id: 'bizVast', panel: 'vastora', automation: true, customer_msgs: 1, subject: null }], rowCount: 1 }; }
+    if (/^INSERT INTO messages[\s\S]*FROM wa_auto_sends w/.test(sql)) { const rows = (S.autoRows || []).filter((r) => r.business_id === p[1] && r.to_number === p[2]); for (const r of rows) S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'system', content: r.body_text, metadata: { automation: true, wa_id: r.wa_id, auto_id: r.id }, ts: null }); return { rows: [], rowCount: rows.length }; }
     if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: /'agent'/.test(sql) ? 'agent' : 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/FROM messages m\s+WHERE m\.conversation_id = \$1 AND m\.deleted_at IS NULL AND m\.sender IN/.test(sql)) { const rows = S.msgs.filter((m) => m.conversation_id === p[0]).slice().reverse().map((m, i) => ({ id: m.id, sender: m.sender, content: m.content, created_at: '2026-10-10T10:0' + (9 - Math.min(i, 9)) + ':00Z', metadata: m.metadata })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
@@ -28,6 +31,8 @@ const db = {
     throw new Error('fake db query: ' + sql.slice(0, 80));
   },
   queryOne: async (sql, p = []) => {
+    if (/FROM wa_auto_sends WHERE to_number = \$1/.test(sql)) { const r = (S.autoRows || []).filter((x) => x.to_number === p[0] && ['sent', 'delivered', 'read'].includes(x.status)).pop(); return r ? { business_id: r.business_id } : null; }
+    if (/FROM orders o\s+WHERE o\.business_id IS NOT NULL/.test(sql)) { const b = (S.orderPanels || {})[p[0]]; return b ? { business_id: b } : null; }
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
     if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
     if (/SELECT c\.id, c\.visitor_name AS name FROM conversations c/.test(sql)) { const c = S.convs.filter((x) => x.source === 'whatsapp' && x.visitor_id === p[0] && !x.merged_into).pop(); return c ? { id: c.id, name: c.visitor_name } : null; }
@@ -240,6 +245,34 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([c.site_id, c.visitor_id, c.visitor_name, c.visitor_phone, c.status, c.source, c.unread_count], ['site1', 'wa:919876543210', 'Jatin', '+919876543210', 'agent_handling', 'whatsapp', 1]);
     deq(S.msgs.map((m) => [m.conversation_id, m.sender, m.content, m.metadata, m.ts]), [[c.id, 'visitor', 'Hello', { wa_id: 'wamid.1', wa_type: 'text', channel: 'whatsapp' }, 1760090400000]]);
     deq([S.subject, S.health], [[c.id], [c.id]]);
+  });
+  await t('brand-wise: a reply lands in the panel of the brand whose automated message the number got, with that message in the thread before the reply; else the brand of the latest order; else the default panel', async () => {
+    S.autoRows = [{ id: '7', business_id: 'bizKurt', to_number: '919876543210', status: 'delivered', body_text: 'Order Placed Successfully\nHi Jatin, your order #1553 with kurtiya has been placed successfully.', wa_id: 'wamid.A1', template: 'order_placed' }];
+    await inbound.storeWaInbound(wa.parseWaWebhook(webhookBody([textMsg('wamid.1', 'Thank you, when will it come?')])).messages[0], {});
+    eq(S.convs.length, 1); eq(S.convs[0].site_id, 'site-bizKurt');
+    deq(S.msgs.map((m) => [m.sender, m.content.slice(0, 23), !!(m.metadata && m.metadata.automation)]), [['system', 'Order Placed Successful', true], ['visitor', 'Thank you, when will it', false]]);
+    reset(); S.orderPanels = { '9876543210': 'bizKurt' };
+    await inbound.storeWaInbound(wa.parseWaWebhook(webhookBody([textMsg('wamid.2', 'Hi')])).messages[0], {});
+    eq(S.convs[0].site_id, 'site-bizKurt'); deq(S.msgs.map((m) => m.sender), ['visitor']);
+    reset();
+    await inbound.storeWaInbound(wa.parseWaWebhook(webhookBody([textMsg('wamid.3', 'Hi')])).messages[0], {});
+    eq(S.convs[0].site_id, 'site1');
+  });
+  await t('a number written to by two brands: the latest automated message decides; a failed one never does', async () => {
+    S.autoRows = [
+      { id: '1', business_id: 'bizVast', to_number: '919876543210', status: 'read', body_text: 'a', wa_id: 'w1', template: 't' },
+      { id: '2', business_id: 'bizKurt', to_number: '919876543210', status: 'failed', body_text: 'b', wa_id: 'w2', template: 't' },
+    ];
+    eq(await inbound.waPanelFor('919876543210', {}), 'bizVast');
+  });
+  await t('Chats route: Super Admin only; one brand or all; the numbers per brand and the chats with who wrote last', async () => {
+    const rChats = require(path.join(SRC, 'app/api/whatsapp/chats/route.ts'));
+    eq((await rChats.GET(jreq(AGENT, {}, 'http://x/api/whatsapp/chats'))).status, 401); eq((await rChats.GET(jreq(null, {}, 'http://x/api/whatsapp/chats'))).status, 401);
+    let g = await rChats.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/chats?panel=bizVast'));
+    deq([g.status, g.body.panels.map((x) => [x.name, x.chats, x.unread, x.waiting]), S.chatSql[1]], [200, [['vastora', 2, 1, 1], ['kurtiya', 0, 0, 0]], ['bizVast']]);
+    deq(g.body.chats[0], { id: 'c9', name: 'Jatin', phone: '+919876543210', status: 'agent_handling', unread: 2, at: '2026-10-10T10:00:00Z', last: 'Thank you', lastSender: 'visitor', panelId: 'bizVast', panel: 'vastora', automation: true, customerMsgs: 1, subject: null });
+    S.chatSql = []; await rChats.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/chats?panel=all')); deq(S.chatSql[1], [null]);
+    S.chatSql = []; await rChats.GET(jreq(OWNER, {}, "http://x/api/whatsapp/chats?panel=x'%3Bdrop")); deq(S.chatSql[1], [null]);
   });
   await t('the same wamid again (Meta resends) is skipped; a second message joins the same chat; a Closed chat reopens for the team', async () => {
     const m1 = wa.parseWaWebhook(webhookBody([textMsg('wamid.1', 'Hello')])).messages[0];

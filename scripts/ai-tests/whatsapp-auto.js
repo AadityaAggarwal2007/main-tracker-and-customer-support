@@ -58,6 +58,7 @@ const db = {
     if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = \$3, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: p[2], attempts: r.attempts + 1 }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', attempts = 0/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'failed'); if (r) Object.assign(r, { status: 'pending', attempts: 0, error: null, due_at: new Date(S.nowMs) }); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) { S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]); return { rows: [], rowCount: r ? 1 : 0 }; }
+    if (/count\(DISTINCT w\.to_number\)::int AS replied/.test(sql)) return { rows: [{ business_id: 'b1', replied: 2 }], rowCount: 1 };
     if (/FROM wa_auto_sends GROUP BY 1, 2, 3/.test(sql)) {
       const m = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; }
       const rows = Object.keys(m).map((k) => { const [business_id, kind, status] = k.split('|'); return { business_id, kind, status, n: m[k], n24: m[k] }; });
@@ -262,7 +263,7 @@ async function t(name, fn) {
     const g = await route.GET(jreq(OWNER, {}));
     deq([g.status, g.body.installed, g.body.configured, g.body.templates.placed, g.body.templates.tracking], [200, true, true, 'APPROVED', 'APPROVED']);
     const p = g.body.panels.find((x) => x.id === 'b1');
-    deq([p.enabled, p.placed.sent, p.tracking.pending], [true, 1, 1]);
+    deq([p.enabled, p.placed.sent, p.tracking.pending, p.replied], [true, 1, 1, 2]);
     eq(g.body.recent[0].to, '••••3210'); assert.ok(!JSON.stringify(g.body).includes('9876543210'));
   });
   await t('POST: the switch needs the table and an APPROVED order_placed; ON starts the clock; OFF keeps the rows; a viewer is refused', async () => {
