@@ -15,7 +15,7 @@ const path = require('path');
 const DAYS = Math.max(1, Math.min(90, parseInt(process.argv[2] || '30', 10) || 30));
 const AI_BUSY_REPLY = 'Sorry, that took longer than expected on my end. Could you send that again?';
 // Since 10 Oct a visitor gets src/lib/chat/ai-down.ts's line instead when every model is down: counted the same.
-const AI_DOWN_REGEX = 'thanks for writing to [^!]{1,60}! (please share your order id|we have your order id)|ko message karne ke liye shukriya!';
+const AI_DOWN_REGEX = 'thanks for writing to [^!]{1,60}! (please share your order id|we have your order id|that order id and phone number)|ko message karne ke liye shukriya!';
 const BUSY = (a) => `(${a}.content = '${AI_BUSY_REPLY.replace(/'/g, "''")}' OR ${a}.content ~* '${AI_DOWN_REGEX}')`;
 
 // psql: the server's database as postgres (like scripts/ai-tests/run.js), or REVIEW_PSQL_URL for a test database.

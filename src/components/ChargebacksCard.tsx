@@ -83,9 +83,19 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
       onAlert('success', 'Moved.'); onChanged?.(); await load();
     } catch { onAlert('error', 'Could not move it.'); }
   };
+  // The mail named no order of ours (owner 2026-10-11): type it, and it is checked against the alert's panel.
+  const [linkNo, setLinkNo] = useState('');
+  const link = async (a: Alert) => {
+    try {
+      const r = await fetch('/api/chargebacks', { method: 'PATCH', headers: auth, body: JSON.stringify({ id: a.id, orderId: linkNo }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not link it.'); return; }
+      onAlert('success', `Linked to order ${j.orderId}.`); setLinkNo(''); onChanged?.(); await load();
+    } catch { onAlert('error', 'Could not link it.'); }
+  };
   const toggle = (a: Alert) => {
     const next = openId === a.id ? null : a.id;
-    setOpenId(next); setNote('');
+    setOpenId(next); setNote(''); setLinkNo('');
     if (next && a.status === 'new') void patch(a.id, 'seen');
   };
 
@@ -124,6 +134,13 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
                 <div className="meta">From {a.from_name ? `${a.from_name} <${a.from_address}>` : a.from_address} · {notifyText(a.notify_status)}</div>
                 <div style={{ fontSize: '0.8125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--muted)', borderRadius: '0.5rem', padding: '0.625rem' }}>{a.snippet || '(no text)'}</div>
                 <div className="meta">The full mail, with the gateway&apos;s deadline and evidence steps, is in that panel&apos;s chargeback Gmail.</div>
+                {!a.order_id && a.kind !== 'other' && (
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span className="meta">The mail names no order of this panel. Find it in the gateway (by the amount / date / customer) and link it:</span>
+                    <input className="form-input" style={{ width: 140, height: '2rem' }} placeholder="Order no., e.g. 1553" value={linkNo} onChange={e => setLinkNo(e.target.value)} inputMode="numeric" />
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => void link(a)} disabled={!linkNo.trim()}>Link order</button>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
                   {(a.alt_panels?.length ?? 0) > 0 && a.status !== 'done' && (
                     <select className="form-input" style={{ height: '2rem', width: 'auto' }} value="" onChange={e => { if (e.target.value) void move(a, e.target.value); }} aria-label="Move to another panel">

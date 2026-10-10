@@ -97,6 +97,30 @@ export async function setAlertPanel(id: string, businessId: string): Promise<{ o
   return { ok: true };
 }
 
+// "Link order" (owner 2026-10-11: the Study showed all 3 chargebacks "Order not found": the gateways' mails name no order
+// number of ours): the Super Admin or the Manager types the order number; it must be an order of the alert's panel. The
+// customer's verified chat goes from AI to Needs you, as the poller does for a matched mail. Returns the stored order id.
+export async function setAlertOrder(id: string, typed: string, scope: string[] | null = null): Promise<{ ok: boolean; status?: number; error?: string; orderId?: string }> {
+  const digits = String(typed || '').replace(/[^0-9]/g, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !/^\d{3,8}$/.test(digits)) return { ok: false, status: 400, error: 'Type the order number, like 1553 or #1553.' };
+  const a = await queryOne<{ business_id: string }>(
+    `SELECT business_id FROM chargeback_alerts WHERE id = $1 AND ($2::text[] IS NULL OR business_id = ANY($2::text[]))`, [id, scope]);
+  if (!a) return { ok: false, status: 404, error: 'Alert not found.' };
+  const o = await queryOne<{ order_id: string }>(
+    `SELECT order_id FROM orders WHERE business_id::text = $1::text AND order_id = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`,
+    [a.business_id, orderForms([digits])]);
+  if (!o) return { ok: false, status: 404, error: 'No order with that number in this panel.' };
+  await query(`UPDATE chargeback_alerts SET order_id = $2 WHERE id = $1`, [id, o.order_id]);
+  try {
+    await query(
+      `UPDATE conversations c SET status = 'human_needed', updated_at = now()
+         FROM sites s
+        WHERE s.id = c.site_id AND s.tracker_business_id::text = $1::text AND c.verified_order_id = $2
+          AND c.merged_into IS NULL AND c.status = 'ai_handling' AND c.case_kind IS NULL`, [a.business_id, o.order_id]);
+  } catch (e) { console.error('[chargeback] link chat tag:', (e as Error).message); }
+  return { ok: true, orderId: o.order_id };
+}
+
 // Opening an alert marks it seen (once); "Done" closes it with an optional note. The red tag in the chat goes with Done.
 export async function setAlertStatus(id: string, status: 'seen' | 'done', byName: string, note?: string, scope: string[] | null = null): Promise<boolean> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return false;

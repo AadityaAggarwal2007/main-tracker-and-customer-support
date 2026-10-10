@@ -47,7 +47,7 @@ export const AI_NOT_AN_ANSWER_REGEX =
   '|(sit down with|take up) your case|sabse pehle aapka case' +
   // Since 2026-10-10 (owner, Chikki review: every model down, a visitor gets ai-down.ts aiDownVisitorReply instead of
   // "took longer"): the same as AI_DOWN_REGEX there (unit.js compares them). Nobody has answered such a visitor yet.
-  '|thanks for writing to [^!]{1,60}! (please share your order id|we have your order id)|ko message karne ke liye shukriya!';
+  '|thanks for writing to [^!]{1,60}! (please share your order id|we have your order id|that order id and phone number)|ko message karne ke liye shukriya!';
 
 export type WaitingLevel = 'fresh' | 'soon' | 'overdue';
 

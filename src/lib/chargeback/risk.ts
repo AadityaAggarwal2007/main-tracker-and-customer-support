@@ -233,6 +233,9 @@ export interface StudyRow {
   daysFromOrder: number | null; contacted: boolean; channels: Channel[]; firstContactAt: string | null;
   before3: { score: number; level: string; signals: string[] } | null;  // 3 days before the mail
   onDay: { score: number; level: string; signals: string[]; action: string } | null;
+  // What the mail itself carries to find the order by (owner 2026-10-11: all 3 "Order not found"): amounts, and how many
+  // customer emails / phones (never the values).
+  mailHints: { amounts: number[]; emails: number; phones: number };
 }
 export interface Study {
   rows: StudyRow[];
@@ -263,6 +266,7 @@ export async function loadStudy(scope: string[] | null): Promise<Study> {
       alertId: a.id, receivedAt: a.received_at, gateway: a.gateway, panelName: panelNames.get(a.business_id) || 'Panel', status: a.status,
       matchedBy: m?.by ?? null, orderId: m?.orderId ?? null, cod: null, placedAt: null, daysFromOrder: null, contacted: false, channels: [],
       firstContactAt: null, before3: null, onDay: null,
+      mailHints: (() => { const c = contactCandidates(`${a.subject}\n${a.snippet}`); return { amounts: c.amounts, emails: c.emails.length, phones: c.phones.length }; })(),
     };
     if (o) {
       const chats = g.chatsOf.get(okey(o)) || [];

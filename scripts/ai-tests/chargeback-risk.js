@@ -6,7 +6,7 @@ const ts = require('typescript');
 const SRC = path.resolve(__dirname, '../../src');
 require.extensions['.ts'] = (m, filename) => m._compile(
   ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: 'commonjs', target: 'es2020', esModuleInterop: true, jsx: 'react-jsx' }, fileName: filename }).outputText, filename);
-const eq = assert.strictEqual, ok = assert.ok;
+const eq = assert.strictEqual, ok = assert.ok, deq = assert.deepStrictEqual;
 
 const NOW = Date.parse('2026-10-10T08:00:00Z');
 const H = 3_600_000, D = 24 * H;
@@ -77,6 +77,11 @@ const db = {
     }
     if (/abs\(o.order_total - \$2\) < 1/.test(sql)) return { rows: S.orders.filter((o) => o.business_id === p[0] && notCod(o) && Math.abs(o.total - p[1]) < 1).slice(0, 2).map((o) => ({ order_id: o.order_id })) };
     if (/SELECT id::text AS id, name FROM businesses/.test(sql)) return { rows: [{ id: 'bizA', name: 'Store A' }] };
+    // "Link order" (store.ts setAlertOrder, owner 11 Oct)
+    if (/SELECT business_id FROM chargeback_alerts WHERE id = \$1/.test(sql)) { const a = S.alerts.find((x) => x.id === p[0] && (!p[1] || p[1].includes(x.business_id))); return { rows: a ? [{ business_id: a.business_id }] : [] }; }
+    if (/SELECT order_id FROM orders WHERE business_id::text = \$1::text AND order_id = ANY\(\$2::text\[\]\)/.test(sql)) return { rows: S.orders.filter((o) => o.business_id === p[0] && p[1].includes(o.order_id)).map((o) => ({ order_id: o.order_id })) };
+    if (/UPDATE chargeback_alerts SET order_id = \$2 WHERE id = \$1/.test(sql)) { S.alerts.find((x) => x.id === p[0]).order_id = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/UPDATE conversations c SET status = 'human_needed'/.test(sql)) { (S.tagged = S.tagged || []).push(p); return { rows: [], rowCount: 1 }; }
     throw new Error('unexpected SQL: ' + sql.slice(0, 120));
   },
 };
@@ -211,6 +216,23 @@ const ro = (o = {}) => ({ orderId: '#1', businessId: 'b', placedAt: NOW - 15 * D
     const a2 = St.rows.find((r) => r.alertId === 'a2');
     eq(a2.orderId, '#2004'); eq(a2.contacted, false); eq(St.summary.silent, 1);
     ok(St.summary.signals.length > 0);
+  });
+
+  await t('Link order (owner 11 Oct): an order of the alert\'s panel only, "#" or not; the chat goes to the team; the study then finds it', async () => {
+    const St = require(path.join(SRC, 'lib/chargeback/store.ts'));
+    S.alerts.push({ id: '00000000-0000-4000-8000-0000000000a9', business_id: 'bizA', received_at: iso(NOW - 3 * H), subject: 'PayU Chargeback Notification', snippet: 'A chargeback was raised for INR 999.', gateway: 'PayU', order_id: null, status: 'new' });
+    const id = '00000000-0000-4000-8000-0000000000a9';
+    eq((await St.setAlertOrder(id, 'abc')).status, 400);
+    eq((await St.setAlertOrder(id, '9999')).status, 404, 'not an order of this panel');
+    eq((await St.setAlertOrder(id, '2002', ['bizOther'])).status, 404, 'a Manager of another panel cannot');
+    const r = await St.setAlertOrder(id, '#2002');
+    eq(r.ok, true); eq(r.orderId, '#2002'); eq(S.alerts.find((x) => x.id === id).order_id, '#2002');
+    eq(S.tagged.length, 1, 'the customer\'s chat goes to the team');
+    const study = await K.loadStudy(null);
+    const row = study.rows.find((x) => x.alertId === id);
+    eq(row.orderId, '#2002'); eq(row.matchedBy, 'order');
+    const un = (await K.loadStudy(null)).rows.find((x) => x.alertId === 'a1');
+    deq(un.mailHints, { amounts: [1499], emails: 1, phones: 0 });
   });
 
   await t('route: Super Admin / Manager with chargebacks.view only; the risk list and the study', async () => {

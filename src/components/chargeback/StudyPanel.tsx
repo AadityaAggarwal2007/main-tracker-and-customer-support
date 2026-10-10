@@ -12,6 +12,7 @@ interface Row {
   cod: boolean | null; daysFromOrder: number | null; contacted: boolean; channels: string[];
   before3: { score: number; level: string; signals: string[] } | null;
   onDay: { score: number; level: string; signals: string[]; action: string } | null;
+  mailHints?: { amounts: number[]; emails: number; phones: number };
 }
 interface Study {
   rows: Row[];
@@ -82,6 +83,12 @@ export default function StudyPanel({ token, onAlert }: { token: string; onAlert:
               {r.orderId && (r.contacted ? <span className="chip chip-info">Wrote first: {r.channels.join(' + ')}</span> : <span className="chip chip-danger">Never wrote to us</span>)}
             </div>
             {r.orderId && r.matchedBy && r.matchedBy !== 'order' && <div className="meta">Order found {MATCH_TEXT[r.matchedBy]}.</div>}
+            {!r.orderId && (
+              <div className="meta">
+                The mail names no order of ours{r.mailHints ? ` (it mentions ${r.mailHints.amounts.length ? r.mailHints.amounts.map((x) => `₹${x}`).join(', ') : 'no amount'}, ${r.mailHints.emails ? 'a customer email' : 'no customer email'}, ${r.mailHints.phones ? 'a phone' : 'no phone'})` : ''}.
+                Find the order in the gateway, then open it under Chargebacks and press <b>Link order</b>: the study and the chat tag follow.
+              </div>
+            )}
             {r.before3 && (
               <div style={{ fontSize: '0.8125rem' }}>
                 <span className={`chip ${LEVEL_CHIP[r.before3.level] || 'chip-muted'}`}>3 days before: {r.before3.level} {r.before3.score}</span>{' '}

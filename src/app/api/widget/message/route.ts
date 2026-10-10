@@ -12,7 +12,8 @@ import { afterHours, closedWhy } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
 import { CLOSED_NOTE_KEY, closedNote } from '@/lib/chat/closed-hours';
 import { closedHoursTurn, closedStatusText, withClosedNote } from '@/lib/chat/closed-hours-run';
-import { conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
+import { clientIp, conversationForSite, siteByKey, widgetJson, widgetPreflight } from '@/lib/chat/widget-api';
+import { aiDownCheck } from '@/lib/chat/ai-down-check';
 import { mergeIntoCustomerChat } from '@/lib/chat/merge-chats';
 import { chatIsVerified } from '@/lib/chat/verified';
 import { addressConflict, addressConflictReply } from '@/lib/chat/address-conflict';
@@ -384,7 +385,21 @@ export async function POST(request: NextRequest) {
             } else {
               // A visitor stays a visitor: nobody is told a team has it. Owner 2026-10-10: not "took longer, send that
               // again" (read as "fake" by new customers) but the store's name and what to share (ai-down.ts).
-              text = await aiDownText();
+              // Owner 2026-10-11: one who typed the order ID + full phone is checked by the code (ai-down-check.ts:
+              // the verify form's check and limits); a match = verified, the order's stage line, and the team takes it.
+              const texts = (await recentVisitorMessages(conversationId, 6).catch(() => [] as string[])).slice().reverse();
+              const check = await aiDownCheck({
+                conversationId, siteKey, ip: clientIp(request), businessId: site.tracker_business_id, brand: brandOf(site.name),
+                visitorTexts: texts.length ? texts : [String(masked.text)],
+              });
+              if (check?.verified) {
+                conversationId = await mergeIntoCustomerChat(conversationId);
+                verified = true;
+                text = check.text;
+                await handOver('AI failure');
+              } else {
+                text = check?.text ?? await aiDownText();
+              }
             }
           } else if (!verified) {
             // A visitor: whatever the message was about (a refund, a threat, a fraud

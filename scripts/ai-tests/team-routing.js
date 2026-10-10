@@ -65,6 +65,9 @@ stub('chikki-runs', 'module.exports = { recordChikkiRun: async () => {} };');
 stub('chat-history', 'module.exports = { recentVisitorMessages: async () => global.__recentSaid || [] };');
 // The verified order as orders.ts loads it (case-auto.ts): global.__orders[order id], else not found.
 stub('orders', `module.exports = {
+  // ai-down-check.ts (owner 11 Oct): the verify form's check; global.__verifyOrder = the order that matches, else none.
+  verifyOrderByPhone: async (order, phone, biz) => { (global.__verifyCalls = global.__verifyCalls || []).push([order, phone, biz]); const o = global.__verifyOrder; return o && o.order_id.replace('#', '') === String(order).replace('#', '') && o.phone === phone ? { order_id: o.order_id, customer_name: o.customer_name } : null; },
+  customerKeyForOrderSql: () => '(SELECT customer_key_for_order)',
   lookupVerifiedOrder: async (id) => {
     global.__orderLookups.push(id);
     const o = global.__orders[id];
@@ -102,7 +105,7 @@ for (const f of ['permissions', 'auth', 'office-hours', 'journey']) compile(`lib
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
-  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'ai-down', 'common-setup-rules', 'reship',
+  'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'ai-down', 'ai-down-check', 'lookup-limits', 'common-setup-rules', 'reship',
   'effort', 'closed-hours', 'closed-hours-run']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
@@ -832,6 +835,13 @@ async function handle(q, p, tx) {
   if (q === "UPDATE conversations SET merged_into = $1, status = 'resolved', unread_count = 0, updated_at = now() WHERE id = $2") {
     need(tx, q);
     setRow(tx, await rowFor(tx, p[1]), { merged_into: p[0], status: 'resolved', unread_count: 0 });
+    return rows([]);
+  }
+
+  // ai-down-check.ts: the code's own order check while every model is down marks the chat verified like Chikki's lookup.
+  if (/^UPDATE conversations SET verified_order_id = CASE WHEN verified_order_id IS NULL OR verified_via = 'legacy' THEN \$1 ELSE verified_order_id END, .* customer_key = CASE WHEN \(verified_order_id IS NULL OR verified_via = 'legacy'\) AND source = 'chat' THEN \(SELECT customer_key_for_order\) ELSE customer_key END WHERE id = \$2$/.test(q)) {
+    const c = conv(p[1]);
+    if (c && (!c.verified_order_id || c.verified_via === 'legacy')) Object.assign(c, { verified_order_id: p[0], verified_at: nowIso(), verified_via: 'chat_phone', customer_key: c.source === 'chat' ? (global.__verifyOrder && global.__verifyOrder.phone) : c.customer_key });
     return rows([]);
   }
 
@@ -3794,6 +3804,39 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(await send('r66d', 'Is it scam??', ist(12, 0, 6)), "Thanks for writing to Vastora! Please share your order ID and the complete phone number on the order, and we'll help you right here.");
     eq(C('r66d').status, 'ai_handling');
     ok(!/took longer/.test(await send('r66d', 'order #5121 phone 9876543210', ist(12, 5, 6))));
+  });
+  await t('R66c owner 11 Oct: every model down, a visitor typed the order ID + full phone: the code checks it (the verify form\'s check and limits); a match = verified, the stage line, the team takes it; no match = one plain line, still a visitor', async () => {
+    const send = async (id, said, ms) => {
+      at(ms); global.__ai.next = { content: 'unused', allFailed: true };
+      const r = await mod.widgetMessage.POST(req(null, { conversationId: id, siteKey: 'key-s1', content: said }));
+      status(r, 201);
+      return r.body.aiResponse ? r.body.aiResponse.content : null;
+    };
+    global.__verifyCalls = [];
+    global.__verifyOrder = { order_id: '#5121', phone: '9876543210', customer_name: 'Asha K.' };
+    global.__orderFacts = (id) => (id === '#5121' ? { order_id: '#5121', status: 'In Transit', eta: '2026-10-20', late: null, tracking_link: 'https://shiptrack.store/track/abc' } : null);
+    // No match: the same line whether the order exists or not; the chat stays a visitor chat in AI handling.
+    newConv({ id: 'adc1' });
+    global.__recentSaid = ['my order 5121 phone 9123456789'];
+    const miss = await send('adc1', 'my order 5121 phone 9123456789', ist(12, 0, 6));
+    eq(miss, 'Thanks for writing to Vastora! That order ID and phone number do not match one of our orders. Please check the order ID and the phone number used on the order and send them again.');
+    eq(C('adc1').status, 'ai_handling'); ok(!C('adc1').verified_order_id);
+    ok(new RegExp(waitingMod.AI_NOT_AN_ANSWER_REGEX, 'i').test(miss), 'still waiting: nobody answered yet');
+    // A match: verified (chat_phone, the order's phone as the customer key), the stage line, and the team takes it.
+    newConv({ id: 'adc2' });
+    global.__recentSaid = ['mera order #5121 hai, number 98765 43210'];
+    const hit = await send('adc2', 'mera order #5121 hai, number 98765 43210', ist(12, 5, 6));
+    eq(hit, 'Shukriya Asha, aapka order mil gaya. Aapka order #5121 abhi "In Transit" stage par hai, estimated delivery 20 October 2026. Yahan track kar sakte hain: https://shiptrack.store/track/abc Kuch aur poochna ho to yahin likhiye, hamari team bhi yeh chat dekh rahi hai.');
+    eq(C('adc2').verified_order_id, '#5121'); eq(C('adc2').verified_via, 'chat_phone'); eq(C('adc2').customer_key, '9876543210');
+    eq(C('adc2').status, 'human_needed', 'a verified customer whose AI is down goes to a person');
+    deq(global.__verifyCalls.map((c) => c.slice(0, 2)), [['5121', '9123456789'], ['5121', '9876543210']]);
+    ok(!/today|tonight|aaj/i.test(hit));
+    // The guessing limits are the verify form's: after 5 wrong tries in this chat the code stops checking (the old line).
+    newConv({ id: 'adc3' });
+    for (let i = 0; i < 5; i++) { global.__recentSaid = [`order ${7000 + i} phone 9000000001`]; await send('adc3', `order ${7000 + i} phone 9000000001`, ist(12, 10 + i, 6)); }
+    global.__recentSaid = ['order 7100 phone 9000000001'];
+    ok(/We have your order ID and phone number/.test(await send('adc3', 'order 7100 phone 9000000001', ist(12, 20, 6))), 'limited: no check, the old line');
+    global.__verifyOrder = null; global.__orderFacts = null; global.__recentSaid = [];
   });
   await t('R66 the list: a promised chat carries promise_due_at (Monday 10:00 IST after a weekend note) and office_open follows the week; the holidays row is read once a minute', async () => {
     at(ist(12, 0, 4));
