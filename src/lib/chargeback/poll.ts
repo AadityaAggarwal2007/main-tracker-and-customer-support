@@ -3,6 +3,7 @@ import { simpleParser } from 'mailparser';
 import { query, queryOne } from '@/lib/db';
 import { friendlyMailError, mailErrorText, noteMailboxCheck } from '@/lib/chat/mailbox-status';
 import { gmailHost } from '@/lib/chat/imap-pool';
+import { matchByContact } from './risk';
 import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { sendChargebackWhatsApp } from './notify';
@@ -123,6 +124,12 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
         WHERE business_id::text = ANY($1::text[]) AND order_id = ANY($2::text[]) ORDER BY created_at DESC`,
       [panelIds, forms])).rows
     : [];
+  // No order number of these panels in the mail (owner 2026-10-10: 3 chargebacks were "order not found"): a gateway's
+  // dispute mail names the customer's email or phone instead. ONE order of that email / phone per panel, or nothing.
+  if (!found.length) {
+    try { found.push(...await matchByContact(panelIds, `${subject}\n${text}`, (p.date || new Date()).getTime())); }
+    catch (e) { console.error('[chargeback] match by contact:', (e as Error).message); }
+  }
 
   // Which panel: the only one in the group, else by the order, else by the gateway ticked in its checklist (routing.ts).
   let target = group.primary, routedBy: RoutedBy = 'single';

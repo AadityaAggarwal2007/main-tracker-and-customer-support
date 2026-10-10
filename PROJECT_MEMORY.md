@@ -146,6 +146,15 @@ Done and live:
   WhatsApp alert (`ai-credit.ts`): the owner must (1) make the "ShipTrack alert template" in WhatsApp > Templates and
   wait for Meta, (2) type his number in WhatsApp > Setup "Your WhatsApp number for ShipTrack alerts", (3) still turn
   on OpenRouter Auto top-up / raise the key's monthly limit.
+- **Chargeback Shield, step 1 (2026-10-10 night, owner: "chargeback bilkul rok paaye ... fake site / fake link / time
+  zyada ... critical wale Sunny ke paas, Super Admin ko bhi pata chale"):** `src/lib/chargeback/risk-rules.ts` (pure
+  score per PREPAID order from the customer's chat + email + WhatsApp: chargeback / legal threat, store called fake,
+  fake / stuck link, Delivered-not-received, days late, refund asks, repeat asks, waiting for us, health, channels,
+  charged back before; minus solved / reshipped / delivered; ONE next step), `risk.ts` (loader, 2 min cache; the
+  chargeback mail -> order by email / phone when it names no order number, also in `poll.ts` for new mails; the
+  study), `GET /api/chargebacks/risk[?view=study]`, Chargebacks tab = "Chargeback Shield" with Stop them / Chargebacks
+  / Study (`src/components/chargeback/*`). Rulebook 9.15. Step 2 (next): Critical -> the chat goes to the Manager by
+  itself + red bar + WhatsApp to owner / Sunny, a Today line, weights tuned from the owner's Study screenshot.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
