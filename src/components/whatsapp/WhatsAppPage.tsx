@@ -76,7 +76,7 @@ export default function WhatsAppPage({ token, onAlert, onOpenChat }: { token: st
       {tab === 'profile' && <ProfilePanel token={token} s={s} prof={prof} onAlert={onAlert} reload={load} />}
       {tab === 'templates' && <TemplatesPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} reload={load} />}
       {tab === 'automation' && <AutomationPanel token={token} onAlert={onAlert} />}
-      {tab === 'chats' && <ChatsPanel token={token} onAlert={onAlert} onOpenChat={onOpenChat} />}
+      {tab === 'chats' && <ChatsPanel token={token} onAlert={onAlert} onOpenChat={onOpenChat} goSend={() => pick('send')} />}
       {tab === 'send' && <SendPanel token={token} s={s} lists={lists} prof={prof} brands={brands} onAlert={onAlert} onOpenChat={onOpenChat} />}
       {tab === 'activity' && <ActivityPanel act={act} onOpenChat={onOpenChat} />}
     </div>

@@ -16,9 +16,10 @@ const db = {
   query: async (sql, p = []) => {
     if (/count\(c\.id\)::int AS chats/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'bizVast', name: 'vastora', chats: 2, unread: 1, today: 1, waiting: 1 }, { id: 'bizKurt', name: 'kurtiya', chats: 0, unread: 0, today: 0, waiting: 0 }], rowCount: 2 }; }
     if (/\(\$1::text IS NULL OR s\.tracker_business_id/.test(sql)) { S.chatSql = (S.chatSql || []).concat([p]); return { rows: [{ id: 'c9', name: 'Jatin', phone: '+919876543210', status: 'agent_handling', unread: 2, last_message_at: '2026-10-10T10:00:00Z', last_message: 'Thank you', last_sender: 'visitor', panel_id: 'bizVast', panel: 'vastora', automation: true, customer_msgs: 1, subject: null }], rowCount: 1 }; }
-    if (/^INSERT INTO messages[\s\S]*FROM wa_auto_sends w/.test(sql)) { const rows = (S.autoRows || []).filter((r) => r.business_id === p[1] && r.to_number === p[2]); for (const r of rows) S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'system', content: r.body_text, metadata: { automation: true, wa_id: r.wa_id, auto_id: r.id }, ts: null }); return { rows: [], rowCount: rows.length }; }
+    if (/^INSERT INTO messages[\s\S]*FROM wa_auto_sends w/.test(sql)) { const rows = (S.autoRows || []).filter((r) => r.business_id === p[1] && r.to_number === p[2]); for (const r of rows) S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: 'system', content: r.body_text, metadata: { automation: true, wa_template: r.template, wa_id: r.wa_id, auto_id: r.id }, ts: null }); return { rows: [], rowCount: rows.length }; }
     if (/^INSERT INTO messages/.test(sql)) { S.msgs.push({ id: 'm' + (++seq), conversation_id: p[0], sender: /'agent'/.test(sql) ? 'agent' : 'visitor', content: p[1], metadata: JSON.parse(p[2]), ts: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/FROM messages m\s+WHERE m\.conversation_id = \$1 AND m\.deleted_at IS NULL AND m\.sender IN/.test(sql)) { const rows = S.msgs.filter((m) => m.conversation_id === p[0]).slice().reverse().map((m, i) => ({ id: m.id, sender: m.sender, content: m.content, created_at: '2026-10-10T10:0' + (9 - Math.min(i, 9)) + ':00Z', metadata: m.metadata })); return { rows, rowCount: rows.length }; }
+    if (/^UPDATE conversations SET unread_count = 0 WHERE id = \$1/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) c.unread_count = 0; S.cleared = (S.cleared || []).concat([p[0]]); return { rows: [], rowCount: c ? 1 : 0 }; }
     if (/^UPDATE conversations/.test(sql)) { const c = S.convs.find((x) => x.id === p[0]); if (c) { c.unread_count++; if (!['human_needed', 'agent_handling'].includes(c.status)) c.status = 'agent_handling'; if (!c.visitor_name) c.visitor_name = p[1]; } S.updates.push(p); return { rows: [], rowCount: c ? 1 : 0 }; }
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql.replace(/\s+/g, ' '))) { const rows = S.panels.map((x) => ({ id: x.id, name: x.id === 'bizVast' ? 'vastora' : 'kurtiya' })); return { rows, rowCount: rows.length }; }
     if (/FROM site_emails se JOIN sites s/.test(sql.replace(/\s+/g, ' '))) return { rows: [{ id: 'bizVast', email: 'help@vastora.in' }], rowCount: 1 };
@@ -35,6 +36,7 @@ const db = {
     if (/FROM orders o\s+WHERE o\.business_id IS NOT NULL/.test(sql)) { const b = (S.orderPanels || {})[p[0]]; return b ? { business_id: b } : null; }
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
     if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
+    if (/conversations c WHERE c\.id = \$1 AND c\.source = 'whatsapp'/.test(sql)) { const c = S.convs.find((x) => x.id === p[0] && x.source === 'whatsapp' && !x.merged_into); return c ? { id: c.id, name: c.visitor_name } : null; }
     if (/SELECT c\.id, c\.visitor_name AS name FROM conversations c/.test(sql)) { const c = S.convs.filter((x) => x.source === 'whatsapp' && x.visitor_id === p[0] && !x.merged_into).pop(); return c ? { id: c.id, name: c.visitor_name } : null; }
     if (/metadata->>'wa_id' = \$1 LIMIT 1/.test(sql)) { const m = S.msgs.find((x) => x.metadata && x.metadata.wa_id === p[0]); return m ? { id: m.id } : null; }
     if (/FROM businesses WHERE id::text = \$1/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { id: b.id } : null; }
@@ -657,6 +659,18 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([r.body.name, r.body.messages.map((m) => [m.from, m.text, m.sent, m.status, m.error])], ['Aaditya', [['customer', 'Helliooo', null, null, null], ['us', 'Test reply', true, 'read', null]]]);
   }));
 
+  await t('thread by chat id (the Chats tab): the automation\'s lines show as automatic, the customer\'s reply as theirs, read=1 clears the unread count; a bad id is refused', () => withEnv(async () => {
+    S.autoRows = [{ id: '7', business_id: 'bizVast', to_number: '919289144767', status: 'delivered', body_text: 'Order Placed Successfully\nHi Aaditya, your order #1553', wa_id: 'wamid.A1', template: 'order_placed' }];
+    await inbound.storeWaInbound({ id: 'wamid.in7', from: '919289144767', name: 'Aaditya', text: 'Thanks!', type: 'text', timestamp: Date.now(), phoneNumberId: null }, {});
+    const id = S.convs[0].id; eq(S.convs[0].unread_count, 1);
+    const q = (user, query) => jreq(user, {}, 'http://x/api/whatsapp/thread?' + query);
+    eq((await rThread.GET(q(AGENT, 'conversation=' + id))).status, 401);
+    eq((await rThread.GET(q(OWNER, "conversation=x'%3B"))).status, 400);
+    deq((await rThread.GET(q(OWNER, 'conversation=nope'))).body, { conversationId: null, name: null, messages: [] });
+    let r = await rThread.GET(q(OWNER, 'conversation=' + id)); eq(S.convs[0].unread_count, 1);     // reading alone never clears it
+    deq(r.body.messages.map((m) => [m.from, !!m.auto, m.text.slice(0, 23), m.template]), [['us', true, 'Order Placed Successful', 'order_placed'], ['customer', false, 'Thanks!', null]]);
+    r = await rThread.GET(q(OWNER, 'conversation=' + id + '&read=1')); eq(S.convs[0].unread_count, 0);
+  }));
   await t('the paid-message-account refusal (#10): the text keeps Meta\'s words once and metaHint names the account and the fix', () => {
     const e = wa.waErrorText(400, { error: { code: 10, message: '(#10) Viewer cannot access the provided Paid Message Account 28873951022288651' } });
     deq(e, { text: 'WhatsApp refused the message: (#10) Viewer cannot access the provided Paid Message Account 28873951022288651', code: 10 });
