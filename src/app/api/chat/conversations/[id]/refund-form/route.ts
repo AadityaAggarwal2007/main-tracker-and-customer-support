@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authReady, getAuthFromRequest, type AuthUser } from '@/lib/auth';
-import { isSuperAdmin } from '@/lib/permissions';
+import { canRefunds } from '@/lib/permissions';
 import { actionError } from '@/lib/chat/team-routing';
 import { ajson } from '@/lib/refund/public';
 import { adminFailure, cancelRefundLink, refundFormState, retryFormEmail, sendRefundForm, type Res } from '@/lib/refund/server';
@@ -25,7 +25,8 @@ async function gate(request: NextRequest): Promise<Gate> {
   await authReady();
   const user = getAuthFromRequest(request);
   if (!user) return { user: null, deny: ajson({ error: 'Please log in again' }, 401) };
-  if (!isSuperAdmin(user)) return { user: null, deny: ajson({ error: 'Only the Super Admin can send the refund form' }, 403) };
+  // The Super Admin and the Manager (refunds.manage, owner 2026-10-10); the chat's panel is checked by loadConv.
+  if (!canRefunds(user)) return { user: null, deny: ajson({ error: 'Only the Super Admin and the Manager can send the refund form' }, 403) };
   return { user, deny: null };
 }
 const send = (r: Res) => ajson(r.body, r.status);

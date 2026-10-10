@@ -9,7 +9,7 @@ import { bankName, chatMessage, formatDateTime, type Lang, type Step } from './t
 import { ipHash, openJson, payoutAad, refundCryptoReady, refundFormsState, RefundCryptoError } from './crypto';
 import { hit, REFUND_LIMITS } from './limits';
 import {
-  type Db, type Res, type Row, type TargetChat, chatLang, codeOf, deliverEmail, iso, last4, logRefundEvent, ms, num, obj, pickLang, pool,
+  type Db, type Res, type Row, type TargetChat, byMeta, chatLang, codeOf, deliverEmail, iso, last4, logRefundEvent, ms, num, obj, pickLang, pool,
   postRefundMessage, res, softEvent, stateOf, targetConversation, tx,
 } from './server-shared';
 import { STATUS_WORD } from './server-send';
@@ -35,7 +35,8 @@ function listFlags(r: Row, now: number): string[] {
 }
 
 // GET /api/refunds?view=&before=
-export async function listRefunds(viewRaw: string | null, beforeRaw: string | null): Promise<Res> {
+// scope: the panels this login may see (null = every panel; the Manager limited to some panels sees only theirs).
+export async function listRefunds(viewRaw: string | null, beforeRaw: string | null, scope: string[] | null = null): Promise<Res> {
   const view = (viewRaw || 'new') as typeof VIEWS[number];
   if (!(VIEWS as readonly string[]).includes(view)) return res(400, { error: 'Unknown view' });
   const before = beforeRaw ? iso(beforeRaw) : null;
@@ -48,10 +49,11 @@ export async function listRefunds(viewRaw: string | null, beforeRaw: string | nu
             count(*) FILTER (WHERE status = 'rejected')::int AS rejected,
             count(*) FILTER (WHERE status = 'refunded')::int AS refunded,
             count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled
-       FROM refund_requests`
+       FROM refund_requests WHERE ($1::text[] IS NULL OR business_id = ANY($1::text[]))`, [scope]
   )).rows[0] || {};
   const sent = (await pool.query(
-    `SELECT count(*)::int AS n FROM refund_links WHERE status = 'active' AND created_at > now() - interval '14 days'`
+    `SELECT count(*)::int AS n FROM refund_links WHERE status = 'active' AND created_at > now() - interval '14 days'
+        AND ($1::text[] IS NULL OR business_id = ANY($1::text[]))`, [scope]
   )).rows[0];
   const counts = {
     new: Number(countsRow.new) || 0, unseen: Number(countsRow.unseen) || 0, approved: Number(countsRow.approved) || 0,
@@ -66,7 +68,8 @@ export async function listRefunds(viewRaw: string | null, beforeRaw: string | nu
               l.opened_count, l.last_opened_at, l.conversation_id
          FROM refund_links l LEFT JOIN sites s ON s.id = l.site_id
         WHERE l.status = 'active' AND l.created_at > now() - interval '14 days'
-        ORDER BY l.created_at DESC LIMIT 100`
+          AND ($1::text[] IS NULL OR l.business_id = ANY($1::text[]))
+        ORDER BY l.created_at DESC LIMIT 100`, [scope]
     )).rows;
     return res(200, {
       links: links.map((l) => ({
@@ -88,8 +91,9 @@ export async function listRefunds(viewRaw: string | null, beforeRaw: string | nu
               WHERE r.phone_fp IS NOT NULL AND p.phone_fp = r.phone_fp AND p.created_at > now() - interval '90 days')::int AS phone_count
        FROM refund_requests r LEFT JOIN sites s ON s.id = r.site_id
       WHERE ($1::text = 'all' OR r.status = $1::text) AND ($2::timestamptz IS NULL OR r.created_at < $2::timestamptz)
+        AND ($3::text[] IS NULL OR r.business_id = ANY($3::text[]))
       ORDER BY r.created_at DESC LIMIT 101`,
-    [view, before]
+    [view, before, scope]
   )).rows;
   const page = rows.slice(0, 100);
   return res(200, {
@@ -108,24 +112,27 @@ export async function listRefunds(viewRaw: string | null, beforeRaw: string | nu
 }
 
 // GET /api/refunds/counts (the red badge next to the tab).
-export async function refundCounts(): Promise<Res> {
+export async function refundCounts(scope: string[] | null = null): Promise<Res> {
   const r = (await pool.query(
     `SELECT count(*) FILTER (WHERE status = 'new' AND seen_at IS NULL)::int AS unseen,
             count(*) FILTER (WHERE status = 'new')::int AS new,
             count(*) FILTER (WHERE status = 'approved')::int AS approved
-       FROM refund_requests`
+       FROM refund_requests WHERE ($1::text[] IS NULL OR business_id = ANY($1::text[]))`, [scope]
   )).rows[0] || {};
   return res(200, { unseen: Number(r.unseen) || 0, new: Number(r.new) || 0, approved: Number(r.approved) || 0 });
 }
 
 // GET /api/refunds/counts?byPanel=1 (the panel board, owner 2026-10-09): new requests per panel, { by_panel: { <business_id>: n } }.
 // Kept here so the refund tables stay inside the refund files (refund-isolation I2); the board reads it over HTTP.
-export async function refundCountsByPanel(): Promise<Res> {
-  const r = await pool.query(`SELECT business_id, count(*)::int AS n FROM refund_requests WHERE status = 'new' GROUP BY business_id`);
+export async function refundCountsByPanel(scope: string[] | null = null): Promise<Res> {
+  const r = await pool.query(`SELECT business_id, count(*)::int AS n FROM refund_requests WHERE status = 'new' AND ($1::text[] IS NULL OR business_id = ANY($1::text[])) GROUP BY business_id`, [scope]);
   const by_panel: Record<string, number> = {};
   for (const row of r.rows as { business_id: string; n: number }[]) by_panel[String(row.business_id)] = Number(row.n) || 0;
   return res(200, { by_panel });
 }
+
+// A request outside the login's panels is "not found" (the Manager limited to some panels).
+const inScope = (r: Row, scope: string[] | null) => !scope || scope.includes(String(r.business_id));
 
 // Never payout_enc: the full details come only from revealPayout.
 const REQ_COLS = `r.id, r.ref_code, r.link_id, r.conversation_id, r.site_id, r.business_id, r.order_id, r.order_snapshot, r.phone_fp,
@@ -229,15 +236,15 @@ async function flagsOf(r: Row, extra: { now: Record<string, unknown> | null; cha
 }
 
 // GET /api/refunds/<id>: the drawer. Marks it seen; a 'viewed' event at most every 10 minutes.
-export async function getRefund(id: string): Promise<Res> {
+export async function getRefund(id: string, scope: string[] | null = null, user?: AuthUser | null): Promise<Res> {
   const r = await readRequest(pool, id);
-  if (!r) return res(404, { error: 'Not found' });
+  if (!r || !inScope(r, scope)) return res(404, { error: 'Not found' });
   const nowMs = Date.now();
   if (!r.seen_at) await pool.query(`UPDATE refund_requests SET seen_at = now() WHERE id = $1 AND seen_at IS NULL`, [r.id]);
   const recent = (await pool.query(
     `SELECT 1 AS x FROM refund_events WHERE request_id = $1 AND kind = 'viewed' AND created_at > now() - interval '10 minutes' LIMIT 1`, [r.id]
   )).rows.length;
-  if (!recent) await softEvent({ link_id: r.link_id, request_id: r.id, conversation_id: r.conversation_id, kind: 'viewed', actor: 'owner' });
+  if (!recent) await softEvent({ link_id: r.link_id, request_id: r.id, conversation_id: r.conversation_id, kind: 'viewed', actor: 'owner', meta: byMeta(user) });
   return res(200, await detailOf(r, nowMs));
 }
 
@@ -320,16 +327,16 @@ export async function revealPayout(id: string, ip: string, ua: string | null): P
 // approve / reject / refunded / cancel: a compare-and-set on the status the screen showed (`expect`),
 // the customer's message in the SAME transaction (none for cancel), email after commit. The DB trigger
 // is the second gate on every move. note / return / tell_return / post_ack / retry_email as listed.
-export async function patchRefund(user: AuthUser, id: string, body: unknown): Promise<Res> {
+export async function patchRefund(user: AuthUser, id: string, body: unknown, scope: string[] | null = null): Promise<Res> {
   const b = obj(body);
   const action = String(b.action ?? '');
   const r = await readRequest(pool, id);
-  if (!r) return res(404, { error: 'Not found' });
+  if (!r || !inScope(r, scope)) return res(404, { error: 'Not found' });
   if (isMoveAction(action)) return moveStatus(user, r, action, b);
   if (action === 'note') {
     const n = checkNote(b.note, true);
     if (!n.ok) return res(400, { error: 'Write a note (up to 500 characters).', errors: { note: n.code } });
-    await logRefundEvent(pool, { link_id: r.link_id, request_id: r.id, conversation_id: r.conversation_id, kind: 'note', actor: 'owner', note: n.value });
+    await logRefundEvent(pool, { link_id: r.link_id, request_id: r.id, conversation_id: r.conversation_id, kind: 'note', actor: 'owner', note: n.value, meta: byMeta(user) });
     return res(200, { ok: true, request: detailRequest(r), message: null, emailed: null });
   }
   if (action === 'return') {
@@ -399,13 +406,13 @@ async function moveStatus(user: AuthUser, r: Row, action: 'approve' | 'reject' |
           ? { utr: mv.utr, amount: mv.amount, date: mv.refund_date, method: row.payout_method }
           : {});
         msg = await postRefundMessage(db, target, mv.message, text, lang, { actor });
-        await logRefundEvent(db, { link_id: row.link_id, request_id: row.id, conversation_id: target.id, kind: 'status', actor: 'owner', from_status: expect, to_status: mv.to, note: mv.note });
+        await logRefundEvent(db, { link_id: row.link_id, request_id: row.id, conversation_id: target.id, kind: 'status', actor: 'owner', from_status: expect, to_status: mv.to, note: mv.note, meta: byMeta(user) });
         await logRefundEvent(db, {
           link_id: row.link_id, request_id: row.id, conversation_id: target.id, kind: 'message_posted', actor: 'system',
           meta: { step: mv.message, message_id: msg.id, lang },
         });
       } else {
-        await logRefundEvent(db, { link_id: row.link_id, request_id: row.id, conversation_id: row.conversation_id, kind: 'status', actor: 'owner', from_status: expect, to_status: mv.to, note: mv.note });
+        await logRefundEvent(db, { link_id: row.link_id, request_id: row.id, conversation_id: row.conversation_id, kind: 'status', actor: 'owner', from_status: expect, to_status: mv.to, note: mv.note, meta: byMeta(user) });
       }
       return { row, msg, text, target };
     });

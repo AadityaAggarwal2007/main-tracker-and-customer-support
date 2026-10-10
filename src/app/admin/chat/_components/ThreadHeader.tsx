@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone } from 'lucide-react';
-import { can, isSuperAdmin } from '@/lib/permissions';
+import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
@@ -237,7 +237,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       {canReply && canCases && !isVisitorChat(activeConv) && activeConv.case_kind && (
         <div className="th-row th-case meta">
           <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
-          {activeConv.case_kind === 'refund' && isSuperAdmin(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
+          {activeConv.case_kind === 'refund' && canRefunds(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
             <RefundFormControl token={token} conversationId={activeConv.id} state={threadRefund.state} onChanged={() => fetchThread(activeConv.id, true)} onAlert={showAlert}
               label={supportLabel(activeConv.site_name || activeConv.panel_name)} />
           )}
@@ -261,8 +261,8 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       )}
 
       {/* Chikki's own Refund mark (owner 2026-10-02): the customer was told a refund form will come
-          in this chat, and only the Super Admin sends it. Until a form link or a request exists. */}
-      {canReply && canCases && isSuperAdmin(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
+          in this chat; the Super Admin or the Manager sends it. Until a form link or a request exists. */}
+      {canReply && canCases && canRefunds(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
         && threadRefund?.id === activeConv.id && threadRefund.state && !threadRefund.state.link && !threadRefund.state.request && (
         <div className="meta t-warn" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
           Chikki promised a refund form - press Send refund form

@@ -628,7 +628,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
     const block = page.slice(page.lastIndexOf('<div', line), line);
     ok(/flexBasis: '100%'/.test(block) && !/@media|display: 'none'|hide/i.test(block), 'a line of its own, never hidden on a phone');
     ok(page.includes('Chikki promised a refund form - press Send refund form'), 'the Super Admin\'s line');
-    ok(/isSuperAdmin\(user\) && activeConv\.case_kind === 'refund' && activeConv\.case_marked_by === AUTO_MARK_NAME/.test(page), 'only for him, on Chikki\'s Refund');
+    ok(/canRefunds\(user\) && activeConv\.case_kind === 'refund' && activeConv\.case_marked_by === AUTO_MARK_NAME/.test(page), 'only for whoever sends the form (Super Admin / Manager, owner 2026-10-10), on Chikki\'s Refund');
     // The chip names Chikki on its own Refund mark, as on its Ship again marks.
     ok(/const autoRefund = refund && auto;/.test(page));
     ok(/\{big && by \? <span style=\{\{ fontWeight: 500 \}\}>· \{by\}/.test(page), 'the big chip shows who marked it');

@@ -127,7 +127,7 @@ const MUTATIONS = [
   { id: 'MR9', file: R + 'server-send.ts', what: 'a failed form email never shows on the chip (no Retry email)', find: "return r.rows[0]?.kind === 'email_failed';", to: 'return false;', suite: ROUTE, by: ['R5'] },
   { id: 'MR10', file: R + 'server-send.ts', what: 'Retry email re-sends an expired link', find: "if (!link || stateOf(link, Date.now()) !== 'open') {", to: 'if (!link) {', suite: ROUTE, by: ['R5'] },
   { id: 'MR8', file: 'src/app/api/chat/conversations/[id]/route.ts', what: 'thread GET returns refund_form to staff',
-    find: "isSuperAdmin(user) && conversation.case_kind === 'refund' ? { refund_form:", to: "conversation.case_kind === 'refund' ? { refund_form:", suite: ROUTE, by: ['R14'] },
+    find: "canRefunds(user) && conversation.case_kind === 'refund' ? { refund_form:", to: "conversation.case_kind === 'refund' ? { refund_form:", suite: ROUTE, by: ['R14'] },
 ];
 
 const args = process.argv.slice(2);

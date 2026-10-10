@@ -472,3 +472,14 @@ be taken by any member ("Take from Super Admin") or handed on, like a member's. 
 N to the team" in My chats once, or the team takes them one by one. Rulebook 7.7 / 7.9 updated. Rules 11 / 14 / 26
 (a waiting customer is never locked away from the team): PASS, better than before. Tests: `team-unit.js` U2,
 `team-routing.js` R5 / R6 updated; full suite green, tsc 0, build ok. No SQL, no env.
+
+## Owner change 2026-10-10: the Manager (Sunny) runs the team and owns the chargebacks
+
+Owner: "Sunny is the main guy ... saare chargeback ki responsibility uske sar pe; in fuck-up chats ko tu theek kar, refund
+de, reship kar, lekin chargeback nahi aana chahiye". Step 1 of the plan (Manager panel, team chat rules, auto-assignment):
+the `manager` role gets `team.lead`, `refunds.manage`, `chargebacks.view`. Changed from the 2 Oct decision (9.9 / 9.11:
+"sirf super admin isko bhej paee"): the Manager may now send the refund form and approve / reject / mark Refunded, for
+his panels; the full UPI / bank details (reveal) stay the Super Admin's (owner answer, 10 Oct). Chargeback alerts are the
+Manager's too. The team score is the Manager's and the Super Admin's only (Chat Support members no longer see "My
+score"). Rules 17 / 18 (refunds): PASS (same form, same checks, one more trusted person). 24 / 27 / 43 (chargebacks):
+PASS (more eyes, nothing deleted). SHIPTRACK_MASTER_RULES.md itself is not edited.

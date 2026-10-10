@@ -1255,6 +1255,21 @@ const t = async (name, fn) => {
     assert.deepStrictEqual(ok200(await post({ action: 'judge' })).judged, 0);
   });
 
+  await t('the Manager (owner 2026-10-10, team.lead): the whole team like the Super Admin; changing it stays the Super Admin\'s', async () => {
+    const rahul = db.team.find((u) => u.id === R), keep = rahul.permissions;
+    rahul.permissions = [...keep, 'team.lead'];
+    await auth.refreshTeamCache(true);
+    try {
+      const tok = auth.generateToken('rahul', 'agent', null, { name: 'Rahul', uid: R, sv: 1 });
+      const lead = ok200(await score.GET(reqOf(tok, '/api/team/score')));
+      const full = ok200(await get());
+      assert.notStrictEqual(lead.view, 'self');
+      assert.deepStrictEqual(lead.people.map((p) => p.key).sort(), full.people.map((p) => p.key).sort());
+      ok200(await items.GET(reqOf(tok, `/api/team/score/items?person=${A}&metric=thanks`)));
+      assert.deepStrictEqual([(await post({ action: 'judge' }, tok)).status], [403]);
+    } finally { rahul.permissions = keep; await auth.refreshTeamCache(true); }
+  });
+
   await t('logs: counts only, never a customer text, phone, judge input or the cron secret', async () => {
     assert.ok(logs.some((l) => /^\[team-score\] 2026-10-08\.\.2026-10-08 1 live \d+ ms \(\d+ msgs, 0 frozen\)$/.test(l)), logs.filter((l) => /team-score/.test(l)).slice(0, 3).join(' | '));
     assert.ok(logs.some((l) => /^\[team-score\] judge asked=\d+ yes=\d+ unclear=\d+ failed=\d+ capped=(true|false)$/.test(l)));

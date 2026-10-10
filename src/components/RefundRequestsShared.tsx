@@ -25,6 +25,7 @@ export interface Msg { step: string; id: string | null; at: string | null; lang:
 export interface Ev { at: string | null; kind: string; actor: string | null; from: string | null; to: string | null; note: string | null; meta: Record<string, unknown> | null }
 export type Bi2 = { en: string; hinglish: string };
 export interface Detail {
+  can_reveal?: boolean;   // false for the Manager: the full bank / UPI details are the Super Admin's (owner 2026-10-10)
   request: {
     id: string; ref: string; status: Status; status_at: string | null; created_at: string | null; reason: string; sub_reason: string | null;
     checked_around: boolean; details: string; consent_version: string | null; consent_at: string | null; device: string | null;
