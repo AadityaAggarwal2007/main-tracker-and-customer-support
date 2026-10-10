@@ -87,4 +87,5 @@ export const SKIP = {
   noNumber: 'No valid WhatsApp number on the order',
   noLink: 'The order has no tracking link',
   gone: 'The order is no longer there',
+  stopped: 'The customer asked us to stop WhatsApp messages (STOP)',
 } as const;
