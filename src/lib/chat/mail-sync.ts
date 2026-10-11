@@ -288,6 +288,14 @@ async function syncBodies(c: ImapFlow, box: SyncBox, folder: StoreFolder, path: 
   try {
     const uv = String((c.mailbox as unknown as { uidValidity?: bigint })?.uidValidity ?? '');
     const valid = rows.filter(r => r.uidvalidity === uv);
+    // A copy from an older uidvalidity can never be fetched again (Gmail renumbered the folder; the same mail is copied
+    // again under the new number): it is marked gone instead of waiting for ever (owner 2026-10-11 log: one mailbox kept
+    // 5 bodies 'none' while every run reported bodies=0).
+    const stale = rows.filter(r => r.uidvalidity !== uv).map(r => r.id);
+    if (stale.length && uv) {
+      await query(`UPDATE mail_store SET gone = true, updated_at = now() WHERE id = ANY($1::bigint[]) AND NOT local`, [stale]);
+      console.log(`[mail-sync] box=${box.id} ${folder}: ${stale.length} old copies (uidvalidity changed) marked gone`);
+    }
     // Ten mails per Gmail call (owner 2026-10-11, the first live run: one mail per call made a slow Gmail copy 4-13
     // bodies a run); a batch Gmail refuses falls back to one by one.
     for (let i = 0; i < valid.length; i += BODY_BATCH) {
