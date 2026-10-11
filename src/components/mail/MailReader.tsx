@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
 import { BUCKET_LABEL, initials, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
+import { CorrectionDialog } from '@/components/CorrectionDialog';
+import { correctionLine, isOverdue, type CorrectionKind } from '@/lib/chat/corrections-rules';
+import type { CorrectionRow } from '@/lib/chat/corrections-read';
 import type { Att, Box, Customer, Full, ThreadItem, Ver } from './types';
 
 const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -45,9 +48,36 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   const [vPhone, setVPhone] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [vError, setVError] = useState('');
+  // "Correction" (owner 2026-10-11): what a verified sender wants changed on their order; POST /api/corrections { mail }.
+  // The mail's own rows come from one light GET when it opens (a missing table = none).
+  const [corrOpen, setCorrOpen] = useState(false);
+  const [corrBusy, setCorrBusy] = useState(false);
+  const [corrError, setCorrError] = useState('');
+  const [corrRows, setCorrRows] = useState<CorrectionRow[]>([]);
 
   // Another mail: a clean reply box and verify form.
-  useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); }, [mail.uid]);
+  useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); setCorrOpen(false); setCorrError(''); setCorrRows([]); }, [mail.uid]);
+  useEffect(() => {
+    if (!box || !token) return;
+    let gone = false;
+    fetch(`/api/corrections?box=${encodeURIComponent(box.id)}&uid=${mail.uid}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null)).then(j => { if (!gone && j && Array.isArray(j.rows)) setCorrRows(j.rows); }).catch(() => { /* no line */ });
+    return () => { gone = true; };
+  }, [box, token, mail.uid]);
+
+  const saveCorrection = async (kinds: CorrectionKind[], note: string, orderId: string) => {
+    if (!box || corrBusy) return;
+    setCorrBusy(true); setCorrError('');
+    try {
+      const r = await fetch('/api/corrections', { method: 'POST', headers: auth, body: JSON.stringify({ mail: { box: box.id, uid: mail.uid, email: mail.fromAddress, orderId }, kinds, note }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setCorrError(d.error || 'Could not save the correction.'); return; }
+      setCorrOpen(false);
+      if (d.correction) setCorrRows(rows => [d.correction as CorrectionRow, ...rows]);
+      onAlert('success', 'Correction noted. Tell the customer in your reply; the Manager will fix the order.');
+    } catch { setCorrError('Could not save the correction.'); }
+    finally { setCorrBusy(false); }
+  };
 
   const download = async (a: Att) => {
     try {
@@ -170,6 +200,12 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         {canReply && caseInfo && onCase && (caseInfo.state === 'active'
           ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="For a mail that needs no reply: the case moves to Closed cases and leaves To reply (a reply closes it by itself). A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
           : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases, until you reply again or close it again"><FolderOpen size={15} /> Reopen case</button>)}
+        {canReply && (
+          <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => setCorrOpen(true)}
+            title={versions.length > 0 ? 'The customer wants something changed on the order (address, size, colour ...): note it for the Manager' : 'Verify this sender first; the dialog shows the two ways'}>
+            <Wrench size={15} /> Correction
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {position && <span className="meta" style={{ whiteSpace: 'nowrap' }}>{position}</span>}
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPrev?.()} disabled={!onPrev} title="Newer"><ChevronLeft size={16} /></button>
@@ -184,6 +220,13 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
           <span className="meta mail-caseline"><FolderCheck size={13} /> {caseInfo.closedBy === 'reply'
             ? `Case closed · replied ${agoText(Date.parse(caseInfo.closedAt))}`
             : `Case closed${caseInfo.byName ? ` by ${caseInfo.byName}` : ''} · ${agoText(Date.parse(caseInfo.closedAt))}`}</span>
+        )}
+        {/* Corrections noted on this mail (owner 2026-10-11): pending ones in full, red once over a day */}
+        {corrRows.filter(r => r.status === 'pending').map(r => (
+          <span key={r.id} className={`meta mail-caseline${isOverdue(r) ? ' t-danger' : ''}`} title={r.note}><Wrench size={13} /> {correctionLine(r)}</span>
+        ))}
+        {corrRows.some(r => r.status !== 'pending') && !corrRows.some(r => r.status === 'pending') && (
+          <span className="meta mail-caseline"><Wrench size={13} /> {correctionLine(corrRows.find(r => r.status !== 'pending') as CorrectionRow)}</span>
         )}
       </header>
 
@@ -247,6 +290,13 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       </div>
       <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />
       </div>
+      {corrOpen && (
+        <CorrectionDialog who="sender" verified={versions.length > 0} orders={versions.map(v => v.orderId)} busy={corrBusy} error={corrError}
+          onCancel={() => setCorrOpen(false)} onSave={saveCorrection}
+          onVerifyNow={() => { setCorrOpen(false); setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }}
+          ask={{ en: ASK_VERIFY_EN, hi: ASK_VERIFY_HINGLISH }}
+          onAsk={(text) => { setCorrOpen(false); setReplyOpen(true); setReplyText(text); }} />
+      )}
     </div>
   );
 }

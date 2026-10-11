@@ -8,6 +8,7 @@ import { loadHolidays } from '@/lib/chat/holidays';
 import { loadWaHealth } from '@/lib/chat/whatsapp-health';
 import { loadRiskList } from '@/lib/chargeback/risk';
 import { loadAiCredit } from '@/lib/chat/ai-credit';
+import { correctionsByPanel } from '@/lib/chat/corrections-read';
 import type { AiCredit } from '@/lib/chat/ai-credit-rules';
 import type { WaHealth } from '@/lib/chat/whatsapp-health-rules';
 import { isOfficeHours, istDate } from '@/lib/office-hours';
@@ -87,6 +88,9 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
                                AND tracking_status <> 'Delivered' AND tracking_status !~* 'cancel|rto|return') AS late
        FROM orders WHERE business_id::text = ANY($1::text[]) GROUP BY business_id`, [ids])).rows, []));
 
+  // Corrections (owner 2026-10-11): pending and over-24-hours per panel, in its own try (corrections-read.ts: a missing table = none).
+  const corr = await correctionsByPanel(ids).catch(() => new Map<string, { pending: number; overdue: number }>());
+
   // The chargeback Gmail's sign-in status is kept under the first-connected panel's row of that address (poll.ts).
   const cbBoxes = by(await safe('chargeback boxes', async () => (await query<{ business_id: string; whatsapp: string | null; status_id: string }>(
     `SELECT m.business_id::text AS business_id, (SELECT whatsapp_number FROM panel_chargeback p WHERE p.business_id = m.business_id) AS whatsapp,
@@ -116,6 +120,7 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
       refundRequestsNew: null,
       chatsToday: num(t?.chats), teamRepliesToday: num(t?.team), chikkiToday: num(chikki.get(p.id)?.n),
       ordersToday: num(o?.today), lateOrders: num(o?.late),
+      correctionsPending: corr.get(p.id)?.pending ?? 0, correctionsOverdue: corr.get(p.id)?.overdue ?? 0,
       aiOn: s ? s.ai_enabled !== false : null, hasPrompt: s?.has_prompt === true,
       supportGmail: num(s?.support_gmail) > 0, chargebackGmail: !!cb, whatsapp: !!(cb && cb.whatsapp && cb.whatsapp.trim()),
       supportGmailStatus: num(s?.support_gmail) > 0 ? sup.status : null, supportGmailError: sup.error,

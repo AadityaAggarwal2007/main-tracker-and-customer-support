@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
+import { listForConversation } from '@/lib/chat/corrections-read';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { loadOrderItems } from '@/lib/chat/order-items-db';
 import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
@@ -140,6 +141,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   // The red Chargeback tag (owner 2026-10-08): an open chargeback alert on this customer's verified order.
   const cbBiz = conversation.tracker_business_id == null ? null : String(conversation.tracker_business_id);
   const chargebackOpen = (await openChargebackKeys([{ business_id: cbBiz, order_id: conversation.verified_order_id }])).has(chargebackKey(cbBiz, conversation.verified_order_id));
+  // Corrections (owner 2026-10-11): this chat's rows, pending first; a missing table = none (corrections-read.ts).
+  const corrections = await listForConversation(params.id);
 
   return NextResponse.json({
     as_of: asOf,
@@ -151,6 +154,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     newer_chat: thread.newer,
     order_facts: orderFacts,
     chargeback_open: chargebackOpen,
+    corrections,
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     order_items: orderItems,

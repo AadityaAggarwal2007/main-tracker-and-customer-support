@@ -1,0 +1,80 @@
+import { query } from '@/lib/db';
+import { OVERDUE_MS } from './corrections-rules';
+
+// ── Corrections: the light reads (owner 2026-10-11) ────────────────────────────────────────────────
+// The reads the inbox list, the open thread, the Mail tab and the Today board add AFTER their own query, like the
+// chargeback tag (openChargebackKeys): one small query each, never inside the list, and a missing table
+// (order-corrections.sql not run yet, 42P01) or a failed read means "none" / zero, never a broken inbox. Imports
+// only the database: the board's and the route suites' fakes answer it with nothing. The writes and the full list
+// (with rights) are in corrections.ts.
+
+export interface CorrectionRow {
+  id: string; business_id: string; source: 'chat' | 'email' | 'mail';
+  conversation_id: string | null; mail_box_id: string | null; mail_uid: number | null; customer_email: string | null;
+  order_id: string; kinds: string[]; note: string; status: 'pending' | 'done' | 'cancelled';
+  created_by: string | null; created_by_name: string | null; created_at: string;
+  done_by: string | null; done_by_name: string | null; done_at: string | null; done_note: string | null;
+  updated_at: string;
+}
+
+export const CORRECTION_COLS = `x.id::text AS id, x.business_id, x.source, x.conversation_id, x.mail_box_id, x.mail_uid::int AS mail_uid, x.customer_email,
+            x.order_id, x.kinds, x.note, x.status, x.created_by, x.created_by_name, x.created_at, x.done_by, x.done_by_name, x.done_at, x.done_note, x.updated_at`;
+
+export const missingCorrections = (e: unknown) => (e as { code?: string })?.code === '42P01';
+const quiet = (what: string, e: unknown) => { if (!missingCorrections(e)) console.error(`[correction] ${what}:`, (e as Error).message); };
+
+// The open chat's own corrections, newest first (the thread's answer `corrections`; pending and done).
+export async function listForConversation(conversationId: string): Promise<CorrectionRow[]> {
+  try {
+    const r = await query<CorrectionRow>(
+      `SELECT ${CORRECTION_COLS} FROM order_corrections x WHERE x.conversation_id = $1 ORDER BY (x.status = 'pending') DESC, x.created_at DESC LIMIT 20`,
+      [conversationId]);
+    return r.rows;
+  } catch (e) { quiet('thread', e); return []; }
+}
+
+// The open mail's own corrections (the Mail tab's "Correction pending" line).
+export async function listForMail(boxId: string, uid: number): Promise<CorrectionRow[]> {
+  try {
+    const r = await query<CorrectionRow>(
+      `SELECT ${CORRECTION_COLS} FROM order_corrections x WHERE x.mail_box_id = $1 AND x.mail_uid = $2 ORDER BY (x.status = 'pending') DESC, x.created_at DESC LIMIT 20`,
+      [boxId, uid]);
+    return r.rows;
+  } catch (e) { quiet('mail', e); return []; }
+}
+
+// For the inbox rows: which of these chats carry a pending correction (the small "Correction" chip).
+export async function pendingCorrectionConvIds(conversationIds: (string | null | undefined)[]): Promise<Set<string>> {
+  const ids = Array.from(new Set(conversationIds.filter((x): x is string => !!x)));
+  const out = new Set<string>();
+  if (ids.length === 0) return out;
+  try {
+    const r = await query<{ conversation_id: string }>(
+      `SELECT DISTINCT x.conversation_id FROM order_corrections x WHERE x.status = 'pending' AND x.conversation_id = ANY($1::text[])`, [ids]);
+    for (const row of r.rows) out.add(row.conversation_id);
+  } catch (e) { quiet('row chips', e); }
+  return out;
+}
+
+// For the sidebar badge: pending corrections in the login's panels (null = every panel). A failure is 0.
+export async function pendingCorrectionCount(scope: string[] | null): Promise<number> {
+  try {
+    const r = await query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM order_corrections x WHERE x.status = 'pending' AND ($1::text[] IS NULL OR x.business_id = ANY($1::text[]))`, [scope]);
+    return r.rows[0]?.n ?? 0;
+  } catch (e) { quiet('count', e); return 0; }
+}
+
+// For the Today board: pending and overdue (over 24 h) per panel. A missing table = an empty map (zero everywhere).
+export async function correctionsByPanel(businessIds: string[]): Promise<Map<string, { pending: number; overdue: number }>> {
+  const out = new Map<string, { pending: number; overdue: number }>();
+  if (businessIds.length === 0) return out;
+  try {
+    const r = await query<{ business_id: string; pending: number; overdue: number }>(
+      `SELECT x.business_id, count(*)::int AS pending,
+              count(*) FILTER (WHERE x.created_at <= now() - interval '${Math.round(OVERDUE_MS / 3600000)} hours')::int AS overdue
+         FROM order_corrections x WHERE x.status = 'pending' AND x.business_id = ANY($1::text[]) GROUP BY x.business_id`, [businessIds]);
+    for (const row of r.rows) out.set(String(row.business_id), { pending: Number(row.pending) || 0, overdue: Number(row.overdue) || 0 });
+  } catch (e) { quiet('board', e); }
+  return out;
+}

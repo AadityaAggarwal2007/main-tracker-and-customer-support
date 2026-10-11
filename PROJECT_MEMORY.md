@@ -208,6 +208,15 @@ Done and live:
   wrong click, `chat_events` kind `verify`). Not strict proof (no automatic Refund promise), like the Mail
   tab's check. Rulebook 2.11; `team-routing.js` R73. No SQL.
 
+- **11 Oct, "Correction" (approved plan):** a team member presses Correction on a VERIFIED chat (website / email, never
+  WhatsApp) or a verified sender's mail; the row (kinds + note) shows in Chat Support > **Corrections** for everyone
+  (pending oldest first, red after 24 h; a chip on the row, a line at the top of the chat, a Today line + routine step);
+  only the Super Admin / Manager mark it done / cancelled / reopened and change the order (Edit address / items from
+  the row = the chat header's editors). Unverified chat: "Verify first" with Verify now or a ready "please verify"
+  line for the reply box (EN / Hinglish). `src/lib/chat/corrections*.ts`, `/api/corrections`, `CorrectionDialog.tsx`,
+  `CorrectionsPanel.tsx`. **`order-corrections.sql` waits for his yes** (until then: 503 "not installed", nothing breaks).
+  Tests: `corrections.js` 9 groups. Rulebook 7.17.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
@@ -225,6 +234,8 @@ Done and live:
    of his message). Afterwards rotate the token. Also: confirm the stray `KEY` repo secret was deleted.
 6. A Manager login for Sunny: Team > Add member, role Manager, pick the panels; the password is
    shown once (Copy all / WhatsApp). I cannot create it from here (no database access).
+7. Run `order-corrections.sql` (one line: `cd /var/www/tracker && git pull origin main && sudo -u postgres psql -d tracking_crm -v ON_ERROR_STOP=1 -f order-corrections.sql`)
+   so the Correction button and the Corrections section work (additive, no deletes).
 
 ## Gotchas that cost time before
 

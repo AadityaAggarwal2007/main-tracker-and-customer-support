@@ -19,7 +19,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_TOTAL_BYTES,
   TOO_MANY_MESSAGE, TOTAL_TOO_LARGE_MESSAGE, checkBrowserFile,
 } from '@/lib/chat/attachment-rules';
-import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems } from './_lib/types';
+import type { AuthUser, Business, Conversation, EarlierChat, NewerChat, ChatMessage, MessageDetails, PendingFile, TeamMember, TransferTarget, StaffBlock, HotLock, TeamLogEntry, InboxTab, OrderFacts, StaffAddress, StaffOrderItems, CorrectionRow } from './_lib/types';
 import { FULL_EVERY_MS, afterFor, keepOlder, mergeMessages } from '@/lib/chat/thread-sync';
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
@@ -30,6 +30,11 @@ import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
 import { ReshipDialog } from './_components/ReshipDialog';
 import { VerifyDialog } from './_components/VerifyDialog';
+import { CorrectionDialog } from '@/components/CorrectionDialog';
+import CorrectionLine from './_components/CorrectionLine';
+import CorrectionsPanel from './_components/CorrectionsPanel';
+import { ASK_VERIFY_WIDGET_EN, ASK_VERIFY_WIDGET_HI, type CorrectionKind } from '@/lib/chat/corrections-rules';
+import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH } from '@/lib/chat/mail-view';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import TeamLive from './_components/TeamLive';
@@ -61,7 +66,10 @@ export default function ChatSupportPage() {
   const leadOpen = tab === 'lead:open';
   const leadTeam = tab === 'lead:team';
   const [leadCount, setLeadCount] = useState<number | null>(null);
-  const tabDef = topicKey || activeKey || leadOpen || leadTeam ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
+  // Corrections (owner 2026-10-11): its own board in place of the list + thread, like Team live; the badge is the list's count.
+  const corrTab = tab === 'corrections';
+  const [correctionsPending, setCorrectionsPending] = useState(0);
+  const tabDef = topicKey || activeKey || leadOpen || leadTeam || corrTab ? { ...INBOX_TABS[0], status: '', segment: '' as const } : (INBOX_TABS.find(t => t.v === tab) || INBOX_TABS[0]);
   const statusFilter = tabDef.status;
   const segment = tabDef.segment;
   // Open customers per problem tab, from the list's own answer.
@@ -118,6 +126,9 @@ export default function ChatSupportPage() {
   const [reshipEdit, setReshipEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // The team's Verify dialog (owner 2026-10-11): order ID + full phone typed by a team member, POST .../verify.
   const [verifyEdit, setVerifyEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // "Correction" (owner 2026-10-11): the dialog, and the open chat's own rows from the thread's answer.
+  const [correctionEdit, setCorrectionEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  const [threadCorrections, setThreadCorrections] = useState<{ id: string; rows: CorrectionRow[] } | null>(null);
   // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
   // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -288,6 +299,7 @@ export default function ChatSupportPage() {
       if (res.ok && data.me !== undefined) setMeKey(data.me ?? null);
       if (res.ok && Array.isArray(data.alerts)) setTeamAlerts(data.alerts);
       if (res.ok && data.lead_count !== undefined) setLeadCount(typeof data.lead_count === 'number' ? data.lead_count : null);
+      if (res.ok && typeof data.corrections_pending === 'number') setCorrectionsPending(data.corrections_pending);
       if (res.ok && data.mine) setMyChats({ open: data.mine.open ?? 0, waiting: data.mine.waiting ?? 0, held: data.mine.held ?? 0 });
       if (res.ok && seq === listSeqRef.current) {
         setConversations(data.conversations || []);
@@ -335,6 +347,7 @@ export default function ChatSupportPage() {
       setThreadTeam({ id, staff: data.staff ?? null, log: Array.isArray(data.team_log) ? data.team_log : [], hotLock: data.hot_lock ?? null });
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable, items: data.order_items ?? null, itemsEditable: !!data.items_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });
+      setThreadCorrections({ id, rows: Array.isArray(data.corrections) ? data.corrections : [] });
       // The older messages "Load older" put on screen stay; a different chat starts clean.
       const keep = sameChatRef.current === id;
       sameChatRef.current = id;
@@ -462,6 +475,8 @@ export default function ChatSupportPage() {
     try {
       const id = new URLSearchParams(window.location.search).get('open');
       if (id && /^[\w-]{6,80}$/.test(id)) { setActiveId(id); window.history.replaceState(window.history.state, '', '/admin/chat'); return; }
+      // The Today board's corrections line (owner 2026-10-11): /admin/chat?section=corrections opens that section.
+      if (new URLSearchParams(window.location.search).get('section') === 'corrections') { setTab('corrections'); setActiveId(null); window.history.replaceState(window.history.state, '', '/admin/chat'); return; }
       const last = JSON.parse(localStorage.getItem('chat_last') || 'null') as { id?: unknown; tab?: unknown } | null;
       // The Manager's tabs only come back for a login that has them.
       const lead = isTeamLead(JSON.parse(localStorage.getItem('auth_user') || 'null'));
@@ -1155,6 +1170,28 @@ export default function ChatSupportPage() {
       setVerifyEdit({ convId, busy: false, error: 'Could not verify' });
     }
   };
+  // "Correction" (owner 2026-10-11): POST /api/corrections on the open chat; the server refuses an unverified chat
+  // ("Verify this customer first"), a WhatsApp chat and a merged shell. The row then shows at the top of the chat and in
+  // Chat Support > Corrections; the customer is told nothing by this.
+  const saveCorrection = async (kinds: CorrectionKind[], note: string) => {
+    if (!correctionEdit || !token) return;
+    const convId = correctionEdit.convId;
+    setCorrectionEdit({ ...correctionEdit, busy: true, error: '' });
+    try {
+      const res = await fetch('/api/corrections', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ conversationId: convId, kinds, note }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setCorrectionEdit({ convId, busy: false, error: data.error || 'Could not save the correction' }); return; }
+      setCorrectionEdit(null);
+      showAlert('success', 'Correction noted. Tell the customer in the chat; the Manager will fix the order.');
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch {
+      setCorrectionEdit({ convId, busy: false, error: 'Could not save the correction' });
+    }
+  };
   // A wrong click: only the team's own verification comes off; the customer is told nothing.
   const removeVerify = async () => {
     if (!activeConv || !token) return;
@@ -1259,7 +1296,7 @@ export default function ChatSupportPage() {
     <div className="admin-layout" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden' }}>
       {/* ── Sidebar ── (a slide-in menu below 1024px, as in the admin panel) */}
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-      <InboxSidebar simple={simple} leadCount={leadCount} activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} unreadTotal={unreadTotal} user={user} />
+      <InboxSidebar simple={simple} leadCount={leadCount} activeCounts={activeCounts} activePanelId={activePanelId} businesses={businesses} canReply={canReply} caseCounts={caseCounts} correctionsPending={correctionsPending} logout={logout} myChats={myChats} router={router} setActiveId={setActiveId} setActivePanelId={setActivePanelId} setMeOpen={setMeOpen} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setSidebarOpen={setSidebarOpen} setTab={setTab} sidebarOpen={sidebarOpen} tab={tab} topicCounts={topicCounts} unreadTotal={unreadTotal} user={user} />
 
       {/* ── Main ── */}
       <main className="main-content chat-main">
@@ -1282,7 +1319,8 @@ export default function ChatSupportPage() {
         </div>
 
         {leadTeam && <TeamLive token={token} />}
-        <div className={`chat-shell${activeId ? ' thread-open' : ''}`} style={leadTeam ? { display: 'none' } : undefined}>
+        {corrTab && <CorrectionsPanel token={token} user={user} businesses={businesses} onAlert={showAlert} onOpenChat={(id) => { setTab('all'); openConversation(id); }} />}
+        <div className={`chat-shell${activeId ? ' thread-open' : ''}`} style={leadTeam || corrTab ? { display: 'none' } : undefined}>
           {/* Conversation list */}
           <div className="chat-list">
             <ListHeader simple={simple} setTab={setTab} topicCounts={topicCounts} activeKey={activeKey} activePanelId={activePanelId} businesses={businesses} caseKey={caseKey} caseSummary={caseSummary} conversations={conversations} listTotal={listTotal} mineTab={mineTab} myChats={myChats} release={release} releaseAll={releaseAll} searchActive={searchActive} searchInput={searchInput} setRelease={setRelease} setSearchInput={setSearchInput} setSearchQ={setSearchQ} setUnreadOnly={setUnreadOnly} tab={tab} topicDef={topicDef} unreadOnly={unreadOnly} urgentCount={urgentCount} user={user} />
@@ -1415,7 +1453,9 @@ export default function ChatSupportPage() {
                 <div className="chat-top">
                 <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} removeVerify={removeVerify} />
 
-                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} canVerify={!!staff?.can_verify} onVerify={() => setVerifyEdit({ convId: activeConv.id, busy: false, error: '' })} />
+                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} canVerify={!!staff?.can_verify} onVerify={() => setVerifyEdit({ convId: activeConv.id, busy: false, error: '' })}
+                  canCorrect={!!staff?.can_correct} onCorrect={() => setCorrectionEdit({ convId: activeConv.id, busy: false, error: '' })} />
+                {threadCorrections?.id === activeConv.id && <CorrectionLine rows={threadCorrections.rows} />}
                 </div>
 
                 {/* Messages */}
@@ -1527,6 +1567,15 @@ export default function ChatSupportPage() {
         {verifyEdit && activeConv?.id === verifyEdit.convId && (
           <VerifyDialog email={activeConv.source === 'email'} busy={verifyEdit.busy} error={verifyEdit.error}
             onCancel={() => setVerifyEdit(null)} onSave={saveVerify} />
+        )}
+        {correctionEdit && activeConv?.id === correctionEdit.convId && (
+          <CorrectionDialog who="customer" verified={!!activeVerifiedOrder} orders={activeVerifiedOrder ? [activeVerifiedOrder] : []}
+            busy={correctionEdit.busy} error={correctionEdit.error} onCancel={() => setCorrectionEdit(null)}
+            onSave={(kinds, note) => saveCorrection(kinds, note)}
+            onVerifyNow={staff?.can_verify ? () => { setCorrectionEdit(null); setVerifyEdit({ convId: activeConv.id, busy: false, error: '' }); } : undefined}
+            ask={activeConv.source === 'email' ? { en: ASK_VERIFY_EN, hi: ASK_VERIFY_HINGLISH } : { en: ASK_VERIFY_WIDGET_EN, hi: ASK_VERIFY_WIDGET_HI }}
+            onAsk={insertDraft ? (text) => { insertDraft(text); setCorrectionEdit(null); } : undefined}
+            askHint={insertDraft ? undefined : 'To ask the customer, take over the chat first (the line goes into your reply box).'} />
         )}
         {itemsEdit && activeItems && activeConv?.id === itemsEdit.convId && (
           <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}

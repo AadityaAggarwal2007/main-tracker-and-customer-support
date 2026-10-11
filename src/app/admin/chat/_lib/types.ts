@@ -1,5 +1,7 @@
 import type { StoredAttachment } from '@/lib/chat/attachment-rules';
 import type { OrderAddress } from '@/lib/chat/order-address';
+import type { CorrectionRow } from '@/lib/chat/corrections-read';
+export type { CorrectionRow };
 
 /* ═══════════ TYPES ═══════════ */
 export interface AuthUser { username: string; displayName: string; role: string; businessIds: string[] | null; permissions?: string[] }
@@ -96,6 +98,8 @@ export interface Conversation {
   health_threat?: boolean;
   // An open chargeback alert on this customer's verified order (src/lib/chargeback): a red Chargeback tag.
   chargeback_open?: boolean;
+  // A pending correction on this chat (owner 2026-10-11, order-corrections.sql): a small "Correction" chip on the row.
+  correction_pending?: boolean;
   health_accuse?: boolean;
   // How long the customer has waited for an answer (src/lib/chat/waiting.ts):
   // since when, and whether that is WAITING_OVERDUE_HOURS or more.
@@ -207,6 +211,9 @@ export interface StaffBlock {
   // The team's Verify button (owner 2026-10-11): order ID + full phone typed by a team member, on a
   // website / email chat this login may reply in (never WhatsApp). POST .../[id]/verify.
   can_verify: boolean;
+  // The Correction button (owner 2026-10-11): any login that replies to chats, on a live website / email chat (never
+  // WhatsApp). POST /api/corrections; the server refuses an unverified chat with "Verify this customer first".
+  can_correct?: boolean;
 }
 // Close / Hand to AI on the open chat (the thread's answer: `hot_lock`, owner 2026-10-02). On a HOT chat
 // (an unanswered threat / fraud claim, At risk by the scorer's model, or Chikki's own Refund mark:
@@ -232,7 +239,8 @@ export interface TeamLogEntry {
 // about one problem, whatever their status.
 // My chats (chat team, owner 2026-10-01): this login's own chats in Needs you and With team (?mine=1).
 // With team keeps EVERY chat a person took over, so the Super Admin still sees them all in one place.
-export type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'mine' | 'team' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | 'active:open' | 'active:closed' | 'lead:open' | 'lead:team' | `topic:${string}`;
+// Corrections (owner 2026-10-11): its own section for everyone, a board in place of the list + thread (CorrectionsPanel).
+export type InboxTab = 'all' | 'visitors' | 'customers' | 'human_needed' | 'mine' | 'team' | 'agent_handling' | 'ai_handling' | 'case:refund' | 'case:reship' | 'resolved' | 'active:open' | 'active:closed' | 'lead:open' | 'lead:team' | 'corrections' | `topic:${string}`;
 
 // A chat tied to an order shows the customer name ON THE ORDER, never one the
 // customer typed (display-name.ts). For a verified customer that is simply their

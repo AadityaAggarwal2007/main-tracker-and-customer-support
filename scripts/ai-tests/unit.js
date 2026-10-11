@@ -1353,7 +1353,7 @@ t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that name
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
   // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct),
   // ... then 7.16 (WhatsApp chats are not in Chat Support, owner 11 Oct).
-  assert.deepStrictEqual(sec.rules.slice(-6).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16']);
+  assert.deepStrictEqual(sec.rules.slice(-7).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16', '7.17']);
   assert.ok(rule('7.16').how === 'code' && /no-reply identity/.test(rule('7.16').text) && /NEVER in Chat Support/.test(rule('7.16').text) && /WhatsApp > Chats/.test(rule('7.16').text) && /never moved to the Manager/.test(rule('7.16').text));
   assert.ok(/Open cases/.test(rule('7.15').text) && /half hour/.test(rule('7.15').text) && /Chikki/.test(rule('7.15').text));
   assert.ok(/30 minutes/.test(rule('7.14').text) && /red bar/.test(rule('7.14').text));
@@ -1663,6 +1663,44 @@ t('team-verify: who may (canAct: the holder, a free chat, the Super Admin; never
   assert.ok(/verified_via = 'team'/.test(src('lib/chat/team-verify.ts')) && !/visitor_phone/.test(src('lib/chat/team-verify.ts')), 'the phone is never stored');
   const rule = rb.RULEBOOK.find((s) => s.key === 'verify').rules.slice(-1)[0];
   assert.ok(rule.id === '2.11' && rule.how === 'code' && /Remove/.test(rule.text) && /WhatsApp/.test(rule.text), 'rulebook 2.11 at the end of the verify section');
+});
+
+// ── Corrections (owner 2026-10-11): the pure rules in corrections-rules.ts ──
+const corr = load('corrections-rules');
+t('corrections-rules: the kinds and their labels; cleanCorrection validates and deduplicates the kinds, trims the note, refuses an empty / long / "<" note and an unknown kind, in plain words', () => {
+  assert.deepStrictEqual(corr.CORRECTION_KIND_KEYS, ['address', 'pincode', 'phone', 'size', 'colour', 'product', 'pack', 'bogo', 'other']);
+  assert.strictEqual(corr.kindLabel('pack'), 'Pack / quantity'); assert.strictEqual(corr.kindLabel('bogo'), 'Buy 1 Get 1'); assert.strictEqual(corr.kindsText(['size', 'colour']), 'Size, Colour');
+  const okk = corr.cleanCorrection({ kinds: ['colour', 'size', 'Size', ' colour '], note: '  Size M, blue\r\n  ' });
+  assert.deepStrictEqual(okk, { kinds: ['size', 'colour'], note: 'Size M, blue' }, 'the list\'s order, each once, the note trimmed');
+  assert.deepStrictEqual(corr.cleanCorrection({ kinds: 'address', note: 'x' }).kinds, ['address'], 'one kind as a string');
+  for (const [input, words] of [
+    [{ kinds: [], note: 'x' }, /Pick what/], [{ note: 'x' }, /Pick what/], [{ kinds: ['sizee'], note: 'x' }, /not known/], [{ kinds: ['size'], note: '' }, /Write what/],
+    [{ kinds: ['size'], note: 'x'.repeat(501) }, /under 500/], [{ kinds: ['size'], note: 'a <b>' }, /"<"/], [null, /Pick what/],
+  ]) { const r = corr.cleanCorrection(input); assert.ok(r.error && words.test(r.error), JSON.stringify(input).slice(0, 40) + ' -> ' + (r.error || 'ok')); }
+  assert.deepStrictEqual(corr.cleanDoneNote(undefined), { note: null }); assert.deepStrictEqual(corr.cleanDoneNote('  '), { note: null }); assert.deepStrictEqual(corr.cleanDoneNote(' fixed '), { note: 'fixed' });
+  assert.ok(/under 300/.test(corr.cleanDoneNote('x'.repeat(301)).error)); assert.ok(/"<"/.test(corr.cleanDoneNote('<').error)); assert.ok(corr.cleanDoneNote(5).error);
+  assert.deepStrictEqual([corr.ACTION_STATUS.done, corr.ACTION_STATUS.cancel, corr.ACTION_STATUS.reopen], ['done', 'cancelled', 'pending']);
+  assert.deepStrictEqual(corr.ACTION_FROM.reopen, ['done', 'cancelled']); assert.ok(corr.isCorrectionAction('cancel') && !corr.isCorrectionAction('finish'));
+});
+t('corrections-rules: pendingAge / isOverdue (a pending row over 24 h; a done row never), ageText, the line for the thread, the ask-to-verify lines name the widget\'s own button', () => {
+  const now = Date.UTC(2026, 9, 12, 6, 0);
+  const at = (h) => new Date(now - h * 3600000).toISOString();
+  assert.strictEqual(corr.pendingAge(at(3), now), 3 * 3600000); assert.ok(Number.isNaN(corr.pendingAge('bad', now))); assert.strictEqual(corr.pendingAge(new Date(now - 60000), now), 60000);
+  assert.strictEqual(corr.isOverdue({ status: 'pending', created_at: at(23) }, now), false);
+  assert.strictEqual(corr.isOverdue({ status: 'pending', created_at: at(24) }, now), true);
+  assert.strictEqual(corr.isOverdue({ status: 'done', created_at: at(80) }, now), false);
+  assert.strictEqual(corr.isOverdue({ status: 'pending', created_at: null }, now), false);
+  assert.deepStrictEqual([corr.ageText(20 * 60000), corr.ageText(3 * 3600000), corr.ageText(50 * 3600000), corr.ageText(NaN)], ['20 min', '3 h', '2 d', '']);
+  assert.strictEqual(corr.correctionLine({ status: 'pending', kinds: ['size', 'colour'], created_by_name: 'Rahul', created_at: at(3) }, now), 'Correction pending · Size, Colour · by Rahul · 3 h');
+  assert.strictEqual(corr.correctionLine({ status: 'done', kinds: ['address'], created_by_name: 'Rahul', created_at: at(30), done_by_name: 'Sunny' }, now), 'Correction done by Sunny · Address · asked by Rahul');
+  assert.strictEqual(corr.correctionLine({ status: 'cancelled', kinds: ['other'], created_by_name: null, created_at: at(1) }, now), 'Correction cancelled · Other · asked by team');
+  // the customer finds "Verify yourself" on their own screen (public/widget.js); email chats keep mail-view's lines
+  const widget = fs.readFileSync(path.resolve(__dirname, '../../public/widget.js'), 'utf8');
+  assert.ok(/Verify yourself/.test(widget) && corr.ASK_VERIFY_WIDGET_EN.includes("'Verify yourself'") && corr.ASK_VERIFY_WIDGET_HI.includes("'Verify yourself'"));
+  assert.ok(/Order ID/.test(corr.ASK_VERIFY_WIDGET_EN) && /phone number/.test(corr.ASK_VERIFY_WIDGET_EN) && /Order ID/.test(corr.ASK_VERIFY_WIDGET_HI));
+  assert.ok(/ASK_VERIFY_EN, ASK_VERIFY_HINGLISH/.test(src('app/admin/chat/page.tsx')), 'an email chat gets the Mail tab\'s ask lines');
+  assert.ok(/can_correct/.test(src('lib/chat/thread-staff.ts')) && /source !== 'whatsapp'/.test(src('lib/chat/corrections-rules.ts')) === false, 'the rules file has no imports and no source check (that is the server\'s)');
+  assert.ok(!/^import /m.test(src('lib/chat/corrections-rules.ts')));
 });
 
 console.log(`UNIT: ${n} groups passed`);
