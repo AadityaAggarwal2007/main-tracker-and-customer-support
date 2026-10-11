@@ -1,6 +1,6 @@
 'use client';
 
-import { Mail, MessageCircle, Phone, BadgeCheck, Smartphone } from 'lucide-react';
+import { Mail, MessageCircle, Phone, BadgeCheck, Smartphone, Wrench } from 'lucide-react';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { waitingLevel } from '@/lib/chat/waiting';
 import type { Conversation, TeamMember } from '../_lib/types';
@@ -96,6 +96,8 @@ export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaitin
         </span>
         <Chip tone={status.tone} title={status.title}>{status.text}</Chip>
         {priority}
+        {/* A pending correction on this chat (owner 2026-10-11): the Manager has not changed the order yet */}
+        {c.correction_pending && <Chip tone="info" title="A correction is waiting on this customer's order (Chat Support > Corrections)"><Wrench /> Correction</Chip>}
       </div>
       {simple && !searchActive && c.subject_summary && (
         // The team's rows say in one line what the customer needs, so a chat is understood before it is opened.

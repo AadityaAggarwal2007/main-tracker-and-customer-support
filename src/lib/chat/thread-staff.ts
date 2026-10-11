@@ -37,5 +37,8 @@ export async function staffBlock(conv: ConversationRow, user: AuthUser) {
     office_open: isOfficeHours(now, cachedHolidays()),
     // The team's Verify button (owner 2026-10-11): whoever may reply here, on a website / email chat (team-verify-rules.ts).
     can_verify: live && !!actor && canTeamVerify(actor, h, conv),
+    // The Correction button (owner 2026-10-11): any login that replies to chats, on a live website / email chat (never
+    // WhatsApp). The server decides again on POST /api/corrections (corrections.ts: the chat must be verified).
+    can_correct: live && !!actor && actor.canReply && conv.source !== 'whatsapp',
   };
 }

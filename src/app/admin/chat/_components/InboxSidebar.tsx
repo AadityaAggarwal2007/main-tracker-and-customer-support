@@ -1,7 +1,7 @@
 'use client';
 
 import type { useRouter } from 'next/navigation';
-import { ShoppingBag, LogOut, MessageCircle, UserCheck, MailOpen, CheckCheck, Siren, Activity, ShieldAlert, Trophy } from 'lucide-react';
+import { ShoppingBag, LogOut, MessageCircle, UserCheck, MailOpen, CheckCheck, Siren, Activity, ShieldAlert, Trophy, Wrench } from 'lucide-react';
 import PanelSwitcher from '@/components/PanelSwitcher';
 import { ROLE_INFO, canChargebacks, type Role } from '@/lib/permissions';
 import type { AuthUser, Business, InboxTab } from '../_lib/types';
@@ -9,8 +9,10 @@ import { TOPIC_ICONS, INBOX_TABS } from '../_lib/inbox';
 import type { ChipTone } from './chips';
 import { Chip } from './chips';
 
-export default function InboxSidebar({ simple, leadCount, activeCounts, activePanelId, businesses, canReply, caseCounts, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, sidebarOpen, tab, topicCounts, unreadTotal, user }: {
+export default function InboxSidebar({ simple, leadCount, activeCounts, activePanelId, businesses, canReply, caseCounts, correctionsPending, logout, myChats, router, setActiveId, setActivePanelId, setMeOpen, setSearchInput, setSearchQ, setSidebarOpen, setTab, sidebarOpen, tab, topicCounts, unreadTotal, user }: {
   simple: boolean;
+  // Corrections (owner 2026-10-11): pending rows in this login's panels, everyone's; the badge on the section.
+  correctionsPending: number;
   leadCount: number | null;
   activeCounts: { open: number; closed: number };
   activePanelId: string;
@@ -44,6 +46,9 @@ export default function InboxSidebar({ simple, leadCount, activeCounts, activePa
   // The Manager's group (owner 2026-10-10, step 5: "Manager panel ... sabse pehle Open cases"), first for the Manager
   // and the Super Admin: the risky chats and the ones given to them, the Refund / Ship again queues, the team's day,
   // and links to Chargebacks and Team score on the admin page.
+  // Corrections (owner 2026-10-11): what customers asked to change on their orders; everyone sees every row, the
+  // Super Admin and the Manager fix the order and mark it done. Its own section in both menus.
+  const correctionsItem: Item = { v: 'corrections', label: 'Corrections', icon: Wrench, n: correctionsPending, tone: 'warn', hint: 'Address, size, colour, pincode ... changes customers asked for; the Manager fixes the order and marks each done', line: simple ? 'Changes customers asked for. The Manager fixes them.' : undefined };
   const groups: { title: string; items: Item[] }[] = [
     { title: 'Manager', items: [
       { v: 'lead:open', label: 'Open cases', icon: Siren, n: leadCount ?? 0, tone: 'danger', hint: 'Chats given to you (Send to Manager, 30 minutes without a reply, transfers), customers at risk and threats or fraud claims, riskiest first' },
@@ -57,6 +62,7 @@ export default function InboxSidebar({ simple, leadCount, activeCounts, activePa
       { v: 'human_needed', label: 'Needs you', icon: base('human_needed').icon, n: 0, tone: 'danger', hint: 'Chats where the AI stopped and a person must answer' },
       { v: 'topic:risk', label: 'At risk', icon: TOPIC_ICONS.risk, n: topicCounts.risk ?? 0, tone: 'danger', hint: 'Frustrated customers who may charge back' },
     ] },
+    { title: 'Corrections', items: [correctionsItem] },
     { title: 'Team and AI', items: [
       { v: 'agent_handling', label: 'With team', icon: base('agent_handling').icon, n: 0, tone: 'muted' },
       { v: 'active:open', label: 'Open case', icon: MailOpen, n: activeCounts.open, tone: 'danger', sub: true, hint: 'The customer wrote and nobody has answered yet' },
@@ -81,6 +87,7 @@ export default function InboxSidebar({ simple, leadCount, activeCounts, activePa
       { v: 'all', label: 'All chats', icon: base('all').icon, n: 0, tone: 'muted', line: 'All your customers.' },
     ] },
     { title: 'Team', items: [{ v: 'team', label: 'Team chats', icon: base('team').icon, n: 0, tone: 'muted', line: "Your team's chats. Read them, or Take over." }] },
+    { title: 'Corrections', items: [correctionsItem] },
   ];
   const view = simple ? simpleGroups : groups;
   return (

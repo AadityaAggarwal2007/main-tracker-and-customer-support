@@ -57,6 +57,8 @@ stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };')
 stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 // The red Chargeback tag (src/lib/chargeback/store.ts): no open alert here; the tag has its own test (chargeback.js).
 stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new Set(), chargebackKey: (b, o) => b + "|" + o };');
+// Corrections (owner 2026-10-11, corrections-read.ts): its own suite (corrections.js); the thread and the list only carry its light reads here.
+stub('corrections-read', 'module.exports = { listForConversation: async () => [], pendingCorrectionConvIds: async () => new Set(), pendingCorrectionCount: async () => 0 };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');
@@ -1886,6 +1888,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       // Owner 5 Oct (answer 4): Rahul may also hand Anurag's chat on (to the Super Admin here: never to himself or the holder).
       can_act: false, claims: false, take: 'senior', transfer_to: [{ key: 'owner', name: 'Super Admin', senior: false, away_min: 295 }], can_mark_case: true, mark_override: false, mark_note: null, office_open: true,
       can_verify: false,   // owner 2026-10-11: Verify follows can_act (R72)
+      can_correct: true,   // owner 2026-10-11: Correction for anyone who replies to chats, on a website / email chat (corrections.js)
     });
     const ga = (await thread('anurag', 'r18')).body.staff;
     deq([ga.me, ga.can_act, ga.claims, ga.take, ga.transfer_to.map((x) => x.key)], [ANURAG, true, false, null, [RAHUL, 'owner']]);

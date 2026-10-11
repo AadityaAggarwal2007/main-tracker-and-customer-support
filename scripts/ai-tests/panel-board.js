@@ -80,7 +80,8 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.strictEqual(t1.panels, 2); assert.strictEqual(t1.needsYou, 3); assert.strictEqual(t1.overdue, 1); assert.strictEqual(t1.chargebacks, 1); assert.strictEqual(t1.refundRequests, 2);
     assert.strictEqual(t1.reshipToShip, 3); assert.strictEqual(t1.chatsToday, 5); assert.strictEqual(t1.chikkiToday, 7); assert.strictEqual(t1.gmailErrors, 1); assert.strictEqual(t1.setupGaps, 2);
     const r1 = rules.morningRoutine(t1);
-    assert.deepStrictEqual(r1.map((x) => [x.done, x.count]), [[true, 0], [false, 1], [false, 1], [false, 1], [false, 3], [false, 2], [false, 3], [true, 0], [true, 0], [false, 2]]);
+    // the Corrections step (owner 2026-10-11) sits after "Ship again parcels sent"
+    assert.deepStrictEqual(r1.map((x) => [x.done, x.count]), [[true, 0], [false, 1], [false, 1], [false, 1], [false, 3], [false, 2], [false, 3], [true, 0], [true, 0], [true, 0], [false, 2]]);
     assert.ok(/Chikki is answering/.test(r1[0].text)); assert.strictEqual(r1[1].go, 'chargebacks'); assert.strictEqual(r1[2].go, 'settings');
     assert.deepStrictEqual(rules.morningRoutine(t1, true)[0], { text: r1[0].text, count: 1, done: false, go: 'settings' }, 'Chikki down = the first step open');
     const t2 = rules.summarize([{ ...base, chargebacksOpen: null, refundRequestsNew: null }]);
@@ -134,6 +135,32 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     const today = S.queries.find((q) => /FROM messages m JOIN conversations c/.test(q.sql)).sql;
     assert.ok(/m\.deleted_at IS NULL AND c\.source <> 'whatsapp'/.test(today), 'customers who wrote / team replies today');
     assert.ok(/loadWaHealth\(now\)/.test(fs.readFileSync(path.join(SRC, 'lib/panel-board-server.ts'), 'utf8')), 'the WhatsApp number box is still read');
+  });
+  // Corrections (owner 2026-10-11): the board's line, the routine step and the loader's own read (corrections-read.ts).
+  await t('corrections: a panel\'s pending rows give one line (red once one is over 24 h) that opens Chat Support > Corrections; the routine step; the loader reads them per panel in its own try', async () => {
+    const one = rules.panelNeeds({ ...base, correctionsPending: 2 });
+    assert.deepStrictEqual(one.map((x) => [x.tone, x.go, x.text]), [['warn', 'corrections', '2 corrections waiting']]);
+    const late = rules.panelNeeds({ ...base, correctionsPending: 3, correctionsOverdue: 1, reshipToShip: 1, lateOrders: 1 });
+    assert.deepStrictEqual(late.map((x) => x.go), ['chats', 'corrections', 'orders'], 'after Ship again, before late orders');
+    assert.deepStrictEqual([late[1].tone, late[1].text], ['danger', '3 corrections waiting (1 over 24 h)']);
+    assert.deepStrictEqual(rules.panelNeeds({ ...base }).map((x) => x.tone), ['ok'], 'no field (an older answer) = no line');
+    const tot = rules.summarize([{ ...base, correctionsPending: 2, correctionsOverdue: 1 }, { ...base, correctionsPending: 1 }]);
+    assert.strictEqual(tot.corrections, 3); assert.strictEqual(tot.correctionsOverdue, 1);
+    const step = rules.morningRoutine(tot).find((x) => x.go === 'corrections');
+    assert.deepStrictEqual([step.text, step.count, step.done], ['Every correction done (Chat Support > Corrections)', 3, false]);
+    assert.ok(rules.morningRoutine(rules.summarize([base])).find((x) => x.go === 'corrections').done);
+    assert.ok(rules.urgency({ ...base, correctionsOverdue: 1, correctionsPending: 1 }) > rules.urgency({ ...base, correctionsPending: 1 }));
+    // the loader: GROUP BY business_id on order_corrections, pending and overdue; a missing table = zero
+    const realQuery = db.query;
+    db.query = async (sql, p) => (/FROM order_corrections x WHERE x\.status = 'pending' AND x\.business_id = ANY/.test(sql) ? { rows: [{ business_id: 'A', pending: '2', overdue: '1' }], rowCount: 1 } : realQuery(sql, p));
+    try {
+      const r = await server.loadPanelBoard(null, true);
+      assert.deepStrictEqual([r[0].correctionsPending, r[0].correctionsOverdue, r[1].correctionsPending, r[1].correctionsOverdue], [2, 1, 0, 0]);
+    } finally { db.query = realQuery; }
+    S.missing = new Set(['order_corrections']);
+    const g = await server.loadPanelBoard(null, true);
+    assert.deepStrictEqual([g[0].correctionsPending, g[0].correctionsOverdue, g[0].ordersToday], [0, 0, 12], 'no table = 0, the other numbers still come');
+    assert.ok(/where === 'corrections'/.test(fs.readFileSync(path.join(SRC, 'app/admin/page.tsx'), 'utf8')), 'the line opens Chat Support > Corrections');
   });
   await t('route: login needed; the answer carries every panel\'s numbers and whether this is the Super Admin (the screen adds the refund numbers and the lines)', async () => {
     authState.user = null; assert.strictEqual((await route.GET(req('/api/panel-board'))).status, 401);

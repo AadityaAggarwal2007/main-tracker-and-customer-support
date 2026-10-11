@@ -60,6 +60,8 @@ stub('order-items-db', 'module.exports = { loadOrderItems: async () => null };')
 stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 // The red Chargeback tag (src/lib/chargeback/store.ts): no open alert here; the tag has its own test (chargeback.js).
 stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new Set(), chargebackKey: (b, o) => b + "|" + o };');
+// Corrections (owner 2026-10-11, corrections-read.ts): its own suite (corrections.js); the thread and the list only carry its light reads here.
+stub('corrections-read', 'module.exports = { listForConversation: async () => [], pendingCorrectionConvIds: async () => new Set(), pendingCorrectionCount: async () => 0 };');
 stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: true, block: null, block_text: null, link: null, request: null }), refundMarkLocked: async () => false };');
 
 const compile = (from, to) => {
@@ -570,7 +572,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
       status(g, 200);
       deq(g.body.hot_lock, { can_close: false, can_hand_to_ai: false, lock_reason: rules.hotLockNote(kind, c.health_score) }, kind);
       eq(g.body.staff.can_act, true, 'the member still acts on it (reply, Take over, Transfer)');
-      deq(Object.keys(g.body.staff).sort(), ['can_act', 'can_mark_case', 'can_verify', 'claims', 'holder', 'mark_note', 'mark_override', 'me', 'office_open', 'take', 'transfer_to']);
+      deq(Object.keys(g.body.staff).sort(), ['can_act', 'can_correct', 'can_mark_case', 'can_verify', 'claims', 'holder', 'mark_note', 'mark_override', 'me', 'office_open', 'take', 'transfer_to']);
       const go = await get('owner', c.id);
       deq(go.body.hot_lock, { can_close: true, can_hand_to_ai: kind !== 'auto_refund', lock_reason: null }, kind + ' owner');
     }

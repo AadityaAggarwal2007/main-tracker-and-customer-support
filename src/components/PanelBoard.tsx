@@ -80,6 +80,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
     if (go === 'refunds') return pick(p => p.refundRequestsNew ?? 0);
     if (go === 'orders') return pick(p => p.lateOrders);
     if (go === 'settings') return pick(p => p.needs.filter(x => x.go === 'settings').length);
+    if (go === 'corrections') return pick(p => (p.correctionsOverdue ?? 0) * 10 + (p.correctionsPending ?? 0));
     return pick(p => p.overdue * 10 + p.needsYou);
   };
 

@@ -1078,6 +1078,8 @@ export default function AdminDashboard() {
             <PanelBoard token={token} activePanelId={activePanelId} goTo={(panelId, where) => {
               switchPanel(panelId);
               if (where === 'chats') { router.push('/admin/chat'); return; }
+              // Corrections (owner 2026-10-11): the Chat Support section of that name.
+              if (where === 'corrections') { router.push('/admin/chat?section=corrections'); return; }
               setActiveTab(where === 'orders' ? 'orders' : where);
             }} />
           )}

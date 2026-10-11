@@ -24,6 +24,9 @@ export interface PanelStats {
   // Orders
   ordersToday: number;
   lateOrders: number;      // estimated date passed in the last 14 days, not delivered, not cancelled / returned
+  // Corrections (owner 2026-10-11, order-corrections.sql): pending rows, and those waiting over 24 hours. Missing = 0.
+  correctionsPending?: number;
+  correctionsOverdue?: number;
   // Setup
   aiOn: boolean | null;    // null = the panel has no chat site yet
   hasPrompt: boolean;
@@ -39,7 +42,7 @@ export interface PanelStats {
 export type GmailStatus = 'ok' | 'error' | 'unknown';
 
 export type NeedTone = 'danger' | 'warn' | 'ok';
-export interface Need { tone: NeedTone; text: string; go?: 'chats' | 'chargebacks' | 'refunds' | 'settings' | 'orders' | 'whatsapp' }
+export interface Need { tone: NeedTone; text: string; go?: 'chats' | 'chargebacks' | 'refunds' | 'settings' | 'orders' | 'whatsapp' | 'corrections' }
 
 const n = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -56,6 +59,8 @@ export function panelNeeds(s: PanelStats): Need[] {
   if ((s.refundRequestsNew ?? 0) > 0) out.push({ tone: 'warn', text: `${n(s.refundRequestsNew!, 'refund request', 'refund requests')} to decide`, go: 'refunds' });
   if (s.refundCases > 0) out.push({ tone: 'warn', text: `${n(s.refundCases, 'Refund chat', 'Refund chats')} open`, go: 'chats' });
   if (s.reshipToShip > 0) out.push({ tone: 'warn', text: `${n(s.reshipToShip, 'Ship again parcel', 'Ship again parcels')} not sent yet`, go: 'chats' });
+  // Corrections (owner 2026-10-11): changes customers asked for that the Manager has not made yet; red once one waits over a day.
+  if ((s.correctionsPending ?? 0) > 0) out.push({ tone: (s.correctionsOverdue ?? 0) > 0 ? 'danger' : 'warn', text: `${n(s.correctionsPending!, 'correction', 'corrections')} waiting${(s.correctionsOverdue ?? 0) > 0 ? ` (${s.correctionsOverdue} over 24 h)` : ''}`, go: 'corrections' });
   if (s.lateOrders > 0) out.push({ tone: 'warn', text: `${n(s.lateOrders, 'order', 'orders')} past the estimated date`, go: 'orders' });
   if (s.aiOn === false) out.push({ tone: 'warn', text: 'Chikki is OFF: every chat waits for a person', go: 'settings' });
   if (!s.hasPrompt) out.push({ tone: 'warn', text: 'Chikki has no prompt yet: use Settings > All panels setup (or Copy setup)', go: 'settings' });
@@ -70,7 +75,7 @@ export function panelNeeds(s: PanelStats): Need[] {
 export function urgency(s: PanelStats): number {
   return (s.chargebacksOpen ?? 0) * 1000 + (s.supportGmailStatus === 'error' || s.chargebackGmailStatus === 'error' ? 500 : 0)
     + s.overdue * 100 + s.needsYou * 20 + (s.refundRequestsNew ?? 0) * 10 + s.waiting * 5
-    + s.refundCases * 3 + s.reshipToShip * 3 + Math.min(s.lateOrders, 20) + (s.aiOn === false ? 2 : 0) + (s.hasPrompt ? 0 : 1);
+    + s.refundCases * 3 + s.reshipToShip * 3 + (s.correctionsOverdue ?? 0) * 10 + (s.correctionsPending ?? 0) * 3 + Math.min(s.lateOrders, 20) + (s.aiOn === false ? 2 : 0) + (s.hasPrompt ? 0 : 1);
 }
 
 export function sortPanels(panels: PanelStats[]): PanelStats[] {
@@ -82,6 +87,7 @@ export interface BoardSummary {
   panels: number; needsYou: number; overdue: number; waiting: number; chargebacks: number | null; refundRequests: number | null;
   refundCases: number; reshipToShip: number; lateOrders: number; chatsToday: number; teamRepliesToday: number; chikkiToday: number;
   ordersToday: number; gmailErrors: number; setupGaps: number;
+  corrections: number; correctionsOverdue: number;
 }
 export function summarize(panels: PanelStats[]): BoardSummary {
   const sum = (f: (p: PanelStats) => number) => panels.reduce((a, p) => a + f(p), 0);
@@ -93,6 +99,7 @@ export function summarize(panels: PanelStats[]): BoardSummary {
     chatsToday: sum(p => p.chatsToday), teamRepliesToday: sum(p => p.teamRepliesToday), chikkiToday: sum(p => p.chikkiToday), ordersToday: sum(p => p.ordersToday),
     gmailErrors: sum(p => (p.supportGmailStatus === 'error' ? 1 : 0) + (p.chargebackGmailStatus === 'error' ? 1 : 0)),
     setupGaps: sum(p => (p.aiOn === false ? 1 : 0) + (p.hasPrompt ? 0 : 1) + (p.supportGmail ? 0 : 1) + (p.chargebackGmail ? 0 : 1)),
+    corrections: sum(p => p.correctionsPending ?? 0), correctionsOverdue: sum(p => p.correctionsOverdue ?? 0),
   };
 }
 
@@ -114,6 +121,8 @@ export function morningRoutine(t: BoardSummary, aiDown = false, waProblems: numb
   steps.push({ text: 'Needs you is empty', count: t.needsYou, done: t.needsYou === 0, go: 'chats' });
   if (t.refundRequests !== null) steps.push({ text: 'Refund requests decided', count: t.refundRequests, done: t.refundRequests === 0, go: 'refunds' });
   steps.push({ text: 'Ship again parcels sent', count: t.reshipToShip, done: t.reshipToShip === 0, go: 'chats' });
+  // Corrections (owner 2026-10-11): every change a customer asked for is made ("kal subah" means today).
+  steps.push({ text: 'Every correction done (Chat Support > Corrections)', count: t.corrections, done: t.corrections === 0, go: 'corrections' });
   steps.push({ text: 'Refund chats closed', count: t.refundCases, done: t.refundCases === 0, go: 'chats' });
   steps.push({ text: 'Late orders followed up', count: t.lateOrders, done: t.lateOrders === 0, go: 'orders' });
   steps.push({ text: 'Every panel fully set up', count: t.setupGaps, done: t.setupGaps === 0, go: 'settings' });
