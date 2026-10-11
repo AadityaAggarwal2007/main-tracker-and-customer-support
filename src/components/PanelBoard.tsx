@@ -159,7 +159,7 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
         const worst = waLines.some(l => l.tone === 'danger') ? 'danger' : waLines.length ? 'warn' : 'ok';
         const q = (wa.quality || 'UNKNOWN').toUpperCase();
         const qTone = q === 'GREEN' ? 'chip-ok' : q === 'YELLOW' ? 'chip-warn' : q === 'RED' ? 'chip-danger' : 'chip-muted';
-        const pct = wa.limit ? Math.min(100, Math.round((wa.used24h / wa.limit) * 100)) : 0;
+        const pct = wa.limit ? Math.min(100, Math.round(((wa.usedToday ?? wa.used24h) / wa.limit) * 100)) : 0;
         return (
           <div className={`pb-wa pb-wa-${worst}`} role={worst === 'danger' ? 'alert' : undefined}>
             <div className="pb-wa-head">
@@ -172,12 +172,13 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
             </div>
             <dl className="pb-wa-nums">
               <div>
-                <dt title="Different customers we started a WhatsApp conversation with in the last 24 hours, against Meta's daily limit">Customers messaged, last 24 h</dt>
-                <dd>{wa.used24h}{wa.limit ? <span className="meta" title={wa.limitFrom === 'saved' ? 'The limit typed in WhatsApp > Setup (from WhatsApp Manager)' : "Meta's limit for the number"}> / {wa.limit.toLocaleString('en-IN')}</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not set (WhatsApp > Setup)'}</span>}</dd>
+                <dt title="Different customers we started a WhatsApp conversation with since midnight (India time), against the daily limit">Customers messaged today</dt>
+                <dd>{wa.usedToday ?? wa.used24h}{wa.limit ? <span className="meta" title={wa.limitFrom === 'saved' ? 'The limit typed in WhatsApp > Setup (from WhatsApp Manager)' : "Meta's limit for the number"}> / {wa.limit.toLocaleString('en-IN')} a day</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not set (WhatsApp > Setup)'}</span>}</dd>
                 {wa.limit ? <div className="pb-wa-bar" aria-hidden="true"><i style={{ width: `${pct}%`, background: pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)' }} /></div> : null}
+                {wa.usedToday != null && <div className="meta" style={{ fontSize: '0.6875rem', marginTop: 2 }} title="Meta checks the limit over a rolling 24 hours, so yesterday evening's messages still count this morning">Meta&apos;s count, last 24 h: {wa.used24h}</div>}
               </div>
               {!wa.today && <div className={wa.failedToday ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.failedToday}</dd></div>}
-              <div title="Tracking links (48 hours after the order) and order messages queued to go later, every day together"><dt>Queued for later</dt><dd>{wa.waitingToday}</dd></div>
+              <div title="Every tracking link waiting for its time: each goes 48 hours after its order, in office hours. Not today's count."><dt>Tracking links due later</dt><dd>{wa.waitingToday}</dd></div>
               <div title="Customers who wrote STOP: the automation never messages them"><dt>Wrote STOP</dt><dd>{wa.stopped}</dd></div>
             </dl>
             {wa.today && (

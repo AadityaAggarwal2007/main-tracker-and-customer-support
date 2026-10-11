@@ -42,15 +42,16 @@ export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
   const saved = metaLimit || phone.tier.toUpperCase() === 'TIER_UNLIMITED' ? null : await dailyLimit();
   const h: WaHealth = { quality: phone.quality, status: phone.status, tier: phone.tier, limit: metaLimit ?? saved, limitFrom: metaLimit ? 'meta' : saved ? 'saved' : null, used24h: 0, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: phone.error };
   try {
-    const r = await query<{ n: number }>(
-      `SELECT count(DISTINCT x.digits)::int AS n FROM (
-         SELECT w.to_number AS digits FROM wa_auto_sends w
+    const r = await query<{ n: number; today: number }>(
+      `SELECT count(DISTINCT x.digits)::int AS n, (count(DISTINCT x.digits) FILTER (WHERE x.at >= ${IST_TODAY}))::int AS today FROM (
+         SELECT w.to_number AS digits, w.sent_at AS at FROM wa_auto_sends w
           WHERE w.sent_at > now() - interval '24 hours' AND w.status IN ('sent', 'delivered', 'read')
          UNION ALL
-         SELECT substr(c.visitor_id, 4) FROM messages m JOIN conversations c ON c.id = m.conversation_id
+         SELECT substr(c.visitor_id, 4), m.created_at FROM messages m JOIN conversations c ON c.id = m.conversation_id
           WHERE m.created_at > now() - interval '24 hours' AND m.sender = 'agent' AND m.metadata ? 'wa_template'
             AND c.source = 'whatsapp' AND c.visitor_id LIKE 'wa:%' AND COALESCE(m.metadata->>'wa_sent', 'true') <> 'false'
        ) x`);
+    h.usedToday = r.rows[0]?.today ?? 0;
     h.used24h = r.rows[0]?.n ?? 0;
   } catch (e) { ignoreMissing(e, 'used'); }
   try {

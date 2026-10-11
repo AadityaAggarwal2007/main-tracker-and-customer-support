@@ -90,7 +90,7 @@ const db = {
       const rows = Object.keys(m).map((k) => ({ kind: k.split('|')[0], status: k.split('|')[1], n: m[k] }));
       return { rows, rowCount: rows.length };
     }
-    if (/count\(DISTINCT x\.digits\)::int AS n/.test(sql)) return { rows: [{ n: 0 }], rowCount: 1 };
+    if (/count\(DISTINCT x\.digits\)::int AS n, \(count\(DISTINCT x\.digits\) FILTER \(WHERE x\.at >= /.test(sql)) return { rows: [{ n: 613, today: 311 }], rowCount: 1 };
     if (/AS failed, \(count\(\*\) FILTER \(WHERE status = 'pending'\)\)::int AS waiting FROM wa_auto_sends/.test(sql)) return { rows: [{ failed: 0, waiting: S.rows.filter((r) => r.status === 'pending').length }], rowCount: 1 };
     if (/FROM wa_auto_sends GROUP BY 1, 2, 3|FROM wa_auto_sends w GROUP BY 1, 2, 3/.test(sql)) {
       const m = {}, mi = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; const t = msgAt(r); if (t >= p[0].getTime() && t < p[1].getTime()) mi[k] = (mi[k] || 0) + 1; }
@@ -494,6 +494,7 @@ async function t(name, fn) {
     let h; try { wh.resetWaPhoneCache(); h = await wh.loadWaHealth(S.nowMs); } finally { Date.now = realNow; }
     deq(h.today, { placedWent: 1, placedRead: 0, trackingWent: 0, trackingRead: 0, failed: 0, skipped: 2, dueLater: 0 });   // #1554 has no number: both skipped
     eq(h.waitingToday, 1);   // #1553's tracking link, due on the 15th
+    deq([h.usedToday, h.used24h], [311, 613]);   // today first (the limit is a day's), Meta's rolling 24 h beside it
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
