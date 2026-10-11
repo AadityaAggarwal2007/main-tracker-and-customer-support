@@ -6,7 +6,8 @@ import { parseUid } from '@/lib/chat/mail-view';
 import { autoVerifySenders } from '@/lib/chat/mail-auto-verify';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
 import { can } from '@/lib/permissions';
-import { storeFlag, storeMail, storeReady, storeRow, storeSeenThread } from '@/lib/chat/mail-store';
+import { storeBody, storeFlag, storeMail, storeReady, storeRow, storeSeenThread } from '@/lib/chat/mail-store';
+import { MailError } from '@/lib/chat/mail-inbox';
 
 // GET /api/mail/message?box=&uid=[&images=1][&peek=1]: opens one mail. It is marked read in Gmail, like opening
 // it in Gmail, unless peek=1. The HTML comes back already wrapped for a sandboxed frame (mail-view.ts).
@@ -32,7 +33,19 @@ export async function GET(request: NextRequest) {
     if ((await storeReady(a.box.id)).ok) {
       const { row, mail: kept } = await storeMail(a.box.id, folder, uid, images);
       if (row) {
-        const mail = kept ?? await readMail(a.box, uid, { markRead: false, images, folder, slot });
+        let mail: (NonNullable<typeof kept> | Omit<NonNullable<Awaited<ReturnType<typeof readMail>>>, 'raw'>) | null = kept;
+        if (!mail) {
+          // Not copied yet (it just arrived, or the sync is behind): read from Gmail once on the click's own connection,
+          // 30 s at most, and KEEP it (owner 2026-10-11: before, every click on such a mail waited on a cold Gmail again).
+          let got: Awaited<ReturnType<typeof readMail>>;
+          try { got = await readMail(a.box, uid, { markRead: false, images, folder, slot: 'read', withRaw: true, timeoutMs: 30_000 }); }
+          catch (e) {
+            if (e instanceof MailError && e.status === 504) throw new MailError('This mail\'s text is not copied into ShipTrack yet and Gmail did not answer in 30 s. Click it again in a moment; the copy runs in the background.', 504);
+            throw e;
+          }
+          if (got?.raw) { await storeBody(row, got.raw); }
+          if (got) { const { raw: _raw, ...rest } = got; mail = rest; }
+        }
         if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
         if (folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
         if (!peek) { if (!row.seen) await storeFlag(row, 'seen'); await storeSeenThread(row); }

@@ -49,10 +49,10 @@ export class MailError extends Error {
 
 // One IMAP session on the mailbox's kept-open connection (imap-pool.ts): 'list' for reading the list, 'read' for
 // everything else, so opening a mail never waits for a list refresh. A session that hangs is cut after 25 s.
-async function withImap<T>(box: MailBoxSecret, fn: (c: ImapFlow) => Promise<T>, slot: PoolSlot = 'read'): Promise<T> {
+async function withImap<T>(box: MailBoxSecret, fn: (c: ImapFlow) => Promise<T>, slot: PoolSlot = 'read', timeoutMs?: number): Promise<T> {
   const t0 = Date.now();
   try {
-    return await withPooledImap(box, slot, fn);
+    return await withPooledImap(box, slot, fn, timeoutMs);
   } catch (e) {
     if (e instanceof MailError) throw e;
     // The real reason in the PM2 log (owner 2026-10-11: "conversation kisi panel mein nahi khul raha"; the screen only says
@@ -211,8 +211,14 @@ const VIEW_SOURCE_BYTES = 3 * 1024 * 1024;
 
 const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 
-// Opens one mail. markRead (default) sets Gmail's Seen flag, like opening it in Gmail.
-export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean; folder?: MailFolder; slot?: PoolSlot } = {}): Promise<MailFull | null> {
+// The body as the mail store keeps it (mail-store.ts storeBody): the text, the HTML with the mail's own pictures inlined,
+// the attachment list. Returned next to the screen's shape when readMail is asked withRaw (owner 2026-10-11: a mail the
+// sync had not copied yet was read live on every click; now the click's read is kept, so the next open is instant).
+export interface MailRaw { text: string; html: string; attachments: MailAttachmentInfo[]; cut: boolean }
+
+// Opens one mail. markRead (default) sets Gmail's Seen flag, like opening it in Gmail. timeoutMs: how long the click may
+// wait for Gmail (the pool's 25 s by default).
+export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead?: boolean; images?: boolean; folder?: MailFolder; slot?: PoolSlot; withRaw?: boolean; timeoutMs?: number } = {}): Promise<(MailFull & { raw?: MailRaw }) | null> {
   const t0 = Date.now();
   const out = await withImap(box, async (c) => {
     const path = opts.folder === 'sent' ? await sentPath(c, box.id) : 'INBOX';
@@ -245,6 +251,10 @@ export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead
         return arr.flatMap((x: { value?: { name?: string; address?: string }[] }) => x?.value || []).map(addressLabel).filter(Boolean).join(', ');
       };
       const remote = html ? hasRemoteImages(html) : false;
+      const attachments = (p.attachments || []).map((a, i) => ({
+        index: i, filename: a.filename || `attachment-${i + 1}`, contentType: a.contentType || 'application/octet-stream',
+        size: a.size ?? a.content?.length ?? 0, inline: !!a.cid && a.contentDisposition !== 'attachment',
+      }));
       return {
         uid,
         subject: (p.subject || '').trim() || '(no subject)',
@@ -254,15 +264,13 @@ export async function readMail(box: MailBoxSecret, uid: number, opts: { markRead
         text: text.slice(0, 40_000),
         frame: frameHtml(html || textToHtml(text), !!opts.images),
         remoteImages: remote, imagesShown: !!opts.images,
-        attachments: (p.attachments || []).map((a, i) => ({
-          index: i, filename: a.filename || `attachment-${i + 1}`, contentType: a.contentType || 'application/octet-stream',
-          size: a.size ?? a.content?.length ?? 0, inline: !!a.cid && a.contentDisposition !== 'attachment',
-        })),
+        attachments,
         unread: false, answered: got.flags.has('\\Answered'), cut: got.cut,
         authPass: gmailAuthPassed((p.headerLines || []).find(h => h.key === 'authentication-results')?.line.replace(/^authentication-results:\s*/i, '') ?? null),
+        ...(opts.withRaw ? { raw: { text: text.slice(0, 40_000), html, attachments, cut: got.cut } } : {}),
       };
     } finally { lock.release(); }
-  }, opts.slot ?? 'read');
+  }, opts.slot ?? 'read', opts.timeoutMs);
   const ms = Date.now() - t0;
   if (ms > 2000) console.log(`[mail-timing] read box=${box.id} uid=${uid} folder=${opts.folder ?? 'inbox'} slot=${opts.slot ?? 'read'} ${ms}ms`);
   return out;
@@ -327,25 +335,42 @@ export async function sendMailReply(box: MailBoxSecret, uid: number, text: strin
 // The original mail as a reply needs it (read from Gmail above, or from the mail store: mail-store.ts storeOriginal).
 export interface ReplyOriginal { to: string; subject: string; messageId: string; references: string; date: string; fromLabel: string; text: string }
 
-// Sends the reply over SMTP (no Gmail IMAP call). Our own Message-ID, so the mail store can show it in the conversation
-// at once and match Gmail's copy of it in Sent later.
-export async function sendReplyTo(box: MailBoxSecret, orig: ReplyOriginal, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string; messageId: string; subject: string }> {
+// The finished reply, ready to send: the address, the subject, both bodies with Gmail's quote already in, the threading
+// ids and our own Message-ID (so the mail store shows it in the conversation at once and matches Gmail's copy of it in
+// Sent later). Built once; sent either here (sendBuiltReply, the old way inside the request) or by the outbox worker
+// (mail-outbox.ts, owner 2026-10-11: the screen never waits for Gmail's SMTP).
+export interface ReplyBuilt { to: string; messageId: string; subject: string; htmlBody: string; textBody: string; inReplyTo: string | null; references: string | null; fromName: string }
+export function buildReply(box: MailBoxSecret, orig: ReplyOriginal, text: string, opts: { includeQuote?: boolean } = {}): ReplyBuilt {
   if (!orig.to) throw new MailError('That mail has no address to reply to.', 400);
   if (orig.to === box.email.toLowerCase()) throw new MailError('That mail came from this same Gmail address.', 400);
   const quote = opts.includeQuote === false ? null : { dateIso: orig.date, fromLabel: orig.fromLabel, original: orig.text };
   const messageId = `<${randomUUID()}@${(box.email.split('@')[1] || 'shiptrack.store').toLowerCase()}>`;
-  const subject = replySubject(orig.subject);
+  return {
+    to: orig.to, messageId, subject: replySubject(orig.subject), fromName: `${box.siteName} Support`,
+    htmlBody: replyBodyHtml(text, quote), textBody: replyBodyText(text, quote),
+    inReplyTo: orig.messageId || null, references: orig.references || null,
+  };
+}
+
+// Sends a built reply over SMTP now (no Gmail IMAP call).
+export async function sendBuiltReply(box: MailBoxSecret, built: ReplyBuilt, files?: ReplyFile[]): Promise<void> {
   try {
     await sendEmailReply({
-      fromEmail: box.email, fromName: `${box.siteName} Support`, appPassword: box.appPassword, toEmail: orig.to,
-      subject, htmlBody: replyBodyHtml(text, quote), textBody: replyBodyText(text, quote),
-      replyToMessageId: orig.messageId || null, references: orig.references || null,
-      attachments: opts.files && opts.files.length ? opts.files : undefined, messageId,
+      fromEmail: box.email, fromName: built.fromName, appPassword: box.appPassword, toEmail: built.to,
+      subject: built.subject, htmlBody: built.htmlBody, textBody: built.textBody,
+      replyToMessageId: built.inReplyTo, references: built.references,
+      attachments: files && files.length ? files : undefined, messageId: built.messageId,
     });
   } catch {
     throw new MailError('Gmail did not accept the reply. Nothing was sent. Try again.', 502);
   }
-  return { to: orig.to, messageId, subject };
+}
+
+// Build + send in one go (the path before the outbox, kept for a mailbox whose outbox table is not there yet).
+export async function sendReplyTo(box: MailBoxSecret, orig: ReplyOriginal, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string; messageId: string; subject: string }> {
+  const built = buildReply(box, orig, text, opts);
+  await sendBuiltReply(box, built, opts.files);
+  return { to: built.to, messageId: built.messageId, subject: built.subject };
 }
 
 export interface ThreadItem { folder: MailFolder; uid: number; from: string; to: string; subject: string; date: string }

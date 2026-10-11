@@ -75,6 +75,10 @@ Done and live:
   scripts/ai-tests/mail-store.js`.
 - **Mail looks like Gmail (11 Oct)**: boxes To reply / Replied / Not customers (`mail-filters.ts bucketOf`), one line per
   conversation across the width, the conversation as cards, Reply at the bottom, Send opens the next mail to answer.
+- **Mail, ekdam tich (11 Oct evening)**: `mail-outbox.sql` (owner runs it) + `mail-outbox.ts`: a reply is queued and sent in the
+  background with SMTP timeouts (Sending… / Sent / Not sent · Try again in the conversation); the sync copies a just-arrived
+  mail's body first and releases its lease (75 s) at the end; a live-read body is kept; the frame is as tall as the mail; a
+  "Customer" card (order, items, place, payment, chat) stands next to the open mail (`/api/mail/customer`).
 - **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
   send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
   = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route

@@ -25,6 +25,8 @@ import { autoVerifySenders } from './mail-auto-verify';
 import { warmMailboxes } from './mail-cache';
 import { loadSyncBoxes, startMailSync } from './mail-sync';
 import { gmailAuthPassed } from './mail-view';
+import { replyMailMessage } from './reply-mail';
+import { runOutbox } from './mail-outbox';
 
 // ── Email support ──────────────────────────────────────────────
 // Ported from the chat-support app's email-service.js. The socket broadcasts
@@ -131,24 +133,9 @@ export async function sendEmailReply({
     tls: { rejectUnauthorized: false },
   });
 
-  const replySubject = subject && !subject.startsWith('Re:') ? `Re: ${subject}` : (subject || 'Re: Your enquiry');
-  const headers: Record<string, string> = {};
-  if (replyToMessageId) {
-    headers['In-Reply-To'] = replyToMessageId;
-    headers['References'] = references ? `${references} ${replyToMessageId}` : replyToMessageId;
-  }
-
-  await transporter.sendMail({
-    from: `"${(fromName || 'Support').replace(/["\r\n]/g, '')}" <${fromEmail}>`,
-    ...(cc ? { cc } : {}),
-    to: toEmail,
-    subject: replySubject,
-    html: htmlBody,
-    text: textBody,
-    headers,
-    attachments,
-    ...(messageId ? { messageId } : {}),
-  });
+  // The message itself (From, threading headers, our Message-ID) is built in reply-mail.ts, the same as the Mail
+  // tab's outbox worker builds it (owner 2026-10-11).
+  await transporter.sendMail(replyMailMessage({ fromEmail, fromName, cc, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments, messageId }));
 }
 
 interface MailboxRow {
@@ -570,7 +557,10 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
   // the sweep's minute is not spent on it, and a failure there never touches the poll.
   // Since 2026-10-11 (owner: "history ko load karke rakh"): once mail-store.sql is run, the mail store's sync loop
   // (mail-sync.ts) copies every support Gmail into the database instead, and this memory warm-up stops.
-  void startMailSync(loadSyncBoxes).then((on) => {
+  // The Mail tab's outbox (owner 2026-10-11): a reply queued in mail_outbox that is still waiting (a send that failed,
+  // or a process that restarted mid-send) goes out on the next tick; the sync loop retries too. Never awaited.
+  void runOutbox().catch((e) => console.error('[mail-outbox] minute:', (e as Error).message));
+  void startMailSync(loadSyncBoxes, runOutbox).then((on) => {
     if (on) return;
     return warmMailboxes(accounts.rows.map(a => ({
       id: a.id, email: a.email, appPassword: a.app_password, siteId: a.site_id, siteName: a.site_name,

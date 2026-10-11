@@ -6,7 +6,8 @@
 // is run, or before a mailbox's first copy is done, storeReady() is false and the routes keep the old live path.
 import { query, queryOne } from '@/lib/db';
 import { MAIL_DAYS, MAX_MAILS, sinceDate, sortMails, type MailListItem } from './mail-view';
-import { rowToListItem, rowToMailFull, threadFromRows, type StoreFolder, type StoreRow, type StoreThreadItem } from './mail-store-rules';
+import { STORE_HTML_MAX, rowToListItem, rowToMailFull, threadFromRows, type StoreFolder, type StoreRow, type StoreThreadItem } from './mail-store-rules';
+import { outboxStates } from './mail-outbox';
 
 interface ErrCode { code?: string }
 const missing = (e: unknown) => ['42P01', '42703'].includes((e as ErrCode)?.code || '');
@@ -80,14 +81,16 @@ export async function storeMail(boxId: string, folder: StoreFolder, uid: number,
   return { row, mail: rowToMailFull(row, images) };
 }
 
-// A body read live (the click came before the sync got to it) is kept, so the next open is instant.
+// A body read live (the click came before the sync got to it) is kept, so the next open is instant (owner 2026-10-11:
+// a mail that arrived at 9:19 was still read from a cold Gmail on every click at 9:24). Same limits as the sync's copy.
 export async function storeBody(row: StoreRow, body: { text: string; html: string; attachments: unknown[]; cut?: boolean }): Promise<void> {
   try {
+    const html = body.html.length > STORE_HTML_MAX ? '' : body.html;
     await query(
       `UPDATE mail_store SET body_state = 'done', body_text = $2, body_html = NULLIF($3, ''), attachments = $4::jsonb, cut = $5,
-              has_attach = has_attach OR jsonb_array_length($4::jsonb) > 0, updated_at = now()
+              has_attach = has_attach OR EXISTS (SELECT 1 FROM jsonb_array_elements($4::jsonb) a WHERE NOT COALESCE((a->>'inline')::boolean, false)), updated_at = now()
         WHERE id = $1 AND body_state <> 'done'`,
-      [row.id, body.text, body.html, JSON.stringify(body.attachments), !!body.cut]);
+      [row.id, body.text.slice(0, 40_000), html, JSON.stringify(body.attachments), !!body.cut]);
   } catch (e) { console.error('[mail-store] keep body:', (e as Error).message); }
 }
 
@@ -118,7 +121,10 @@ export async function storeThread(boxId: string, address: string, uid: number | 
            OR (folder = 'inbox' AND from_addr = $4)
            OR (folder = 'sent' AND $4 = ANY(to_addrs)) )
       ORDER BY sent_at DESC LIMIT 80`, [boxId, since, threadId, address.toLowerCase()]);
-  return threadFromRows(r.rows.map(x => ({ ...x, body_text: x.body_text ? String(x.body_text).slice(0, 400) : null })));
+  // The state of a reply sent from here (the outbox, owner 2026-10-11): Sending… / Sent / Not sent, by its Message-ID.
+  const localIds = r.rows.filter(x => x.local && x.message_id).map(x => x.message_id as string);
+  const sends = localIds.length ? await outboxStates(boxId, localIds) : undefined;
+  return threadFromRows(r.rows.map(x => ({ ...x, body_text: x.body_text ? String(x.body_text).slice(0, 400) : null })), sends);
 }
 
 // What a reply needs from the mail it answers (no Gmail call when the body is copied).

@@ -21,7 +21,7 @@ import { VIEW_LABELS, bucketOf, matchesView, neighbour, searchMatch, sortItems, 
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
-import type { Box, Full, Item, ListEntry, ThreadItem, Ver } from './mail/types';
+import type { Box, Customer, Full, Item, ListEntry, ThreadItem, Ver } from './mail/types';
 
 interface Props { token: string; onAlert: (type: string, message: string) => void; activePanelId?: string; initialBox?: string | null; initialUid?: number | null }
 
@@ -277,6 +277,45 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   }, [entry?.items, openAddress, serverThread?.items]);
   const threadLoading = !!serverThread?.loading;
   const threadFailed = !!serverThread?.failed;
+  // A reply the outbox is still sending: the conversation is read again every few seconds until it is Sent or Not sent.
+  const sendingNow = !!serverThread?.items?.some(x => x.local && x.sendState === 'sending');
+  useEffect(() => {
+    if (!sendingNow || !boxId || !openAddress) return;
+    const t = setTimeout(() => { if (document.visibilityState === 'visible') void loadThread(boxId, openAddress, true, openMailUid); }, 4000);
+    return () => clearTimeout(t);
+  }, [sendingNow, boxId, openAddress, openMailUid, loadThread, serverThread?.items]);
+  const retrySend = useCallback(async (outboxId: string) => {
+    if (!boxId) return;
+    try {
+      const r = await fetch('/api/mail/send', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'retry', box: boxId, id: outboxId }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alertRef.current('error', d.error || 'Could not send it again.'); return; }
+      alertRef.current('success', 'Sending the reply again.');
+      if (openAddress) void loadThread(boxId, openAddress, true, openMailUid);
+    } catch { alertRef.current('error', 'Could not send it again.'); }
+  }, [auth, boxId, openAddress, openMailUid, loadThread]);
+
+  // The "Customer" card (owner 2026-10-11): the sender's verified order(s) with their details, or the orders placed with
+  // that email as hints; read once per address (cached), again after a verification changes.
+  const [customerSt, setCustomerSt] = useState<{ key: string; customer: Customer | null; loading: boolean } | null>(null);
+  const customerSeq = useRef(0);
+  const loadCustomer = useCallback(async (id: string, address: string, force = false) => {
+    const k = threadKey(id, `cust|${address}`);
+    const cached = mailCache.customers.get(k) ?? null;
+    const seq = ++customerSeq.current;
+    if (cached && !force) { setCustomerSt({ key: k, customer: cached, loading: false }); return; }
+    setCustomerSt({ key: k, customer: cached, loading: true });
+    try {
+      const r = await fetch(`/api/mail/customer?box=${encodeURIComponent(id)}&email=${encodeURIComponent(address)}`, { headers: auth, cache: 'no-store' });
+      const d = await r.json().catch(() => ({}));
+      if (seq !== customerSeq.current) return;
+      if (r.ok && d.customer) { mailCache.customers.set(k, d.customer); setCustomerSt({ key: k, customer: d.customer, loading: false }); }
+      else setCustomerSt({ key: k, customer: cached, loading: false });
+    } catch { if (seq === customerSeq.current) setCustomerSt({ key: k, customer: cached, loading: false }); }
+  }, [auth]);
+  useEffect(() => { if (boxId && openAddress) void loadCustomer(boxId, openAddress); }, [boxId, openAddress, loadCustomer]);
+  const customerKey = boxId && openAddress ? threadKey(boxId, `cust|${openAddress}`) : null;
+  const customer = customerSt && customerSt.key === customerKey ? customerSt : null;
 
   const markUnread = async () => {
     if (!boxId || !mail) return;
@@ -394,6 +433,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               versions={verified[mail.fromAddress] || []}
               thread={thread} threadLoading={threadLoading} threadFailed={threadFailed}
               onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
+              onRetrySend={outboxId => void retrySend(outboxId)}
+              customer={customer?.customer ?? null} customerLoading={!!customer?.loading}
               onBack={() => { setOpenUid(null); setMail(null); }}
               backLabel={VIEW_LABELS[view]}
               position={pos >= 0 ? `${pos + 1} of ${shown.length}` : undefined}
@@ -403,7 +444,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
               onShowImages={() => void openMail(mail.uid, true)}
               onMarkUnread={markUnread}
-              onChanged={() => { if (boxId) void refresh(boxId); }}
+              onChanged={() => { if (boxId) { void refresh(boxId); if (mail) void loadCustomer(boxId, mail.fromAddress, true); } }}
               onSent={() => {
                 const uid = mail.uid;
                 patchItems(list => list.map(x => x.uid === uid ? { ...x, answered: true, replied: true } : x));

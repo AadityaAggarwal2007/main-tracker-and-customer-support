@@ -61,9 +61,21 @@ export function rowToMailFull(r: StoreRow, images: boolean) {
 }
 
 // One line of the conversation (the shape of mail-inbox.ts ThreadItem, plus a short preview when the body is copied).
-export interface StoreThreadItem { folder: StoreFolder; uid: number; from: string; to: string; subject: string; date: string; preview?: string; local?: boolean }
-export function rowToThreadItem(r: StoreRow): StoreThreadItem {
+// sendState (owner 2026-10-11, the outbox): a reply sent from here is 'sending' until the worker has handed it to Gmail,
+// then 'sent'; 'failed' with sendError after the last try (the conversation offers "Try again" by outboxId).
+export type SendState = 'sending' | 'sent' | 'failed';
+export interface StoreThreadItem {
+  folder: StoreFolder; uid: number; from: string; to: string; subject: string; date: string; preview?: string; local?: boolean;
+  sendState?: SendState; sendError?: string | null; outboxId?: string;
+}
+export interface SendRecord { id: string; status: 'pending' | 'sending' | 'sent' | 'failed'; error: string | null }
+export function sendStateOf(s: SendRecord | null | undefined): { sendState: SendState; sendError: string | null; outboxId: string } | null {
+  if (!s) return null;
+  return { sendState: s.status === 'failed' ? 'failed' : s.status === 'sent' ? 'sent' : 'sending', sendError: s.status === 'failed' ? s.error : null, outboxId: s.id };
+}
+export function rowToThreadItem(r: StoreRow, sends?: Map<string, SendRecord>): StoreThreadItem {
   const text = (r.body_text || '').replace(/\s+/g, ' ').trim();
+  const send = r.local && r.message_id && sends ? sendStateOf(sends.get(r.message_id)) : null;
   return {
     folder: r.folder, uid: Number(r.uid),
     from: (r.from_name || r.from_addr || '').trim() || '(unknown)',
@@ -72,12 +84,14 @@ export function rowToThreadItem(r: StoreRow): StoreThreadItem {
     date: iso(r.sent_at),
     ...(text ? { preview: text.slice(0, 160) } : {}),
     ...(r.local ? { local: true } : {}),
+    ...(send || {}),
   };
 }
 
 // The conversation: the mails of one Gmail thread and, for mails Gmail gave no thread id, the ones with that address;
 // a reply sent from ShipTrack (local) is dropped once Gmail's own copy (same Message-ID) is in. Oldest first, the last 40.
-export function threadFromRows(rows: StoreRow[]): StoreThreadItem[] {
+// sends: the outbox rows by Message-ID (the state of a reply sent from here).
+export function threadFromRows(rows: StoreRow[], sends?: Map<string, SendRecord>): StoreThreadItem[] {
   const real = new Set(rows.filter(r => !r.local && r.message_id).map(r => r.message_id));
   const seen = new Set<string>();
   const out: StoreRow[] = [];
@@ -87,7 +101,7 @@ export function threadFromRows(rows: StoreRow[]): StoreThreadItem[] {
     if (seen.has(k)) continue;
     seen.add(k); out.push(r);
   }
-  return out.sort((a, b) => Date.parse(iso(a.sent_at)) - Date.parse(iso(b.sent_at))).slice(-40).map(rowToThreadItem);
+  return out.sort((a, b) => Date.parse(iso(a.sent_at)) - Date.parse(iso(b.sent_at))).slice(-40).map(r => rowToThreadItem(r, sends));
 }
 
 // Lists of addresses as mailparser gives them ("Name <a@b>, c@d") and the bare addresses (lower case).
@@ -127,12 +141,20 @@ export function bodyFromParsed(p: ParsedLike): { text: string; html: string; att
   };
 }
 
-// How the sync spends its minute: headers of new mails first, then the flags, then bodies newest first.
-export const SYNC_BUDGET_MS = 50_000;          // one mailbox's run stops starting new work after this
-export const BODIES_PER_RUN = 150;              // the run's 50 s budget is the real limit
+// How the sync spends its run (owner 2026-10-11, the live log: one slow Gmail's runs took 50-64 s and copied 0 bodies,
+// because the sign-in (up to 13 s), the Sent folder and the 15-minute SEARCH (up to 27 s) ate the budget before the
+// bodies' turn): the budget starts once the connection is ready; the order is the screen's flags, INBOX headers, the
+// bodies of the INBOX mails that just arrived (never skipped: they are what the team clicks), the INBOX backlog newest
+// first with a guaranteed slice, then Sent (headers + bodies), and the "gone" SEARCH only with time left.
+export const SYNC_BUDGET_MS = 50_000;          // one mailbox's run stops starting new work after this (from connection ready)
+export const INBOX_BODIES_MIN_MS = 20_000;     // the INBOX backlog bodies always get at least this slice
+export const FRESH_BODIES_MAX = 30;            // just-arrived INBOX mails whose bodies ignore the deadline (a first copy of a whole month is a backlog)
+export const BODIES_PER_RUN = 150;              // the run's budget is the real limit
 export const BODY_BATCH = 10;                   // mails per Gmail FETCH
 export const FLAGS_EVERY_MS = 2 * 60_000;      // a folder without CONDSTORE: the flags of its kept mails this often
 export const GONE_EVERY_MS = 15 * 60_000;      // which kept mails left the folder (archived / deleted): one SEARCH this often
-export const LEASE_MS = 3 * 60_000;            // a sync process holds a mailbox this long per run (renewed while it works)
+export const GONE_NEEDS_MS = 12_000;           // ... and only when at least this much of the budget is left (else a later run)
+export const LEASE_MS = 75_000;                // a sync process holds a mailbox this long (renewed before each step, released at the end:
+                                               // after a deploy's restart the other process takes over within seconds, not 3 minutes)
 export const BODY_MAX_TRIES = 3;
 export const PRUNE_DAYS = 120;                 // bodies older than this are dropped (the headers stay)
