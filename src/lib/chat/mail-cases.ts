@@ -3,8 +3,10 @@
 // One case per sender address per mailbox, kept in chat_settings (no SQL file: the table exists; tracker_user may SELECT /
 // INSERT / UPDATE, never DELETE): key `mail_case:<box id>:<address>`, value JSON { closedAt, by, byName }; a reopen by hand
 // writes { closedAt: null, reopenedAt, by, byName } (an UPDATE, never a DELETE). Whether a case is Active or Closed is the
-// pure rule in mail-filters.ts (closed = closedAt and no newer INBOX mail from that address): a customer who writes again
-// is Active by himself, nothing here has to change. Staff only; nothing is sent to the customer.
+// pure rule in mail-filters.ts (caseState, owner 2026-10-11 12:45: closed when our last mark, a reply after the
+// customer's newest mail or this close, is not older than theirs, the newest mail or this reopen): a reply closes the
+// case by itself, a customer who writes again is Active by himself, nothing here has to change. Staff only; nothing is
+// sent to the customer.
 import { query, queryOne } from '@/lib/db';
 import type { AuthUser } from '@/lib/auth';
 import { actorKey } from './mail-verify';

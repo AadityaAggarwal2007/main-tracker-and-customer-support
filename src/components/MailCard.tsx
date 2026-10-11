@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, BadgeCheck, ChevronLeft, FolderCheck, FolderOpen, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, bucketOf, caseRows, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, bucketOf, caseRows, caseState, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
@@ -433,15 +433,15 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             </div>
             {view === 'todo' && <div className="meta">Customers&apos; mails nobody has answered yet. Reply, and the next one opens by itself.</div>}
             {view === 'other' && <div className="meta">Banks, gateways, tools, newsletters and sales mails: not from a customer, nothing to answer.</div>}
-            {view === 'active' && <div className="meta">One line per customer, their newest conversation first. Close the case when it is done; a customer who writes again comes back here by himself.</div>}
-            {view === 'closed' && <div className="meta">Customers whose case was closed and who have not written since. A new mail from them makes the case active again.</div>}
+            {view === 'active' && <div className="meta">One line per customer whose newest mail we have not answered yet, newest first. Your reply closes the case by itself; Close case is for a mail that needs no reply. A customer who writes again comes back here by himself.</div>}
+            {view === 'closed' && <div className="meta">Customers we replied to after their newest mail, or whose case was closed by hand. A new mail from them makes the case active again.</div>}
           </div>
           {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
           {down && <div className="mail-warn">{down}</div>}
           <div className="mail-rows">
             {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading the mails…</div>}
             {entry && shown.length === 0 && (
-              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : view === 'active' && !q ? 'No active case: every customer\'s case is closed.' : view === 'closed' && !q ? 'No closed case yet. Open a customer\'s mail and press "Close case" when it is done.' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
+              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : view === 'active' && !q ? 'No active case: every customer\'s case is closed.' : view === 'closed' && !q ? 'No closed case yet. A reply closes a customer\'s case by itself; "Close case" closes one that needs no reply.' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
             )}
             <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} showVerify={view !== 'other'} />
             {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 conversations of the last 30 days.</div>}
@@ -480,7 +480,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               bucket={(() => { const it = items.find(x => x.uid === mail.uid); return it ? bucketOf(it, verified, cases) : undefined; })()}
               caseInfo={openCase}
               onCase={action => void setCase(action)}
-              onNextAfterSend={view === 'todo'}
+              onNextAfterSend={view === 'todo' || view === 'active'}
               onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
               onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
               onShowImages={() => void openMail(mail.uid, true)}
@@ -488,10 +488,14 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               onChanged={() => { if (boxId) { void refresh(boxId); if (mail) void loadCustomer(boxId, mail.fromAddress, true); } }}
               onSent={() => {
                 const uid = mail.uid;
-                patchItems(list => list.map(x => x.uid === uid ? { ...x, answered: true, replied: true } : x));
+                // repliedAt now: the reply closes the customer's case at once on this screen (owner 2026-10-11 12:45); the
+                // next list refresh brings the same from the store
+                patchItems(list => list.map(x => x.uid === uid ? { ...x, answered: true, replied: true, repliedAt: new Date().toISOString() } : x));
                 setMail(m => (m ? { ...m, answered: true } : m));
                 if (boxId) void loadThread(boxId, mail.fromAddress, true, uid);
                 if (view === 'todo') goNext(uid);
+                // from Active cases the next active customer opens, like from To reply
+                else if (view === 'active') goNext(uid, x => caseState(x, cases) === 'active');
               }}
             />
           )}

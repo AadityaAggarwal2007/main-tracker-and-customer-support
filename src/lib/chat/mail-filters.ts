@@ -5,38 +5,58 @@
 export type MailView = 'todo' | 'done' | 'other' | 'active' | 'closed' | 'all' | 'unread' | 'unverified' | 'verified' | 'notreplied' | 'replied' | 'attach' | 'today' | 'week';
 export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
-export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; snippet?: string }
+// repliedAt: when we last wrote in the conversation after this mail (ISO; the mail store only, mail-store.ts storeList).
+export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
 // ── Cases per customer (owner 2026-10-11 afternoon: "active case aur close case ... jo customer dobara dobara email kar
 // rahe na unko hum log ek active case mein jaake reply ... close case") ──
-// One case per sender address per mailbox (mail-cases.ts keeps it in chat_settings). A case is CLOSED when it has a
-// closedAt and no INBOX mail of that address is newer than it; a customer who writes again after the close is ACTIVE by
-// himself. A mail that is not a customer's (isCustomerMail) never has a case.
+// One case per sender address per mailbox (mail-cases.ts keeps the close / reopen by hand in chat_settings). A mail
+// that is not a customer's (isCustomerMail) never has a case.
+// Since 2026-10-11 12:45 (owner, live test: he replied and the customer stayed in Active cases; "Chat Support jaisa,
+// apne aap") the case works on TIMES, like a chat: our last mark = when we last answered the customer's newest mail
+// (repliedAt from the store; without it, the replied / answered flag counts as "answered at the mail's own time") or
+// closed the case by hand; their last mark = their newest mail, or a reopen by hand. CLOSED when our mark is not older
+// than theirs (a reply closes the case by itself, so does Close case); ACTIVE otherwise (a new mail from the customer,
+// or a reopen, until we reply again or close again). The To reply / Replied boxes keep their own rule (bucketOf).
 export interface MailCase { closedAt: string | null; by?: string; byName?: string; reopenedAt?: string | null }
 export type CasesMap = Record<string, MailCase | undefined>;
 export type CaseState = 'active' | 'closed';
+// closedBy: 'reply' = we wrote after their newest mail (closedAt = when), 'hand' = Close case (closedAt = when, byName = who)
+export interface CustomerCase { state: CaseState; closedAt: string | null; closedBy?: 'reply' | 'hand'; byName?: string }
 export const caseAddress = (address: string): string => (address || '').trim().toLowerCase();
-const closedAtMs = (c: MailCase | undefined): number => (c?.closedAt ? Date.parse(c.closedAt) || 0 : 0);
-// The close this mail falls under (it is not newer than the close), else null. A newer mail = the customer wrote again.
+const stampMs = (s: string | null | undefined): number => (s ? Date.parse(s) || 0 : 0);
+const closedAtMs = (c: MailCase | undefined): number => stampMs(c?.closedAt);
+// The close by hand this mail falls under (it is not newer than the close), else null: the To reply box reads it
+// (a manual close clears To reply without a reply); the case state itself is caseMarks below.
 export function caseClosedAt(it: FilterItem, cases: CasesMap | undefined): string | null {
   const c = cases?.[caseAddress(it.fromAddress)];
   const at = closedAtMs(c);
   return at && time(it) <= at ? (c as MailCase).closedAt : null;
 }
+// The two marks of one customer, from their newest mail and the case by hand (0 = never).
+function caseMarks(newest: FilterItem, c: MailCase | undefined): { ours: number; theirs: number; replyAt: number } {
+  const replyAt = newest.repliedAt ? stampMs(newest.repliedAt) : (newest.replied || newest.answered ? time(newest) : 0);
+  return { ours: Math.max(replyAt, closedAtMs(c)), theirs: Math.max(time(newest), stampMs(c?.reopenedAt)), replyAt };
+}
 // The customer's state from their NEWEST mail.
 export function caseState(newest: FilterItem, cases: CasesMap | undefined): CaseState {
-  return caseClosedAt(newest, cases) ? 'closed' : 'active';
+  const m = caseMarks(newest, cases?.[caseAddress(newest.fromAddress)]);
+  return m.ours > 0 && m.ours >= m.theirs ? 'closed' : 'active';
 }
-// The open mail's customer: their state from their newest mail in the list, and who closed it (null = not a customer, or
-// the address is not in the list).
-export function customerCase(items: FilterItem[], address: string, v: VerifiedMap, cases: CasesMap | undefined): { state: CaseState; closedAt: string | null; byName?: string } | null {
+// The open mail's customer: their state from their newest mail in the list, and how it was closed (null = not a customer,
+// or the address is not in the list).
+export function customerCase(items: FilterItem[], address: string, v: VerifiedMap, cases: CasesMap | undefined): CustomerCase | null {
   const k = caseAddress(address);
   const mine = items.filter(it => caseAddress(it.fromAddress) === k);
   if (!mine.length || !isCustomerMail(mine[0], v)) return null;
   const newest = mine.reduce((a, b) => (time(b) > time(a) ? b : a));
-  const closedAt = caseClosedAt(newest, cases);
-  return { state: closedAt ? 'closed' : 'active', closedAt, byName: cases?.[k]?.byName };
+  const c = cases?.[k];
+  const m = caseMarks(newest, c);
+  if (!(m.ours > 0 && m.ours >= m.theirs)) return { state: 'active', closedAt: null };
+  // the later of the two closed it: the reply, else the close by hand (a close after the reply is the one the team meant)
+  if (m.replyAt >= closedAtMs(c)) return { state: 'closed', closedAt: newest.repliedAt || newest.date, closedBy: 'reply' };
+  return { state: 'closed', closedAt: (c as MailCase).closedAt, closedBy: 'hand', byName: c?.byName };
 }
 // One row per customer (their newest conversation) with how many conversations the list holds of them (the last 30 days),
 // newest first; only the customers in the asked state. Not-customer mail is never a case.
@@ -91,8 +111,9 @@ export const BUCKET_LABEL: Record<MailBucket, string> = { todo: 'To reply', done
 export function matchesView(it: FilterItem, view: MailView, v: VerifiedMap, now: number, cases?: CasesMap): boolean {
   switch (view) {
     case 'todo': case 'done': case 'other': return bucketOf(it, v, cases) === view;
-    // per mail; the Active / Closed cases lists themselves are one row per customer (caseRows)
-    case 'active': case 'closed': return isCustomerMail(it, v) && (caseClosedAt(it, cases) ? 'closed' : 'active') === view;
+    // per mail, by the same marks (a reply after it, the flag, or a close / reopen by hand); the Active / Closed cases lists
+    // themselves are one row per customer (caseRows)
+    case 'active': case 'closed': return isCustomerMail(it, v) && caseState(it, cases) === view;
     case 'all': return true;
     case 'unread': return it.unread;
     case 'unverified': return !isVerified(it, v);
