@@ -68,6 +68,11 @@ Done and live:
   server's memory AND in `<app>/.mail-cache/mail-cache.json` (survives deploys); the minute poller refreshes
   lists and reads 10 mails/min ahead until the whole month is kept. From this VPS a Gmail sign-in is 2-14 s.
   An open mail is full width by default. A refresh comes back to the same tab / mailbox / mail / chat.
+- **Mail store (11 Oct, "history ko load karke rakh")**: `mail-store.sql` (owner runs it) + `mail-sync.ts`: one
+  kept Gmail connection per mailbox copies INBOX + Sent (30 days, then every new mail) into the database every
+  30 s, bodies too; the Mail tab then reads only the database (list, mail, conversation by Gmail thread, reply).
+  Before the SQL is run the old memory copy keeps working. Test with a scratch Postgres: `MAIL_STORE_PG=... node
+  scripts/ai-tests/mail-store.js`.
 - **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
   send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
   = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route

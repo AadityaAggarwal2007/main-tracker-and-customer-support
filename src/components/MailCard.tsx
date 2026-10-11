@@ -99,7 +99,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
       const r = await fetch(`/api/mail/messages?box=${encodeURIComponent(id)}${phase === 'fast' ? '&phase=fast' : ''}`, { headers: auth, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) return d.error || 'Could not read Gmail.';
-      return { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now(), partial: phase === 'fast' };
+      return { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now(), partial: phase === 'fast' && !d.store, store: d.store ?? null };
     } catch { return 'Could not reach Gmail. It will try again.'; }
   }, [auth]);
 
@@ -238,8 +238,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   // Sent folder) are read from the server, behind the screen, and a failure there never hides the rest. Keyed by the
   // address, so a slow answer for one sender can never show up under another.
   const [threadSt, setThreadSt] = useState<{ key: string; items: ThreadItem[] | null; loading: boolean; failed: boolean } | null>(null);
-  const loadThread = useCallback(async (id: string, address: string, force = false) => {
-    const k = threadKey(id, address);
+  const loadThread = useCallback(async (id: string, address: string, force = false, uid: number | null = null) => {
+    const k = threadKey(id, `${address}|${uid ?? ''}`);
     const cached = mailCache.threads.get(k) ?? null;
     const seq = ++threadSeq.current;
     if (cached && !force) { setThreadSt({ key: k, items: cached, loading: false, failed: false }); return; }
@@ -248,7 +248,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     const ctl = new AbortController();
     const cut = setTimeout(() => ctl.abort(), 30_000);
     try {
-      const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}${force ? '&fresh=1' : ''}`, { headers: auth, cache: 'no-store', signal: ctl.signal });
+      const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}${uid ? `&uid=${uid}` : ''}${force ? '&fresh=1' : ''}`, { headers: auth, cache: 'no-store', signal: ctl.signal });
       const d = await r.json().catch(() => ({}));
       if (seq !== threadSeq.current) return;
       if (r.ok && Array.isArray(d.items)) { mailCache.threads.set(k, d.items); setThreadSt({ key: k, items: d.items, loading: false, failed: false }); }
@@ -257,12 +257,13 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     finally { clearTimeout(cut); }
   }, [auth]);
   const openAddress = mail?.fromAddress;
+  const openMailUid = mail?.uid ?? null;
   useEffect(() => {
     if (!boxId || !openAddress) return;
-    void loadThread(boxId, openAddress);
-  }, [boxId, openAddress, loadThread]);
+    void loadThread(boxId, openAddress, false, openMailUid);
+  }, [boxId, openAddress, openMailUid, loadThread]);
   // What is shown: their mails from the list + whatever the server read (ours, and theirs older than the list), one each.
-  const curKey = boxId && openAddress ? threadKey(boxId, openAddress) : null;
+  const curKey = boxId && openAddress ? threadKey(boxId, `${openAddress}|${openMailUid ?? ''}`) : null;
   const serverThread = threadSt && threadSt.key === curKey ? threadSt : null;
   const thread = useMemo<ThreadItem[] | null>(() => {
     if (!openAddress) return null;
@@ -366,7 +367,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
         </div>
         <div className="meta mail-foot">
-          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'kept ready on the server, refreshed every few minutes'}
+          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.store ? `${entry.store.mails} mails saved in ShipTrack${entry.store.bodies < entry.store.mails ? ` (${entry.store.bodies} opened ahead, the rest within minutes)` : ''}${entry.store.syncedAt ? `, synced with Gmail ${agoText(Date.parse(entry.store.syncedAt))}` : ''}${entry.store.error ? ` · Gmail: ${entry.store.error}` : ''}` : entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'kept ready on the server, refreshed every few minutes'}
         </div>
       </section>
 
@@ -409,7 +410,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
             versions={verified[mail.fromAddress] || []}
             thread={thread} threadLoading={threadLoading} threadFailed={threadFailed}
-            onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true); }}
+            onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
             onBack={() => { setOpenUid(null); setMail(null); }}
             wide={wide} onToggleWide={toggleWide}
             onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
@@ -417,7 +418,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             onShowImages={() => void openMail(mail.uid, true)}
             onMarkUnread={markUnread}
             onChanged={() => { if (boxId) void refresh(boxId); }}
-            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); if (boxId) void loadThread(boxId, mail.fromAddress, true); }}
+            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); if (boxId) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
           />
         )}
       </section>

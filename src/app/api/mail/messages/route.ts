@@ -3,6 +3,7 @@ import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { listMails } from '@/lib/chat/mail-inbox';
 import { cachedList, listCached } from '@/lib/chat/mail-cache';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
+import { storeList, storeReady, storeStatus } from '@/lib/chat/mail-store';
 import { can } from '@/lib/permissions';
 
 // GET /api/mail/messages?box=<mailbox id>: the last 30 days of that Gmail inbox, unread first. Since 2026-10-09 the
@@ -14,6 +15,15 @@ export async function GET(request: NextRequest) {
   const a = await mailAccess(request, new URL(request.url).searchParams.get('box'), 'view');
   if ('error' in a) return a.error;
   try {
+    // The mail store (owner 2026-10-11, mail-store.sql + mail-sync.ts): once this mailbox's copy exists the list comes
+    // from the database, never from Gmail, for both phases.
+    const st = await storeReady(a.box.id);
+    if (st.ok) {
+      const l = await storeList(a.box.id);
+      const verified = await verifiedSenders(a.box.panelId, l.mails.map(m => m.fromAddress));
+      if (!can(a.user, 'chat.view')) for (const list of Object.values(verified)) for (const v of list) v.chatId = null;
+      return NextResponse.json({ ...l, cached: true, at: st.syncedAt ? Date.parse(st.syncedAt) : Date.now(), phase: 'full', store: await storeStatus(a.box.id), mailbox: a.box.email, verified }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     // phase=fast: only who / subject / date / flags, so the list can show at once (mail-inbox.ts listMails); the sender
     // checks (automatic verification) need the full list and are skipped. The verified marks already saved still show.
     const phase = new URL(request.url).searchParams.get('phase') === 'fast' ? 'fast' as const : 'full' as const;

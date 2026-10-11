@@ -8,5 +8,7 @@ export interface Full {
   cut?: boolean; text?: string; frame: string; remoteImages: boolean; imagesShown: boolean; attachments: Att[]; unread: boolean; answered: boolean;
 }
 // partial: only the quick first list (who / subject / date / flags) has arrived; the attachment icons and the automatic sender checks follow
-export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number; partial?: boolean }
-export interface ThreadItem { folder: 'inbox' | 'sent'; uid: number; from: string; to: string; subject: string; date: string }
+// store: the server's database copy of this Gmail (mail-store.ts, owner 2026-10-11), with how far it got
+export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number; partial?: boolean; store?: { mails: number; bodies: number; syncedAt: string | null; error: string | null } | null }
+// preview: the first words (from the server's copy); local: a reply just sent from ShipTrack, before Gmail's copy of it is in
+export interface ThreadItem { folder: 'inbox' | 'sent'; uid: number; from: string; to: string; subject: string; date: string; preview?: string; local?: boolean }

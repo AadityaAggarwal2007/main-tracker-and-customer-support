@@ -23,6 +23,7 @@ import { pollChargebackMailboxes } from '@/lib/chargeback/poll';
 import { gmailHost } from './imap-pool';
 import { autoVerifySenders } from './mail-auto-verify';
 import { warmMailboxes } from './mail-cache';
+import { loadSyncBoxes, startMailSync } from './mail-sync';
 import { gmailAuthPassed } from './mail-view';
 
 // ── Email support ──────────────────────────────────────────────
@@ -115,11 +116,12 @@ function stripQuotedReply(text: string): string {
 
 // ── Send via Gmail SMTP ────────────────────────────────────────────────────
 export async function sendEmailReply({
-  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments, fromName, cc,
+  fromEmail, appPassword, toEmail, subject, htmlBody, textBody, replyToMessageId, references, attachments, fromName, cc, messageId,
 }: {
   fromEmail: string; fromName?: string; cc?: string; appPassword: string; toEmail: string; subject: string;
   htmlBody: string; textBody: string; replyToMessageId?: string | null; references?: string | null;
   attachments?: { filename: string; content: Buffer; contentType: string }[];
+  messageId?: string;   // our own Message-ID (the Mail tab's store matches Gmail's Sent copy by it)
 }): Promise<void> {
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -145,6 +147,7 @@ export async function sendEmailReply({
     text: textBody,
     headers,
     attachments,
+    ...(messageId ? { messageId } : {}),
   });
 }
 
@@ -565,10 +568,15 @@ export async function pollAllMailboxes(): Promise<{ accounts: number; handled: n
   // The Mail tab's copies (mail-cache.ts, owner 2026-10-09): each support Gmail's list is read again when it is a few
   // minutes old and its newest mails are read ahead, in the background, so the tab opens at once. Never awaited here:
   // the sweep's minute is not spent on it, and a failure there never touches the poll.
-  void warmMailboxes(accounts.rows.map(a => ({
-    id: a.id, email: a.email, appPassword: a.app_password, siteId: a.site_id, siteName: a.site_name,
-    panelId: a.tracker_business_id == null ? null : String(a.tracker_business_id), panelName: a.site_name,
-  })));
+  // Since 2026-10-11 (owner: "history ko load karke rakh"): once mail-store.sql is run, the mail store's sync loop
+  // (mail-sync.ts) copies every support Gmail into the database instead, and this memory warm-up stops.
+  void startMailSync(loadSyncBoxes).then((on) => {
+    if (on) return;
+    return warmMailboxes(accounts.rows.map(a => ({
+      id: a.id, email: a.email, appPassword: a.app_password, siteId: a.site_id, siteName: a.site_name,
+      panelId: a.tracker_business_id == null ? null : String(a.tracker_business_id), panelName: a.site_name,
+    })));
+  }).catch((e) => console.error('[mail-sync] start:', (e as Error).message));
 
   return { accounts: accounts.rowCount ?? 0, handled };
 }
