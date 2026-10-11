@@ -84,6 +84,13 @@ Done and live:
   has not taken; the list card ends under its content; one case per customer per mailbox in `chat_settings`
   (`mail_case:<box>:<address>`, `mail-cases.ts`, `POST /api/mail/case`): Close case / Reopen case on the open mail, a closed
   customer leaves To reply and comes back to Active cases by himself when he writes again. No SQL file.
+  **Cases close by themselves (11 Oct 12:45, live test: he replied and the customer stayed active; "Chat Support jaisa,
+  apne aap")**: the rule runs on TIMES (`mail-filters.ts` `caseState`): Active = the customer's newest mail has no reply
+  from us after it (`storeList`'s new `replied_at` -> `repliedAt` on the row; a reply from here counts at once) and no
+  Close case after it; Closed = we replied after it, or someone pressed Close case (for a mail that needs no reply);
+  a customer who writes again is Active again; Reopen keeps it Active until we reply again or close again. The reader
+  says "Case closed · replied <ago>" or "Case closed by <name> · <ago>"; Send from Active cases opens the next active
+  customer. To reply / Replied / Not customers keep their own rule. Tests: `mail-store.js` 28/28 on PostgreSQL, 10 pure.
 - **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
   send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
   = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route

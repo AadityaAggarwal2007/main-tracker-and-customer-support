@@ -22,6 +22,9 @@ export interface MailListItem {
   // Gmail conversation after this mail, and how many mails the conversation has (one row per conversation, like Gmail).
   snippet?: string;
   replied?: boolean;
+  // ISO, when we last wrote in the conversation after this mail (owner 2026-10-11 12:45: a reply closes the customer's
+  // case by itself, so the Cases rule needs the TIME, not only whether); absent when never, or on the old live path.
+  repliedAt?: string;
   threadCount?: number;
 }
 

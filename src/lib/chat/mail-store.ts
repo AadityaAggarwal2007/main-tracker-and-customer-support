@@ -36,8 +36,11 @@ export function forgetStoreReady(): void { ready.clear(); }
 // The list: the last 30 days of INBOX, ONE row per Gmail conversation (its newest mail; bold while any mail of it is
 // unread), with the first words, whether we wrote in that conversation after it (Sent, or a reply from here), and how
 // many mails the conversation holds (owner 2026-10-11: "Gmail jaisa UI"). Unread first, as before.
+// replied_at (owner 2026-10-11 12:45, the cases close by themselves): WHEN we last wrote in the conversation after this
+// mail (the newest Sent row of the thread after it, a reply from here counts: it carries the thread id), NULL when never;
+// the Cases rule in mail-filters.ts compares it with the mail's own time and a close / reopen by hand.
 export async function storeList(boxId: string, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
-  const r = await query<StoreRow & { snippet: string | null; replied: boolean; thread_count: number; any_unread: boolean }>(
+  const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean }>(
     `WITH inbox AS (
        SELECT ${LIST_COLS}, thread_id, body_text,
               row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY sent_at DESC) AS rn,
@@ -49,6 +52,8 @@ export async function storeList(boxId: string, now = Date.now()): Promise<{ mail
             btrim(left(regexp_replace(COALESCE(i.body_text, ''), '\\s+', ' ', 'g'), 180)) AS snippet,
             (i.answered OR EXISTS (SELECT 1 FROM mail_store s WHERE s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone
                                      AND s.thread_id = i.thread_id AND s.sent_at > i.sent_at)) AS replied,
+            (SELECT max(s.sent_at) FROM mail_store s WHERE s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone
+                                     AND s.thread_id = i.thread_id AND s.sent_at > i.sent_at) AS replied_at,
             CASE WHEN i.thread_id IS NULL THEN 1
                  ELSE (SELECT count(*)::int FROM mail_store t WHERE t.box_id = $1 AND t.thread_id = i.thread_id AND NOT t.gone AND NOT t.local) END AS thread_count
        FROM inbox i WHERE i.rn = 1

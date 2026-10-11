@@ -5,7 +5,7 @@ import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpe
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
-import { BUCKET_LABEL, initials, type CaseState, type MailBucket } from '@/lib/chat/mail-filters';
+import { BUCKET_LABEL, initials, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
 import type { Att, Box, Customer, Full, ThreadItem, Ver } from './types';
@@ -26,7 +26,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   backLabel?: string; position?: string;   // "To reply" / "3 of 41"
   bucket?: MailBucket;                      // To reply / Replied / Not a customer (mail-filters.ts bucketOf)
-  caseInfo?: { state: CaseState; closedAt: string | null; byName?: string } | null;   // the customer's case (owner 2026-10-11 afternoon); null = not a customer
+  caseInfo?: CustomerCase | null;           // the customer's case (owner 2026-10-11 afternoon; closed by a reply or by hand since 12:45); null = not a customer
   onCase?: (action: 'close' | 'reopen') => void;                                       // Close case / Reopen case (canReply only)
   onNextAfterSend?: boolean;                // after Send the screen opens the next mail to reply to
   onShowImages: () => void; onMarkUnread: () => void;
@@ -165,10 +165,11 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <div className="mail-readbar">
         <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={onBack} title="Back to the list"><ChevronLeft size={16} /> {backLabel || 'List'}</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onMarkUnread} title="Mark unread"><EyeOff size={15} /> Mark unread</button>
-        {/* Close case / Reopen case (owner 2026-10-11 afternoon): a customer's mail only; nothing goes to the customer */}
+        {/* Close case / Reopen case (owner 2026-10-11 afternoon): a customer's mail only; nothing goes to the customer.
+            A reply closes the case by itself (owner 12:45); Close case is for a mail that needs no reply. */}
         {canReply && caseInfo && onCase && (caseInfo.state === 'active'
-          ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="Done with this customer for now: the case moves to Closed cases and leaves To reply. A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
-          : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases"><FolderOpen size={15} /> Reopen case</button>)}
+          ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="For a mail that needs no reply: the case moves to Closed cases and leaves To reply (a reply closes it by itself). A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
+          : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases, until you reply again or close it again"><FolderOpen size={15} /> Reopen case</button>)}
         <span style={{ flex: 1 }} />
         {position && <span className="meta" style={{ whiteSpace: 'nowrap' }}>{position}</span>}
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPrev?.()} disabled={!onPrev} title="Newer"><ChevronLeft size={16} /></button>
@@ -178,8 +179,11 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <header className="mail-subjecthead">
         <h2>{mail.subject}</h2>
         {bucket && <span className={`chip ${bucket === 'todo' ? 'chip-warn' : bucket === 'done' ? 'chip-ok' : 'chip-muted'}`}>{BUCKET_LABEL[bucket]}</span>}
+        {/* how the case closed (owner 2026-10-11 12:45): by our reply after their newest mail, or by hand */}
         {caseInfo?.state === 'closed' && caseInfo.closedAt && (
-          <span className="meta mail-caseline"><FolderCheck size={13} /> Case closed{caseInfo.byName ? ` by ${caseInfo.byName}` : ''} · {agoText(Date.parse(caseInfo.closedAt))}</span>
+          <span className="meta mail-caseline"><FolderCheck size={13} /> {caseInfo.closedBy === 'reply'
+            ? `Case closed · replied ${agoText(Date.parse(caseInfo.closedAt))}`
+            : `Case closed${caseInfo.byName ? ` by ${caseInfo.byName}` : ''} · ${agoText(Date.parse(caseInfo.closedAt))}`}</span>
         )}
       </header>
 

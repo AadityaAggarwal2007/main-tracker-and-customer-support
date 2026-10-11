@@ -149,36 +149,71 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([c.todo, c.done, c.other, c.all], [1, 1, 1, 3]);
     eq(f.searchMatch(it('a@gmail.com', { snippet: 'my parcel is late' }), 'parcel', {}), true);
   });
-  await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"): closed until the customer writes again; reopen; not-customer mail is never a case; a closed customer leaves To reply', () => {
+  await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"; 12:45, live: he replied and the customer stayed active, "Chat Support jaisa, apne aap"): a new mail = active; our reply after it = closed; wrote again = active; Close / Reopen by hand; not-customer mail is never a case; a closed customer leaves To reply', () => {
     const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
     const it = (uid, a, date, o = {}) => ({ uid, from: 'X', fromAddress: a, subject: 's', date, unread: false, hasAttachment: false, answered: false, ...o });
-    const closed = { 'piyush@gmail.com': { closedAt: '2026-10-10T12:00:00Z', by: 'owner', byName: 'Super Admin' } };
-    const older = it(1, 'piyush@gmail.com', '2026-10-10T10:00:00Z'), newer = it(2, 'piyush@gmail.com', '2026-10-11T09:00:00Z');
-    // closed: a close and nothing newer; active again by itself once a newer mail is there; reopened = closedAt null
-    eq(f.caseState(older, closed), 'closed'); eq(f.caseState(newer, closed), 'active');
-    eq(f.caseState(older, {}), 'active'); eq(f.caseState(older, undefined), 'active');
-    eq(f.caseState(older, { 'piyush@gmail.com': { closedAt: null, reopenedAt: '2026-10-11T08:00:00Z', byName: 'Rahul' } }), 'active');
-    eq(f.caseClosedAt(older, closed), '2026-10-10T12:00:00Z'); eq(f.caseClosedAt(newer, closed), null);
+    const P = 'piyush@gmail.com';
+    const asked = it(1, P, '2026-10-10T10:00:00Z');
+    // a new mail = active (no case row at all); our reply after it (repliedAt from the store) = closed, "replied <when>"
+    eq(f.caseState(asked, {}), 'active'); eq(f.caseState(asked, undefined), 'active');
+    deq(f.customerCase([asked], P, {}, undefined), { state: 'active', closedAt: null });
+    const replied = it(1, P, '2026-10-10T10:00:00Z', { replied: true, repliedAt: '2026-10-10T11:00:00Z' });
+    eq(f.caseState(replied, {}), 'closed');
+    deq(f.customerCase([replied], P, {}, {}), { state: 'closed', closedAt: '2026-10-10T11:00:00Z', closedBy: 'reply' });
+    // the customer wrote again after our reply = active by himself (his newest mail has no reply after it)
+    const again = it(2, P, '2026-10-11T09:00:00Z');
+    eq(f.caseState(again, {}), 'active');
+    deq(f.customerCase([replied, again], P, {}, {}), { state: 'active', closedAt: null });
+    // the old path (no repliedAt): the replied / answered flag = answered at the mail's own time = closed
+    eq(f.caseState(it(1, P, '2026-10-10T10:00:00Z', { answered: true }), {}), 'closed');
+    eq(f.caseState(it(1, P, '2026-10-10T10:00:00Z', { replied: true }), undefined), 'closed');
+    deq(f.customerCase([it(1, P, '2026-10-10T10:00:00Z', { answered: true })], P, {}, undefined), { state: 'closed', closedAt: '2026-10-10T10:00:00Z', closedBy: 'reply' });
+    // Close case by hand (a mail that needs no reply): closed, who and when; a newer mail from the customer = active by himself
+    const closed = { [P]: { closedAt: '2026-10-10T12:00:00Z', by: 'owner', byName: 'Super Admin' } };
+    eq(f.caseState(asked, closed), 'closed'); eq(f.caseState(again, closed), 'active');
+    deq(f.customerCase([asked], P, {}, closed), { state: 'closed', closedAt: '2026-10-10T12:00:00Z', closedBy: 'hand', byName: 'Super Admin' });
+    deq(f.customerCase([asked, again], P, {}, closed), { state: 'active', closedAt: null });
     eq(f.caseState(it(3, 'Piyush@Gmail.com', '2026-10-10T10:00:00Z'), closed), 'closed');            // the address is matched lower-case
+    eq(f.caseClosedAt(asked, closed), '2026-10-10T12:00:00Z'); eq(f.caseClosedAt(again, closed), null);
+    // the later of the two closed it: a close by hand after our reply is the one the team meant; a reply after a close says "replied"
+    eq(f.customerCase([replied], P, {}, closed).closedBy, 'hand');                                       // replied 11:00, closed 12:00
+    deq(f.customerCase([it(1, P, '2026-10-10T10:00:00Z', { replied: true, repliedAt: '2026-10-10T13:00:00Z' })], P, {}, closed), { state: 'closed', closedAt: '2026-10-10T13:00:00Z', closedBy: 'reply' });
+    // Reopen case: active until a NEWER reply (or a close again); the reply from before the reopen does not close it
+    const reopened = { [P]: { closedAt: null, reopenedAt: '2026-10-10T14:00:00Z', by: 'u2', byName: 'Rahul' } };
+    eq(f.caseState(asked, reopened), 'active');
+    eq(f.caseState(it(1, P, '2026-10-10T10:00:00Z', { replied: true, repliedAt: '2026-10-10T13:00:00Z' }), reopened), 'active');
+    eq(f.caseState(it(1, P, '2026-10-10T10:00:00Z', { replied: true, repliedAt: '2026-10-10T15:00:00Z' }), reopened), 'closed');
+    deq(f.customerCase([it(1, P, '2026-10-10T10:00:00Z', { replied: true, repliedAt: '2026-10-10T15:00:00Z' })], P, {}, reopened), { state: 'closed', closedAt: '2026-10-10T15:00:00Z', closedBy: 'reply' });
+    eq(f.caseState(it(1, P, '2026-10-10T10:00:00Z', { answered: true }), reopened), 'active');          // old path: the flag counts at the mail's time, before the reopen
+    eq(f.caseState(it(4, P, '2026-10-10T16:00:00Z', { answered: true }), reopened), 'closed');          // a mail after the reopen, answered: closed
     // one row per CUSTOMER (newest conversation, how many conversations), newest first; not-customer mail never a case
-    const items = [older, it(5, 'riya@yahoo.com', '2026-10-09T10:00:00Z'), it(6, 'riya@yahoo.com', '2026-10-11T11:00:00Z'), it(7, 'alerts@hdfcbank.net', '2026-10-11T12:00:00Z'), it(8, 'noreply@gmail.com', '2026-10-11T12:00:00Z')];
+    const riya = [it(5, 'riya@yahoo.com', '2026-10-09T10:00:00Z'), it(6, 'riya@yahoo.com', '2026-10-11T11:00:00Z')];
+    const items = [asked, ...riya, it(7, 'alerts@hdfcbank.net', '2026-10-11T12:00:00Z'), it(8, 'noreply@gmail.com', '2026-10-11T12:00:00Z')];
     deq(f.caseRows(items, {}, closed, 'active').map((r) => [r.uid, r.fromAddress, r.convCount]), [[6, 'riya@yahoo.com', 2]]);
     deq(f.caseRows(items, {}, closed, 'closed').map((r) => [r.uid, r.convCount]), [[1, 1]]);
-    deq(f.caseRows([...items, newer], {}, closed, 'active').map((r) => [r.uid, r.convCount]), [[6, 2], [2, 2]]);   // Piyush wrote again: active, newest conversation on top
+    deq(f.caseRows([...items, again], {}, closed, 'active').map((r) => [r.uid, r.convCount]), [[6, 2], [2, 2]]);   // Piyush wrote again: active, newest conversation on top
     eq(f.caseRows(items, {}, closed, 'closed').length + f.caseRows(items, {}, closed, 'active').length, 2);            // the bank and the robot are nobody's case
-    deq(f.customerCase(items, 'piyush@gmail.com', {}, closed), { state: 'closed', closedAt: '2026-10-10T12:00:00Z', byName: 'Super Admin' });
-    deq(f.customerCase([...items, newer], 'piyush@gmail.com', {}, closed), { state: 'active', closedAt: null, byName: 'Super Admin' });
+    // Riya replied to (repliedAt on her newest conversation): a closed row with no case row at all; her older one does not count
+    deq(f.caseRows([riya[0], { ...riya[1], replied: true, repliedAt: '2026-10-11T11:30:00Z' }], {}, undefined, 'closed').map((r) => [r.uid, r.convCount]), [[6, 2]]);
+    deq(f.caseRows([{ ...riya[0], replied: true, repliedAt: '2026-10-09T11:00:00Z' }, riya[1]], {}, undefined, 'active').map((r) => r.uid), [6]);
     eq(f.customerCase(items, 'alerts@hdfcbank.net', {}, closed), null); eq(f.customerCase(items, 'nobody@gmail.com', {}, closed), null);
     eq(f.customerCase(items, 'shop@company.in', { 'shop@company.in': [{ orderId: '#1' }] }, closed), null);         // verified but not in the list
-    // the boxes: a mail under a closed case is Replied (leaves To reply) even without a reply; without the map nothing changes
-    eq(f.bucketOf(older, {}, closed), 'done'); eq(f.bucketOf(older, {}), 'todo'); eq(f.bucketOf(newer, {}, closed), 'todo');
+    // the boxes keep their own rule: a mail under a close by hand is Replied (leaves To reply) even without a reply; without the map nothing changes
+    eq(f.bucketOf(asked, {}, closed), 'done'); eq(f.bucketOf(asked, {}), 'todo'); eq(f.bucketOf(again, {}, closed), 'todo');
     eq(f.bucketOf(it(7, 'alerts@hdfcbank.net', '2026-10-11T12:00:00Z'), {}, closed), 'other');
-    const c = f.viewCounts([...items, newer], {}, Date.parse('2026-10-11T13:00:00Z'), closed);
+    const c = f.viewCounts([...items, again], {}, Date.parse('2026-10-11T13:00:00Z'), closed);
     deq([c.todo, c.done, c.other, c.active, c.closed], [3, 1, 2, 2, 0]);                                              // active / closed count customers
     const c2 = f.viewCounts(items, {}, Date.parse('2026-10-11T13:00:00Z'), closed);
     deq([c2.todo, c2.done, c2.active, c2.closed], [2, 1, 1, 1]);
+    const c3 = f.viewCounts([replied, ...riya], {}, Date.parse('2026-10-11T13:00:00Z'), {});
+    deq([c3.todo, c3.done, c3.active, c3.closed], [2, 1, 1, 1]);                                                        // a reply closes Piyush, Riya stays active
     deq([f.VIEW_LABELS.active, f.VIEW_LABELS.closed], ['Active cases', 'Closed cases']);
-    eq(f.matchesView(older, 'closed', {}, Date.now(), closed), true); eq(f.matchesView(newer, 'active', {}, Date.now(), closed), true);
+    eq(f.matchesView(asked, 'closed', {}, Date.now(), closed), true); eq(f.matchesView(again, 'active', {}, Date.now(), closed), true);
+    eq(f.matchesView(replied, 'closed', {}, Date.now(), {}), true); eq(f.matchesView(replied, 'active', {}, Date.now(), reopened), true);
+    // the screen: a sent reply stamps repliedAt on the row and opens the next active customer from Active cases
+    const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
+    assert.match(card, /replied: true, repliedAt: new Date\(\)\.toISOString\(\)/);
+    assert.match(card, /else if \(view === 'active'\) goNext\(uid, x => caseState\(x, cases\) === 'active'\)/);
     // the server side (mail-cases.ts): the chat_settings key, the masked address for the log, and no DELETE anywhere
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-cases.ts'), 'utf8');
     const code = src.replace(/\/\/[^\n]*/g, '');
@@ -275,6 +310,9 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       deq(l.mails.map((m) => [m.uid, m.unread]), [[13, true], [11, true], [12, false]]);
       // one row per conversation: the first words, whether we wrote after it in the same thread, the thread's size
       deq(l.mails.map((m) => [m.uid, m.snippet, m.replied, m.threadCount]), [[13, 'Please refund my order.', true, 2], [11, 'Hi, order #1001 has not come.', false, 1], [12, 'See photo.', false, 1]]);
+      // replied_at (owner 11 Oct 12:45, a reply closes the case): WHEN we last wrote after the mail (the Sent copy's time); none where we never did
+      eq(l.mails[0].repliedAt, G.folders['[Gmail]/Sent Mail'].msgs[0].date.toISOString());
+      deq(l.mails.slice(1).map((m) => 'repliedAt' in m), [false, false]);
       const before = { connects: G.connects, fetchOnes: G.fetchOnes };
       store.forgetStoreReady();
       const res = await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`));
@@ -562,6 +600,34 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       const last = (await q(`SELECT text_body FROM mail_outbox ORDER BY id DESC LIMIT 1`)).rows[0];
       assert.ok(last.text_body.startsWith('No body yet.') && !/wrote:/.test(last.text_body), 'no quote of an empty original');
       await q(`UPDATE mail_store SET body_state = 'done' WHERE id = $1`, [row.id]);
+    });
+    await t('cases close by themselves (owner 11 Oct 12:45): the list carries WHEN we last wrote after the mail; a customer writing again = none = active; a reply from here (the local Sent row, before Gmail\'s copy) = closed at once', async () => {
+      const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+      const inbox = G.folders.INBOX;
+      let row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'cust@example.com');
+      eq(row.replied, true); assert.ok(row.repliedAt && Date.parse(row.repliedAt) > Date.parse(row.date), 'the earlier replies to uid 13 are after it');
+      const max = (await q(`SELECT max(sent_at) AS at FROM mail_store WHERE box_id = $1 AND folder = 'sent' AND NOT gone AND thread_id = 'T3'`, [BOX])).rows[0].at;
+      eq(row.repliedAt, new Date(max).toISOString());                            // the newest Sent row of the thread (a reply from here counts)
+      eq(f.caseState(row, {}), 'closed');
+      // the customer writes again in the same conversation (a Gmail UID above every one kept): his newest mail has no reply after it = no replied_at = active
+      inbox.msgs.push({ uid: 60, thread: 'T3', seen: false, date: new Date(), from: { name: 'Cust', address: 'cust@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Re: Refund please', mid: '<m60@x>', source: plain('<m60@x>', 'Cust <cust@example.com>', 'vastora@store.example', 'Re: Refund please', 'Any update on the refund?') });
+      await sync.syncMailbox(box);
+      store.forgetStoreReady();
+      row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'cust@example.com');
+      deq([row.uid, row.replied, 'repliedAt' in row], [60, false, false]);
+      eq(f.caseState(row, {}), 'active');
+      for (const a of ['alice@example.com', 'new@example.com']) { const m = (await store.storeList(BOX)).mails.find((x) => x.fromAddress === a); eq(m.replied, false); eq('repliedAt' in m, false); }
+      // a reply from here: the local Sent row carries the thread id, so the list closes the case before Gmail's copy is in
+      const res = await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 60, text: 'Your refund went out today.' }));
+      eq(res.status, 200);
+      await outbox.runOutbox();
+      row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'cust@example.com');
+      deq([row.uid, row.replied], [60, true]); assert.ok(Date.parse(row.repliedAt) > Date.parse(row.date));
+      eq(f.caseState(row, {}), 'closed');
+      deq(f.customerCase([row], 'cust@example.com', { 'cust@example.com': [{ orderId: '#1001' }] }, {}), { state: 'closed', closedAt: row.repliedAt, closedBy: 'reply' });   // verified = a customer (example.com is no personal mailbox)
+      // the route answers it too
+      const j = await (await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`))).json();
+      eq(j.mails.find((m) => m.fromAddress === 'cust@example.com').repliedAt, row.repliedAt);
     });
     pool.closeAllImap();
     outbox.closeOutboxTransports();
