@@ -268,6 +268,8 @@ export async function getAIResponse(
   // same chat from the full phone the customer typed and was already shown
   // here, and /api/widget/resume clears the tag when another browser picks
   // the chat up by phone alone, so it is only ever re-served where it was.
+  // 'team' (owner 2026-10-11: a team member typed the order ID + full phone in the inbox,
+  // team-verify.ts) counts the same way: only verified_order_id is read here.
   let verifiedOrderId: string | null = null;
   try {
     const v = await queryOne<{ verified_order_id: string | null }>(

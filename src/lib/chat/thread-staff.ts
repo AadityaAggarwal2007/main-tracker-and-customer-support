@@ -3,6 +3,7 @@ import { isOfficeHours } from '@/lib/office-hours';
 import { cachedHolidays } from './holidays';
 import { canAct, claimsOnAct, type TakeKind } from './team-rules';
 import { caseMarkState, holderOf, holderView, shownAway, staffActor, takeFor, transferList } from './team-routing';
+import { canTeamVerify } from './team-verify-rules';
 import type { ConversationRow } from './thread-read';
 
 // What this person may do on this chat, decided here from team-rules.ts (the inbox draws it and
@@ -34,5 +35,7 @@ export async function staffBlock(conv: ConversationRow, user: AuthUser) {
     mark_override: mark.override,
     mark_note: mark.note,
     office_open: isOfficeHours(now, cachedHolidays()),
+    // The team's Verify button (owner 2026-10-11): whoever may reply here, on a website / email chat (team-verify-rules.ts).
+    can_verify: live && !!actor && canTeamVerify(actor, h, conv),
   };
 }

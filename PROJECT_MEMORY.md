@@ -202,6 +202,12 @@ Done and live:
   Opening by id and the reply route unchanged (the tab's reply box still sends). "Open in Chat Support" button removed;
   Send / Activity "Open the chat" now opens it inside the WhatsApp tab. Rulebook 7.16, AGENTS.md WhatsApp row.
 
+- **11 Oct 13:10, "Team ka Verify button":** Chat Support > open chat > "What to do next" > Verify (website + email
+  chats, never WhatsApp): the team types Order ID + full phone, `POST /api/chat/conversations/[id]/verify`,
+  `src/lib/chat/team-verify.ts` + `team-verify-rules.ts`, `verified_via = 'team'` ("by team" badge, Remove for a
+  wrong click, `chat_events` kind `verify`). Not strict proof (no automatic Refund promise), like the Mail
+  tab's check. Rulebook 2.11; `team-routing.js` R73. No SQL.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

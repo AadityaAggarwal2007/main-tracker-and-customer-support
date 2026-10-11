@@ -54,7 +54,8 @@ export interface Conversation {
   last_message: string | null;
   // Set once the customer proved an order (the widget's form, or order ID +
   // phone in the chat). Unset = a visitor. verified_via 'legacy' = found by an
-  // old phone/email lookup, shown as "Old check", not as Verified.
+  // old phone/email lookup, shown as "Old check", not as Verified. 'team' = a team member
+  // typed the order ID + full phone in the inbox (owner 2026-10-11), shown as "Verified by team".
   verified_order_id?: string | null;
   verified_via?: string | null;
   // OLD chats only (chat-phone-match.sql): a visitor whose typed or saved number was on an
@@ -203,6 +204,9 @@ export interface StaffBlock {
   mark_override: boolean;     // a junior may mark because every senior is away
   mark_note: string | null;   // why Refund / Ship again is off, or the override line
   office_open: boolean;
+  // The team's Verify button (owner 2026-10-11): order ID + full phone typed by a team member, on a
+  // website / email chat this login may reply in (never WhatsApp). POST .../[id]/verify.
+  can_verify: boolean;
 }
 // Close / Hand to AI on the open chat (the thread's answer: `hot_lock`, owner 2026-10-02). On a HOT chat
 // (an unanswered threat / fraud claim, At risk by the scorer's model, or Chikki's own Refund mark:

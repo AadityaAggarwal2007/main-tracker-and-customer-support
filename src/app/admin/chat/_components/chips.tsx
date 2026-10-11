@@ -165,6 +165,15 @@ export function VerifiedBadge({ orderId, via }: { orderId?: string | null; via?:
       </Chip>
     );
   }
+  // 'team' (owner 2026-10-11): a team member typed the order ID + full phone in the inbox. Verified for
+  // Chikki and every screen, but not the strict proof the automatic Refund promise needs (like 'mail').
+  if (via === 'team') {
+    return (
+      <Chip tone="ok" title={`Verified by the team: a team member typed the order ID + full phone${orderId ? ` · order ${orderId}` : ''}`}>
+        <Check /> {orderId || 'Verified'} · by team
+      </Chip>
+    );
+  }
   return (
     <Chip tone="ok" title={orderId ? `Verified order ${orderId}` : 'Verified customer'}>
       <Check /> {orderId || 'Verified'}

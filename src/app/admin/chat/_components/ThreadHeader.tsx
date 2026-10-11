@@ -20,7 +20,7 @@ import CustomerEmails from './CustomerEmails';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, setForwardEdit, simple, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, setForwardEdit, simple, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft, removeVerify }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
@@ -57,6 +57,8 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   showAlert: (type: 'success' | 'error', message: string) => void;
   staff: StaffBlock | null;
   takeLabel: string;
+  // A team verification (owner 2026-10-11) can be undone after a wrong click: POST .../verify { remove: true }.
+  removeVerify: () => void;
   teamLog: TeamLogEntry[];
   teamLogOpen: boolean;
   threadRefund: { id: string; state: RefundThreadState | null } | null;
@@ -102,6 +104,11 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
         <div className="th-chips">
           {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
             : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : <VisitorChip />}
+          {/* A team verification (owner 2026-10-11) has a Remove for a wrong click: only the team's own check can be undone here. */}
+          {activeVerifiedOrder && activeVerifiedVia === 'team' && staff?.can_verify && (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={removeVerify}
+              title="Wrong click? This takes the team's verification off the chat; the customer is told nothing">Remove</button>
+          )}
           <Chip tone={statusTone(activeConv.status)} title={statusTitle}>
             {statusText}{forText ? ` · ${forText}` : ''}
           </Chip>

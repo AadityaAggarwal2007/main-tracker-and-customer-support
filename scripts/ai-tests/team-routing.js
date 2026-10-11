@@ -66,7 +66,8 @@ stub('chat-history', 'module.exports = { recentVisitorMessages: async () => glob
 // The verified order as orders.ts loads it (case-auto.ts): global.__orders[order id], else not found.
 stub('orders', `module.exports = {
   // ai-down-check.ts (owner 11 Oct): the verify form's check; global.__verifyOrder = the order that matches, else none.
-  verifyOrderByPhone: async (order, phone, biz) => { (global.__verifyCalls = global.__verifyCalls || []).push([order, phone, biz]); const o = global.__verifyOrder; return o && o.order_id.replace('#', '') === String(order).replace('#', '') && o.phone === phone ? { order_id: o.order_id, customer_name: o.customer_name } : null; },
+  // o.biz (team-verify.ts, R72): the order belongs to that panel only; unset = any panel.
+  verifyOrderByPhone: async (order, phone, biz) => { (global.__verifyCalls = global.__verifyCalls || []).push([order, phone, biz]); const o = global.__verifyOrder; return o && o.order_id.replace('#', '') === String(order).replace('#', '') && o.phone === phone && (!o.biz || o.biz === biz) ? { order_id: o.order_id, customer_name: o.customer_name } : null; },
   customerKeyForOrderSql: () => '(SELECT customer_key_for_order)',
   lookupVerifiedOrder: async (id) => {
     global.__orderLookups.push(id);
@@ -106,12 +107,13 @@ compile('lib/refund/link-mask.ts', 'refund-link-mask');
 for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'plain-text', 'attachment-rules', 'display-name', 'inbox-search',
   'health-rules', 'inbox-topics', 'merge-chats', 'escalation', 'address-conflict', 'sensitive', 'widget-api', 'verified',
   'reply-guards', 'tracking-claim', 'refund-threat', 'case-auto', 'widget-turn', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync', 'ai-down', 'ai-down-check', 'lookup-limits', 'common-setup-rules', 'reship',
-  'effort', 'closed-hours', 'closed-hours-run']) compile(`lib/chat/${f}.ts`, f);
+  'effort', 'closed-hours', 'closed-hours-run', 'team-verify-rules', 'team-verify']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/messages/route.ts', 'r-messages');
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 compile('app/api/chat/conversations/route.ts', 'r-list');
 compile('app/api/chat/pending/route.ts', 'r-pending');
 compile('app/api/chat/team/release/route.ts', 'r-release');
+compile('app/api/chat/conversations/[id]/verify/route.ts', 'r-verify');   // the team's Verify button (owner 2026-10-11, R72)
 compile('app/api/widget/messages/[conversationId]/route.ts', 'r-widget-messages');
 compile('app/api/widget/message/route.ts', 'r-widget-message');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
@@ -852,6 +854,25 @@ async function handle(q, p, tx) {
     return rows([]);
   }
 
+  // team-verify.ts (owner 2026-10-11): the team's Verify button. The customer key comes from the ORDER (the orders
+  // stub's subquery text): a widget chat gets the order's phone, an email chat keeps its own key.
+  const orderKey = (orderId) => (global.__verifyOrder && global.__verifyOrder.order_id === orderId ? global.__verifyOrder.phone : ((global.__orderKeys || {})[orderId] ?? null));
+  if (q === "UPDATE conversations SET verified_order_id = $1, verified_at = now(), verified_via = 'team', customer_key = CASE WHEN source = 'chat' THEN (SELECT customer_key_for_order) ELSE customer_key END, updated_at = now() WHERE id = $2 AND merged_into IS NULL AND source <> 'whatsapp' RETURNING customer_key") {
+    need(tx, q);
+    const c = await rowFor(tx, p[1]);
+    if (!c || c.merged_into || c.source === 'whatsapp') return rows([]);
+    setRow(tx, c, { verified_order_id: p[0], verified_at: nowIso(), verified_via: 'team', customer_key: c.source === 'chat' ? orderKey(p[0]) : c.customer_key });
+    return rows([pick(c, ['customer_key'])]);
+  }
+  if (q === "UPDATE conversations SET verified_order_id = NULL, verified_at = NULL, verified_via = NULL, customer_key = CASE WHEN source = 'chat' AND customer_key IS NOT DISTINCT FROM (SELECT customer_key_for_order) THEN NULL ELSE customer_key END, updated_at = now() WHERE id = $1 AND verified_via = 'team' RETURNING verified_order_id") {
+    need(tx, q);
+    const c = await rowFor(tx, p[0]);
+    if (!c || c.verified_via !== 'team') return rows([]);
+    const was = c.verified_order_id;
+    setRow(tx, c, { verified_order_id: null, verified_at: null, verified_via: null, customer_key: c.source === 'chat' && c.customer_key === orderKey(was) ? null : c.customer_key });
+    return rows([{ verified_order_id: was }]);
+  }
+
   throw new Error('fake db: unexpected SQL: ' + q.slice(0, 200));
 }
 
@@ -904,7 +925,7 @@ function fresh() {
   mod = {
     auth: r('auth'), routing: r('team-routing'), rules: r('team-rules'), messages: r('r-messages'), thread: r('r-thread'), list: r('r-list'),
     release: r('r-release'), widgetMessages: r('r-widget-messages'), widgetMessage: r('r-widget-message'), merge: r('merge-chats'),
-    pending: r('r-pending'),
+    pending: r('r-pending'), verify: r('r-verify'),
   };
   return mod;
 }
@@ -1864,6 +1885,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
       me: RAHUL, holder: { key: ANURAG, name: 'Anurag', senior: false, owner: false, away_min: null },
       // Owner 5 Oct (answer 4): Rahul may also hand Anurag's chat on (to the Super Admin here: never to himself or the holder).
       can_act: false, claims: false, take: 'senior', transfer_to: [{ key: 'owner', name: 'Super Admin', senior: false, away_min: 295 }], can_mark_case: true, mark_override: false, mark_note: null, office_open: true,
+      can_verify: false,   // owner 2026-10-11: Verify follows can_act (R72)
     });
     const ga = (await thread('anurag', 'r18')).body.staff;
     deq([ga.me, ga.can_act, ga.claims, ga.take, ga.transfer_to.map((x) => x.key)], [ANURAG, true, false, null, [RAHUL, 'owner']]);
@@ -4060,6 +4082,116 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const th = await thread('owner', 'r72w');
     status(th, 200);
     eq(th.body.conversation.id, 'r72w');
+  });
+
+  // ── R73: the team's Verify button (owner 2026-10-11 13:10, team-verify.ts) ───
+  await t('R73 Verify: order ID + full phone typed by the team verify a website / email chat of its own panel (verified_via team, customer_key for a widget chat, one verify event, staff.can_verify); wrong tries 400 and limited (429); another panel, WhatsApp, a viewer, someone else\'s chat refused; Remove undoes only a team check', async () => {
+    at(ist(12, 0, 6));
+    const verify = (who, id, body) => mod.verify.POST(req(who, body), { params: { id } });
+    global.__verifyCalls = [];
+    global.__verifyOrder = { order_id: '#7201', phone: '9876543210', customer_name: 'Asha K.', biz: 'P1' };
+    // A visitor's widget chat nobody holds: Anurag types both, the chat is verified for Chikki and every screen.
+    newConv({ id: 'r73a', status: 'human_needed', assigned_to: null });
+    let g = await thread('anurag', 'r73a');
+    eq(g.body.staff.can_verify, true, 'a free chat: whoever may reply may verify');
+    const s0 = db.stmts.length;
+    let r = await verify('anurag', 'r73a', { orderId: '# 7201', phone: '+91 98765 43210' });
+    status(r, 200);
+    deq(r.body, { ok: true, orderId: '#7201', customerName: 'Asha K' }, 'the order\'s name, the trailing dot cut');
+    deq(pick(C('r73a'), ['verified_order_id', 'verified_via', 'customer_key', 'status', 'assigned_to']), { verified_order_id: '#7201', verified_via: 'team', customer_key: '9876543210', status: 'human_needed', assigned_to: null }, 'verified; status and holder untouched');
+    ok(!!C('r73a').verified_at);
+    deq(global.__verifyCalls.slice(-1), [['#7201', '9876543210', 'P1']], 'the check runs inside the chat\'s own panel, the phone normalised');
+    deq(evs('r73a', 'verify').map((e) => [e.actor, e.reason, e.meta]), [[ANURAG, 'team', { tier: 'junior', verify: 'team', order: '#7201', source: 'chat' }]]);
+    ok(since(s0).every((x) => !/9876543210/.test(x.q)), 'the phone is never in a statement\'s text');
+    ok(!logged.some((l) => /\[chat-verify\]/.test(l) && /9876543210|#7201/.test(l)), 'the log line carries neither the phone nor the whole order number');
+    ok(logged.some((l) => /\[chat-verify\] conv r73a verified for order #\*\*01 by /.test(l)));
+    g = await thread('anurag', 'r73a');
+    deq([g.body.conversation.verified_order_id, g.body.conversation.verified_via, g.body.staff.can_verify], ['#7201', 'team', true]);
+    // The list files it under Customers: KNOWN_CUSTOMER reads verified_order_id, whatever verified_via says.
+    await list('anurag', '?segment=customers');
+    ok(db.list.sql.includes('(c.verified_order_id IS NOT NULL OR c.phone_match_order_id IS NOT NULL)'), 'Customers = a verified order, any proof');
+    // An email chat: verified, no customer_key (as mail-verify.ts).
+    newConv({ id: 'r73e', source: 'email', visitor_id: 'email:asha@example.com', status: 'human_needed', customer_key: null });
+    r = await verify('rahul', 'r73e', { orderId: '7201', phone: '9876543210' });
+    status(r, 200);
+    deq(pick(C('r73e'), ['verified_order_id', 'verified_via', 'customer_key']), { verified_order_id: '#7201', verified_via: 'team', customer_key: null });
+    // Wrong order / wrong phone: 400, nothing changed, a wrong try counted; a bad phone shape: 400 before any check.
+    newConv({ id: 'r73w', status: 'human_needed' });
+    const calls = global.__verifyCalls.length;
+    r = await verify('anurag', 'r73w', { orderId: '7202', phone: '9876543210' });
+    status(r, 400); eq(r.body.error, 'Order ID and phone number do not match any order of this panel. Check what the customer wrote.');
+    r = await verify('anurag', 'r73w', { orderId: '7201', phone: '9876543211' });
+    status(r, 400);
+    eq(global.__verifyCalls.length, calls + 2);
+    r = await verify('anurag', 'r73w', { orderId: '7201', phone: '98765' });
+    status(r, 400); eq(global.__verifyCalls.length, calls + 2, 'not a full number: no check, not a try');
+    r = await verify('anurag', 'r73w', { phone: '9876543210' });
+    status(r, 400);
+    deq(pick(C('r73w'), ['verified_order_id', 'verified_via', 'customer_key']), { verified_order_id: null, verified_via: null, customer_key: null });
+    eq(evs('r73w').length, 0);
+    // Another panel's order gives no match (Priya's chat is on S2 / P2; the order lives in P1).
+    newConv({ id: 'r73p', site_id: 'S2', status: 'human_needed' });
+    r = await verify('priya', 'r73p', { orderId: '7201', phone: '9876543210' });
+    status(r, 400);
+    deq(global.__verifyCalls.slice(-1), [['7201', '9876543210', 'P2']]);
+    ok(!C('r73p').verified_order_id);
+    // A WhatsApp chat: 400 and no Verify in the staff block; a viewer: 403; a login without the panel: 404.
+    newConv({ id: 'r73x', source: 'whatsapp', visitor_id: 'wa:919876543210', status: 'agent_handling' });
+    r = await verify('anurag', 'r73x', { orderId: '7201', phone: '9876543210' });
+    status(r, 400); eq(r.body.error, 'WhatsApp chats are not verified here.');
+    eq((await thread('anurag', 'r73x')).body.staff.can_verify, false);
+    ok(!C('r73x').verified_order_id);
+    status(await verify('viewer', 'r73w', { orderId: '7201', phone: '9876543210' }), 403);
+    status(await verify('priya', 'r73w', { orderId: '7201', phone: '9876543210' }), 404);
+    // Someone else's chat: 409 naming them (team-rules canAct), the Super Admin may anywhere.
+    newConv({ id: 'r73h', status: 'agent_handling', assigned_to: RAHUL });
+    r = await verify('anurag', 'r73h', { orderId: '7201', phone: '9876543210' });
+    status(r, 409); ok(/Rahul has this chat/.test(r.body.error), r.body.error);
+    eq((await thread('anurag', 'r73h')).body.staff.can_verify, false);
+    eq((await thread('owner', 'r73h')).body.staff.can_verify, true);
+    status(await verify('owner', 'r73h', { orderId: '7201', phone: '9876543210' }), 200);
+    deq(evs('r73h', 'verify').map((e) => [e.actor, e.meta.tier]), [['owner', 'owner']]);
+    // A merged shell: refused.
+    newConv({ id: 'r73m', status: 'resolved', merged_into: 'r73a' });
+    status(await verify('owner', 'r73m', { orderId: '7201', phone: '9876543210' }), 409);
+    // Re-verify for another order (the team corrects it): allowed, the old order noted in the event and the log.
+    global.__verifyOrder = { order_id: '#7203', phone: '9000000003', customer_name: 'Ravi', biz: 'P1' };
+    known({ id: 'r73r', status: 'agent_handling', assigned_to: ANURAG, customer_key: '9876543210' });   // form-verified for #r73r
+    r = await verify('anurag', 'r73r', { orderId: '7203', phone: '9000000003' });
+    status(r, 200);
+    deq(pick(C('r73r'), ['verified_order_id', 'verified_via', 'customer_key']), { verified_order_id: '#7203', verified_via: 'team', customer_key: '9000000003' });
+    eq(evs('r73r', 'verify')[0].meta.replaced, '#r73r');
+    ok(logged.some((l) => /\[chat-verify\] conv r73r verified for order #\*\*03 by .* \(was #\*\*3r\)/.test(l)));
+    // Remove: only a team check comes off (the three columns, and the key the check set); a form check is left alone.
+    r = await verify('anurag', 'r73r', { remove: true });
+    status(r, 200); deq(r.body, { ok: true, orderId: '#7203', customerName: null });
+    deq(pick(C('r73r'), ['verified_order_id', 'verified_at', 'verified_via', 'customer_key']), { verified_order_id: null, verified_at: null, verified_via: null, customer_key: null });
+    deq(evs('r73r', 'verify').map((e) => e.reason), ['team', 'remove']);
+    known({ id: 'r73f', status: 'agent_handling', customer_key: '9876543210' });
+    status(await verify('anurag', 'r73f', { remove: true }), 409);
+    deq(pick(C('r73f'), ['verified_order_id', 'verified_via', 'customer_key']), { verified_order_id: '#r73f', verified_via: 'form', customer_key: '9876543210' }, 'a form check is never removed here');
+    // An email chat's team check comes off too; a key from an earlier check of another order stays on a widget chat.
+    status(await verify('rahul', 'r73e', { remove: true }), 200);
+    deq(pick(C('r73e'), ['verified_order_id', 'verified_via']), { verified_order_id: null, verified_via: null });
+    global.__orderKeys = { '#7203': '9000000003' };
+    newConv({ id: 'r73k', status: 'agent_handling', verified_order_id: '#7203', verified_via: 'team', verified_at: nowIso(), customer_key: '9876543210' });
+    status(await verify('owner', 'r73k', { remove: true }), 200);
+    eq(C('r73k').customer_key, '9876543210', 'not this order\'s key: kept');
+    global.__orderKeys = {};
+    // Wrong tries are limited per login: the 11th in 15 minutes is a 429 and never reaches the check; a match gives the try back.
+    global.__verifyOrder = { order_id: '#7204', phone: '9000000004', customer_name: 'Meera', biz: 'P1' };
+    newConv({ id: 'r73l', status: 'human_needed' });
+    for (let i = 0; i < 10; i++) status(await verify('rahul', 'r73l', { orderId: '7204', phone: '9000000' + String(100 + i) }), 400, 'try ' + (i + 1));
+    const before = global.__verifyCalls.length;
+    r = await verify('rahul', 'r73l', { orderId: '7204', phone: '9000000004' });
+    status(r, 429); eq(r.body.error, 'Too many wrong tries. Wait a few minutes and try again.');
+    eq(global.__verifyCalls.length, before, 'limited: no check');
+    ok(!C('r73l').verified_order_id);
+    status(await verify('anurag', 'r73l', { orderId: '7204', phone: '9000000004' }), 200, 'another login is not limited');
+    at(ist(12, 16, 6));
+    newConv({ id: 'r73l2', status: 'human_needed' });
+    status(await verify('rahul', 'r73l2', { orderId: '7204', phone: '9000000004' }), 200, 'after 15 minutes Rahul may again');
+    global.__verifyOrder = null; global.__verifyCalls = [];
   });
 
   Object.assign(console, realConsole);
