@@ -2613,6 +2613,16 @@ a {
 
 /* Mail laid out like Gmail (owner 2026-10-11): the boxes | the list across the width, or the open conversation across the width */
 .mail-app.gm { grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+/* The list card ends under its content (owner 2026-10-11 afternoon, "Ravi Rajput ke niche jo gap hai ... pura border close
+   nahi ho raha niche tak"): the boxes and the list are two cards side by side; the list card ends right under its last row
+   and footer (no white area under a short list, whatever the boxes column's height); with more rows than the screen it stops
+   at the screen and the rows scroll inside, as before. The open mail (.mail-open) keeps the one full-height card. */
+.mail-app.gm:not(.mail-open) { height: auto; min-height: 0; background: transparent; border: 0; border-radius: 0; overflow: visible; gap: 0.75rem; align-items: start; }
+.mail-app.gm:not(.mail-open) .mail-filters { border: 1px solid var(--border); border-radius: 0.875rem; max-height: calc(100vh - 4.5rem); }
+.mail-app.gm:not(.mail-open) .mail-listpane { border: 1px solid var(--border); border-radius: 0.875rem; background: var(--card-bg, #fff); overflow: hidden; max-height: calc(100vh - 4.5rem); }
+.mail-app.gm:not(.mail-open) .mail-rows { flex: 0 1 auto; }
+.mail-caseline { display: inline-flex; align-items: center; gap: 0.25rem; }
+.mail-casebtn { white-space: nowrap; }
 .mail-app.gm .mail-listpane, .mail-app.gm .mail-readerpane { border-right: 0; }
 .mail-app.gm .mail-back { display: inline-flex; }
 .gm .mail-filters { padding: 0.75rem 0.5rem; }

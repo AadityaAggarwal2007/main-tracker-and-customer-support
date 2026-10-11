@@ -79,6 +79,11 @@ Done and live:
   background with SMTP timeouts (Sending… / Sent / Not sent · Try again in the conversation); the sync copies a just-arrived
   mail's body first and releases its lease (75 s) at the end; a live-read body is kept; the frame is as tall as the mail; a
   "Customer" card (order, items, place, payment, chat) stands next to the open mail (`/api/mail/customer`).
+- **Mail: Unread fixed, no gap under the list, Active / Closed cases (11 Oct afternoon, "active case aur close case")**:
+  marking read through PATCH now reads the whole Gmail thread (the row stayed bold) and the sync never undoes a click Gmail
+  has not taken; the list card ends under its content; one case per customer per mailbox in `chat_settings`
+  (`mail_case:<box>:<address>`, `mail-cases.ts`, `POST /api/mail/case`): Close case / Reopen case on the open mail, a closed
+  customer leaves To reply and comes back to Active cases by himself when he writes again. No SQL file.
 - **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
   send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
   = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route

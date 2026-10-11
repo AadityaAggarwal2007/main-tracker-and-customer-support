@@ -196,9 +196,13 @@ async function syncFolder(c: ImapFlow, box: SyncBox, folder: StoreFolder, path: 
         }
         flagsAt = now;
       }
+      // A mail the screen just changed (a mail_actions row Gmail has not got yet) keeps the screen's flag: Gmail's older
+      // flag must not undo a click made while the flags were being read (owner 2026-10-11 afternoon, "Unread ka feature
+      // nahi chal raha"); the next run writes the click to Gmail (applyActions runs first) and reads it back.
       for (const f of flagRows) {
         const r = await query(`UPDATE mail_store SET seen = $5, answered = $6, updated_at = now()
-                                WHERE box_id = $1 AND folder = $2 AND uidvalidity = $3 AND uid = $4 AND (seen <> $5 OR answered <> $6)`,
+                                WHERE box_id = $1 AND folder = $2 AND uidvalidity = $3 AND uid = $4 AND (seen <> $5 OR answered <> $6)
+                                  AND NOT EXISTS (SELECT 1 FROM mail_actions a WHERE a.box_id = $1 AND a.folder = $2 AND a.uidvalidity = $3 AND a.uid = $4 AND a.done_at IS NULL)`,
           [box.id, folder, uidvalidity, f.uid, f.seen, f.answered]);
         out.flags += r.rowCount ?? 0;
       }
