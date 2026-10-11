@@ -51,6 +51,7 @@ class FakeImap {
     if (star) { list = all.filter((m) => m.uid >= Number(star[1])); if (!list.length && all.length) list = [all[all.length - 1]]; }
     else list = all.filter((m) => String(range).split(',').map(Number).includes(m.uid));
     if (o.changedSince !== undefined) list = list.filter((m) => (m.modseq || 0n) > o.changedSince);
+    if (q.source) { G.batches = (G.batches || 0) + 1; if (G.batchFail) throw new Error('batch refused'); }
     return (async function* () {
       for (const m of list) yield {
         uid: m.uid, threadId: m.thread, size: m.source.length,
@@ -58,6 +59,7 @@ class FakeImap {
         envelope: { date: m.date, subject: m.subject, messageId: m.mid, from: [m.from], to: m.to, cc: [], replyTo: [] },
         bodyStructure: { type: 'text/plain' },
         headers: Buffer.from('Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n'),
+        ...(q.source ? { source: Buffer.from(m.source) } : {}),
       };
     })();
   }
@@ -249,6 +251,20 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       const m = await (await routes.message.GET(req('GET', `/api/mail/message?box=${BOX}&uid=16`))).json();
       eq(m.mail.text.trim(), 'Text arrives later.'); eq(f.msgs.find((x) => x.uid === 16).seen, false);
       eq((await store.storeRow(BOX, 'inbox', 16)).seen, true);
+    });
+    await t('bodies come ten to a Gmail call; a batch Gmail refuses falls back to one by one', async () => {
+      const f = G.folders.INBOX;
+      for (let u = 20; u < 32; u++) f.msgs.push({ uid: u, thread: 'B' + u, seen: false, date: new Date(), from: { name: 'B', address: `b${u}@example.com` }, to: [{ address: 'vastora@store.example' }], subject: 'Batch ' + u, mid: `<b${u}@x>`, source: plain(`<b${u}@x>`, `b${u}@example.com`, 'vastora@store.example', 'Batch ' + u, 'Body ' + u) });
+      G.batches = 0; const ones = G.fetchOnes;
+      let r = await sync.syncMailbox(box);
+      deq([r.fresh, r.bodies, G.batches, G.fetchOnes - ones], [13, 13, 2, 0]);   // + uid 16 of the group before (its body was only read live)
+      eq((await store.storeMail(BOX, 'inbox', 25, false)).mail.text.trim(), 'Body 25');
+      f.msgs.push({ uid: 40, thread: 'B40', seen: false, date: new Date(), from: { name: 'B', address: 'b40@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Fallback', mid: '<b40@x>', source: plain('<b40@x>', 'b40@example.com', 'vastora@store.example', 'Fallback', 'One by one') });
+      G.batchFail = true;
+      r = await sync.syncMailbox(box);
+      G.batchFail = false;
+      deq([r.fresh, r.bodies], [1, 1]);
+      eq((await store.storeMail(BOX, 'inbox', 40, false)).mail.text.trim(), 'One by one');
     });
     pool.closeAllImap();
     await db.getPool().end();
