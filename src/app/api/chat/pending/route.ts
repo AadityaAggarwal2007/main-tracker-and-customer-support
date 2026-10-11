@@ -3,6 +3,7 @@ import { getAuthFromRequest } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { can, isTeamLead } from '@/lib/permissions';
 import { staffActor } from '@/lib/chat/team-routing';
+import { NOT_WHATSAPP_SQL } from '@/lib/chat/waiting-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,8 @@ export async function GET(request: NextRequest) {
 
   // A Refund / Ship again chat (chat-cases.sql) is counted under its own section, not here, except a
   // red Ship again chat (status human_needed, owner 2026-10-02, answer 8): it is in Needs you too.
-  const conditions: string[] = [`c.status = 'human_needed'`, "(c.case_kind IS NULL OR c.case_kind = 'reship')"];
+  // A WhatsApp chat is never counted (owner 2026-10-11: it lives in WhatsApp > Chats, not in Chat Support; NOT_WHATSAPP_SQL).
+  const conditions: string[] = [`c.status = 'human_needed'`, "(c.case_kind IS NULL OR c.case_kind = 'reship')", NOT_WHATSAPP_SQL];
   const params: unknown[] = [];
   let pi = 1;
 

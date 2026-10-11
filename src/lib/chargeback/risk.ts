@@ -168,9 +168,14 @@ function factsFor(o: OrderRow, chats: ChatRow[], cbOrders: OrderRow[]) {
   };
 }
 
+// The order's chat to open / move: an open one over a Closed one, and (owner 2026-10-11: WhatsApp chats are not Chat
+// Support's, they live in WhatsApp > Chats) a chat-box / email chat over a WhatsApp one; then the latest. A WhatsApp chat
+// is named only when the customer wrote nowhere else, and risk-escalate.ts never moves it.
+const isWa = (c: ChatRow) => c.source === 'whatsapp';
 function itemOf(o: OrderRow, r: RiskResult, chats: ChatRow[], f: ReturnType<typeof factsFor>): RiskItem {
   const open = chats.filter((c) => c.status !== 'resolved');
-  const best = [...(open.length ? open : chats)].sort((a, b) => Date.parse(b.last_message_at || '0') - Date.parse(a.last_message_at || '0'))[0];
+  const best = [...(open.length ? open : chats)]
+    .sort((a, b) => Number(isWa(a)) - Number(isWa(b)) || Date.parse(b.last_message_at || '0') - Date.parse(a.last_message_at || '0'))[0];
   return {
     ...r, orderId: o.order_id, businessId: o.business_id, panelName: o.panel_name || 'Panel', customerName: (o.customer_name || '').replace(/\.$/, ''),
     placedAt: o.created_at, total: o.total, status: isDelivered(o) ? 'Delivered' : String(o.tracking_status || 'Order Placed'),

@@ -194,6 +194,13 @@ Done and live:
   Conversation now built from the list (their mails, instant) + the server's Sent read behind it; Gmail errors logged as
   `[mail-error]` / `[mail-timing] thread`. Owner also: "mail ka UI/UX bahut bura, kuch samajh nahi aata" -> redesign
   proposed (chat-style conversation, Reply needed / Replied / Not customers), waiting for his yes.
+- **11 Oct 13:10, WhatsApp out of Chat Support** (owner: "hamara WhatsApp no-reply identity hai; saari WhatsApp chats
+  Chat Support se nikaal ke WhatsApp tab mein daal do; abhi mujhe bhi confusion hai, ladke kaise chalayenge"): a
+  `source = 'whatsapp'` chat lives ONLY in WhatsApp > Chats. `waiting-sql.ts` `NOT_WHATSAPP_SQL` is in the inbox list /
+  search / every count, `/api/chat/pending`, the Today board chat numbers, auto-assign, the 30-minute move + red bar, Team
+  live, the chargeback-risk move (`risk.ts` prefers a chat-box / email chat as "the chat") and the team score's Q1.
+  Opening by id and the reply route unchanged (the tab's reply box still sends). "Open in Chat Support" button removed;
+  Send / Activity "Open the chat" now opens it inside the WhatsApp tab. Rulebook 7.16, AGENTS.md WhatsApp row.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

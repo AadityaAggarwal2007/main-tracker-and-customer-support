@@ -39,12 +39,14 @@ const db = {
     if (/WHERE x\.waiting_since IS NOT NULL AND x\.waited_from <= \$1::timestamptz/.test(q)) {
       S.sqlSeen = q;
       const cutoff = Date.parse(p[0]), opened = Date.parse(p[1]);
-      const rows = S.convs.filter((c) => c.assigned_to && c.assigned_to !== 'owner' && c.status !== 'resolved' && !c.merged_into && !c.case_kind && c.waiting_since)
+      // Owner 2026-10-11: a WhatsApp chat is never moved; the fake plays the condition only when the worker sends it.
+      const waOk = q.includes("c.source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+      const rows = S.convs.filter((c) => c.assigned_to && c.assigned_to !== 'owner' && c.status !== 'resolved' && !c.merged_into && !c.case_kind && c.waiting_since && waOk(c))
         .map((c) => ({ ...c, waited_from: iso(Math.max(Date.parse(c.waiting_since), Date.parse(c.assigned_at || 0), opened)) }))
         .filter((c) => Date.parse(c.waited_from) <= cutoff);
       return { rows };
     }
-    if (/FROM chat_events e JOIN conversations c ON c\.id = e\.conversation_id/.test(q)) { S.alertArgs = p; return { rows: S.alertsRows }; }
+    if (/FROM chat_events e JOIN conversations c ON c\.id = e\.conversation_id/.test(q)) { S.alertArgs = p; S.alertSql = q; return { rows: S.alertsRows }; }
     throw new Error('fake db: ' + q.slice(0, 100));
   },
   withTransaction: async (fn) => fn(client),
@@ -122,6 +124,18 @@ async function t(name, fn) {
     client.query = async (raw, p) => { if (/^UPDATE/.test(norm(raw))) b.assigned_to = 'u-anurag'; return realQuery(raw, p); };   // someone took it
     try { eq((await late.runLateEscalation(IST(12, 11))).moved, 0); } finally { client.query = realQuery; }
     eq(b.assigned_to, 'u-anurag');
+  });
+  // Owner 2026-10-11: WhatsApp chats are not Chat Support's (they live in WhatsApp > Chats).
+  await t('a WhatsApp chat waiting 30+ min with a member is never moved to the Manager, and the red bar never names one', async () => {
+    const wa = conv({ source: 'whatsapp', status: 'agent_handling', verified_order_id: null });   // waiting since 10:20, Rahul's
+    const late30 = conv({});
+    const r = await late.runLateEscalation(IST(12, 11));
+    eq(r.moved, 1);
+    deq([wa.assigned_to, wa.status, late30.assigned_to], ['u-rahul', 'agent_handling', 'u-sunny']);
+    ok(/c\.case_kind IS NULL AND c\.source <> 'whatsapp'\) x/.test(S.sqlSeen), 'the worker\'s query leaves WhatsApp chats out');
+    ok(S.events.every((e) => e.conversationId === late30.id));
+    await late.lateAlerts(['P1']);
+    ok(/AND c\.source <> 'whatsapp'/.test(S.alertSql), 'the red bar leaves WhatsApp chats out');
   });
   await t('the red bar: the last 2 hours of these moves in the login\'s panels, with who had it, who got it and how long', async () => {
     S.alertsRows = [{ id: '7', conversation_id: 'c9', at: new Date(IST(12, 11)), meta: { from_name: 'Rahul', to_name: 'Sunny', waited_min: 34 }, customer: 'Asmita', reason: 'no_reply_30' },

@@ -691,7 +691,9 @@ async function handle(q, p, tx) {
     if (q.includes("c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship')")) caseOk = (c) => c.case_kind == null || c.case_kind === 'reship';
     else if (q.includes("c.status = 'human_needed' AND c.case_kind IS NULL")) caseOk = (c) => c.case_kind == null;
     else throw new Error('fake db: the pending count without its case condition');
-    const hits = db.convs.filter((c) => c.status === 'human_needed' && !c.merged_into && caseOk(c));
+    // Owner 2026-10-11: a WhatsApp chat is never counted (R72); the fake plays the condition only when the route sends it.
+    const waOk = q.includes("c.source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+    const hits = db.convs.filter((c) => c.status === 'human_needed' && !c.merged_into && caseOk(c) && waOk(c));
     db.pending = { sql: q, params: p, ids: hits.map((c) => c.id) };
     const keys = new Set(hits.map((c) => (c.customer_key && c.source === 'chat' ? `k:${c.site_id}:${c.customer_key}` : 'c:' + c.id)));
     return rows([{ human_needed: String(keys.size), email_waiting: String(hits.filter((c) => c.source === 'email').length) }]);
@@ -722,7 +724,7 @@ async function handle(q, p, tx) {
   }
 
   // ── The inbox list (/api/chat/conversations) ──
-  if (/^SELECT count\(DISTINCT x\.gk\) FILTER .* FROM \(SELECT c\.subject_label, c\.health_score, c\.health_signals, /.test(q)) return rows([{}]);
+  if (/^SELECT count\(DISTINCT x\.gk\) FILTER .* FROM \(SELECT c\.subject_label, c\.health_score, c\.health_signals, /.test(q)) { db.list = { ...(db.list || {}), topicSql: q }; return rows([{}]); }
   if (/^SELECT count\(DISTINCT x\.gk\) FILTER \(WHERE x\.waiting_since IS NOT NULL\)::int AS n, /.test(q)) {
     db.list = { ...(db.list || {}), unansweredSql: q, unansweredParams: p };
     return rows([{ ...db.unanswered }]);
@@ -733,7 +735,12 @@ async function handle(q, p, tx) {
     return rows([{ active_open: 4, active_closed: 7 }]);
   }
   if (/^WITH .*base AS \( SELECT c\.id, c\.visitor_name, /.test(q)) { db.list = { ...(db.list || {}), sql: q, params: p }; return rows([]); }
-  if (/^SELECT c\.case_kind, count\(\*\)::int AS total, /.test(q)) return rows([]);
+  if (/^SELECT c\.case_kind, count\(\*\)::int AS total, /.test(q)) { db.list = { ...(db.list || {}), caseCountsSql: q }; return rows([]); }
+  // The Manager's Open cases number (owner 2026-10-10, step 5): the SQL is kept for R72.
+  if (/^SELECT count\(DISTINCT CASE WHEN c\.customer_key IS NOT NULL AND c\.source = 'chat' THEN 'k:' \|\| s\.id \|\| ':' \|\| c\.customer_key ELSE 'c:' \|\| c\.id END\)::int AS n FROM conversations c JOIN sites s ON s\.id = c\.site_id WHERE /.test(q)) {
+    db.list = { ...(db.list || {}), leadSql: q };
+    return rows([{ n: 0 }]);
+  }
   // The Super Admin's "Give all N": exactly the release's WHERE.
   if (q === "SELECT count(*)::int AS n FROM conversations WHERE assigned_to = $1 AND status <> 'resolved' AND merged_into IS NULL") {
     db.list = { ...(db.list || {}), heldParams: p };
@@ -4017,6 +4024,42 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     eq(full.status, 404, 'Priya works only in P2');
     eq((await threadQ('priya', 'r71p', '?after=' + encodeURIComponent(cursor))).status, full.status);
     eq((await threadQ('priya', 'r71p', '?before=' + encodeURIComponent(cursor) + '&before_id=m1')).status, full.status);
+  });
+
+  // ── R72: WhatsApp chats are not Chat Support's (owner 2026-10-11, "saari WhatsApp chats Chat Support se nikaal do") ──
+  await t('R72 a source = whatsapp chat is in no list (the search too), no count (badge, Open / Closed case, topic / case / lead counts) and not in the Needs you badge; opening it by id still works', async () => {
+    const WA = "c.source <> 'whatsapp'";
+    at(ist(16, 0, 2));
+    newConv({ id: 'r72w', source: 'whatsapp', status: 'human_needed', visitor_id: 'wa:919876543210', visitor_phone: '+919876543210' });
+    newConv({ id: 'r72c', status: 'human_needed' });
+    let r = await list('owner');
+    status(r, 200);
+    ok(db.list.sql.includes(WA) && db.list.sql.includes('c.merged_into IS NULL'), 'the list leaves WhatsApp chats out');
+    ok(db.list.unansweredSql.includes(WA), 'the badge beside Chat Support');
+    ok(db.list.activeSql.includes(WA), 'Open / Closed case');
+    ok(db.list.topicSql.includes(WA), 'the problem tabs');
+    ok(db.list.caseCountsSql.includes(WA), 'Refund / Ship again counts');
+    ok(db.list.leadSql.includes(WA), 'the Manager\'s Open cases number');
+    r = await list('anurag', '?q=9876543210');
+    ok(db.list.sql.includes(WA), 'a search never finds a WhatsApp chat');
+    r = await list('anurag', '?team=1');
+    ok(db.list.sql.includes(WA), 'Team chats');
+    r = await list('anurag', '?mine=1');
+    ok(db.list.sql.includes(WA), 'My chats');
+    r = await list('owner', '?case=refund');
+    ok(db.list.sql.includes(WA), 'the Refund section');
+    const pr = await mod.pending.GET(req('owner', undefined, { method: 'GET', url: 'http://x/api/chat/pending' }));
+    status(pr, 200);
+    ok(db.pending.sql.includes(WA), 'the Needs you badge leaves WhatsApp chats out');
+    ok(db.pending.ids.includes('r72c') && !db.pending.ids.includes('r72w'), 'counted: the chat-box chat, not the WhatsApp one');
+    // The route's own text: the condition is pushed BEFORE scopeConditions is copied, so every count carries it.
+    const src = fs.readFileSync(path.join(SRC, 'app/api/chat/conversations/route.ts'), 'utf8');
+    ok(src.indexOf('conditions.push(NOT_WHATSAPP_SQL);') < src.indexOf('const scopeConditions = [...conditions];'));
+    eq(wsql.NOT_WHATSAPP_SQL, WA);
+    // Opening the chat by its id is unchanged (the WhatsApp tab's reply box posts to the normal reply route).
+    const th = await thread('owner', 'r72w');
+    status(th, 200);
+    eq(th.body.conversation.id, 'r72w');
   });
 
   Object.assign(console, realConsole);

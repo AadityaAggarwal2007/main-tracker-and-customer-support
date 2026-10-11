@@ -7,7 +7,8 @@
 //    Ship again chat keeps its status). One 'transfer' event by the system, reason 'chargeback_risk' (score, order, the
 //    top reasons): the inbox's red bar for the whole team reads these (escalate-late.ts lateAlerts). A chat already moved
 //    for this reason in the last 7 days is never pulled again (the Manager may hand it back on purpose). Moved only if
-//    the holder is still the same. A chat the Manager or the Super Admin holds stays where it is.
+//    the holder is still the same. A chat the Manager or the Super Admin holds stays where it is. A WhatsApp chat is never
+//    moved (owner 2026-10-11: WhatsApp chats are not Chat Support's; risk.ts picks a chat-box / email chat first).
 // 2. ONE WhatsApp (approved template "shiptrack_alert") per Critical order, ever, to the owner's alert number and the
 //    extra alert numbers (WhatsApp > Setup: Sunny, the team; up to 5), 09:00-22:00 India time; claimed in chat_settings first (`risk_alert:<panel>|<order>`),
 //    so the two PM2 processes never send it twice. Nothing is sent to the customer; nothing is refunded. Never throws.
@@ -60,12 +61,15 @@ async function moveToManager(item: RiskItem, leads: Set<string>, now: number): P
   return withTransaction(async (client) => {
     const c = (await client.query<{
       id: string; site_id: string; status: string; case_kind: string | null; assigned_to: string | null; panel: string | null;
-      verified_order_id: string | null; phone_match_order_id: string | null; merged_into: string | null;
+      verified_order_id: string | null; phone_match_order_id: string | null; merged_into: string | null; source: string | null;
     }>(
       `SELECT c.id, c.site_id, c.status, c.case_kind, c.assigned_to, s.tracker_business_id::text AS panel,
-              c.verified_order_id, c.phone_match_order_id, c.merged_into
+              c.verified_order_id, c.phone_match_order_id, c.merged_into, c.source
          FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1 FOR NO KEY UPDATE OF c`, [item.chatId])).rows[0];
     if (!c || c.status === 'resolved' || c.merged_into) return false;
+    // A WhatsApp chat is not Chat Support's (owner 2026-10-11: the number is a no-reply identity): its messages still count
+    // as risk signals (risk.ts), but it is never moved to the Manager; the WhatsApp alert below still goes.
+    if (c.source === 'whatsapp') return false;
     if (c.assigned_to === OWNER_KEY || (c.assigned_to && leads.has(c.assigned_to))) return false;
     const before = await client.query(
       `SELECT 1 FROM chat_events WHERE conversation_id = $1 AND reason = $2 AND created_at > now() - interval '7 days' LIMIT 1`, [c.id, RISK_REASON]);

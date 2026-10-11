@@ -45,12 +45,17 @@ const db = {
     const q = norm(raw);
     if (/WHERE c\.assigned_to IS NULL AND c\.merged_into IS NULL AND c\.case_kind IS NULL/.test(q)) {
       assert.ok(/LIMIT 40$/.test(q));
-      const rows = S.convs.filter((c) => c.assigned_to === null && !c.merged_into && !c.case_kind && (c.status === 'human_needed' || (c.status === 'agent_handling' && c.waiting)))
+      S.dueSql = q;
+      // Owner 2026-10-11: a WhatsApp chat is never given out; the fake plays the condition only when the worker sends it.
+      const waOk = q.includes("c.source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+      const rows = S.convs.filter((c) => c.assigned_to === null && !c.merged_into && !c.case_kind && waOk(c) && (c.status === 'human_needed' || (c.status === 'agent_handling' && c.waiting)))
         .sort((a, b) => a.last - b.last).map((c) => ({ id: c.id, site_id: c.site_id, customer_key: c.customer_key, source: c.source, panel: c.panel, status: c.status }));
       return { rows, rowCount: rows.length };
     }
     if (/^SELECT assigned_to, count\(\*\)::int AS n FROM conversations WHERE assigned_to IS NOT NULL/.test(q)) {
-      const by = {}; for (const c of S.convs) if (c.assigned_to && c.status !== 'resolved' && !c.merged_into) by[c.assigned_to] = (by[c.assigned_to] || 0) + 1;
+      S.loadSql = q;
+      const waOk = q.includes("source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+      const by = {}; for (const c of S.convs) if (c.assigned_to && c.status !== 'resolved' && !c.merged_into && waOk(c)) by[c.assigned_to] = (by[c.assigned_to] || 0) + 1;
       return { rows: Object.entries(by).map(([assigned_to, n]) => ({ assigned_to, n })), rowCount: 1 };
     }
     throw new Error('fake db: ' + q.slice(0, 100));
@@ -168,6 +173,21 @@ const here = (key, ms) => { S.seen[key] = ms; };
     const keep = db.query; db.query = async () => { throw new Error('db down'); };
     try { eq((await auto.runAutoAssign(IST(12, 11))).idle, 'error'); } finally { db.query = keep; }
     eq(global.__autoAssignBusy, false);
+  });
+  // Owner 2026-10-11: WhatsApp chats are not Chat Support's (they live in WhatsApp > Chats).
+  await t('a WhatsApp chat is never given out and is no load: a waiting source = whatsapp chat stays unheld, a member\'s WhatsApp chats do not count against them', async () => {
+    here('u-rahul', IST(12, 10, 40)); here('u-anurag', IST(12, 10, 50));
+    const wa = conv({ source: 'whatsapp', status: 'human_needed' });
+    const wa2 = conv({ source: 'whatsapp', status: 'agent_handling', waiting: true });
+    // Rahul holds two WhatsApp chats (he answered from the WhatsApp tab): no load, so the first chat-box chat is his (fewest, then by name).
+    conv({ source: 'whatsapp', status: 'agent_handling', assigned_to: 'u-rahul', waiting: false });
+    conv({ source: 'whatsapp', status: 'agent_handling', assigned_to: 'u-rahul', waiting: false });
+    const a = conv({});
+    const r = await auto.runAutoAssign(IST(12, 11));
+    deq([r.given, r.waiting, wa.assigned_to, wa2.assigned_to, a.assigned_to], [1, 1, null, null, 'u-anurag']);
+    ok(S.dueSql.includes("c.case_kind IS NULL AND c.source <> 'whatsapp'"), 'the due query leaves WhatsApp chats out');
+    ok(S.loadSql.includes("merged_into IS NULL AND source <> 'whatsapp'"), 'the load count too');
+    ok(S.events.every((e) => e.conversationId === a.id));
   });
   await t('the minute cron starts it, not awaited, and again 30 seconds later', () => {
     const src = fs.readFileSync(path.join(SRC, 'app/api/cron/chat-email-poll/route.ts'), 'utf8');

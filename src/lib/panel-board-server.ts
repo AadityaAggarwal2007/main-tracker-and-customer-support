@@ -1,5 +1,5 @@
 import { query } from '@/lib/db';
-import { WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
+import { NOT_WHATSAPP_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { chargebackKind } from '@/lib/chargeback/parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
@@ -47,14 +47,15 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
     if (s.site_id && !s.has_prompt && common && modeFor(await savedMode(s.site_id), null, true) === 'common') s.has_prompt = true;
   }
 
-  // Today in India: customers who wrote, team replies, Chikki's replies.
+  // Today in India: customers who wrote, team replies, Chikki's replies. WhatsApp chats are not Chat Support's
+  // (owner 2026-10-11, NOT_WHATSAPP_SQL): the WhatsApp number box below has its own numbers.
   const today = by(await safe('today', async () => (await query<{ business_id: string; chats: string; team: string }>(
     `SELECT s.tracker_business_id::text AS business_id,
             count(DISTINCT m.conversation_id) FILTER (WHERE m.sender = 'visitor') AS chats,
             count(*) FILTER (WHERE m.sender = 'agent') AS team
        FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN sites s ON s.id = c.site_id
       WHERE s.tracker_business_id::text = ANY($1::text[]) AND m.created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
-        AND m.deleted_at IS NULL
+        AND m.deleted_at IS NULL AND ${NOT_WHATSAPP_SQL}
       GROUP BY s.tracker_business_id`, [ids])).rows, []));
   const chikki = by(await safe('chikki', async () => (await query<{ business_id: string; n: string }>(
     `SELECT s.tracker_business_id::text AS business_id, count(*) AS n
@@ -75,7 +76,7 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
             count(*) FILTER (WHERE c.case_kind = 'reship' AND c.status <> 'resolved' AND c.reshipped_at IS NULL) AS reship_to_ship
        FROM conversations c JOIN sites s ON s.id = c.site_id
        ${WAITING_LATERAL}
-      WHERE s.tracker_business_id::text = ANY($1::text[]) AND c.merged_into IS NULL AND c.status <> 'resolved'
+      WHERE s.tracker_business_id::text = ANY($1::text[]) AND c.merged_into IS NULL AND c.status <> 'resolved' AND ${NOT_WHATSAPP_SQL}
       GROUP BY s.tracker_business_id`, [ids])).rows, []));
 
   const orders = by(await safe('orders', async () => (await query<{ business_id: string; today: string; late: string }>(

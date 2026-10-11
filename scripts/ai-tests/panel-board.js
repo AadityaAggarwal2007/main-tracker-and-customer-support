@@ -125,6 +125,16 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     S.fail = null; S.missing = new Set(['chargeback_alerts']); const g = await server.loadPanelBoard(null, true);
     assert.strictEqual(g[0].chargebacksOpen, 0, 'no table = 0, never an error');
   });
+  // Owner 2026-10-11: WhatsApp chats are not Chat Support's; the WhatsApp number box has its own numbers.
+  await t('loader: the chat numbers and today\'s line leave WhatsApp chats out; the WhatsApp number box stays', async () => {
+    S.queries = [];
+    await server.loadPanelBoard(null, true);
+    const chats = S.queries.find((q) => /FROM conversations c JOIN sites s/.test(q.sql)).sql;
+    assert.ok(/c\.status <> 'resolved' AND c\.source <> 'whatsapp'/.test(chats), 'Needs you / waiting / overdue / cases');
+    const today = S.queries.find((q) => /FROM messages m JOIN conversations c/.test(q.sql)).sql;
+    assert.ok(/m\.deleted_at IS NULL AND c\.source <> 'whatsapp'/.test(today), 'customers who wrote / team replies today');
+    assert.ok(/loadWaHealth\(now\)/.test(fs.readFileSync(path.join(SRC, 'lib/panel-board-server.ts'), 'utf8')), 'the WhatsApp number box is still read');
+  });
   await t('route: login needed; the answer carries every panel\'s numbers and whether this is the Super Admin (the screen adds the refund numbers and the lines)', async () => {
     authState.user = null; assert.strictEqual((await route.GET(req('/api/panel-board'))).status, 401);
     authState.user = { role: 'admin', username: 'owner', displayName: 'Super Admin', businessIds: null, permissions: [] };

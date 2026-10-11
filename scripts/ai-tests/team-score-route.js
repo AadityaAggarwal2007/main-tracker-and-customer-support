@@ -125,8 +125,10 @@ async function handle(sql, params = [], tx = null) {
     for (const h of db.holders) if (h.at >= lo && h.at < hi) ids.add(h.conv);
     for (const e of db.events) if (e.at >= lo && e.at < hi) ids.add(e.conv);
     for (const c of db.convs) if (c.assigned_to !== null && c.status !== 'resolved') ids.add(c.id);
+    // A WhatsApp chat is never team work (owner 2026-10-11): Q1 must leave it out, and the fake plays that WHERE.
+    if (!/\) AND c\.source <> 'whatsapp'$/.test(q)) db.violations.push('Q1 counts WhatsApp chats as team work');
     const keys = new Set(db.convs.filter((c) => ids.has(c.id) && c.source === 'chat' && c.customer_key).map((c) => c.site_id + '|' + c.customer_key));
-    return rows(db.convs.filter((c) => ids.has(c.id) || (c.source === 'chat' && c.customer_key && keys.has(c.site_id + '|' + c.customer_key))).map((c) => ({
+    return rows(db.convs.filter((c) => c.source !== 'whatsapp' && (ids.has(c.id) || (c.source === 'chat' && c.customer_key && keys.has(c.site_id + '|' + c.customer_key)))).map((c) => ({
       id: c.id, source: c.source, status: c.status, merged_into: c.merged_into, assigned_to: c.assigned_to,
       assigned_ms: c.assigned_at, known: c.known, case_now: c.case_kind !== null,
       cu: c.source === 'chat' && c.customer_key ? 'k' + md5(c.site_id + ':' + c.customer_key) : 'c' + md5(c.id),
