@@ -23,8 +23,9 @@ export default function MailThread({ token, boxId, currentUid, items, loading, f
     setBodies(b => ({ ...b, [k]: 'loading' }));
     try {
       // peek=1: looking at an old mail here never marks it read in Gmail
-      // via=thread: its own Gmail connection, never behind the read-ahead (owner 2026-10-10)
-      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(boxId)}&uid=${m.uid}&peek=1&via=thread${m.folder === 'sent' ? '&folder=sent' : ''}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      // ours: the conversation's own Gmail connection (owner 2026-10-10); theirs: the click's connection (usually already in
+      // the server's copy). Never behind the read-ahead.
+      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(boxId)}&uid=${m.uid}&peek=1${m.folder === 'sent' ? '&via=thread&folder=sent' : '&via=read'}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.mail) { setBodies(b => ({ ...b, [k]: 'error' })); return; }
       mailCache.mails.set(k, d.mail);
@@ -32,24 +33,26 @@ export default function MailThread({ token, boxId, currentUid, items, loading, f
     } catch { setBodies(b => ({ ...b, [k]: 'error' })); }
   };
 
+  // Their mails come from the list at once; only OUR replies are read from Gmail (owner 2026-10-11). The header says
+  // where that stands, and a failure there never hides the rest.
   const others = (items ?? []).length;
-  if (failed && !items) {
-    return (
-      <section className="mail-thread">
-        <div className="mail-thread-head" role="status">
-          Conversation · <span className="meta">could not be read from Gmail just now.</span>
-          {onRetry && <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry} style={{ marginLeft: 'auto' }}>Try again</button>}
-        </div>
-      </section>
-    );
-  }
-  if (!loading && others <= 1) return null;   // nothing but this very mail: no section
+  if (others <= 1 && !loading && !failed) return null;   // nothing but this very mail: no section
+  const ours = (items ?? []).filter(m => m.folder === 'sent').length;
   return (
     <section className="mail-thread">
-      <button type="button" className="mail-thread-head" onClick={() => setOpen(o => !o)} aria-expanded={open}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        Conversation {loading && !items ? <Loader2 size={12} className="spin" /> : <b>· {others} messages</b>}
-      </button>
+      <div className="mail-thread-head" role="status">
+        <button type="button" className="mail-thread-toggle" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          Conversation <b>· {others} {others === 1 ? 'message' : 'messages'}</b>{ours ? <span className="meta"> ({ours} from us)</span> : null}
+        </button>
+        {loading && <span className="meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Loader2 size={12} className="spin" /> checking our replies in Gmail…</span>}
+        {failed && !loading && (
+          <span className="meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            our replies could not be read from Gmail just now
+            {onRetry && <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>Try again</button>}
+          </span>
+        )}
+      </div>
       {open && (items ?? []).map(m => {
         const k = mailKey(boxId, m.uid, m.folder);
         const here = m.folder === 'inbox' && m.uid === currentUid;

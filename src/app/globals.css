@@ -2594,6 +2594,9 @@ a {
 .mail-file-x { border: 0; background: transparent; cursor: pointer; padding: 0 0 0 0.25rem; color: var(--fg-muted); display: inline-flex; }
 .mail-thread { border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.5rem; overflow: hidden; }
 .mail-thread-head { display: flex; align-items: center; gap: 0.375rem; width: 100%; padding: 0.4375rem 0.625rem; border: 0; background: var(--muted, #f7f7fb); font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer; color: var(--fg-secondary); text-align: left; }
+.mail-thread-head { flex-wrap: wrap; cursor: default; }
+.mail-thread-toggle { display: inline-flex; align-items: center; gap: 0.375rem; border: 0; background: transparent; font: inherit; font-weight: 700; cursor: pointer; color: var(--fg-secondary); padding: 0; }
+.mail-thread-head .meta { font-weight: 500; }
 .mail-thread-item { border-top: 1px solid var(--border); }
 .mail-thread-item.here { background: var(--primary-light); }
 .mail-thread-row { display: grid; grid-template-columns: auto minmax(0, 9rem) 1fr auto; gap: 0.5rem; align-items: center; width: 100%; padding: 0.4375rem 0.625rem; border: 0; background: transparent; font: inherit; font-size: 0.75rem; cursor: pointer; color: var(--fg-secondary); text-align: left; }

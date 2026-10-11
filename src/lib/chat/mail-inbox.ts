@@ -1,6 +1,7 @@
 import type { ImapFlow } from 'imapflow';
 import { htmlToText } from '@/lib/chargeback/parse';
 import { PoolTimeout, withPooledImap, type PoolSlot } from './imap-pool';
+import { mailErrorText } from './mailbox-status';
 import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { canAccessPanel, type PermissionHolder } from '@/lib/permissions';
@@ -48,10 +49,14 @@ export class MailError extends Error {
 // One IMAP session on the mailbox's kept-open connection (imap-pool.ts): 'list' for reading the list, 'read' for
 // everything else, so opening a mail never waits for a list refresh. A session that hangs is cut after 25 s.
 async function withImap<T>(box: MailBoxSecret, fn: (c: ImapFlow) => Promise<T>, slot: PoolSlot = 'read'): Promise<T> {
+  const t0 = Date.now();
   try {
     return await withPooledImap(box, slot, fn);
   } catch (e) {
     if (e instanceof MailError) throw e;
+    // The real reason in the PM2 log (owner 2026-10-11: "conversation kisi panel mein nahi khul raha"; the screen only says
+    // "could not read Gmail"): grep "[mail-error]".
+    console.error(`[mail-error] slot=${slot} box=${box.id} ${box.email} after ${Date.now() - t0}ms: ${e instanceof PoolTimeout ? 'timed out' : mailErrorText(e).slice(0, 300)}`);
     if (e instanceof PoolTimeout) throw new MailError('Gmail did not answer in time. Try again.', 504);
     const err = e as { authenticationFailed?: boolean; message?: string };
     if (err?.authenticationFailed || /credentials|authenticat/i.test(err?.message || '')) throw new MailError('Gmail rejected the App Password for this mailbox. Connect it again in Settings → Email Support.', 502);
@@ -305,11 +310,15 @@ export async function listThread(box: MailBoxSecret, address: string, now = Date
       }
     } finally { lock.release(); }
   };
+  const t0 = Date.now(); let tIn = 0, tSent = 0;
   await withImap(box, async (c) => {
     await grab(c, 'INBOX', 'inbox', { since, from: address });
+    tIn = Date.now() - t0;
     const sent = await sentPath(c, box.id);
     if (sent) await grab(c, sent, 'sent', { since, to: address });
+    tSent = Date.now() - t0 - tIn;
   }, 'thread');
+  if (Date.now() - t0 > 2000) console.log(`[mail-timing] thread box=${box.id} inbox=${tIn}ms sent=${tSent}ms total=${Date.now() - t0}ms`);
   return out.sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0)).slice(-40);
 }
 

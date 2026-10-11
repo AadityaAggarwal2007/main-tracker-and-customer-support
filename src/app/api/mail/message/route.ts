@@ -21,7 +21,10 @@ export async function GET(request: NextRequest) {
     // up the one the person clicked (imap-pool.ts).
     const peek = sp.get('peek') === '1';
     // via=thread: an older message opened inside the conversation (its own connection, owner 2026-10-10).
-    const slot = sp.get('via') === 'thread' ? 'thread' as const : peek ? 'bg' as const : 'read' as const;
+    // via=read (owner 2026-10-11): an earlier mail of THEIRS opened inside the conversation: the click's own connection,
+    // never the read-ahead's ('bg'); it is usually in the server's copy anyway.
+    const via = sp.get('via');
+    const slot = via === 'thread' ? 'thread' as const : via === 'read' ? 'read' as const : peek ? 'bg' as const : 'read' as const;
     // An INBOX mail comes from the server's copy when it was opened or read ahead before (mail-cache.ts); a sent one is
     // read live (the conversation view only).
     const mail = folder === 'sent'

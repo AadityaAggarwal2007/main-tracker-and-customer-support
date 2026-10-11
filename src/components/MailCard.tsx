@@ -54,10 +54,6 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   const toggleWide = () => { setWide(w => { try { localStorage.setItem(WIDE_KEY, w ? '0' : '1'); } catch { /* ignore */ } return !w; }); };
   const [mail, setMail] = useState<Full | null>(null);
   const [opening, setOpening] = useState(false);
-  const [thread, setThread] = useState<ThreadItem[] | null>(null);
-  const [threadLoading, setThreadLoading] = useState(false);
-  // The conversation could not be read (owner 2026-10-10: it used to spin): a line with "Try again" instead.
-  const [threadFailed, setThreadFailed] = useState(false);
   const threadSeq = useRef(0);
   const [, tick] = useState(0);
   const initialDone = useRef(false);
@@ -234,30 +230,48 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boxId, entry?.at, topKey]);
 
-  // The conversation with the open mail's sender (their mails and ours): shown from memory at once, read in the background.
+  // The conversation with the open mail's sender (owner 2026-10-11, "conversation abhi bhi nahi khul raha, kisi panel mein"):
+  // THEIR mails come from the list this screen already has (no Gmail call: shown at once, always); only OUR replies (Gmail's
+  // Sent folder) are read from the server, behind the screen, and a failure there never hides the rest. Keyed by the
+  // address, so a slow answer for one sender can never show up under another.
+  const [threadSt, setThreadSt] = useState<{ key: string; items: ThreadItem[] | null; loading: boolean; failed: boolean } | null>(null);
   const loadThread = useCallback(async (id: string, address: string, force = false) => {
     const k = threadKey(id, address);
-    const cached = mailCache.threads.get(k);
-    if (cached && !force) { setThread(cached); return; }
+    const cached = mailCache.threads.get(k) ?? null;
     const seq = ++threadSeq.current;
-    setThread(cached ?? null); setThreadLoading(true); setThreadFailed(false);
-    // Never longer than 40 s: then it says so and offers "Try again".
+    if (cached && !force) { setThreadSt({ key: k, items: cached, loading: false, failed: false }); return; }
+    setThreadSt({ key: k, items: cached, loading: true, failed: false });
+    // Never longer than 30 s: then it says so and offers "Try again".
     const ctl = new AbortController();
-    const cut = setTimeout(() => ctl.abort(), 40_000);
+    const cut = setTimeout(() => ctl.abort(), 30_000);
     try {
       const r = await fetch(`/api/mail/thread?box=${encodeURIComponent(id)}&address=${encodeURIComponent(address)}${force ? '&fresh=1' : ''}`, { headers: auth, cache: 'no-store', signal: ctl.signal });
       const d = await r.json().catch(() => ({}));
       if (seq !== threadSeq.current) return;
-      if (r.ok && Array.isArray(d.items)) { mailCache.threads.set(k, d.items); if (boxRef.current === id) setThread(d.items); }
-      else if (!cached) setThreadFailed(true);
-    } catch { if (seq === threadSeq.current && !cached) setThreadFailed(true); }
-    finally { clearTimeout(cut); if (seq === threadSeq.current) setThreadLoading(false); }
+      if (r.ok && Array.isArray(d.items)) { mailCache.threads.set(k, d.items); setThreadSt({ key: k, items: d.items, loading: false, failed: false }); }
+      else setThreadSt({ key: k, items: cached, loading: false, failed: true });
+    } catch { if (seq === threadSeq.current) setThreadSt({ key: k, items: cached, loading: false, failed: true }); }
+    finally { clearTimeout(cut); }
   }, [auth]);
   const openAddress = mail?.fromAddress;
   useEffect(() => {
-    if (!boxId || !openAddress) { setThread(null); return; }
+    if (!boxId || !openAddress) return;
     void loadThread(boxId, openAddress);
   }, [boxId, openAddress, loadThread]);
+  // What is shown: their mails from the list + whatever the server read (ours, and theirs older than the list), one each.
+  const curKey = boxId && openAddress ? threadKey(boxId, openAddress) : null;
+  const serverThread = threadSt && threadSt.key === curKey ? threadSt : null;
+  const thread = useMemo<ThreadItem[] | null>(() => {
+    if (!openAddress) return null;
+    const addr = openAddress.toLowerCase();
+    const local: ThreadItem[] = (entry?.items ?? []).filter(x => (x.fromAddress || '').toLowerCase() === addr)
+      .map(x => ({ folder: 'inbox' as const, uid: x.uid, from: x.from, to: '', subject: x.subject, date: x.date }));
+    const seen = new Set<string>(); const all: ThreadItem[] = [];
+    for (const x of [...(serverThread?.items ?? []), ...local]) { const k = `${x.folder}:${x.uid}`; if (!seen.has(k)) { seen.add(k); all.push(x); } }
+    return all.sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0));
+  }, [entry?.items, openAddress, serverThread?.items]);
+  const threadLoading = !!serverThread?.loading;
+  const threadFailed = !!serverThread?.failed;
 
   const markUnread = async () => {
     if (!boxId || !mail) return;
