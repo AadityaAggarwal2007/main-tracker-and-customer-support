@@ -15,6 +15,8 @@ const when = (iso: string) => {
 // One line per conversation, like Gmail (owner 2026-10-11: "aisa UI UX bana de", with Gmail's inbox as the picture):
 // who (and how many mails the conversation has), the verified order or "Not verified", the subject and the first words
 // in grey, the attachment / replied marks, the time. Unread is bold. On a phone the line wraps into three.
+// In Active / Closed cases (one line per customer, owner 2026-10-11 afternoon) the number is how many conversations the
+// customer has in the last 30 days (convCount).
 export default function MailRows({ items, verified, openUid, onOpen, showVerify = true }: { items: Item[]; verified: Record<string, Ver[]>; openUid: number | null; onOpen: (uid: number) => void; showVerify?: boolean }) {
   return (
     <>
@@ -25,7 +27,9 @@ export default function MailRows({ items, verified, openUid, onOpen, showVerify 
           <button type="button" key={m.uid} className={`mail-row${m.unread ? ' unread' : ''}${openUid === m.uid ? ' active' : ''}`} onClick={() => onOpen(m.uid)}>
             <span className="mail-from truncate">
               {m.unread && <i className="mail-dot" aria-label="unread" />}
-              {m.from}{m.threadCount && m.threadCount > 1 ? <span className="mail-n">{m.threadCount}</span> : null}
+              {m.from}{m.convCount != null
+                ? (m.convCount > 1 ? <span className="mail-n" title={`${m.convCount} conversations in the last 30 days`}>{m.convCount}</span> : null)
+                : (m.threadCount && m.threadCount > 1 ? <span className="mail-n" title={`${m.threadCount} mails in this conversation`}>{m.threadCount}</span> : null)}
             </span>
             <span className="mail-tags">
               {showVerify && (v ? <span className="mail-chip ok" title={`Verified for order ${v.orderId}${v.byName ? ` · ${v.byName}` : ''}`}><BadgeCheck size={11} /> {v.orderId}</span>

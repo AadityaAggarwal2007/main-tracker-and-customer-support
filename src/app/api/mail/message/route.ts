@@ -83,7 +83,15 @@ export async function PATCH(request: NextRequest) {
   try {
     if ((await storeReady(a.box.id)).ok) {
       const row = await storeRow(a.box.id, 'inbox', uid);
-      if (row) { await storeFlag(row, body.seen ? 'seen' : 'unseen'); return NextResponse.json({ ok: true, seen: body.seen }); }
+      if (row) {
+        // Marking read = opening the conversation (owner 2026-10-11 afternoon, "Unread ka feature nahi chal raha"): the list is one
+        // row per Gmail thread, bold while ANY mail of it is unread, and a mail the screen already held (read ahead) is marked
+        // through this call, not the GET, so the thread's other unread mails stayed unread and the row came back bold on the next
+        // refresh. Mark unread stays one mail, as in Gmail.
+        if (row.seen !== body.seen) await storeFlag(row, body.seen ? 'seen' : 'unseen');
+        if (body.seen) await storeSeenThread(row);
+        return NextResponse.json({ ok: true, seen: body.seen });
+      }
     }
     await setSeen(a.box, uid, body.seen);
     noteSeen(a.box.id, uid, body.seen);

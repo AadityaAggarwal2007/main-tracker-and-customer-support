@@ -1,6 +1,9 @@
 // Shapes the Mail tab reads from /api/mail/* (the server side: src/lib/chat/mail-inbox.ts).
+import type { CasesMap } from '@/lib/chat/mail-filters';
+export type { CasesMap, MailCase } from '@/lib/chat/mail-filters';
 export interface Box { id: string; email: string; siteName: string; panelId: string | null; panelName: string; status: { ok: boolean; error: string | null; checkedAt: number } | null }
-export interface Item { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; authPass?: boolean; snippet?: string; replied?: boolean; threadCount?: number }
+// convCount: in the Active / Closed cases lists (one row per customer), how many conversations the list holds of them (owner 2026-10-11)
+export interface Item { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; authPass?: boolean; snippet?: string; replied?: boolean; threadCount?: number; convCount?: number }
 export interface Att { index: number; filename: string; contentType: string; size: number; inline: boolean }
 export interface Ver { orderId: string; byName: string; at: string; chatId: string | null }
 export interface Full {
@@ -9,7 +12,8 @@ export interface Full {
 }
 // partial: only the quick first list (who / subject / date / flags) has arrived; the attachment icons and the automatic sender checks follow
 // store: the server's database copy of this Gmail (mail-store.ts, owner 2026-10-11), with how far it got
-export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; truncated: boolean; at: number; partial?: boolean; store?: { mails: number; bodies: number; syncedAt: string | null; error: string | null } | null }
+// cases: the closed / reopened cases of this mailbox by lower-case address (mail-cases.ts, owner 2026-10-11 afternoon)
+export interface ListEntry { items: Item[]; verified: Record<string, Ver[]>; cases: CasesMap; truncated: boolean; at: number; partial?: boolean; store?: { mails: number; bodies: number; syncedAt: string | null; error: string | null } | null }
 // preview: the first words (from the server's copy); local: a reply just sent from ShipTrack, before Gmail's copy of it is in;
 // sendState (the outbox, owner 2026-10-11): 'sending' until the worker handed it to Gmail, 'sent', or 'failed' with sendError
 // and the outboxId "Try again" sends back

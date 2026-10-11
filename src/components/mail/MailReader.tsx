@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
+import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
-import { BUCKET_LABEL, initials, type MailBucket } from '@/lib/chat/mail-filters';
+import { BUCKET_LABEL, initials, type CaseState, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
 import type { Att, Box, Customer, Full, ThreadItem, Ver } from './types';
@@ -16,7 +17,7 @@ const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${
 // box right under it (Reply, or ask for the order details when the sender is not verified). The frame is as tall as the
 // mail (no white box below a three-line mail), and the "Customer" card (CustomerCard) stands on the right on a desktop,
 // above the conversation on a phone.
-export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, onRetrySend, customer, customerLoading, canReply, onAlert, onBack, backLabel, position, bucket, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, onRetrySend, customer, customerLoading, canReply, onAlert, onBack, backLabel, position, bucket, caseInfo, onCase, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
   thread: ThreadItem[] | null; threadLoading: boolean; threadFailed?: boolean; onRetryThread?: () => void;
   onRetrySend?: (outboxId: string) => void;      // "Try again" on a reply the outbox could not send
@@ -25,6 +26,8 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   backLabel?: string; position?: string;   // "To reply" / "3 of 41"
   bucket?: MailBucket;                      // To reply / Replied / Not a customer (mail-filters.ts bucketOf)
+  caseInfo?: { state: CaseState; closedAt: string | null; byName?: string } | null;   // the customer's case (owner 2026-10-11 afternoon); null = not a customer
+  onCase?: (action: 'close' | 'reopen') => void;                                       // Close case / Reopen case (canReply only)
   onNextAfterSend?: boolean;                // after Send the screen opens the next mail to reply to
   onShowImages: () => void; onMarkUnread: () => void;
   onChanged: () => void;            // a verification was added or removed: read the list again
@@ -162,6 +165,10 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <div className="mail-readbar">
         <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={onBack} title="Back to the list"><ChevronLeft size={16} /> {backLabel || 'List'}</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onMarkUnread} title="Mark unread"><EyeOff size={15} /> Mark unread</button>
+        {/* Close case / Reopen case (owner 2026-10-11 afternoon): a customer's mail only; nothing goes to the customer */}
+        {canReply && caseInfo && onCase && (caseInfo.state === 'active'
+          ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="Done with this customer for now: the case moves to Closed cases and leaves To reply. A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
+          : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases"><FolderOpen size={15} /> Reopen case</button>)}
         <span style={{ flex: 1 }} />
         {position && <span className="meta" style={{ whiteSpace: 'nowrap' }}>{position}</span>}
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPrev?.()} disabled={!onPrev} title="Newer"><ChevronLeft size={16} /></button>
@@ -171,6 +178,9 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <header className="mail-subjecthead">
         <h2>{mail.subject}</h2>
         {bucket && <span className={`chip ${bucket === 'todo' ? 'chip-warn' : bucket === 'done' ? 'chip-ok' : 'chip-muted'}`}>{BUCKET_LABEL[bucket]}</span>}
+        {caseInfo?.state === 'closed' && caseInfo.closedAt && (
+          <span className="meta mail-caseline"><FolderCheck size={13} /> Case closed{caseInfo.byName ? ` by ${caseInfo.byName}` : ''} · {agoText(Date.parse(caseInfo.closedAt))}</span>
+        )}
       </header>
 
       {/* Verification: automatic first, then the team (owner 2026-10-08) */}

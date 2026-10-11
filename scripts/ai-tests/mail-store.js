@@ -64,7 +64,7 @@ class FakeImap {
     })();
   }
   async fetchOne(uid, q, o) { assert.ok(o && o.uid); G.fetchOnes++; const m = this.f.msgs.find((x) => String(x.uid) === String(uid)); return m ? { source: Buffer.from(m.source) } : false; }
-  async messageFlagsAdd(uid, flags) { G.flagCalls.push(['add', Number(uid), flags]); const m = this.f.msgs.find((x) => x.uid === Number(uid)); if (m) { if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; } return true; }
+  async messageFlagsAdd(uid, flags) { if (G.flagFail && Number(uid) === G.flagFail) throw new Error('flag refused'); G.flagCalls.push(['add', Number(uid), flags]); const m = this.f.msgs.find((x) => x.uid === Number(uid)); if (m) { if (flags.includes('\\Seen')) m.seen = true; if (flags.includes('\\Answered')) m.answered = true; } return true; }
   async messageFlagsRemove(uid, flags) { G.flagCalls.push(['remove', Number(uid), flags]); const m = this.f.msgs.find((x) => x.uid === Number(uid)); if (m && flags.includes('\\Seen')) m.seen = false; return true; }
   async logout() { this.usable = false; }
   close() { this.usable = false; }
@@ -149,6 +149,46 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([c.todo, c.done, c.other, c.all], [1, 1, 1, 3]);
     eq(f.searchMatch(it('a@gmail.com', { snippet: 'my parcel is late' }), 'parcel', {}), true);
   });
+  await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"): closed until the customer writes again; reopen; not-customer mail is never a case; a closed customer leaves To reply', () => {
+    const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+    const it = (uid, a, date, o = {}) => ({ uid, from: 'X', fromAddress: a, subject: 's', date, unread: false, hasAttachment: false, answered: false, ...o });
+    const closed = { 'piyush@gmail.com': { closedAt: '2026-10-10T12:00:00Z', by: 'owner', byName: 'Super Admin' } };
+    const older = it(1, 'piyush@gmail.com', '2026-10-10T10:00:00Z'), newer = it(2, 'piyush@gmail.com', '2026-10-11T09:00:00Z');
+    // closed: a close and nothing newer; active again by itself once a newer mail is there; reopened = closedAt null
+    eq(f.caseState(older, closed), 'closed'); eq(f.caseState(newer, closed), 'active');
+    eq(f.caseState(older, {}), 'active'); eq(f.caseState(older, undefined), 'active');
+    eq(f.caseState(older, { 'piyush@gmail.com': { closedAt: null, reopenedAt: '2026-10-11T08:00:00Z', byName: 'Rahul' } }), 'active');
+    eq(f.caseClosedAt(older, closed), '2026-10-10T12:00:00Z'); eq(f.caseClosedAt(newer, closed), null);
+    eq(f.caseState(it(3, 'Piyush@Gmail.com', '2026-10-10T10:00:00Z'), closed), 'closed');            // the address is matched lower-case
+    // one row per CUSTOMER (newest conversation, how many conversations), newest first; not-customer mail never a case
+    const items = [older, it(5, 'riya@yahoo.com', '2026-10-09T10:00:00Z'), it(6, 'riya@yahoo.com', '2026-10-11T11:00:00Z'), it(7, 'alerts@hdfcbank.net', '2026-10-11T12:00:00Z'), it(8, 'noreply@gmail.com', '2026-10-11T12:00:00Z')];
+    deq(f.caseRows(items, {}, closed, 'active').map((r) => [r.uid, r.fromAddress, r.convCount]), [[6, 'riya@yahoo.com', 2]]);
+    deq(f.caseRows(items, {}, closed, 'closed').map((r) => [r.uid, r.convCount]), [[1, 1]]);
+    deq(f.caseRows([...items, newer], {}, closed, 'active').map((r) => [r.uid, r.convCount]), [[6, 2], [2, 2]]);   // Piyush wrote again: active, newest conversation on top
+    eq(f.caseRows(items, {}, closed, 'closed').length + f.caseRows(items, {}, closed, 'active').length, 2);            // the bank and the robot are nobody's case
+    deq(f.customerCase(items, 'piyush@gmail.com', {}, closed), { state: 'closed', closedAt: '2026-10-10T12:00:00Z', byName: 'Super Admin' });
+    deq(f.customerCase([...items, newer], 'piyush@gmail.com', {}, closed), { state: 'active', closedAt: null, byName: 'Super Admin' });
+    eq(f.customerCase(items, 'alerts@hdfcbank.net', {}, closed), null); eq(f.customerCase(items, 'nobody@gmail.com', {}, closed), null);
+    eq(f.customerCase(items, 'shop@company.in', { 'shop@company.in': [{ orderId: '#1' }] }, closed), null);         // verified but not in the list
+    // the boxes: a mail under a closed case is Replied (leaves To reply) even without a reply; without the map nothing changes
+    eq(f.bucketOf(older, {}, closed), 'done'); eq(f.bucketOf(older, {}), 'todo'); eq(f.bucketOf(newer, {}, closed), 'todo');
+    eq(f.bucketOf(it(7, 'alerts@hdfcbank.net', '2026-10-11T12:00:00Z'), {}, closed), 'other');
+    const c = f.viewCounts([...items, newer], {}, Date.parse('2026-10-11T13:00:00Z'), closed);
+    deq([c.todo, c.done, c.other, c.active, c.closed], [3, 1, 2, 2, 0]);                                              // active / closed count customers
+    const c2 = f.viewCounts(items, {}, Date.parse('2026-10-11T13:00:00Z'), closed);
+    deq([c2.todo, c2.done, c2.active, c2.closed], [2, 1, 1, 1]);
+    deq([f.VIEW_LABELS.active, f.VIEW_LABELS.closed], ['Active cases', 'Closed cases']);
+    eq(f.matchesView(older, 'closed', {}, Date.now(), closed), true); eq(f.matchesView(newer, 'active', {}, Date.now(), closed), true);
+    // the server side (mail-cases.ts): the chat_settings key, the masked address for the log, and no DELETE anywhere
+    const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-cases.ts'), 'utf8');
+    const code = src.replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/\bDELETE\b/.test(code) && /ON CONFLICT \(key\) DO UPDATE/.test(code) && /mail_case:/.test(code));
+    assert.match(fs.readFileSync(path.join(SRC, 'app/api/mail/case/route.ts'), 'utf8'), /mailAccess\(request, body\.box \?\? null, 'reply'\)/);
+    // the unread fix (owner 11 Oct afternoon): marking read through PATCH reads the whole conversation; mark unread stays one mail
+    assert.match(fs.readFileSync(path.join(SRC, 'app/api/mail/message/route.ts'), 'utf8'), /if \(body\.seen\) await storeSeenThread\(row\);/);
+    // the sync never undoes a click Gmail has not taken yet
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/mail-sync.ts'), 'utf8'), /AND NOT EXISTS \(SELECT 1 FROM mail_actions a WHERE a\.box_id = \$1 AND a\.folder = \$2 AND a\.uidvalidity = \$3 AND a\.uid = \$4 AND a\.done_at IS NULL\)/);
+  });
   await t('a reply sent from here carries its outbox state in the conversation: sending / sent / failed with the reason and the id for Try again', () => {
     deq(rules.sendStateOf(null), null);
     deq(rules.sendStateOf({ id: '7', status: 'pending', error: null }), { sendState: 'sending', sendError: null, outboxId: '7' });
@@ -204,7 +244,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
     const { NextRequest } = require('next/server');
     const R = (p) => require(path.join(SRC, 'app/api/mail', p, 'route.ts'));
-    const routes = { messages: R('messages'), message: R('message'), thread: R('thread'), send: R('send') };
+    const routes = { messages: R('messages'), message: R('message'), thread: R('thread'), send: R('send'), mailCase: R('case') };
     const perms = require(path.join(SRC, 'lib/permissions.ts'));
     authState.user = { role: 'admin', username: 'owner', permissions: perms.resolvePermissions('admin'), businessIds: null };
     const BOX = '22222222-2222-2222-2222-222222222222';
@@ -309,6 +349,76 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       store.forgetStoreReady();
       await routes.message.GET(req('GET', `/api/mail/message?box=${BOX}&uid=17`));
       deq([(await store.storeRow(BOX, 'inbox', 11)).seen, (await store.storeRow(BOX, 'inbox', 17)).seen], [true, true]);
+    });
+    await t('Unread (owner 11 Oct afternoon, "Unread ka feature nahi chal raha"): marking read through PATCH (a mail the screen read ahead) reads the whole conversation; Mark unread stays one mail; the sync never undoes a click Gmail has not taken', async () => {
+      const f = G.folders.INBOX;
+      f.msgs.push({ uid: 18, thread: 'T1', seen: false, date: new Date(), from: { name: 'Alice', address: 'alice@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Re: Where is my order?', mid: '<m18@x>', source: plain('<m18@x>', 'alice@example.com', 'vastora@store.example', 'Re: Where is my order?', 'Third mail') });
+      await sync.syncMailbox(box);                                             // Gmail gets the earlier clicks (11, 17 read); 18 is copied unread
+      store.forgetStoreReady();
+      let r = await routes.message.PATCH(req('PATCH', '/api/mail/message', { box: BOX, uid: 11, seen: false }));   // Mark unread on the older mail
+      eq(r.status, 200);
+      let row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'alice@example.com');
+      deq([row.uid, row.unread, row.threadCount], [18, true, 3]);
+      // the screen opened uid 18 from its cache and only sent PATCH seen:true: before, 11 stayed unread and the row came back bold
+      r = await routes.message.PATCH(req('PATCH', '/api/mail/message', { box: BOX, uid: 18, seen: true }));
+      eq(r.status, 200);
+      deq([(await store.storeRow(BOX, 'inbox', 18)).seen, (await store.storeRow(BOX, 'inbox', 11)).seen, (await store.storeRow(BOX, 'inbox', 17)).seen], [true, true, true]);
+      row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'alice@example.com');
+      eq(row.unread, false);
+      // Mark unread: that one mail, as in Gmail; the row is bold again (any mail of the thread unread)
+      r = await routes.message.PATCH(req('PATCH', '/api/mail/message', { box: BOX, uid: 18, seen: false }));
+      eq(r.status, 200);
+      deq([(await store.storeRow(BOX, 'inbox', 18)).seen, (await store.storeRow(BOX, 'inbox', 11)).seen], [false, true]);
+      eq((await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'alice@example.com').unread, true);
+      // the next run writes the clicks to Gmail (unseen 11, seen 18, seen 11, unseen 18 in order) and reads the same back
+      const res = await sync.syncMailbox(box);
+      eq(res.actions, 4);
+      deq([f.msgs.find((m) => m.uid === 18).seen, f.msgs.find((m) => m.uid === 11).seen], [false, true]);
+      deq([(await store.storeRow(BOX, 'inbox', 18)).seen, (await store.storeRow(BOX, 'inbox', 11)).seen], [false, true]);
+      // a click Gmail has not taken yet (its mail_actions row still open: Gmail refused the flag call) is never undone by
+      // Gmail's older flag; once Gmail took it, Gmail's flags count again
+      const kept = await store.storeRow(BOX, 'inbox', 18);
+      await q(`UPDATE mail_store SET seen = true WHERE id = $1`, [kept.id]);
+      await q(`INSERT INTO mail_actions (box_id, folder, uidvalidity, uid, action) VALUES ($1, 'inbox', $2, 18, 'seen')`, [BOX, kept.uidvalidity]);
+      f.msgs.find((m) => m.uid === 18).modseq = 301n; f.modseq = 301n;   // Gmail still says "unseen" for 18 (changed since the last look)
+      G.flagFail = 18;
+      await sync.syncMailbox(box);
+      G.flagFail = null;
+      eq((await q(`SELECT count(*)::int AS n FROM mail_actions WHERE box_id = $1 AND done_at IS NULL`, [BOX])).rows[0].n, 1);
+      eq((await store.storeRow(BOX, 'inbox', 18)).seen, true);
+      await sync.syncMailbox(box);                                             // Gmail takes it now
+      deq([f.msgs.find((m) => m.uid === 18).seen, (await store.storeRow(BOX, 'inbox', 18)).seen], [true, true]);
+      f.msgs.find((m) => m.uid === 18).seen = false; f.msgs.find((m) => m.uid === 18).modseq = 302n; f.modseq = 302n;   // marked unread in Gmail itself
+      await sync.syncMailbox(box);
+      eq((await store.storeRow(BOX, 'inbox', 18)).seen, false);
+    });
+    await t('cases (owner 11 Oct afternoon): POST /api/mail/case close / reopen writes one chat_settings row (an UPDATE on reopen, never a DELETE), the list answers `cases`, a login without Reply gets 403', async () => {
+      try { await q(`CREATE TABLE IF NOT EXISTS chat_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`); }
+      catch (e) { try { await q(`SELECT 1 FROM chat_settings LIMIT 1`); } catch { throw new Error(`the scratch database needs chat_settings (run chat-settings.sql on it): ${e.message}`); } }
+      const key = `mail_case:${BOX}:alice@example.com`;
+      await q(`UPDATE chat_settings SET value = '{"closedAt":null}' WHERE key = $1`, [key]);
+      const before = (await (await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`))).json()).cases;
+      deq(before['alice@example.com'] && before['alice@example.com'].closedAt, before['alice@example.com'] ? null : undefined);
+      let r = await routes.mailCase.POST(req('POST', '/api/mail/case', { box: BOX, address: 'Alice@Example.com', action: 'close' }));
+      let j = await r.json();
+      deq([r.status, j.ok, j.address, j.state, j.case.by, j.case.byName], [200, true, 'alice@example.com', 'closed', 'owner', 'owner']);   // byName = displayName, else the username
+      assert.ok(!Number.isNaN(Date.parse(j.case.closedAt)));
+      let rows = (await q(`SELECT key, value FROM chat_settings WHERE key = $1`, [key])).rows;
+      eq(rows.length, 1); eq(JSON.parse(rows[0].value).closedAt, j.case.closedAt);
+      const cases = (await (await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`))).json()).cases;
+      deq(cases['alice@example.com'], { closedAt: j.case.closedAt, by: 'owner', byName: 'owner', reopenedAt: null });
+      r = await routes.mailCase.POST(req('POST', '/api/mail/case', { box: BOX, address: 'alice@example.com', action: 'reopen' }));
+      j = await r.json();
+      deq([r.status, j.state, j.case.closedAt], [200, 'active', null]); assert.ok(!Number.isNaN(Date.parse(j.case.reopenedAt)));
+      rows = (await q(`SELECT value FROM chat_settings WHERE key = $1`, [key])).rows;
+      eq(rows.length, 1); eq(JSON.parse(rows[0].value).closedAt, null);                                  // updated, not deleted
+      eq((await (await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`))).json()).cases['alice@example.com'].closedAt, null);
+      eq((await routes.mailCase.POST(req('POST', '/api/mail/case', { box: BOX, address: 'not an address', action: 'close' }))).status, 400);
+      eq((await routes.mailCase.POST(req('POST', '/api/mail/case', { box: BOX, address: 'alice@example.com', action: 'drop' }))).status, 400);
+      const owner = authState.user;
+      authState.user = { role: 'agent', username: 'reader', displayName: 'Reader', id: 'u1', permissions: ['mail.view'], businessIds: null };
+      eq((await routes.mailCase.POST(req('POST', '/api/mail/case', { box: BOX, address: 'alice@example.com', action: 'close' }))).status, 403);
+      authState.user = owner;
     });
     await t('a mail whose body is not copied yet still opens (read from Gmail once, not marked there by the click)', async () => {
       const f = G.folders.INBOX;

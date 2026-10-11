@@ -14,25 +14,28 @@
 // marks it read in Gmail ("Mark unread" undoes it). Filters, search and order: src/lib/chat/mail-filters.ts.
 // An HTML mail is shown in a sandboxed frame (no scripts) with remote pictures blocked until "Show images".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
+import { Ban, BadgeCheck, ChevronLeft, FolderCheck, FolderOpen, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, bucketOf, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, bucketOf, caseRows, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
-import type { Box, Customer, Full, Item, ListEntry, ThreadItem, Ver } from './mail/types';
+import type { Box, CasesMap, Customer, Full, Item, ListEntry, MailCase, ThreadItem, Ver } from './mail/types';
 
 interface Props { token: string; onAlert: (type: string, message: string) => void; activePanelId?: string; initialBox?: string | null; initialUid?: number | null }
 
 const REFRESH_MS = 60_000;
-// The three boxes first (owner 2026-10-11), then everything and the older filters.
+// The three boxes first (owner 2026-10-11), then the cases per customer (owner 2026-10-11 afternoon: "active case aur close
+// case"; one row per customer, mail-filters.ts caseRows), then everything and the older filters.
 const NAV: { title: string; views: MailView[] }[] = [
   { title: '', views: ['todo', 'done', 'other'] },
+  { title: 'Cases', views: ['active', 'closed'] },
   { title: '', views: ['all'] },
   { title: 'Filters', views: ['unread', 'unverified', 'verified', 'attach', 'today', 'week'] },
 ];
-const VIEW_ICON: Partial<Record<MailView, typeof Inbox>> = { todo: Inbox, done: MessageSquareReply, other: Ban, all: Mails, unread: MailIcon, unverified: ShieldQuestion, verified: BadgeCheck, notreplied: Reply, replied: MessageSquareReply, attach: Paperclip, today: Calendar, week: CalendarDays };
+const VIEW_ICON: Partial<Record<MailView, typeof Inbox>> = { todo: Inbox, done: MessageSquareReply, other: Ban, active: FolderOpen, closed: FolderCheck, all: Mails, unread: MailIcon, unverified: ShieldQuestion, verified: BadgeCheck, notreplied: Reply, replied: MessageSquareReply, attach: Paperclip, today: Calendar, week: CalendarDays };
+const CASE_VIEW = (v: MailView) => v === 'active' || v === 'closed';
 const VIEW_KEY = 'mail_view';
 const readView = (): MailView => { try { const v = localStorage.getItem(VIEW_KEY) as MailView | null; return v && v in VIEW_LABELS ? v : 'todo'; } catch { return 'todo'; } };
 
@@ -100,7 +103,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
       const r = await fetch(`/api/mail/messages?box=${encodeURIComponent(id)}${phase === 'fast' ? '&phase=fast' : ''}`, { headers: auth, cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) return d.error || 'Could not read Gmail.';
-      return { items: d.mails || [], verified: d.verified || {}, truncated: !!d.truncated, at: Date.now(), partial: phase === 'fast' && !d.store, store: d.store ?? null };
+      return { items: d.mails || [], verified: d.verified || {}, cases: d.cases || {}, truncated: !!d.truncated, at: Date.now(), partial: phase === 'fast' && !d.store, store: d.store ?? null };
     } catch { return 'Could not reach Gmail. It will try again.'; }
   }, [auth]);
 
@@ -148,8 +151,19 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     });
   }, []);
 
+  // A case closed / reopened on this screen shows at once (the next list refresh brings the same from the server).
+  const patchCases = useCallback((address: string, c: MailCase) => {
+    setEntry(prev => {
+      if (!prev || !boxRef.current) return prev;
+      const next = { ...prev, cases: { ...prev.cases, [address]: c } as CasesMap };
+      mailCache.lists.set(boxRef.current, next);
+      return next;
+    });
+  }, []);
+
   const items = entry?.items ?? [];
   const verified = entry?.verified ?? {};
+  const cases = entry?.cases ?? {};
   const openMail = useCallback(async (uid: number, images = false) => {
     const id = boxRef.current;
     if (!id) return;
@@ -199,11 +213,17 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     void openMail(initialUid);
   }, [items.length, boxId, initialBox, initialUid, openMail]);
 
-  const shown = useMemo(() => {
+  const shown = useMemo<Item[]>(() => {
     const now = Date.now();
-    return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now) && searchMatch(x, q, verified))), sort);
-  }, [items, view, q, sort, verified, openUid]);
-  const counts = useMemo(() => viewCounts(items, verified, Date.now()), [items, verified]);
+    // Active / Closed cases: one row per customer (their newest conversation), with how many conversations they have
+    if (CASE_VIEW(view)) {
+      const rows: Item[] = caseRows(items.filter(x => searchMatch(x, q, verified)), verified, cases, view as 'active' | 'closed');
+      const open = openUid && !rows.some(x => x.uid === openUid) ? items.find(x => x.uid === openUid) : null;
+      return sortItems(open ? [...rows, open] : rows, sort);
+    }
+    return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now, cases) && searchMatch(x, q, verified))), sort);
+  }, [items, view, q, sort, verified, cases, openUid]);
+  const counts = useMemo(() => viewCounts(items, verified, Date.now(), cases), [items, verified, cases]);
 
   // Fetch ahead (owner 2026-10-08: "sloww hai"): the first few mails of what is on screen are read in the
   // background WITHOUT marking them read in Gmail (peek=1), one at a time, so opening them is instant. Opening
@@ -341,14 +361,31 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     );
   }
 
-  const goNext = (from: number) => {
+  const goNext = (from: number, keep: (x: Item) => boolean = x => bucketOf(x, verified, cases) === 'todo') => {
     // after a reply: the next mail still to reply to, below this one in the list (else the first one), else the list
-    const rest = shown.filter(x => x.uid !== from && bucketOf(x, verified) === 'todo');
+    const rest = shown.filter(x => x.uid !== from && keep(x));
     const i = shown.findIndex(x => x.uid === from);
     const next = rest.find(x => shown.indexOf(x) > i) ?? rest[0];
     if (next) void openMail(next.uid); else { setOpenUid(null); setMail(null); }
   };
   const pos = openUid ? shown.findIndex(x => x.uid === openUid) : -1;
+  // The open mail's customer case (owner 2026-10-11 afternoon): Active / Closed from their newest mail; null = not a customer.
+  const openCase = mail ? customerCase(items, mail.fromAddress, verified, cases) : null;
+  const setCase = async (action: 'close' | 'reopen') => {
+    if (!boxId || !mail) return;
+    const uid = mail.uid, address = mail.fromAddress.toLowerCase();
+    try {
+      const r = await fetch('/api/mail/case', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ box: boxId, address, action }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alertRef.current('error', d.error || (action === 'close' ? 'Could not close the case.' : 'Could not reopen the case.')); return; }
+      // From Active cases a close opens the next active customer (like Send from To reply); the list is patched after the pick
+      const fromActive = action === 'close' && view === 'active';
+      patchCases(address, d.case);
+      const who = mail.from.replace(/\s*<[^>]*>\s*$/, '') || address;
+      alertRef.current('success', action === 'close' ? `Case closed for ${who}.` : `Case reopened for ${who}.`);
+      if (fromActive) goNext(uid, () => true);
+    } catch { alertRef.current('error', 'Could not change the case. Try again.'); }
+  };
 
   return (
     <div className={`mail-app gm${openUid ? ' mail-open' : ''}`}>
@@ -396,13 +433,15 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
             </div>
             {view === 'todo' && <div className="meta">Customers&apos; mails nobody has answered yet. Reply, and the next one opens by itself.</div>}
             {view === 'other' && <div className="meta">Banks, gateways, tools, newsletters and sales mails: not from a customer, nothing to answer.</div>}
+            {view === 'active' && <div className="meta">One line per customer, their newest conversation first. Close the case when it is done; a customer who writes again comes back here by himself.</div>}
+            {view === 'closed' && <div className="meta">Customers whose case was closed and who have not written since. A new mail from them makes the case active again.</div>}
           </div>
           {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
           {down && <div className="mail-warn">{down}</div>}
           <div className="mail-rows">
             {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading the mails…</div>}
             {entry && shown.length === 0 && (
-              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
+              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : view === 'active' && !q ? 'No active case: every customer\'s case is closed.' : view === 'closed' && !q ? 'No closed case yet. Open a customer\'s mail and press "Close case" when it is done.' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
             )}
             <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} showVerify={view !== 'other'} />
             {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 conversations of the last 30 days.</div>}
@@ -438,7 +477,9 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               onBack={() => { setOpenUid(null); setMail(null); }}
               backLabel={VIEW_LABELS[view]}
               position={pos >= 0 ? `${pos + 1} of ${shown.length}` : undefined}
-              bucket={(() => { const it = items.find(x => x.uid === mail.uid); return it ? bucketOf(it, verified) : undefined; })()}
+              bucket={(() => { const it = items.find(x => x.uid === mail.uid); return it ? bucketOf(it, verified, cases) : undefined; })()}
+              caseInfo={openCase}
+              onCase={action => void setCase(action)}
               onNextAfterSend={view === 'todo'}
               onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
               onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
