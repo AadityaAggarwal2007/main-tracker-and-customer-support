@@ -130,16 +130,19 @@ export async function storeThread(boxId: string, address: string, uid: number | 
 }
 
 // What a reply needs from the mail it answers (no Gmail call when the body is copied).
+// A mail whose body is not copied yet still has every header a reply needs (owner 2026-10-11: such a reply fell back to
+// reading Gmail inside the request and never went); `hasBody` false = the reply goes without the quoted original.
 export async function storeOriginal(boxId: string, uid: number) {
   const row = await storeRow(boxId, 'inbox', uid);
-  if (!row || row.body_state !== 'done') return null;
+  if (!row) return null;
   const replyAddr = (row.reply_to.match(/<([^>]+)>/)?.[1] || (/@/.test(row.reply_to) ? row.reply_to.split(',')[0].trim() : '') || row.from_addr).toLowerCase();
   return {
     row,
     to: replyAddr, subject: row.subject, messageId: row.message_id || '', references: row.refs || '',
     date: new Date(row.sent_at).toISOString(),
     fromLabel: row.from_name && row.from_addr ? `${row.from_name} <${row.from_addr}>` : (row.from_addr || row.from_name),
-    text: row.body_text || '',
+    text: row.body_state === 'done' ? row.body_text || '' : '',
+    hasBody: row.body_state === 'done',
   };
 }
 

@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
       const orig = await storeOriginal(a.box.id, uid);
       if (orig) {
         const text = stripLinkJunk(clean.text).text;
-        const built = buildReply(a.box, orig, text, { includeQuote });
+        const built = buildReply(a.box, orig, text, { includeQuote: includeQuote && orig.hasBody });
         // The outbox: the row first (so nothing is lost if the process dies), then the answer; the worker sends.
         const queued = await outboxInstalled();
         if (queued) {
@@ -100,6 +100,7 @@ export async function POST(request: NextRequest) {
         if (queued) void runOutbox();
         return NextResponse.json({ ok: true, to: built.to, files: replyFiles.length, queued });
       }
+      console.warn(`[mail-send] box=${a.box.id} uid=${uid}: not in the mail store, sending the old way (reads Gmail first)`);
     }
     const sent = await sendMailReply(a.box, uid, stripLinkJunk(clean.text).text, { includeQuote, files: replyFiles });
     noteAnswered(a.box.id, uid);
