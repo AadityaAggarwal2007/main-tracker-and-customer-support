@@ -20,7 +20,7 @@ import { mailErrorText } from './mailbox-status';
 import { firstAuthResults, gmailAuthPassed, sinceDate } from './mail-view';
 import { autoVerifySenders } from './mail-auto-verify';
 import {
-  BODIES_PER_RUN, BODY_MAX_TRIES, FLAGS_EVERY_MS, GONE_EVERY_MS, LEASE_MS, PRUNE_DAYS, SYNC_BUDGET_MS,
+  BODIES_PER_RUN, BODY_BATCH, BODY_MAX_TRIES, FLAGS_EVERY_MS, GONE_EVERY_MS, LEASE_MS, PRUNE_DAYS, SYNC_BUDGET_MS,
   addrList, addrText, bodyFromParsed, type StoreFolder,
 } from './mail-store-rules';
 
@@ -240,35 +240,52 @@ async function syncBodies(c: ImapFlow, box: SyncBox, paths: Record<StoreFolder, 
     const lock = await c.getMailboxLock(path, { readOnly: true });
     try {
       const uv = String((c.mailbox as unknown as { uidValidity?: bigint })?.uidValidity ?? '');
-      for (const r of rows) {
+      const valid = rows.filter(r => r.uidvalidity === uv);
+      // Ten mails per Gmail call (owner 2026-10-11, the first live run: one mail per call made a slow Gmail copy 4-13
+      // bodies a run); a batch Gmail refuses falls back to one by one.
+      for (let i = 0; i < valid.length; i += BODY_BATCH) {
         if (Date.now() > deadline) break;
-        if (r.uidvalidity !== uv) continue;
+        const chunk = valid.slice(i, i + BODY_BATCH);
+        let sources: Map<string, Buffer> | null = new Map();
         try {
-          let got = await c.fetchOne(r.uid, { source: { maxLength: VIEW_BYTES } } as never, { uid: true }) as unknown as { source?: Buffer } | false;
-          if (!got || !got.source) { await query(`UPDATE mail_store SET gone = true, updated_at = now() WHERE id = $1`, [r.id]); continue; }
-          const cut = got.source.length >= VIEW_BYTES;
-          let p = await simpleParser(got.source);
-          if (cut && !p.html && !p.text) {
-            got = await c.fetchOne(r.uid, { source: true }, { uid: true }) as unknown as { source?: Buffer } | false;
-            if (got && got.source) p = await simpleParser(got.source);
+          for await (const m of c.fetch(chunk.map(r => r.uid).join(','), { uid: true, source: { maxLength: VIEW_BYTES } } as never, { uid: true })) {
+            const src = (m as unknown as { source?: Buffer }).source;
+            if (src) sources.set(String(m.uid), src);
           }
-          const b = bodyFromParsed(p as never);
-          await query(
-            `UPDATE mail_store SET body_state = 'done', body_text = $2, body_html = NULLIF($3, ''), attachments = $4::jsonb, cut = $5,
-                    has_attach = has_attach OR EXISTS (SELECT 1 FROM jsonb_array_elements($4::jsonb) a WHERE NOT (a->>'inline')::boolean),
-                    reply_to = CASE WHEN reply_to = '' THEN $6 ELSE reply_to END, updated_at = now()
-              WHERE id = $1`,
-            [r.id, b.text, b.html, JSON.stringify(b.attachments), cut, addrText(p.replyTo).slice(0, 1000)]);
-          n++;
-          if (folder === 'inbox' && p.from?.value?.[0]?.address) {
-            const auth = gmailAuthPassed((p.headerLines || []).find(h => h.key === 'authentication-results')?.line.replace(/^authentication-results:\s*/i, '') ?? null);
-            try { await autoVerifySenders(box.panelId, [{ email: p.from.value[0].address.toLowerCase(), authPass: auth, subject: p.subject || '', text: b.text }]); }
-            catch (e) { console.error('[mail-sync] auto-verify:', (e as Error).message); }
+        } catch (e) { sources = null; console.error(`[mail-sync] batch box=${box.id}: ${(e as Error).message.slice(0, 200)}`); }
+        for (const r of chunk) {
+          if (Date.now() > deadline) break;
+          try {
+            let source = sources ? sources.get(r.uid) : undefined;
+            if (!source && !sources) {
+              const one = await c.fetchOne(r.uid, { source: { maxLength: VIEW_BYTES } } as never, { uid: true }) as unknown as { source?: Buffer } | false;
+              source = one && one.source ? one.source : undefined;
+            }
+            if (!source) { await query(`UPDATE mail_store SET gone = true, updated_at = now() WHERE id = $1`, [r.id]); continue; }
+            const cut = source.length >= VIEW_BYTES;
+            let p = await simpleParser(source);
+            if (cut && !p.html && !p.text) {
+              const whole = await c.fetchOne(r.uid, { source: true }, { uid: true }) as unknown as { source?: Buffer } | false;
+              if (whole && whole.source) p = await simpleParser(whole.source);
+            }
+            const b = bodyFromParsed(p as never);
+            await query(
+              `UPDATE mail_store SET body_state = 'done', body_text = $2, body_html = NULLIF($3, ''), attachments = $4::jsonb, cut = $5,
+                      has_attach = has_attach OR EXISTS (SELECT 1 FROM jsonb_array_elements($4::jsonb) a WHERE NOT (a->>'inline')::boolean),
+                      reply_to = CASE WHEN reply_to = '' THEN $6 ELSE reply_to END, updated_at = now()
+                WHERE id = $1`,
+              [r.id, b.text, b.html, JSON.stringify(b.attachments), cut, addrText(p.replyTo).slice(0, 1000)]);
+            n++;
+            if (folder === 'inbox' && p.from?.value?.[0]?.address) {
+              const auth = gmailAuthPassed((p.headerLines || []).find(h => h.key === 'authentication-results')?.line.replace(/^authentication-results:\s*/i, '') ?? null);
+              try { await autoVerifySenders(box.panelId, [{ email: p.from.value[0].address.toLowerCase(), authPass: auth, subject: p.subject || '', text: b.text }]); }
+              catch (e) { console.error('[mail-sync] auto-verify:', (e as Error).message); }
+            }
+          } catch (e) {
+            const tries = r.body_tries + 1;
+            await query(`UPDATE mail_store SET body_tries = $2, body_state = CASE WHEN $2 >= ${BODY_MAX_TRIES} THEN 'failed' ELSE body_state END, updated_at = now() WHERE id = $1`, [r.id, tries]);
+            console.error(`[mail-sync] body box=${box.id} uid=${r.uid}: ${(e as Error).message.slice(0, 200)}`);
           }
-        } catch (e) {
-          const tries = r.body_tries + 1;
-          await query(`UPDATE mail_store SET body_tries = $2, body_state = CASE WHEN $2 >= ${BODY_MAX_TRIES} THEN 'failed' ELSE body_state END, updated_at = now() WHERE id = $1`, [r.id, tries]);
-          console.error(`[mail-sync] body box=${box.id} uid=${r.uid}: ${(e as Error).message.slice(0, 200)}`);
         }
       }
     } finally { lock.release(); }

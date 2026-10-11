@@ -126,7 +126,8 @@ export function bodyFromParsed(p: ParsedLike): { text: string; html: string; att
 
 // How the sync spends its minute: headers of new mails first, then the flags, then bodies newest first.
 export const SYNC_BUDGET_MS = 50_000;          // one mailbox's run stops starting new work after this
-export const BODIES_PER_RUN = 40;
+export const BODIES_PER_RUN = 150;              // the run's 50 s budget is the real limit
+export const BODY_BATCH = 10;                   // mails per Gmail FETCH
 export const FLAGS_EVERY_MS = 2 * 60_000;      // a folder without CONDSTORE: the flags of its kept mails this often
 export const GONE_EVERY_MS = 15 * 60_000;      // which kept mails left the folder (archived / deleted): one SEARCH this often
 export const LEASE_MS = 3 * 60_000;            // a sync process holds a mailbox this long per run (renewed while it works)
