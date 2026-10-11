@@ -73,7 +73,7 @@ const compile = (from, to) => {
 };
 for (const f of ['permissions', 'auth', 'office-hours']) compile(`lib/${f}.ts`, f);
 compile('lib/refund/link-mask.ts', 'refund-link-mask');
-for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'thread-staff', 'thread-transfer', 'thread-sync']) compile(`lib/chat/${f}.ts`, f);
+for (const f of ['team-rules', 'waiting', 'waiting-sql', 'holidays', 'team-routing', 'display-name', 'health-rules', 'thread-read', 'team-verify-rules', 'thread-staff', 'thread-transfer', 'thread-sync']) compile(`lib/chat/${f}.ts`, f);
 compile('app/api/chat/conversations/[id]/route.ts', 'r-thread');
 const wsql = require(path.join(dir, 'waiting-sql.js'));
 
@@ -570,7 +570,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
       status(g, 200);
       deq(g.body.hot_lock, { can_close: false, can_hand_to_ai: false, lock_reason: rules.hotLockNote(kind, c.health_score) }, kind);
       eq(g.body.staff.can_act, true, 'the member still acts on it (reply, Take over, Transfer)');
-      deq(Object.keys(g.body.staff).sort(), ['can_act', 'can_mark_case', 'claims', 'holder', 'mark_note', 'mark_override', 'me', 'office_open', 'take', 'transfer_to']);
+      deq(Object.keys(g.body.staff).sort(), ['can_act', 'can_mark_case', 'can_verify', 'claims', 'holder', 'mark_note', 'mark_override', 'me', 'office_open', 'take', 'transfer_to']);
       const go = await get('owner', c.id);
       deq(go.body.hot_lock, { can_close: true, can_hand_to_ai: kind !== 'auto_refund', lock_reason: null }, kind + ' owner');
     }

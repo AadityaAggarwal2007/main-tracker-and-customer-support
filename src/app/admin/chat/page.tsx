@@ -29,6 +29,7 @@ import { TemplateDialog } from './_components/TemplateDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
 import { ReshipDialog } from './_components/ReshipDialog';
+import { VerifyDialog } from './_components/VerifyDialog';
 import { DeleteMessageDialog, MessageDetailsDialog } from './_components/MessageTools';
 import InboxSidebar from './_components/InboxSidebar';
 import TeamLive from './_components/TeamLive';
@@ -115,6 +116,8 @@ export default function ChatSupportPage() {
   const [addrEdit, setAddrEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [itemsEdit, setItemsEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [reshipEdit, setReshipEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  // The team's Verify dialog (owner 2026-10-11): order ID + full phone typed by a team member, POST .../verify.
+  const [verifyEdit, setVerifyEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
   // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -1131,6 +1134,44 @@ export default function ChatSupportPage() {
       setReshipEdit({ convId, busy: false, error: 'Could not save' });
     }
   };
+  // "Team ka Verify button" (owner 2026-10-11): the server checks order ID + full phone against this chat's own
+  // panel (team-verify.ts); on a match the thread reloads as any verified chat (order line, customer card, Copy link).
+  const saveVerify = async (orderId: string, phone: string) => {
+    if (!verifyEdit || !token) return;
+    const convId = verifyEdit.convId;
+    setVerifyEdit({ ...verifyEdit, busy: true, error: '' });
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orderId, phone }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setVerifyEdit({ convId, busy: false, error: data.error || 'Could not verify' }); return; }
+      setVerifyEdit(null);
+      showAlert('success', `Verified for order ${data.orderId}${data.customerName ? ` (${data.customerName})` : ''}`);
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch {
+      setVerifyEdit({ convId, busy: false, error: 'Could not verify' });
+    }
+  };
+  // A wrong click: only the team's own verification comes off; the customer is told nothing.
+  const removeVerify = async () => {
+    if (!activeConv || !token) return;
+    const convId = activeConv.id;
+    if (!window.confirm(`Take the team's verification off this chat (order ${activeVerifiedOrder ?? ''})? The chat becomes unverified again.`)) return;
+    try {
+      const res = await fetch(`/api/chat/conversations/${convId}/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ remove: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showAlert('error', data.error || 'Could not remove the verification'); return; }
+      showAlert('success', 'Verification removed');
+      fetchThread(convId, true);
+      fetchConversations(true);
+    } catch { showAlert('error', 'Could not remove the verification'); }
+  };
   // The order's items, like the address: PATCH .../items, ShipTrack only (owner 2026-10-03).
   const saveItems = async (items: { product_name: string; quantity: number; price: number | null }[]) => {
     if (!itemsEdit || !token) return;
@@ -1372,9 +1413,9 @@ export default function ChatSupportPage() {
                 {/* Thread header */}
                 {/* The top of the chat (header, address, items, what to do next) scrolls on its own, so the messages keep their room (owner 2026-10-08) */}
                 <div className="chat-top">
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} removeVerify={removeVerify} />
 
-                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} />
+                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} canVerify={!!staff?.can_verify} onVerify={() => setVerifyEdit({ convId: activeConv.id, busy: false, error: '' })} />
                 </div>
 
                 {/* Messages */}
@@ -1482,6 +1523,10 @@ export default function ChatSupportPage() {
         {reshipEdit && activeConv?.id === reshipEdit.convId && (
           <ReshipDialog orderId={activeConv.case_order_id || activeConv.verified_order_id || null} busy={reshipEdit.busy} error={reshipEdit.error}
             onCancel={() => setReshipEdit(null)} onSave={saveReship} />
+        )}
+        {verifyEdit && activeConv?.id === verifyEdit.convId && (
+          <VerifyDialog email={activeConv.source === 'email'} busy={verifyEdit.busy} error={verifyEdit.error}
+            onCancel={() => setVerifyEdit(null)} onSave={saveVerify} />
         )}
         {itemsEdit && activeItems && activeConv?.id === itemsEdit.convId && (
           <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}

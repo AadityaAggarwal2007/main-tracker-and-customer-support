@@ -65,6 +65,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'A visitor who has not verified never goes to Needs You and is never told "the team will reply": Chikki asks for the order ID and the phone number first.' },
       { id: '2.10', how: 'code', from: '4 Oct', title: 'Phone alone: the order ID is asked for, not the phone again',
         text: 'When a visitor answers with only their phone number and Chikki would ask for the phone number again (it read the 10 digits as an order ID, seen live 4 Oct), code replaces the reply: the phone is noted, the order ID is what is missing, with where to find it.' },
+      { id: '2.11', how: 'code', from: '11 Oct', title: 'Your team can verify a chat',
+        text: 'On a website or email chat that is not verified yet, a team member who may reply in it presses Verify under "What to do next" and types the Order ID and the FULL phone number the customer gave; both must match one order of this store (the same check as the form, wrong tries limited: 10 in 15 minutes per login). The chat is then verified for Chikki and every screen ("by team" on the badge, who did it in the chat\'s record), a widget chat joins the customer\'s other chats, and the customer is told nothing. A wrong click has a Remove. Not for WhatsApp chats. A team check is not the strict proof the automatic Refund promise (6.6) and Ship again mark (6.5) need, so those stay the team\'s decision, as after a Mail verification; a new device of the customer still verifies with the form (2.6).' },
     ],
   },
   {

@@ -1615,4 +1615,54 @@ t('email draft mode: ON by default, every AI reply is held except the fixed hand
   assert.ok(/draft: 'draft for the team'/.test(src('app/admin/chat/_lib/inbox.ts')), 'the inbox names the draft');
 });
 
+// ── The team's Verify button (owner 2026-10-11 13:10, team-verify-rules.ts) ──
+load('team-rules');
+const tv = load('team-verify-rules');
+const src = (f) => fs.readFileSync(path.resolve(__dirname, '../../src', f), 'utf8');
+t('team-verify: who may (canAct: the holder, a free chat, the Super Admin; never WhatsApp or a merged shell), the typed order ID and phone, the masked order for the log', () => {
+  const member = { key: 'm1', name: 'Anurag', superAdmin: false, senior: false, canReply: true, canCases: false };
+  const viewer = { ...member, key: 'v1', canReply: false };
+  const owner = { key: 'owner', name: 'Super Admin', superAdmin: true, senior: true, canReply: true, canCases: true };
+  const held = { key: 'm2', name: 'Rahul', superAdmin: false, senior: true, awayMin: null };
+  const chat = { source: 'chat', merged_into: null };
+  assert.strictEqual(tv.canTeamVerify(member, null, chat), true, 'a free chat');
+  assert.strictEqual(tv.canTeamVerify(member, { ...held, key: 'm1' }, chat), true, 'my own chat');
+  assert.strictEqual(tv.canTeamVerify(member, held, chat), false, "someone else's chat");
+  assert.strictEqual(tv.canTeamVerify(owner, held, chat), true, 'the Super Admin anywhere');
+  assert.strictEqual(tv.canTeamVerify(viewer, null, chat), false, 'no chat.reply');
+  assert.strictEqual(tv.canTeamVerify(null, null, chat), false);
+  assert.strictEqual(tv.canTeamVerify(member, null, { source: 'email', merged_into: null }), true, 'email too');
+  assert.strictEqual(tv.canTeamVerify(member, null, { source: 'whatsapp', merged_into: null }), false, 'never WhatsApp');
+  assert.strictEqual(tv.canTeamVerify(owner, null, { source: 'chat', merged_into: 'c0' }), false, 'a merged shell');
+  assert.strictEqual(tv.verifyTake(member, held), 'member', 'the take a member may do first (MEMBER_TAKE)');
+  // The phone: the 10 digits as orders.ts normalizePhone reads them; anything else is refused before any check.
+  for (const [raw, want] of [['9876543210', '9876543210'], ['+91 98765 43210', '9876543210'], ['09876543210', '9876543210'], ['919876543210', '9876543210'], [9876543210, '9876543210'],
+    ['98765', null], ['98765432101', null], ['+91 98765', null], ['', null], [null, null], ['abc', null]]) {
+    assert.strictEqual(tv.cleanPhone(raw), want, String(raw));
+  }
+  // The order ID: with or without "#" ("# 1553" is "#1553"), nothing that is not one.
+  assert.deepStrictEqual(tv.parseVerifyInput({ orderId: '# 1553', phone: '+91 98765 43210' }), { orderId: '#1553', phone: '9876543210' });
+  assert.deepStrictEqual(tv.parseVerifyInput({ orderId: 1553, phone: '9876543210' }), { orderId: '1553', phone: '9876543210' });
+  assert.deepStrictEqual(tv.parseVerifyInput({ orderId: ' ST1234567890 ', phone: '9876543210' }), { orderId: 'ST1234567890', phone: '9876543210' });
+  assert.ok('error' in tv.parseVerifyInput({ phone: '9876543210' }), 'no order ID');
+  assert.ok('error' in tv.parseVerifyInput({ orderId: '1553', phone: '98765' }), 'not a full number');
+  assert.ok('error' in tv.parseVerifyInput({ orderId: '15 53', phone: '9876543210' }), 'a space inside');
+  assert.ok('error' in tv.parseVerifyInput({ orderId: '%', phone: '9876543210' }), 'a wildcard');
+  assert.ok('error' in tv.parseVerifyInput({ orderId: 'x'.repeat(41), phone: '9876543210' }), 'too long');
+  assert.ok('error' in tv.parseVerifyInput(null) && 'error' in tv.parseVerifyInput('1553'));
+  // The log line: the order masked ("#1553" -> "#**53"), never the phone (the route never passes it).
+  assert.strictEqual(tv.maskOrder('#1553'), '#**53'); assert.strictEqual(tv.maskOrder('ST1234567890'), 'S*********90'); assert.strictEqual(tv.maskOrder('#1'), '***');
+  assert.strictEqual(tv.cleanCustomerName('Asha K.'), 'Asha K'); assert.strictEqual(tv.cleanCustomerName('  '), null); assert.strictEqual(tv.cleanCustomerName(null), null);
+  assert.deepStrictEqual(tv.VERIFY_LIMIT, { max: 10, windowMs: 15 * 60 * 1000 }); assert.strictEqual(tv.verifyLimitKey('owner'), 'tv:owner'); assert.strictEqual(tv.VERIFY_VIA, 'team');
+  // The readers of verified_via: 'team' verifies for Chikki (only verified_order_id is read), is never strict proof (case-auto.ts), never
+  // carried to a new device by the widget form, and the badge names it.
+  assert.ok(/const STRICT_PROOF = \['form', 'chat_phone'\];/.test(src('lib/chat/case-auto.ts')), "'team' is not strict proof: no automatic Refund promise / Ship again mark");
+  assert.ok(/AND verified_via IN \('form', 'chat_phone'\)/.test(src('app/api/widget/verify/route.ts')), 'the widget form carries on only chats the customer proved');
+  assert.ok(/can_verify: live && !!actor && canTeamVerify\(actor, h, conv\)/.test(src('lib/chat/thread-staff.ts')), 'the thread tells the inbox who may');
+  assert.ok(/via === 'team'/.test(src('app/admin/chat/_components/chips.tsx')) && /verified_via === 'team'/.test(src('app/admin/chat/_components/ConversationRow.tsx')), 'the badge says by team');
+  assert.ok(/verified_via = 'team'/.test(src('lib/chat/team-verify.ts')) && !/visitor_phone/.test(src('lib/chat/team-verify.ts')), 'the phone is never stored');
+  const rule = rb.RULEBOOK.find((s) => s.key === 'verify').rules.slice(-1)[0];
+  assert.ok(rule.id === '2.11' && rule.how === 'code' && /Remove/.test(rule.text) && /WhatsApp/.test(rule.text), 'rulebook 2.11 at the end of the verify section');
+});
+
 console.log(`UNIT: ${n} groups passed`);

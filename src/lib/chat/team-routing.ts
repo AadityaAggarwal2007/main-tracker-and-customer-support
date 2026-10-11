@@ -302,7 +302,8 @@ export async function setSystemActor(client: PoolClient, name: string, reason: s
   );
 }
 
-export type ChatEventKind = 'claim' | 'take' | 'transfer' | 'merge' | 'reply' | 'case_mark' | 'case_remove' | 'reshipped';
+// 'verify' (owner 2026-10-11): the team verified a chat by order ID + full phone (reason 'team'), or took it off ('remove'); team-verify.ts.
+export type ChatEventKind = 'claim' | 'take' | 'transfer' | 'merge' | 'reply' | 'case_mark' | 'case_remove' | 'reshipped' | 'verify';
 export interface ChatEventInput {
   conversationId: string; siteId: string | null; kind: ChatEventKind;
   fromOwner?: string | null; toOwner?: string | null; fromStatus?: string | null; toStatus?: string | null;
