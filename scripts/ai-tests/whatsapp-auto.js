@@ -22,6 +22,7 @@ function reset() {
 }
 reset();
 const norm = (sql) => sql.replace(/\s+/g, ' ').trim();
+const msgAt = (r) => new Date(r.sent_at || (r.status === 'pending' ? r.due_at : (r.updated_at || r.due_at))).getTime();
 const orderOf = (r) => S.orders.find((o) => o.business_id === r.business_id && o.order_id === r.order_id);
 const db = {
   query: async (rawSql, p = []) => {
@@ -45,7 +46,23 @@ const db = {
       S.rows.push({ id: String(++S.seq), business_id: p[0], order_id: p[1], kind, status: p[2], to_number: p[3], error: p[4], code: null, attempts: 0, due_at: kind === 'placed' ? new Date(S.nowMs) : p[5], sent_at: null, wa_id: null });
       return { rows: [], rowCount: 1 };
     }
-    if (/ORDER BY w\.updated_at DESC LIMIT 300/.test(sql)) return { rows: S.rows.slice().reverse().slice(0, 300).map((r) => ({ ...r, customer_name: (orderOf(r) || {}).customer_name || null })), rowCount: S.rows.length };
+    if (/ORDER BY at DESC LIMIT 4001/.test(sql)) {
+      const inR = (r) => { const t = msgAt(r); return t >= p[0].getTime() && t < p[1].getTime(); };
+      const hit = new Set(S.rows.filter(inR).map((r) => r.business_id + '|' + r.order_id));
+      const rows = S.rows.filter((r) => hit.has(r.business_id + '|' + r.order_id)).sort((a, b) => msgAt(b) - msgAt(a))
+        .map((r) => ({ ...r, at: new Date(msgAt(r)), in_range: inR(r), customer_name: (orderOf(r) || {}).customer_name || null, order_at: (orderOf(r) || {}).created_at || null }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/FROM orders o LEFT JOIN wa_auto_sends w ON w\.business_id = o\.business_id::text AND w\.order_id = o\.order_id AND w\.kind = 'placed' WHERE o\.created_at >= \$1 AND o\.created_at < \$2 GROUP BY 1/.test(sql)) {
+      const since = JSON.parse(p[2]); const m = {};
+      for (const o of S.orders.filter((x) => new Date(x.created_at) >= p[0] && new Date(x.created_at) < p[1])) {
+        const x = m[o.business_id] || (m[o.business_id] = { business_id: o.business_id, total: 0, cancelled: 0, queued: 0, before_on: 0 });
+        const q = S.rows.some((r) => r.business_id === o.business_id && r.order_id === o.order_id && r.kind === 'placed');
+        x.total++; if (o.is_cancelled) x.cancelled++; if (q) x.queued++;
+        if (!q && !o.is_cancelled && since[o.business_id] && new Date(o.created_at) < new Date(since[o.business_id])) x.before_on++;
+      }
+      return { rows: Object.values(m), rowCount: Object.keys(m).length };
+    }
     if (/FROM wa_auto_sends w LEFT JOIN orders o/.test(sql)) {
       S.trackingFlags = (S.trackingFlags || []).concat([p[1]]);
       const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
@@ -66,9 +83,9 @@ const db = {
     if (/^UPDATE wa_auto_sends SET status = 'pending', attempts = 0/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'failed'); if (r) Object.assign(r, { status: 'pending', attempts: 0, error: null, due_at: new Date(S.nowMs) }); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) { S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/count\(DISTINCT w\.to_number\)::int AS replied/.test(sql)) return { rows: [{ business_id: 'b1', replied: 2 }], rowCount: 1 };
-    if (/FROM wa_auto_sends GROUP BY 1, 2, 3/.test(sql)) {
-      const m = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; }
-      const rows = Object.keys(m).map((k) => { const [business_id, kind, status] = k.split('|'); return { business_id, kind, status, n: m[k], n24: m[k] }; });
+    if (/FROM wa_auto_sends w GROUP BY 1, 2, 3/.test(sql)) {
+      const m = {}, mi = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; const t = msgAt(r); if (t >= p[0].getTime() && t < p[1].getTime()) mi[k] = (mi[k] || 0) + 1; }
+      const rows = Object.keys(m).map((k) => { const [business_id, kind, status] = k.split('|'); return { business_id, kind, status, n: m[k], nin: mi[k] || 0 }; });
       return { rows, rowCount: rows.length };
     }
     if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
@@ -336,10 +353,13 @@ async function t(name, fn) {
   await t('GET: Super Admin only; counts per panel, the templates\' state, masked numbers', async () => {
     eq((await route.GET(jreq(AGENT, {}))).status, 401); eq((await route.GET(jreq(null, {}))).status, 401);
     turnOn(); S.orders = [order()]; await run(IST(13, 12));
-    const g = await route.GET(jreq(OWNER, {}));
+    const realNow = Date.now; Date.now = () => S.nowMs;
+    let g; try { g = await route.GET(jreq(OWNER, {})); } finally { Date.now = realNow; }
     deq([g.status, g.body.installed, g.body.configured, g.body.templates.placed, g.body.templates.tracking], [200, true, true, 'APPROVED', 'APPROVED']);
     const p = g.body.panels.find((x) => x.id === 'b1');
     deq([p.enabled, p.placed.sent, p.tracking.pending, p.replied], [true, 1, 1, 2]);
+    deq([p.placedIn.sent, p.trackingIn.pending, p.orders.total, p.orders.queued], [1, 0, 1, 1]);   // the tracking link is due on the 15th
+    eq(g.body.range.day, 'today'); eq(g.body.recent.length, 2);
     eq(g.body.recent[0].to, '••••3210'); assert.ok(!JSON.stringify(g.body).includes('9876543210'));
     eq(g.body.recent[0].name, 'AADITYA SHARMA');
   });
@@ -407,6 +427,56 @@ async function t(name, fn) {
     eq(f('all', 'all', '3210').length, 4); eq(f('all', 'all', '32').length, 0);
     deq(view.countByPanel(lines, { show: 'all', q: '' }), { all: 4, v: 2, k: 2 });
     deq(view.countByShow(lines, { panel: 'k', q: '' }), { all: 2, failed: 1, waiting: 0, sent: 0, skipped: 1 });
+  });
+
+
+  await t('the date filter (owner 11 Oct): India days, night hours, per-hour counts, why not sent, the list per day', async () => {
+    const now = IST(11, 15, 30);
+    const r0 = view.dayRange(null, now); deq([r0.day, r0.from, r0.to], ['today', IST(11, 0), IST(12, 0)]);
+    const y = view.dayRange('yesterday', now); deq([y.from, y.to], [IST(10, 0), IST(11, 0)]);
+    const w = view.dayRange('7d', now); deq([w.from, w.to], [IST(5, 0), IST(12, 0)]);
+    const d = view.dayRange('2026-10-09', now); deq([d.day, d.from, d.to], ['2026-10-09', IST(9, 0), IST(10, 0)]);
+    eq(view.dayRange('2026-10-20', now).day, 'today'); eq(view.dayRange('junk', now).day, 'today');
+    eq(view.dayRange(null, IST(11, 0, 10)).from, IST(11, 0));                  // just after India midnight = the new day
+    eq(view.istDate(IST(11, 23, 59)), '2026-10-11'); eq(view.istDate(IST(12, 0, 1)), '2026-10-12');
+    deq([IST(11, 9, 59), IST(11, 10), IST(11, 19, 29), IST(11, 19, 30), IST(11, 23)].map(view.isNight), [true, false, false, true, true]);
+
+    const R = (id, order_id, kind, status, atMs, extra = {}) => ({ id, panel: 'VASTRIKA', panel_id: 'v', order_id, name: null, kind, status, to: '••••3210', error: null, code: null, attempts: 0, due_at: new Date(atMs).toISOString(), sent_at: null, at: new Date(atMs).toISOString(), in_range: true, ...extra });
+    const rows = [
+      R('1', '#1', 'placed', 'read', IST(11, 23, 10), { order_at: new Date(IST(11, 23, 9)).toISOString() }),
+      R('2', '#2', 'placed', 'delivered', IST(11, 11, 5)), R('3', '#2', 'tracking', 'pending', IST(13, 11, 5), { in_range: false }),
+      R('4', '#3', 'placed', 'failed', IST(11, 11, 40), { error: 'Not a WhatsApp number', code: 131026 }),
+      R('5', '#4', 'placed', 'failed', IST(11, 11, 50), { error: 'Not a WhatsApp number', code: 131026 }),
+      R('6', '#5', 'placed', 'skipped', IST(11, 2, 0), { error: 'The order has no phone number' }),
+      R('7', '#6', 'tracking', 'sent', IST(11, 12, 0)), R('8', '#6', 'placed', 'read', IST(9, 22, 0), { in_range: false }),
+    ];
+    const rg = { from: IST(11, 0), to: IST(12, 0) };
+    const hb = view.hourBuckets(rows, rg);
+    deq([hb[23], hb[11], hb[2], hb[12]].map((h) => [h.went, h.failed, h.skipped]), [[1, 0, 0], [1, 2, 0], [0, 0, 1], [1, 0, 0]]);
+    eq(hb.reduce((n, h) => n + h.went + h.failed + h.skipped, 0), 6);             // the out-of-range rows never count
+    deq(view.reasonCounts(rows, rg), [{ status: 'failed', reason: 'Not a WhatsApp number [131026]', n: 2 }, { status: 'skipped', reason: 'The order has no phone number', n: 1 }]);
+    const lines = view.groupOrders(rows);
+    const f = (time) => view.filterOrders(lines, { panel: 'all', show: 'all', q: '', time }).map((l) => l.orderId).sort();
+    deq(f('night'), ['#1', '#5']);                // order #6's night message was on the 9th: not this day
+    deq(f('day'), ['#2', '#3', '#4', '#6']); eq(f('all').length, 6);
+    deq(view.countByTime(lines, { panel: 'all', show: 'all', q: '' }), { all: 6, night: 2, day: 4 });
+    eq(lines.find((l) => l.orderId === '#1').orderAt, new Date(IST(11, 23, 9)).toISOString());
+    assert.match(view.whyLine(rows[0], rows[0].order_at), /the order came in 11 Oct, 11:09 pm/i);
+    assert.match(view.whyLine(rows[6], null), /48 hours old/);
+  });
+  await t('the overview for a chosen day: counts of that day, the orders that came in and why some got nothing, every message of that day', async () => {
+    turnOn('b1', IST(13, 10, 30));
+    S.orders = [order({ order_id: '#1', created_at: new Date(IST(13, 10)) }), order({ order_id: '#2', created_at: new Date(IST(13, 11)) }),
+      order({ order_id: '#3', created_at: new Date(IST(13, 11, 5)), is_cancelled: true }), order({ order_id: '#9', created_at: new Date(IST(12, 11)) })];
+    await run(IST(13, 12));
+    const o = await auto.automationOverview('2026-10-13', IST(13, 18));
+    const p = o.panels.find((x) => x.id === 'b1');
+    deq([p.orders.total, p.orders.cancelled, p.orders.queued, p.orders.beforeOn], [3, 1, 1, 1]);   // #1 came before ON, #3 cancelled
+    deq([p.placedIn.sent, p.placed.sent], [1, 1]);
+    deq(o.recent.map((r) => [r.order_id, r.kind, r.in_range]).sort(), [['#2', 'placed', true], ['#2', 'tracking', false]]);
+    eq(o.recent[0].order_at !== undefined, true); eq(o.capped, false); eq(o.range.day, '2026-10-13');
+    const y = await auto.automationOverview('2026-10-12', IST(13, 18));
+    deq([y.recent.length, y.panels.find((x) => x.id === 'b1').orders.total, y.panels.find((x) => x.id === 'b1').placedIn.sent], [0, 1, 0]);
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

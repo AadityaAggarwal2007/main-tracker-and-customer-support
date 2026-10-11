@@ -18,6 +18,7 @@ import {
   autoKey, autoValue, dueNow, eligibleFrom, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
   type AutoSetting, type BrandWords, type OrderFacts,
 } from './whatsapp-auto-rules';
+import { dayRange } from './whatsapp-auto-view';
 
 export type Kind = 'placed' | 'tracking';
 const STATUSES = ['pending', 'sent', 'delivered', 'read', 'failed', 'skipped'] as const;
@@ -209,38 +210,52 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
 }
 
 // ── What the Automation tab shows ──
+// Owner 2026-10-11 ("date ka filter nahi hai, aaj ke kitne gaye, kya gaye, kyun gaye, raat ko kyun gaye"): everything is
+// for the chosen India days (whatsapp-auto-view.ts dayRange: today by default). A message counts on the day of its own
+// time (MSG_AT: when it went, failed or was skipped; a waiting one by when it goes). The list carries every message of
+// those days (and the other message of the same order, so both show side by side), not just the latest 300 rows.
 export interface PanelAuto {
   id: string; name: string; enabled: boolean; since: string | null;
-  placed: Counts; tracking: Counts; placed24: Counts; tracking24: Counts;
+  placed: Counts; tracking: Counts;            // all time
+  placedIn: Counts; trackingIn: Counts;        // the chosen days
+  orders: { total: number; cancelled: number; queued: number; beforeOn: number };   // orders that came in on the chosen days
   replied: number;                     // customers who wrote back after one of these messages (distinct numbers)
 }
 export interface RecentRow {
   id: string; panel: string; panel_id: string; order_id: string; name: string | null; kind: Kind; status: string; to: string | null; error: string | null; code: number | null;
   attempts: number; due_at: string; sent_at: string | null;
+  at?: string | null; order_at?: string | null; in_range?: boolean;
 }
 export interface AutoOverview {
   installed: boolean; configured: boolean;
   templates: { placed: string; tracking: string; error: string | null };
-  panels: PanelAuto[]; recent: RecentRow[];
+  range: { day: string; from: string; to: string };
+  panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
 const maskTo = (n: string | null) => (n ? `••••${n.slice(-4)}` : null);
+const MSG_AT = `COALESCE(w.sent_at, CASE WHEN w.status = 'pending' THEN w.due_at ELSE w.updated_at END)`;
+export const LIST_MAX = 4000;
 
-export async function automationOverview(): Promise<AutoOverview> {
+export async function automationOverview(day: string | null = null, nowMs = Date.now()): Promise<AutoOverview> {
+  const rg = dayRange(day, nowMs);
+  const from = new Date(rg.from), to = new Date(rg.to);
   const panelRows = await query<{ id: string; name: string }>(`SELECT b.id::text AS id, b.name FROM businesses b ORDER BY b.is_default DESC, b.created_at ASC`);
   const settings = await loadAutoSettings().catch(() => new Map<string, AutoSetting>());
   const { list, error } = await templateStates();
   const stateOf = (name: string) => (list ? (list.find((t) => t.name === name)?.status || 'MISSING') : 'UNKNOWN');
   const panels: PanelAuto[] = panelRows.rows.map((p) => {
     const s = settings.get(p.id) || { enabled: false, since: null };
-    return { id: p.id, name: p.name, enabled: s.enabled, since: s.since ? new Date(s.since).toISOString() : null, placed: zero(), tracking: zero(), placed24: zero(), tracking24: zero(), replied: 0 };
+    return { id: p.id, name: p.name, enabled: s.enabled, since: s.since ? new Date(s.since).toISOString() : null, placed: zero(), tracking: zero(), placedIn: zero(), trackingIn: zero(), orders: { total: 0, cancelled: 0, queued: 0, beforeOn: 0 }, replied: 0 };
   });
-  let installed = true; let recent: RecentRow[] = [];
+  let installed = true; let recent: RecentRow[] = []; let capped = false;
   try {
-    const c = await query<{ business_id: string; kind: Kind; status: keyof Counts; n: number; n24: number }>(
-      `SELECT business_id, kind, status, count(*)::int AS n, (count(*) FILTER (WHERE created_at > now() - interval '24 hours'))::int AS n24 FROM wa_auto_sends GROUP BY 1, 2, 3`);
+    const c = await query<{ business_id: string; kind: Kind; status: keyof Counts; n: number; nin: number }>(
+      `SELECT business_id, kind, status, count(*)::int AS n,
+              (count(*) FILTER (WHERE ${MSG_AT} >= $1 AND ${MSG_AT} < $2))::int AS nin
+         FROM wa_auto_sends w GROUP BY 1, 2, 3`, [from, to]);
     for (const row of c.rows) {
       const p = panels.find((x) => x.id === row.business_id); if (!p || !STATUSES.includes(row.status)) continue;
-      p[row.kind][row.status] += row.n; p[row.kind === 'placed' ? 'placed24' : 'tracking24'][row.status] += row.n24;
+      p[row.kind][row.status] += row.n; p[row.kind === 'placed' ? 'placedIn' : 'trackingIn'][row.status] += row.nin;
     }
     try {
       const rep = await query<{ business_id: string; replied: number }>(
@@ -253,15 +268,39 @@ export async function automationOverview(): Promise<AutoOverview> {
       );
       for (const row of rep.rows) { const p = panels.find((x) => x.id === row.business_id); if (p) p.replied = row.replied; }
     } catch (e) { console.error('[wa-auto] replied count:', (e as Error).message); }
-    const r = await query<{ id: string; business_id: string; order_id: string; kind: Kind; status: string; to_number: string | null; error: string | null; code: number | null; attempts: number; due_at: string; sent_at: string | null; customer_name: string | null }>(
-      `SELECT w.id::text AS id, w.business_id, w.order_id, w.kind, w.status, w.to_number, w.error, w.code, w.attempts, w.due_at, w.sent_at, o.customer_name
-         FROM wa_auto_sends w LEFT JOIN orders o ON o.business_id::text = w.business_id AND o.order_id = w.order_id
-        ORDER BY w.updated_at DESC LIMIT 300`);
-    recent = r.rows.map((x) => ({ id: x.id, panel: panels.find((p) => p.id === x.business_id)?.name || x.business_id, panel_id: x.business_id, order_id: x.order_id, name: x.customer_name || null, kind: x.kind, status: x.status, to: maskTo(x.to_number), error: x.error, code: x.code, attempts: x.attempts, due_at: x.due_at, sent_at: x.sent_at }));
+    // the orders that came in on those days: how many got the order-placed message, and why the rest did not
+    try {
+      const since: Record<string, string> = {};
+      for (const p of panels) if (p.enabled && p.since) since[p.id] = p.since;
+      const oc = await query<{ business_id: string; total: number; cancelled: number; queued: number; before_on: number }>(
+        `SELECT o.business_id::text AS business_id, count(*)::int AS total,
+                (count(*) FILTER (WHERE o.is_cancelled IS TRUE))::int AS cancelled,
+                (count(w.id))::int AS queued,
+                (count(*) FILTER (WHERE w.id IS NULL AND o.is_cancelled IS NOT TRUE
+                                    AND o.created_at < ($3::jsonb ->> o.business_id::text)::timestamptz))::int AS before_on
+           FROM orders o
+           LEFT JOIN wa_auto_sends w ON w.business_id = o.business_id::text AND w.order_id = o.order_id AND w.kind = 'placed'
+          WHERE o.created_at >= $1 AND o.created_at < $2
+          GROUP BY 1`, [from, to, JSON.stringify(since)]);
+      for (const row of oc.rows) { const p = panels.find((x) => x.id === row.business_id); if (p) p.orders = { total: row.total, cancelled: row.cancelled, queued: row.queued, beforeOn: row.before_on }; }
+    } catch (e) { console.error('[wa-auto] orders count:', (e as Error).message); }
+    const r = await query<{ id: string; business_id: string; order_id: string; kind: Kind; status: string; to_number: string | null; error: string | null; code: number | null; attempts: number; due_at: string; sent_at: string | null; customer_name: string | null; at: string | null; in_range: boolean; order_at: string | null }>(
+      `WITH hit AS (SELECT DISTINCT w.business_id, w.order_id FROM wa_auto_sends w WHERE ${MSG_AT} >= $1 AND ${MSG_AT} < $2)
+       SELECT w.id::text AS id, w.business_id, w.order_id, w.kind, w.status, w.to_number, w.error, w.code, w.attempts, w.due_at, w.sent_at,
+              ${MSG_AT} AS at, (${MSG_AT} >= $1 AND ${MSG_AT} < $2) AS in_range, o.customer_name, o.created_at AS order_at
+         FROM wa_auto_sends w
+         JOIN hit h ON h.business_id = w.business_id AND h.order_id = w.order_id
+         LEFT JOIN orders o ON o.business_id::text = w.business_id AND o.order_id = w.order_id
+        ORDER BY at DESC LIMIT ${LIST_MAX + 1}`, [from, to]);
+    capped = r.rows.length > LIST_MAX;
+    recent = r.rows.slice(0, LIST_MAX).map((x) => ({ id: x.id, panel: panels.find((p) => p.id === x.business_id)?.name || x.business_id, panel_id: x.business_id, order_id: x.order_id, name: x.customer_name || null, kind: x.kind, status: x.status, to: maskTo(x.to_number), error: x.error, code: x.code, attempts: x.attempts, due_at: x.due_at, sent_at: x.sent_at, at: x.at, in_range: !!x.in_range, order_at: x.order_at || null }));
   } catch (e) {
     if (missingTable(e)) installed = false; else console.error('[wa-auto] overview:', (e as Error).message);
   }
-  return { installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), error }, panels, recent };
+  return {
+    installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), error },
+    range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
+  };
 }
 
 // "Send again" on a Failed row (the run still refuses an order that is too old / cancelled).

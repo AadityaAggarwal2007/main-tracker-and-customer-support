@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
 
 // ── WhatsApp > Automation (owner 2026-10-10): the order-placed message on every new order and the tracking link
 // 48 hours later, per panel ON / OFF (default OFF), with what was sent / delivered / read / failed. Super Admin only.
-// GET: the switches, the counts per panel, the template states and the last 30 messages (numbers masked to the last 4).
+// GET [?day=]: the switches, the counts per panel (all time and the chosen days), the orders that came in those days,
+// the template states and every message of those days (numbers masked to the last 4).
 // POST { businessId, enabled }: the switch (turning ON needs the table and an approved order_placed template; it
 // starts the clock: only orders placed from then on are ever messaged). POST { action: 'retry', id }: a Failed row again.
 // POST { action: 'test', businessId, to, name }: both messages of that brand to one number, filled from its latest order
@@ -17,7 +18,9 @@ export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || !isSuperAdmin(user)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (request.nextUrl?.searchParams?.get('fresh') === '1') resetTemplateCache();
-  try { return NextResponse.json(await automationOverview()); }
+  // ?day=today | yesterday | 7d | YYYY-MM-DD (India days; owner 2026-10-11: the date filter)
+  const day = (request.nextUrl?.searchParams?.get('day') || '').slice(0, 10) || null;
+  try { return NextResponse.json(await automationOverview(day)); }
   catch (e) { console.error('[whatsapp] automation overview:', (e as Error).message); return NextResponse.json({ error: 'Could not read the automation' }, { status: 500 }); }
 }
 
