@@ -16,6 +16,9 @@ export interface WaHealth {
   waitingToday: number;       // automation messages waiting to go
   stopped: number;            // customers who asked us to stop (no automation message goes to them)
   phoneError: string | null;  // Meta could not be read (the numbers from our own database still show)
+  // Today's automation, India day (owner 2026-10-11: "Today ma bhi WhatsApp message ka daily ka dikhe"): a message counts on
+  // the day of its own time (sent, failed or skipped; a waiting one by when it goes), as WhatsApp > Automation counts it.
+  today?: { placedWent: number; placedRead: number; trackingWent: number; trackingRead: number; failed: number; skipped: number; dueLater: number };
 }
 
 export type WaTone = 'ok' | 'warn' | 'danger';

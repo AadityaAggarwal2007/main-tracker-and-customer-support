@@ -43,7 +43,7 @@ const db = {
     if (/^INSERT INTO wa_auto_sends/.test(sql)) {
       const kind = /'placed'/.test(sql) ? 'placed' : 'tracking';
       if (S.rows.some((r) => r.business_id === p[0] && r.order_id === p[1] && r.kind === kind)) return { rows: [], rowCount: 0 };
-      S.rows.push({ id: String(++S.seq), business_id: p[0], order_id: p[1], kind, status: p[2], to_number: p[3], error: p[4], code: null, attempts: 0, due_at: kind === 'placed' ? new Date(S.nowMs) : p[5], sent_at: null, wa_id: null });
+      S.rows.push({ id: String(++S.seq), business_id: p[0], order_id: p[1], kind, status: p[2], to_number: p[3], error: p[4], code: null, attempts: 0, due_at: kind === 'placed' ? new Date(S.nowMs) : p[5], sent_at: null, wa_id: null, updated_at: new Date(S.nowMs) });
       return { rows: [], rowCount: 1 };
     }
     if (/ORDER BY at DESC LIMIT 4001/.test(sql)) {
@@ -83,7 +83,16 @@ const db = {
     if (/^UPDATE wa_auto_sends SET status = 'pending', attempts = 0/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'failed'); if (r) Object.assign(r, { status: 'pending', attempts: 0, error: null, due_at: new Date(S.nowMs) }); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) { S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/count\(DISTINCT w\.to_number\)::int AS replied/.test(sql)) return { rows: [{ business_id: 'b1', replied: 2 }], rowCount: 1 };
-    if (/FROM wa_auto_sends w GROUP BY 1, 2, 3/.test(sql)) {
+    if (/^SELECT w\.kind, w\.status, count\(\*\)::int AS n FROM wa_auto_sends w WHERE COALESCE/.test(sql)) {
+      // the India day of S.nowMs
+      const from = Math.floor((S.nowMs + 330 * 60000) / 86400000) * 86400000 - 330 * 60000;
+      const m = {}; for (const r of S.rows) { const t = msgAt(r); if (t >= from && t < from + 86400000) { const k = r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; } }
+      const rows = Object.keys(m).map((k) => ({ kind: k.split('|')[0], status: k.split('|')[1], n: m[k] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/count\(DISTINCT x\.digits\)::int AS n/.test(sql)) return { rows: [{ n: 0 }], rowCount: 1 };
+    if (/AS failed, \(count\(\*\) FILTER \(WHERE status = 'pending'\)\)::int AS waiting FROM wa_auto_sends/.test(sql)) return { rows: [{ failed: 0, waiting: S.rows.filter((r) => r.status === 'pending').length }], rowCount: 1 };
+    if (/FROM wa_auto_sends GROUP BY 1, 2, 3|FROM wa_auto_sends w GROUP BY 1, 2, 3/.test(sql)) {
       const m = {}, mi = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; const t = msgAt(r); if (t >= p[0].getTime() && t < p[1].getTime()) mi[k] = (mi[k] || 0) + 1; }
       const rows = Object.keys(m).map((k) => { const [business_id, kind, status] = k.split('|'); return { business_id, kind, status, n: m[k], nin: mi[k] || 0 }; });
       return { rows, rowCount: rows.length };
@@ -477,6 +486,14 @@ async function t(name, fn) {
     eq(o.recent[0].order_at !== undefined, true); eq(o.capped, false); eq(o.range.day, '2026-10-13');
     const y = await auto.automationOverview('2026-10-12', IST(13, 18));
     deq([y.recent.length, y.panels.find((x) => x.id === 'b1').orders.total, y.panels.find((x) => x.id === 'b1').placedIn.sent], [0, 1, 0]);
+  });
+  await t('the Today board: today\'s automation (India day): sent / read per message, failed, skipped, still to go today', async () => {
+    const wh = require(path.join(SRC, 'lib/chat/whatsapp-health.ts'));
+    turnOn(); S.orders = [order(), order({ order_id: '#1554', customer_mobile: '' })]; await run(IST(13, 12));
+    const realNow = Date.now; Date.now = () => S.nowMs;
+    let h; try { wh.resetWaPhoneCache(); h = await wh.loadWaHealth(S.nowMs); } finally { Date.now = realNow; }
+    deq(h.today, { placedWent: 1, placedRead: 0, trackingWent: 0, trackingRead: 0, failed: 0, skipped: 2, dueLater: 0 });   // #1554 has no number: both skipped
+    eq(h.waitingToday, 1);   // #1553's tracking link, due on the 15th
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
