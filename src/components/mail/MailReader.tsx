@@ -2,20 +2,25 @@
 
 import { useEffect, useState } from 'react';
 import { BadgeCheck, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, X } from 'lucide-react';
-import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, quotedText } from '@/lib/chat/mail-view';
+import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
 import { BUCKET_LABEL, initials, type MailBucket } from '@/lib/chat/mail-filters';
-import MailConversation from './MailConversation';
-import type { Att, Box, Full, ThreadItem, Ver } from './types';
+import MailConversation, { useFrameChars } from './MailConversation';
+import CustomerCard from './CustomerCard';
+import type { Att, Box, Customer, Full, ThreadItem, Ver } from './types';
 
 const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // The open mail like Gmail (owner 2026-10-11): back / mark unread / newer-older on top, the subject with its box (To reply /
 // Replied / Not a customer), the verification bar, the whole conversation as cards (the open mail expanded), and the reply
-// box at the bottom (Reply, or ask for the order details when the sender is not verified).
-export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, canReply, onAlert, onBack, backLabel, position, bucket, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+// box right under it (Reply, or ask for the order details when the sender is not verified). The frame is as tall as the
+// mail (no white box below a three-line mail), and the "Customer" card (CustomerCard) stands on the right on a desktop,
+// above the conversation on a phone.
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, onRetrySend, customer, customerLoading, canReply, onAlert, onBack, backLabel, position, bucket, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
   thread: ThreadItem[] | null; threadLoading: boolean; threadFailed?: boolean; onRetryThread?: () => void;
+  onRetrySend?: (outboxId: string) => void;      // "Try again" on a reply the outbox could not send
+  customer: Customer | null; customerLoading: boolean;
   onAlert: (type: string, message: string) => void;
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   backLabel?: string; position?: string;   // "To reply" / "3 of 41"
@@ -23,9 +28,10 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   onNextAfterSend?: boolean;                // after Send the screen opens the next mail to reply to
   onShowImages: () => void; onMarkUnread: () => void;
   onChanged: () => void;            // a verification was added or removed: read the list again
-  onSent: () => void;
+  onSent: (queued: boolean) => void;
 }) {
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const chars = useFrameChars();
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [sending, setSending] = useState(false);
@@ -75,8 +81,9 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       const r = await fetch('/api/mail/send', { method: 'POST', headers: { Authorization: auth.Authorization }, body: form });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', d.error || 'The reply was not sent.'); return; }
-      onAlert('success', `Reply sent to ${d.to}.`);
-      setReplyOpen(false); setReplyText(''); setAttach([]); onSent();
+      // Queued (the outbox): the screen moves on at once; the conversation shows Sending… until Gmail took it.
+      onAlert('success', d.queued ? `Reply to ${d.to} is on its way.` : `Reply sent to ${d.to}.`);
+      setReplyOpen(false); setReplyText(''); setAttach([]); onSent(!!d.queued);
     } catch { onAlert('error', 'The reply was not sent.'); }
     finally { setSending(false); }
   };
@@ -112,7 +119,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <span className="mail-avatar sm ours" aria-hidden="true">{initials(`${box?.siteName || ''} Support`)}</span>
         <span className="mail-msg-who"><b className="truncate">Reply to {mail.replyTo || mail.fromAddress}</b><span className="meta truncate">from {box?.email}, in the same Gmail conversation</span></span>
       </div>
-      <textarea className="form-input" rows={6} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
+      <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
       <label className="mail-quote-opt">
         <input type="checkbox" checked={includeQuote} onChange={e => setIncludeQuote(e.target.checked)} /> Quote the original message below my reply (like Gmail)
       </label>
@@ -156,7 +163,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={onBack} title="Back to the list"><ChevronLeft size={16} /> {backLabel || 'List'}</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onMarkUnread} title="Mark unread"><EyeOff size={15} /> Mark unread</button>
         <span style={{ flex: 1 }} />
-        {position && <span className="meta">{position}</span>}
+        {position && <span className="meta" style={{ whiteSpace: 'nowrap' }}>{position}</span>}
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onPrev?.()} disabled={!onPrev} title="Newer"><ChevronLeft size={16} /></button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNext?.()} disabled={!onNext} title="Older"><ChevronRight size={16} /></button>
       </div>
@@ -196,9 +203,11 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         </div>
       )}
 
+      <div className="mail-readwrap">
+      <div className="mail-readmain">
       <MailConversation
-        token={token} boxId={box?.id || ''} mail={mail} items={thread} loading={threadLoading} failed={threadFailed} onRetry={onRetryThread}
-        storeName={box?.siteName || 'Store'}
+        token={token} boxId={box?.id || ''} mail={mail} items={thread} loading={threadLoading} failed={threadFailed} onRetry={onRetryThread} onRetrySend={onRetrySend}
+        storeName={box?.siteName || 'Store'} chars={chars}
         current={(
           <>
             {(mail.remoteImages && !mail.imagesShown) || files.length > 0 ? (
@@ -215,12 +224,15 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
             ) : null}
             {mail.cut && <div className="mail-warn" style={{ margin: '0 0 0.5rem' }}>This mail is very large, so only its first part is shown here. Open it in Gmail to see everything. Its files can still be downloaded.</div>}
             {/* Scripts, forms and remote pictures are blocked twice: the sandbox and the policy inside the frame. */}
-            <iframe className="mail-frame" title="Mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={mail.frame} />
+            <iframe className="mail-frame" style={{ height: frameHeight(mail, chars) }} title="Mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={mail.frame} />
           </>
         )}
       />
 
       {replyBox}
+      </div>
+      <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />
+      </div>
     </div>
   );
 }

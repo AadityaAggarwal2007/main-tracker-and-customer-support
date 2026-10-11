@@ -30,7 +30,7 @@ function resetGmail() {
         { uid: 501, thread: 'T3', seen: true, date: d(2), from: { name: 'Vastora Support', address: 'vastora@store.example' }, to: [{ name: 'Cust', address: 'cust@example.com' }], subject: 'Re: Refund please', mid: '<s501@x>', source: plain('<s501@x>', 'Vastora Support <vastora@store.example>', 'cust@example.com', 'Re: Refund please', 'We are checking your order.') },
       ] },
     },
-    connects: 0, fetchOnes: 0, flagCalls: [], sent: [],
+    connects: 0, fetchOnes: 0, flagCalls: [], sent: [], smtpFail: null, smtpHold: null, transports: 0,
   });
 }
 resetGmail();
@@ -75,9 +75,11 @@ const STUBS = {
   'lib/auth.ts': { getAuthFromRequest: () => authState.user },
   'lib/chat/mail-auto-verify.ts': { autoVerifySenders: async () => [] },
 };
+// The fake SMTP: records what the worker asks nodemailer for (pool, timeouts), can hold a send (smtpHold) or refuse it (smtpFail).
+const fakeTransport = (opts) => { G.transports++; G.lastTransport = opts; return { sendMail: async (o) => { if (G.smtpFail) throw new Error(G.smtpFail); if (G.smtpHold) await G.smtpHold; G.sent.push(o); }, close() { G.closed = (G.closed || 0) + 1; } }; };
 const PKG = {
   imapflow: { ImapFlow: FakeImap },
-  nodemailer: { default: { createTransport: () => ({ sendMail: async (o) => { G.sent.push(o); } }) }, createTransport: () => ({ sendMail: async (o) => { G.sent.push(o); } }) },
+  nodemailer: { default: { createTransport: fakeTransport }, createTransport: fakeTransport },
 };
 const origLoad = Module._load, origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, ...rest) {
@@ -147,6 +149,39 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([c.todo, c.done, c.other, c.all], [1, 1, 1, 3]);
     eq(f.searchMatch(it('a@gmail.com', { snippet: 'my parcel is late' }), 'parcel', {}), true);
   });
+  await t('a reply sent from here carries its outbox state in the conversation: sending / sent / failed with the reason and the id for Try again', () => {
+    deq(rules.sendStateOf(null), null);
+    deq(rules.sendStateOf({ id: '7', status: 'pending', error: null }), { sendState: 'sending', sendError: null, outboxId: '7' });
+    deq(rules.sendStateOf({ id: '7', status: 'sending', error: 'old' }), { sendState: 'sending', sendError: null, outboxId: '7' });
+    deq(rules.sendStateOf({ id: '7', status: 'sent', error: null }), { sendState: 'sent', sendError: null, outboxId: '7' });
+    deq(rules.sendStateOf({ id: '7', status: 'failed', error: 'Gmail did not answer in time.' }), { sendState: 'failed', sendError: 'Gmail did not answer in time.', outboxId: '7' });
+    const R = (o) => ({ folder: 'inbox', uidvalidity: '7', from_name: 'X', from_addr: 'x@y', to_list: '', subject: 's', body_text: '', local: false, message_id: null, ...o });
+    const sends = new Map([['<r1@x>', { id: '9', status: 'failed', error: 'no' }]]);
+    const items = rules.threadFromRows([R({ uid: '13', sent_at: '2026-10-10T10:00:00Z' }), R({ folder: 'sent', uid: '-5', uidvalidity: '0', local: true, message_id: '<r1@x>', sent_at: '2026-10-10T11:00:00Z' })], sends);
+    deq(items.map((i) => [i.uid, i.sendState || null, i.sendError || null, i.outboxId || null]), [[13, null, null, null], [-5, 'failed', 'no', '9']]);
+    // without the outbox (not installed) a local row has no state at all
+    eq(rules.threadFromRows([R({ folder: 'sent', uid: '-5', uidvalidity: '0', local: true, message_id: '<r1@x>', sent_at: '2026-10-10T11:00:00Z' })])[0].sendState, undefined);
+  });
+  await t('the frame is as tall as the mail (owner 11 Oct, "neeche ka gap"): lines x 24 px + padding, 120 px to 70vh; a designed mail 65vh', () => {
+    const v = require(path.join(SRC, 'lib/chat/mail-view.ts'));
+    eq(v.frameLines('a\nb\nc'), 3); eq(v.frameLines('x'.repeat(230), 110), 3); eq(v.frameLines('', 110), 1); eq(v.frameLines('x'.repeat(100), 44), 3);
+    eq(v.frameHeight({ text: 'Light wale h', frame: v.frameHtml(v.textToHtml('Light wale h')) }), 'clamp(120px, 80px, 70vh)');
+    eq(v.frameHeight({ text: 'Hello team,\n\nMera order nahi aaya.\n\nThanks,\nPiyush', frame: '<p>x</p>' }), 'clamp(120px, 200px, 70vh)');
+    eq(v.frameHeight({ text: 'short', frame: '<table><tr><td>designed</td></tr></table>' }), '65vh');
+    eq(v.frameHeight({ text: 'short', frame: '<p><img src="data:x"></p>' }), '65vh');
+    eq(v.frameHeight({ text: 'x'.repeat(2000), frame: '' }, 44), `clamp(120px, ${46 * 24 + 56}px, 70vh)`);   // a phone wraps sooner
+  });
+  await t('the outbox SQL file: additive, no DELETE for the app, the App Password is never stored there', () => {
+    const sql = fs.readFileSync(path.resolve(__dirname, '../../mail-outbox.sql'), 'utf8');
+    assert.match(sql, /CREATE TABLE IF NOT EXISTS mail_outbox/); assert.match(sql, /GRANT SELECT, INSERT, UPDATE ON mail_outbox TO tracker_user/);
+    assert.match(sql, /CHECK \(status IN \('pending', 'sending', 'sent', 'failed'\)\)/);
+    const code = sql.replace(/--[^\n]*/g, '');
+    assert.ok(!/\bDELETE\b|DROP |TRUNCATE /i.test(code)); assert.ok(!/app_password/i.test(code));
+    // the worker is kicked from the minute cron and the sync loop (retries), the loop takes it as a hook (no import cycle)
+    const src = fs.readFileSync(path.join(SRC, 'lib/chat/email.ts'), 'utf8');
+    assert.match(src, /void runOutbox\(\)/); assert.match(src, /startMailSync\(loadSyncBoxes, runOutbox\)/);
+    assert.ok(!/from '\.\/mail-inbox'|from '\.\/email'|from '\.\/mail-sync'/.test(fs.readFileSync(path.join(SRC, 'lib/chat/mail-outbox.ts'), 'utf8')));
+  });
   await t('the SQL file: additive, no DELETE for the app, the App Password is never stored here', () => {
     const sql = fs.readFileSync(path.resolve(__dirname, '../../mail-store.sql'), 'utf8');
     for (const tb of ['mail_store', 'mail_sync', 'mail_sync_lease', 'mail_actions']) assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${tb}`));
@@ -156,7 +191,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
   });
   await t('the minute cron starts the sync loop and keeps the old warm-up only until the store is installed', () => {
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/email.ts'), 'utf8');
-    assert.match(src, /void startMailSync\(loadSyncBoxes\)\.then\(\(on\) => \{\s*if \(on\) return;\s*return warmMailboxes/);
+    assert.match(src, /void startMailSync\(loadSyncBoxes, runOutbox\)\.then\(\(on\) => \{\s*if \(on\) return;\s*return warmMailboxes/);
   });
 
   if (!PG) {
@@ -165,6 +200,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const db = require(path.join(SRC, 'lib/db.ts'));
     const sync = require(path.join(SRC, 'lib/chat/mail-sync.ts'));
     const store = require(path.join(SRC, 'lib/chat/mail-store.ts'));
+    const outbox = require(path.join(SRC, 'lib/chat/mail-outbox.ts'));
     const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
     const { NextRequest } = require('next/server');
     const R = (p) => require(path.join(SRC, 'app/api/mail', p, 'route.ts'));
@@ -184,7 +220,10 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       await q(`UPDATE mail_sync SET uidvalidity = 0, last_uid = 0, full_at = NULL, modseq = NULL WHERE box_id = $1`, [BOX]);
       await q(`UPDATE mail_actions SET done_at = now() WHERE box_id = $1 AND done_at IS NULL`, [BOX]);
       await q(`UPDATE mail_sync_lease SET lease_until = now() - interval '1 second' WHERE box_id = $1`, [BOX]);
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE box_id = $1 AND status <> 'sent'`, [BOX]).catch(() => {});
+      outbox.forgetOutboxInstalled(); outbox.closeOutboxTransports(); G.smtpFail = null; G.smtpHold = null;
     };
+    const outboxRow = async (id) => (await q(`SELECT status, tries, error, claimed_at FROM mail_outbox WHERE id = $1`, [id])).rows[0];
     console.log('mail store: the sync and the routes on a real PostgreSQL');
 
     await t('the first run copies INBOX and Sent (headers AND bodies); the screen then reads only the database', async () => {
@@ -226,6 +265,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       const before = G.fetchOnes;
       const res = await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 13, text: 'Your refund is being checked.' }));
       eq(res.status, 200); eq(G.fetchOnes, before);
+      await outbox.runOutbox();                                                // the outbox worker the route kicked (owner 11 Oct): wait for it here
       const mail = G.sent.slice(-1)[0];
       assert.match(mail.messageId, /^<[0-9a-f-]{36}@store\.example>$/); eq(mail.to, 'cust@example.com'); eq(mail.headers['In-Reply-To'], '<m13@x>');
       let items = (await (await routes.thread.GET(req('GET', `/api/mail/thread?box=${BOX}&address=cust@example.com&uid=13`))).json()).items;
@@ -275,16 +315,23 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       f.msgs.push({ uid: 16, thread: 'T6', seen: false, date: new Date(), from: { name: 'Late', address: 'late@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Body later', mid: '<m16@x>', source: plain('<m16@x>', 'late@example.com', 'vastora@store.example', 'Body later', 'Text arrives later.') });
       await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, from_addr, subject, sent_at) VALUES ($1, 'inbox', $2, 16, 'late@example.com', 'Body later', now())`, [BOX, String(f.uidValidity)]);
       store.forgetStoreReady();
+      const ones = G.fetchOnes;
       const m = await (await routes.message.GET(req('GET', `/api/mail/message?box=${BOX}&uid=16`))).json();
       eq(m.mail.text.trim(), 'Text arrives later.'); eq(f.msgs.find((x) => x.uid === 16).seen, false);
       eq((await store.storeRow(BOX, 'inbox', 16)).seen, true);
+      eq(G.fetchOnes - ones, 1); eq(m.mail.raw, undefined);
+      // the body read by the click is KEPT (owner 11 Oct): the next open does not touch Gmail
+      const row = await store.storeRow(BOX, 'inbox', 16);
+      deq([row.body_state, row.body_text.trim()], ['done', 'Text arrives later.']);
+      const again = await (await routes.message.GET(req('GET', `/api/mail/message?box=${BOX}&uid=16`))).json();
+      eq(again.mail.text.trim(), 'Text arrives later.'); eq(G.fetchOnes - ones, 1);
     });
     await t('bodies come ten to a Gmail call; a batch Gmail refuses falls back to one by one', async () => {
       const f = G.folders.INBOX;
       for (let u = 20; u < 32; u++) f.msgs.push({ uid: u, thread: 'B' + u, seen: false, date: new Date(), from: { name: 'B', address: `b${u}@example.com` }, to: [{ address: 'vastora@store.example' }], subject: 'Batch ' + u, mid: `<b${u}@x>`, source: plain(`<b${u}@x>`, `b${u}@example.com`, 'vastora@store.example', 'Batch ' + u, 'Body ' + u) });
       G.batches = 0; const ones = G.fetchOnes;
       let r = await sync.syncMailbox(box);
-      deq([r.fresh, r.bodies, G.batches, G.fetchOnes - ones], [12, 13, 2, 0]);   // + the body of uid 16 (the group before only read it live)
+      deq([r.fresh, r.bodies, G.batches, G.fetchOnes - ones], [12, 12, 2, 0]);   // uid 16's body was kept by the click in the group before
       eq((await store.storeMail(BOX, 'inbox', 25, false)).mail.text.trim(), 'Body 25');
       f.msgs.push({ uid: 40, thread: 'B40', seen: false, date: new Date(), from: { name: 'B', address: 'b40@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Fallback', mid: '<b40@x>', source: plain('<b40@x>', 'b40@example.com', 'vastora@store.example', 'Fallback', 'One by one') });
       G.batchFail = true;
@@ -293,7 +340,95 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       deq([r.fresh, r.bodies], [1, 1]);
       eq((await store.storeMail(BOX, 'inbox', 40, false)).mail.text.trim(), 'One by one');
     });
+    await t('the run\'s order (owner 11 Oct): the just-arrived INBOX mail\'s body comes in the same run even with no budget left; the lease is released at the end', async () => {
+      const f = G.folders.INBOX;
+      f.msgs.push({ uid: 50, thread: 'N50', seen: false, date: new Date(), from: { name: 'Now', address: 'now@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Just arrived', mid: '<n50@x>', source: plain('<n50@x>', 'now@example.com', 'vastora@store.example', 'Just arrived', 'Fresh body') });
+      const r = await sync.syncMailbox(box, Date.now() - 2 * 60 * 60_000);   // "now" two hours ago: the INBOX gone-search window is skipped either way
+      deq([r.fresh, r.bodies], [1, 1]);
+      eq((await store.storeMail(BOX, 'inbox', 50, false)).mail.text.trim(), 'Fresh body');
+      const lease = (await q(`SELECT lease_by, lease_until <= now() AS released FROM mail_sync_lease WHERE box_id = $1`, [BOX])).rows[0];
+      eq(lease.released, true);                                              // another process can take the mailbox at once
+      eq(rules.LEASE_MS, 75_000);
+      // the log line of this run names the sign-in time: the budget starts after it
+      assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/mail-sync.ts'), 'utf8'), /connected = Date\.now\(\);\s*const deadline = connected \+ SYNC_BUDGET_MS/);
+    });
+    await t('the outbox: a reply is queued and answered at once; the worker sends it over a pooled SMTP with timeouts; the conversation says Sending… then Sent', async () => {
+      let release; G.smtpHold = new Promise((res) => { release = res; });
+      const before = G.sent.length;
+      const res = await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 13, text: 'Queued reply.' }));
+      const j = await res.json();
+      deq([res.status, j.ok, j.queued, j.to], [200, true, true, 'cust@example.com']);
+      eq(G.sent.length, before);                                               // nothing went out inside the request
+      let items = (await (await routes.thread.GET(req('GET', `/api/mail/thread?box=${BOX}&address=cust@example.com&uid=13`))).json()).items;
+      const mine = items.filter((i) => i.local);
+      eq(mine.length, 1); eq(mine[0].sendState, 'sending'); eq(mine[0].preview, 'Queued reply.');
+      const rowId = (await q(`SELECT id FROM mail_outbox WHERE box_id = $1 ORDER BY id DESC LIMIT 1`, [BOX])).rows[0].id;
+      assert.ok(['pending', 'sending'].includes((await outboxRow(rowId)).status));
+      release();
+      await outbox.runOutbox();                                                // joins the run the route kicked
+      eq(G.sent.length, before + 1);
+      const mail = G.sent.slice(-1)[0];
+      eq(mail.to, 'cust@example.com'); eq(mail.headers['In-Reply-To'], '<m13@x>'); assert.match(mail.messageId, /^<[0-9a-f-]{36}@store\.example>$/); assert.match(mail.from, /^"Vastora Support" </);
+      deq([G.lastTransport.pool, G.lastTransport.connectionTimeout, G.lastTransport.greetingTimeout, G.lastTransport.socketTimeout], [true, 20000, 20000, 60000]);
+      deq([(await outboxRow(rowId)).status, (await outboxRow(rowId)).tries], ['sent', 1]);
+      items = (await (await routes.thread.GET(req('GET', `/api/mail/thread?box=${BOX}&address=cust@example.com&uid=13`))).json()).items;
+      eq(items.find((i) => i.local).sendState, 'sent');
+      eq((await store.storeRow(BOX, 'inbox', 13)).answered, true);
+    });
+    await t('the outbox: a failing SMTP goes back to pending with the reason, is tried again, is failed for good after 5 tries; Try again queues it again', async () => {
+      G.smtpFail = 'connect ETIMEDOUT 142.250.1.1:587';
+      const res = await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 13, text: 'Will fail.' }));
+      eq(res.status, 200);
+      await outbox.runOutbox();
+      const rowId = (await q(`SELECT id FROM mail_outbox WHERE box_id = $1 ORDER BY id DESC LIMIT 1`, [BOX])).rows[0].id;
+      let row = await outboxRow(rowId);
+      deq([row.status, row.tries, row.error], ['pending', 1, 'Gmail did not answer in time.']);
+      const closedBefore = G.closed || 0, transportsBefore = G.transports;
+      eq(await outbox.runOutbox(), 0); eq((await outboxRow(rowId)).tries, 1);  // too soon: a failed send waits 30 s
+      for (let i = 2; i <= 5; i++) {
+        await q(`UPDATE mail_outbox SET claimed_at = now() - interval '1 minute' WHERE id = $1`, [rowId]);
+        await outbox.runOutbox();
+        row = await outboxRow(rowId);
+        deq([row.status, row.tries], [i < 5 ? 'pending' : 'failed', i]);
+      }
+      // the pooled transport is dropped after every error and made again for the next try (a hung SMTP never sticks)
+      eq(G.transports - transportsBefore, 4); eq((G.closed || 0) - closedBefore, 4);
+      let items = (await (await routes.thread.GET(req('GET', `/api/mail/thread?box=${BOX}&address=cust@example.com&uid=13`))).json()).items;
+      const failed = items.find((i) => i.local && i.preview === 'Will fail.');
+      deq([failed.sendState, failed.sendError, failed.outboxId], ['failed', 'Gmail did not answer in time.', String(rowId)]);
+      // Try again (the conversation's button): pending with fresh tries, then it goes out
+      G.smtpFail = null;
+      const retry = await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, action: 'retry', id: String(rowId) }));
+      eq(retry.status, 200);
+      await outbox.runOutbox();
+      deq([(await outboxRow(rowId)).status, (await outboxRow(rowId)).tries], ['sent', 1]);
+      assert.match(G.sent.slice(-1)[0].text, /^Will fail\.\n\nOn .* wrote:\n> Please refund my order\./);   // the quote is in
+      eq((await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, action: 'retry', id: String(rowId) }))).status, 404);   // not failed any more
+      eq((await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, action: 'retry', id: 'x' }))).status, 400);
+      eq(G.sent.filter((m) => m.text.startsWith('Will fail.')).length, 1);
+    });
+    await t('the outbox: two processes never send one reply twice (the claim); a row a dead process left in sending is taken after 3 minutes', async () => {
+      G.smtpFail = null; G.smtpHold = null;
+      await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 13, text: 'Once only.' }));
+      await outbox.runOutbox();
+      eq(G.sent.filter((m) => m.text.startsWith('Once only.')).length, 1);
+      const id = (await q(`INSERT INTO mail_outbox (box_id, to_addr, subject, text_body, html_body, message_id) VALUES ($1, 'cust@example.com', 'Re: x', 'Claim me', '<p>Claim me</p>', '<claim@x>') RETURNING id`, [BOX])).rows[0].id;
+      const [a, b] = await Promise.all([outbox.claimOutbox(String(id)), outbox.claimOutbox(String(id))]);
+      eq([a, b].filter(Boolean).length, 1);                                    // exactly one process gets it
+      await q(`UPDATE mail_outbox SET status = 'sending', claimed_at = now() - interval '4 minutes' WHERE id = $1`, [id]);   // that process died mid-send
+      await outbox.runOutbox();
+      eq((await outboxRow(id)).status, 'sent'); eq(G.sent.filter((m) => m.text === 'Claim me').length, 1);
+      await q(`UPDATE mail_outbox SET status = 'sending', claimed_at = now() - interval '1 minute' WHERE id = $1`, [id]);   // still being sent elsewhere: left alone
+      await outbox.runOutbox();
+      eq((await outboxRow(id)).status, 'sending'); eq(G.sent.filter((m) => m.text === 'Claim me').length, 1);
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE id = $1`, [id]);
+      // two concurrent runs in one process join into one
+      await routes.send.POST(req('POST', '/api/mail/send', { box: BOX, uid: 13, text: 'Joined.' }));
+      await Promise.all([outbox.runOutbox(), outbox.runOutbox(), outbox.runOutbox()]);
+      eq(G.sent.filter((m) => m.text.startsWith('Joined.')).length, 1);
+    });
     pool.closeAllImap();
+    outbox.closeOutboxTransports();
     await db.getPool().end();
   }
   console.log(`MAIL-STORE: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

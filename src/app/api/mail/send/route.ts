@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
-import { sendMailReply, sendReplyTo, type ReplyFile } from '@/lib/chat/mail-inbox';
+import { buildReply, sendBuiltReply, sendMailReply, type ReplyFile } from '@/lib/chat/mail-inbox';
 import { storeFlag, storeLocalSent, storeOriginal, storeReady } from '@/lib/chat/mail-store';
+import { enqueueReply, outboxInstalled, retryOutbox, runOutbox } from '@/lib/chat/mail-outbox';
+import { actorKey } from '@/lib/chat/mail-verify';
 import { noteAnswered } from '@/lib/chat/mail-cache';
 import { cleanReply, parseUid, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES } from '@/lib/chat/mail-view';
 import { hasFormLink } from '@/lib/refund/link-mask';
@@ -16,10 +18,27 @@ import {
 // multipart (box, uid, text, includeQuote, files). Same rules as a chat reply by the team: no Google Form / refund-form
 // link (the refund form is the Super Admin's own button in Chat Support), copy-paste junk (utm_*, fbclid ...) cut from
 // links. Files: JPG / PNG / WEBP / GIF / PDF only, judged by their bytes, at most 5 and 10 MB in all.
+// With the mail store + outbox (owner 2026-10-11, "Send and open next" sat spinning): the reply is QUEUED (mail_outbox)
+// and the answer comes at once ({ queued: true }); the worker sends it in the background and the conversation shows
+// Sending… / Sent / Not sent. JSON { action: 'retry', box, id } puts a failed reply back in the queue.
 export async function POST(request: NextRequest) {
   const ct = request.headers.get('content-type') || '';
   let box: string | null = null, uidRaw: unknown, textRaw: unknown, includeQuote = true;
   const files: File[] = [];
+  if (!ct.includes('multipart/form-data')) {
+    const peek = await request.clone().json().catch(() => null) as { action?: unknown; box?: string; id?: unknown } | null;
+    if (peek && peek.action === 'retry') {
+      const id = String(peek.id ?? '').trim();
+      if (!/^\d{1,18}$/.test(id)) return NextResponse.json({ error: 'id required' }, { status: 400 });
+      const a = await mailAccess(request, peek.box ?? null, 'reply');
+      if ('error' in a) return a.error;
+      try {
+        if (!(await retryOutbox(id, a.box.id))) return NextResponse.json({ error: 'That reply is not waiting to be sent again.' }, { status: 404 });
+        void runOutbox();
+        return NextResponse.json({ ok: true, queued: true });
+      } catch (e) { return mailFail(e); }
+    }
+  }
   if (ct.includes('multipart/form-data')) {
     const declared = Number(request.headers.get('content-length') || 0);
     if (declared > MAIL_MAX_TOTAL_BYTES + 256 * 1024) return NextResponse.json({ error: TOTAL_TOO_LARGE_MESSAGE.replace(/\d+ MB/, '10 MB') }, { status: 413 });
@@ -64,10 +83,22 @@ export async function POST(request: NextRequest) {
       const orig = await storeOriginal(a.box.id, uid);
       if (orig) {
         const text = stripLinkJunk(clean.text).text;
-        const out = await sendReplyTo(a.box, orig, text, { includeQuote, files: replyFiles });
+        const built = buildReply(a.box, orig, text, { includeQuote });
+        // The outbox: the row first (so nothing is lost if the process dies), then the answer; the worker sends.
+        const queued = await outboxInstalled();
+        if (queued) {
+          await enqueueReply({
+            boxId: a.box.id, replyUid: uid, uidvalidity: orig.row.uidvalidity, to: built.to, subject: built.subject, textBody: built.textBody, htmlBody: built.htmlBody,
+            messageId: built.messageId, inReplyTo: built.inReplyTo, references: built.references, createdBy: actorKey(a.user),
+            files: replyFiles.map(f => ({ filename: f.filename, contentType: f.contentType, content: f.content.toString('base64') })),
+          });
+        } else {
+          await sendBuiltReply(a.box, built, replyFiles);
+        }
         await storeFlag(orig.row, 'answered').catch((e) => console.error('[mail] answered flag:', (e as Error).message));
-        await storeLocalSent(a.box.id, { messageId: out.messageId, threadId: orig.row.thread_id, fromName: `${a.box.siteName} Support`, fromAddr: a.box.email, to: out.to, subject: out.subject, text });
-        return NextResponse.json({ ok: true, to: out.to, files: replyFiles.length });
+        await storeLocalSent(a.box.id, { messageId: built.messageId, threadId: orig.row.thread_id, fromName: built.fromName, fromAddr: a.box.email, to: built.to, subject: built.subject, text });
+        if (queued) void runOutbox();
+        return NextResponse.json({ ok: true, to: built.to, files: replyFiles.length, queued });
       }
     }
     const sent = await sendMailReply(a.box, uid, stripLinkJunk(clean.text).text, { includeQuote, files: replyFiles });

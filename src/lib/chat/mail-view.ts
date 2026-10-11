@@ -170,3 +170,20 @@ export function replyBodyHtml(reply: string, quote: { dateIso: string; fromLabel
 // 10 MB so it passes the same upload size the chat already allows.
 export const MAIL_MAX_FILES = 5;
 export const MAIL_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+
+// ── How tall the mail's frame is (owner 2026-10-11, "neeche ka gap": a three-line mail sat in a box 52% of the screen
+// tall, white below it) ──
+// A plain mail (the frame holds no table and no picture) gets the height of its lines: each line of the text wrapped at
+// `chars` (about 110 on a desktop, 44 on a phone), 24 px a line plus the frame's padding, never under 120 px nor over 70%
+// of the screen. A designed mail (tables, pictures) cannot be measured from the text: 65% of the screen, scrolling inside.
+export const FRAME_LINE_PX = 24, FRAME_PAD_PX = 56, FRAME_MIN_PX = 120;
+export function frameLines(text: string, chars = 110): number {
+  const w = Math.max(20, chars);
+  return (text || '').replace(/\r/g, '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / w)), 0);
+}
+export function frameHeight(mail: { text?: string | null; frame?: string | null }, chars = 110): string {
+  const html = mail.frame || '';
+  if (/<table\b|<img\b/i.test(html)) return '65vh';
+  const lines = frameLines(mail.text || '', chars);
+  return `clamp(${FRAME_MIN_PX}px, ${lines * FRAME_LINE_PX + FRAME_PAD_PX}px, 70vh)`;
+}
