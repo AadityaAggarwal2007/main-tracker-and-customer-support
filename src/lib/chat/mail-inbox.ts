@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { ImapFlow } from 'imapflow';
 import { htmlToText } from '@/lib/chargeback/parse';
 import { PoolTimeout, withPooledImap, type PoolSlot } from './imap-pool';
@@ -301,7 +302,7 @@ export interface ReplyFile { filename: string; content: Buffer; contentType: str
 // typed text, then Gmail's quote of the original after it (includeQuote), optional files, In-Reply-To /
 // References so it stays in the same Gmail conversation. Gmail keeps the copy in Sent. The quote is built HERE from
 // the mail itself, never taken from the browser.
-export async function sendMailReply(box: MailBoxSecret, uid: number, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string }> {
+export async function sendMailReply(box: MailBoxSecret, uid: number, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string; messageId: string; subject: string }> {
   const orig = await withImap(box, async (c) => {
     const lock = await c.getMailboxLock('INBOX', { readOnly: true });
     try {
@@ -318,21 +319,33 @@ export async function sendMailReply(box: MailBoxSecret, uid: number, text: strin
     } finally { lock.release(); }
   });
   if (!orig) throw new MailError('That mail is no longer in the inbox.', 404);
+  const sent = await sendReplyTo(box, orig, text, opts);
+  try { await setAnswered(box, uid); } catch { /* the reply is out; the flag is a courtesy */ }
+  return sent;
+}
+
+// The original mail as a reply needs it (read from Gmail above, or from the mail store: mail-store.ts storeOriginal).
+export interface ReplyOriginal { to: string; subject: string; messageId: string; references: string; date: string; fromLabel: string; text: string }
+
+// Sends the reply over SMTP (no Gmail IMAP call). Our own Message-ID, so the mail store can show it in the conversation
+// at once and match Gmail's copy of it in Sent later.
+export async function sendReplyTo(box: MailBoxSecret, orig: ReplyOriginal, text: string, opts: { includeQuote?: boolean; files?: ReplyFile[] } = {}): Promise<{ to: string; messageId: string; subject: string }> {
   if (!orig.to) throw new MailError('That mail has no address to reply to.', 400);
   if (orig.to === box.email.toLowerCase()) throw new MailError('That mail came from this same Gmail address.', 400);
   const quote = opts.includeQuote === false ? null : { dateIso: orig.date, fromLabel: orig.fromLabel, original: orig.text };
+  const messageId = `<${randomUUID()}@${(box.email.split('@')[1] || 'shiptrack.store').toLowerCase()}>`;
+  const subject = replySubject(orig.subject);
   try {
     await sendEmailReply({
       fromEmail: box.email, fromName: `${box.siteName} Support`, appPassword: box.appPassword, toEmail: orig.to,
-      subject: replySubject(orig.subject), htmlBody: replyBodyHtml(text, quote), textBody: replyBodyText(text, quote),
+      subject, htmlBody: replyBodyHtml(text, quote), textBody: replyBodyText(text, quote),
       replyToMessageId: orig.messageId || null, references: orig.references || null,
-      attachments: opts.files && opts.files.length ? opts.files : undefined,
+      attachments: opts.files && opts.files.length ? opts.files : undefined, messageId,
     });
   } catch {
     throw new MailError('Gmail did not accept the reply. Nothing was sent. Try again.', 502);
   }
-  try { await setAnswered(box, uid); } catch { /* the reply is out; the flag is a courtesy */ }
-  return { to: orig.to };
+  return { to: orig.to, messageId, subject };
 }
 
 export interface ThreadItem { folder: MailFolder; uid: number; from: string; to: string; subject: string; date: string }

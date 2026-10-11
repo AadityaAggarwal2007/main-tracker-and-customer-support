@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { mailUser, mailFail } from '@/lib/chat/mail-access';
 import { listMails, mailboxesForSite } from '@/lib/chat/mail-inbox';
 import { verifiedEmailsForChat } from '@/lib/chat/mail-verify';
+import { storeFromAddresses, storeReady } from '@/lib/chat/mail-store';
 import { can, canAccessPanel } from '@/lib/permissions';
 
 // GET /api/mail/by-chat?conversationId=<id>: the emails (last 30 days, live from Gmail) of the addresses verified
@@ -21,6 +22,11 @@ export async function GET(request: NextRequest) {
     const mails: Array<Record<string, unknown>> = [];
     let failed = 0;
     for (const box of boxes) {
+      // The mail store (owner 2026-10-11): from the database when this mailbox has its copy.
+      if ((await storeReady(box.id)).ok) {
+        try { for (const m of await storeFromAddresses(box.id, info.emails.slice(0, 3))) mails.push({ ...m, boxId: box.id }); } catch { failed += 1; }
+        continue;
+      }
       for (const email of info.emails.slice(0, 3)) {
         try {
           const r = await listMails(box, Date.now(), { from: email });

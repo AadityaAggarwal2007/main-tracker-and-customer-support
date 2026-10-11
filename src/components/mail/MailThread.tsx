@@ -18,6 +18,7 @@ export default function MailThread({ token, boxId, currentUid, items, loading, f
     const k = mailKey(boxId, m.uid, m.folder);
     if (expanded === k) { setExpanded(null); return; }
     setExpanded(k);
+    if (m.local) return;   // a reply just sent from here: its words are already shown
     const cached = mailCache.mails.get(k);
     if (cached) { setBodies(b => ({ ...b, [k]: cached })); return; }
     setBodies(b => ({ ...b, [k]: 'loading' }));
@@ -45,7 +46,7 @@ export default function MailThread({ token, boxId, currentUid, items, loading, f
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           Conversation <b>· {others} {others === 1 ? 'message' : 'messages'}</b>{ours ? <span className="meta"> ({ours} from us)</span> : null}
         </button>
-        {loading && <span className="meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Loader2 size={12} className="spin" /> checking our replies in Gmail…</span>}
+        {loading && <span className="meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Loader2 size={12} className="spin" /> loading the conversation…</span>}
         {failed && !loading && (
           <span className="meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             our replies could not be read from Gmail just now
@@ -65,7 +66,9 @@ export default function MailThread({ token, boxId, currentUid, items, loading, f
               <span className="sub truncate">{here ? 'This mail' : m.subject}</span>
               <span className="when">{when(m.date)}</span>
             </button>
-            {expanded === k && (
+            {m.preview && expanded !== k && <div className="meta mail-thread-preview">{m.preview}</div>}
+            {expanded === k && m.local && <div className="mail-thread-body"><div className="meta">Sent from ShipTrack just now (Gmail&apos;s copy shows here within a minute)</div><div style={{ whiteSpace: 'pre-wrap', fontSize: '0.875rem' }}>{m.preview}</div></div>}
+            {expanded === k && !m.local && (
               <div className="mail-thread-body">
                 {body === 'loading' && <div className="meta"><Loader2 size={12} className="spin" /> Opening…</div>}
                 {body === 'error' && <div className="meta t-danger">Could not open that message.</div>}

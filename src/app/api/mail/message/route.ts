@@ -6,6 +6,7 @@ import { parseUid } from '@/lib/chat/mail-view';
 import { autoVerifySenders } from '@/lib/chat/mail-auto-verify';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
 import { can } from '@/lib/permissions';
+import { storeFlag, storeMail, storeReady, storeRow } from '@/lib/chat/mail-store';
 
 // GET /api/mail/message?box=&uid=[&images=1][&peek=1]: opens one mail. It is marked read in Gmail, like opening
 // it in Gmail, unless peek=1. The HTML comes back already wrapped for a sandboxed frame (mail-view.ts).
@@ -25,6 +26,23 @@ export async function GET(request: NextRequest) {
     // never the read-ahead's ('bg'); it is usually in the server's copy anyway.
     const via = sp.get('via');
     const slot = via === 'thread' ? 'thread' as const : via === 'read' ? 'read' as const : peek ? 'bg' as const : 'read' as const;
+    const images = sp.get('images') === '1';
+    // The mail store (owner 2026-10-11): the copy answers at once; a mail whose body the sync has not copied yet is read
+    // from Gmail this once (without marking it: the copy and the sync do that).
+    if ((await storeReady(a.box.id)).ok) {
+      const { row, mail: kept } = await storeMail(a.box.id, folder, uid, images);
+      if (row) {
+        const mail = kept ?? await readMail(a.box, uid, { markRead: false, images, folder, slot });
+        if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
+        if (folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
+        if (!peek && !row.seen) { await storeFlag(row, 'seen'); }
+        const shown = { ...mail, unread: peek ? !row.seen : false };
+        await autoVerifySenders(a.box.panelId, [{ email: shown.fromAddress, authPass: shown.authPass, subject: shown.subject, text: shown.text }]);
+        const verified = await verifiedSenders(a.box.panelId, [shown.fromAddress]);
+        if (!can(a.user, 'chat.view')) for (const list of Object.values(verified)) for (const v of list) v.chatId = null;
+        return NextResponse.json({ mail: shown, verified: verified[shown.fromAddress] || [], store: true }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+    }
     // An INBOX mail comes from the server's copy when it was opened or read ahead before (mail-cache.ts); a sent one is
     // read live (the conversation view only).
     const mail = folder === 'sent'
@@ -50,6 +68,10 @@ export async function PATCH(request: NextRequest) {
   const a = await mailAccess(request, body.box ?? null, 'view');
   if ('error' in a) return a.error;
   try {
+    if ((await storeReady(a.box.id)).ok) {
+      const row = await storeRow(a.box.id, 'inbox', uid);
+      if (row) { await storeFlag(row, body.seen ? 'seen' : 'unseen'); return NextResponse.json({ ok: true, seen: body.seen }); }
+    }
     await setSeen(a.box, uid, body.seen);
     noteSeen(a.box.id, uid, body.seen);
     return NextResponse.json({ ok: true, seen: body.seen });

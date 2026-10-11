@@ -16,7 +16,9 @@ export interface PoolBox { id: string; email: string; appPassword: string }
 // 'list' = the list, 'read' = opening a mail the person clicked, 'bg' = read-ahead (never in the way of a click),
 // 'thread' = the open mail's conversation and its older messages (owner 2026-10-10: "Conversation" kept spinning while
 // the server's read-ahead of big mails held 'bg'; now each mailbox has at most 4 connections per process, Gmail allows ~15)
-export type PoolSlot = 'list' | 'read' | 'bg' | 'thread';
+// 'sync' = the mail store's background copy (mail-sync.ts, owner 2026-10-11): one per mailbox, only in the process holding
+// that mailbox's lease.
+export type PoolSlot = 'list' | 'read' | 'bg' | 'thread' | 'sync';
 
 // 20 minutes (4 before 11 Oct): a sign-in to Gmail took 13-15 s from the server (the log), so a kept connection must not be
 // closed after a short pause; ImapFlow keeps it alive with IDLE meanwhile. At most 4 per mailbox per process stays well

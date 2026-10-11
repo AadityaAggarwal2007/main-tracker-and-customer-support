@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
-import { sendMailReply, type ReplyFile } from '@/lib/chat/mail-inbox';
+import { sendMailReply, sendReplyTo, type ReplyFile } from '@/lib/chat/mail-inbox';
+import { storeFlag, storeLocalSent, storeOriginal, storeReady } from '@/lib/chat/mail-store';
 import { noteAnswered } from '@/lib/chat/mail-cache';
 import { cleanReply, parseUid, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES } from '@/lib/chat/mail-view';
 import { hasFormLink } from '@/lib/refund/link-mask';
@@ -57,6 +58,18 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // The mail store (owner 2026-10-11): the original comes from the database (no Gmail read before sending), the reply
+    // shows in the conversation at once, and the Answered flag reaches Gmail through the sync.
+    if ((await storeReady(a.box.id)).ok) {
+      const orig = await storeOriginal(a.box.id, uid);
+      if (orig) {
+        const text = stripLinkJunk(clean.text).text;
+        const out = await sendReplyTo(a.box, orig, text, { includeQuote, files: replyFiles });
+        await storeFlag(orig.row, 'answered').catch((e) => console.error('[mail] answered flag:', (e as Error).message));
+        await storeLocalSent(a.box.id, { messageId: out.messageId, threadId: orig.row.thread_id, fromName: `${a.box.siteName} Support`, fromAddr: a.box.email, to: out.to, subject: out.subject, text });
+        return NextResponse.json({ ok: true, to: out.to, files: replyFiles.length });
+      }
+    }
     const sent = await sendMailReply(a.box, uid, stripLinkJunk(clean.text).text, { includeQuote, files: replyFiles });
     noteAnswered(a.box.id, uid);
     return NextResponse.json({ ok: true, to: sent.to, files: replyFiles.length });

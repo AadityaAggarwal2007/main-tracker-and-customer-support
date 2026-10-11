@@ -2602,6 +2602,7 @@ a {
 .mail-thread-row { display: grid; grid-template-columns: auto minmax(0, 9rem) 1fr auto; gap: 0.5rem; align-items: center; width: 100%; padding: 0.4375rem 0.625rem; border: 0; background: transparent; font: inherit; font-size: 0.75rem; cursor: pointer; color: var(--fg-secondary); text-align: left; }
 .mail-thread-row:hover:not(:disabled) { background: var(--primary-light); }
 .mail-thread-row:disabled { cursor: default; font-weight: 700; color: var(--primary); }
+.mail-thread-preview { padding: 0 0.625rem 0.4375rem 2.1rem; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mail-thread-row .who { font-weight: 700; color: var(--fg); }
 .mail-thread-row .when { color: var(--fg-muted); white-space: nowrap; }
 .mail-thread-row .in { color: var(--primary); } .mail-thread-row .out { color: hsl(142, 64%, 30%); }
