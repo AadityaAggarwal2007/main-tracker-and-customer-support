@@ -118,6 +118,10 @@ Done and live:
   after a team member replied "Dear Customer ... Team Vastrika"): a customer's message gets one fixed reply per chat
   per 24 h, "this number only sends order updates, for help email <brand email>" (`whatsapp-autoreply.ts`). The
   Automation tab's list is brand-wise: Brand row + one line per order with both messages, filters and search.
+  Date filter (11 Oct, "aaj ke kitne gaye, raat ko kyun"): Today / Yesterday / 7 days / a date (India days); a
+  "What happened" card (orders came in vs messaged, failed / skipped with reasons, why some orders got nothing), messages
+  per hour with night shaded, Night / Office hours chips. Order-placed goes when the order comes in (night order = night
+  message, by design); tracking links only in office hours.
   A customer who writes STOP (or "band karo") gets no more automatic messages (`whatsapp-stop.ts`, START undoes it).
   The Today board shows the number's health to the Super Admin: Meta quality, customers messaged in 24 h vs the
   daily limit, failed today, wrote STOP; plus a morning-routine step. The real limit is 2,000 a day (WhatsApp Manager
