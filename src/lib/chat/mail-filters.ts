@@ -2,13 +2,14 @@
 // Pure (no imports): the screen keeps the last list it read and filters it here, so a filter click never
 // goes back to Gmail. Staff screen only.
 
-export type MailView = 'all' | 'unread' | 'unverified' | 'verified' | 'notreplied' | 'replied' | 'attach' | 'today' | 'week';
+export type MailView = 'todo' | 'done' | 'other' | 'all' | 'unread' | 'unverified' | 'verified' | 'notreplied' | 'replied' | 'attach' | 'today' | 'week';
 export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
-export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean }
+export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; snippet?: string }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
 export const VIEW_LABELS: Record<MailView, string> = {
+  todo: 'To reply', done: 'Replied', other: 'Not customers',
   all: 'All mail', unread: 'Unread', unverified: 'Not verified', verified: 'Verified',
   notreplied: 'Not replied', replied: 'Replied', attach: 'With attachment', today: 'Today', week: 'Last 7 days',
 };
@@ -18,14 +19,34 @@ export const startOfDay = (now: number): number => { const d = new Date(now); d.
 const isVerified = (it: FilterItem, v: VerifiedMap) => !!v[it.fromAddress]?.length;
 const time = (it: FilterItem) => Date.parse(it.date) || 0;
 
+// ── The three boxes (owner 2026-10-11: "Jawab dena hai / Jawab de diya / Customer nahi") ──
+// A customer: a sender verified for an order, or a person writing from a personal mailbox (Gmail, Yahoo, Outlook ...)
+// that is not a no-reply / notification address. Everything else (newsletters, banks, gateways, tools, sales pitches
+// sent through mailing services) is "Not customers". A customer's mail is "Replied" once we wrote in the same Gmail
+// conversation after it (or Gmail marks it answered), else "To reply".
+const PERSONAL = /@(gmail|googlemail|yahoo|ymail|rocketmail|outlook|hotmail|live|msn|icloud|me|mac|rediffmail|rediff|aol|proton|protonmail|pm|zoho|yandex|gmx|mail|inbox)\.[a-z.]{2,8}$/i;
+const ROBOT = /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?|newsletters?|news|marketing|promotions?|offers?|updates?|info|hello|team|billing|accounts?|admin|support|feedback|digest)([._+-]|@)/i;
+export function isCustomerMail(it: FilterItem, v: VerifiedMap): boolean {
+  if (isVerified(it, v)) return true;
+  const a = (it.fromAddress || '').toLowerCase();
+  return PERSONAL.test(a) && !ROBOT.test(a);
+}
+export type MailBucket = 'todo' | 'done' | 'other';
+export function bucketOf(it: FilterItem, v: VerifiedMap): MailBucket {
+  if (!isCustomerMail(it, v)) return 'other';
+  return it.replied || it.answered ? 'done' : 'todo';
+}
+export const BUCKET_LABEL: Record<MailBucket, string> = { todo: 'To reply', done: 'Replied', other: 'Not a customer' };
+
 export function matchesView(it: FilterItem, view: MailView, v: VerifiedMap, now: number): boolean {
   switch (view) {
+    case 'todo': case 'done': case 'other': return bucketOf(it, v) === view;
     case 'all': return true;
     case 'unread': return it.unread;
     case 'unverified': return !isVerified(it, v);
     case 'verified': return isVerified(it, v);
-    case 'notreplied': return !it.answered;
-    case 'replied': return it.answered;
+    case 'notreplied': return !(it.answered || it.replied);
+    case 'replied': return !!(it.answered || it.replied);
     case 'attach': return it.hasAttachment;
     case 'today': return time(it) >= startOfDay(now);
     case 'week': return time(it) >= now - 7 * DAY;
@@ -42,7 +63,7 @@ export function viewCounts(items: FilterItem[], v: VerifiedMap, now: number): Re
 export function searchMatch(it: FilterItem, q: string, v: VerifiedMap): boolean {
   const t = q.trim().toLowerCase().replace(/^#/, '');
   if (!t) return true;
-  if (it.from.toLowerCase().includes(t) || it.fromAddress.includes(t) || it.subject.toLowerCase().includes(t)) return true;
+  if (it.from.toLowerCase().includes(t) || it.fromAddress.includes(t) || it.subject.toLowerCase().includes(t) || (it.snippet || '').toLowerCase().includes(t)) return true;
   return (v[it.fromAddress] || []).some(x => x.orderId.toLowerCase().replace(/^#/, '').includes(t));
 }
 

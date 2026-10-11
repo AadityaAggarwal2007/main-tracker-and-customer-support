@@ -133,6 +133,20 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq(b.attachments.map((a) => [a.filename, a.inline, a.size]), [['a.png', true, 1000], ['b.png', true, big.length], ['invoice.pdf', false, 4]]);
     eq(rules.bodyFromParsed({ text: '', html: '<p>Hi&nbsp;there</p>' }).text.trim().length > 0, true);
   });
+  await t('the three boxes (owner 11 Oct): a verified sender or a person on a personal mailbox is a customer; To reply until we wrote after it', () => {
+    const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+    const it = (a, o = {}) => ({ uid: 1, from: 'X', fromAddress: a, subject: 's', date: '2026-10-10T10:00:00Z', unread: true, hasAttachment: false, answered: false, ...o });
+    const v = { 'shop@company.in': [{ orderId: '#1553' }] };
+    deq(['piyush@gmail.com', 'riya.k@yahoo.co.in', 'a@outlook.com', 'me@icloud.com', 'x@rediffmail.com'].map((a) => f.bucketOf(it(a), {})), ['todo', 'todo', 'todo', 'todo', 'todo']);
+    deq(['farhan.arshad@10681691.brevosend.com', 'alerts@hdfcbank.net', 'noreply@gmail.com', 'no-reply@accounts.google.com', 'notifications@github.com', 'info@gmail.com'].map((a) => f.bucketOf(it(a), {})), ['other', 'other', 'other', 'other', 'other', 'other']);
+    eq(f.bucketOf(it('shop@company.in'), v), 'todo');                       // verified for an order: a customer whatever the address
+    eq(f.bucketOf(it('piyush@gmail.com', { replied: true }), {}), 'done');
+    eq(f.bucketOf(it('piyush@gmail.com', { answered: true }), {}), 'done');
+    const items = [it('a@gmail.com', { uid: 1 }), it('b@gmail.com', { uid: 2, replied: true }), it('n@brevosend.com', { uid: 3 })];
+    const c = f.viewCounts(items, {}, Date.parse('2026-10-11T00:00:00Z'));
+    deq([c.todo, c.done, c.other, c.all], [1, 1, 1, 3]);
+    eq(f.searchMatch(it('a@gmail.com', { snippet: 'my parcel is late' }), 'parcel', {}), true);
+  });
   await t('the SQL file: additive, no DELETE for the app, the App Password is never stored here', () => {
     const sql = fs.readFileSync(path.resolve(__dirname, '../../mail-store.sql'), 'utf8');
     for (const tb of ['mail_store', 'mail_sync', 'mail_sync_lease', 'mail_actions']) assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${tb}`));
@@ -180,6 +194,8 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       eq((await store.storeReady(BOX)).ok, true);
       const l = await store.storeList(BOX);
       deq(l.mails.map((m) => [m.uid, m.unread]), [[13, true], [11, true], [12, false]]);
+      // one row per conversation: the first words, whether we wrote after it in the same thread, the thread's size
+      deq(l.mails.map((m) => [m.uid, m.snippet, m.replied, m.threadCount]), [[13, 'Please refund my order.', true, 2], [11, 'Hi, order #1001 has not come.', false, 1], [12, 'See photo.', false, 1]]);
       const before = { connects: G.connects, fetchOnes: G.fetchOnes };
       store.forgetStoreReady();
       const res = await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`));
@@ -243,6 +259,17 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       eq(r.fresh >= 3, true);
       deq((await store.storeList(BOX)).mails.map((m) => m.uid).sort(), [11, 13, 15]);   // the old copies are gone, no doubles
     });
+    await t('one row per conversation: two mails of the same thread are one row (the newer), bold while any is unread; opening it reads them all', async () => {
+      const f = G.folders.INBOX;
+      f.msgs.push({ uid: 17, thread: 'T1', seen: false, date: new Date(), from: { name: 'Alice', address: 'alice@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Re: Where is my order?', mid: '<m17@x>', source: plain('<m17@x>', 'alice@example.com', 'vastora@store.example', 'Re: Where is my order?', 'Still waiting!') });
+      f.msgs.find((m) => m.uid === 11).seen = false; f.msgs.find((m) => m.uid === 11).modseq = 200n; f.modseq = 200n;
+      await sync.syncMailbox(box);
+      const rows = (await store.storeList(BOX)).mails.filter((m) => m.fromAddress === 'alice@example.com');
+      deq(rows.map((m) => [m.uid, m.unread, m.threadCount, m.snippet]), [[17, true, 2, 'Still waiting!']]);
+      store.forgetStoreReady();
+      await routes.message.GET(req('GET', `/api/mail/message?box=${BOX}&uid=17`));
+      deq([(await store.storeRow(BOX, 'inbox', 11)).seen, (await store.storeRow(BOX, 'inbox', 17)).seen], [true, true]);
+    });
     await t('a mail whose body is not copied yet still opens (read from Gmail once, not marked there by the click)', async () => {
       const f = G.folders.INBOX;
       f.msgs.push({ uid: 16, thread: 'T6', seen: false, date: new Date(), from: { name: 'Late', address: 'late@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Body later', mid: '<m16@x>', source: plain('<m16@x>', 'late@example.com', 'vastora@store.example', 'Body later', 'Text arrives later.') });
@@ -257,7 +284,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       for (let u = 20; u < 32; u++) f.msgs.push({ uid: u, thread: 'B' + u, seen: false, date: new Date(), from: { name: 'B', address: `b${u}@example.com` }, to: [{ address: 'vastora@store.example' }], subject: 'Batch ' + u, mid: `<b${u}@x>`, source: plain(`<b${u}@x>`, `b${u}@example.com`, 'vastora@store.example', 'Batch ' + u, 'Body ' + u) });
       G.batches = 0; const ones = G.fetchOnes;
       let r = await sync.syncMailbox(box);
-      deq([r.fresh, r.bodies, G.batches, G.fetchOnes - ones], [13, 13, 2, 0]);   // + uid 16 of the group before (its body was only read live)
+      deq([r.fresh, r.bodies, G.batches, G.fetchOnes - ones], [12, 13, 2, 0]);   // + the body of uid 16 (the group before only read it live)
       eq((await store.storeMail(BOX, 'inbox', 25, false)).mail.text.trim(), 'Body 25');
       f.msgs.push({ uid: 40, thread: 'B40', seen: false, date: new Date(), from: { name: 'B', address: 'b40@example.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Fallback', mid: '<b40@x>', source: plain('<b40@x>', 'b40@example.com', 'vastora@store.example', 'Fallback', 'One by one') });
       G.batchFail = true;

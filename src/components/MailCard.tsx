@@ -1,6 +1,10 @@
 'use client';
 
-// ── Mail: the real Gmail inbox of a panel (owner 2026-10-08) ──────────────────────────────────
+// ── Mail: the real Gmail inbox of a panel (owner 2026-10-08; laid out like Gmail since 2026-10-11) ─────────────
+// Gmail's way (owner 2026-10-11, "aisa UI UX bana de" with Gmail's inbox as the picture): the boxes on the left (To reply,
+// Replied, Not customers: mail-filters.ts bucketOf; then All mail and the filters), the list across the whole width, one
+// line per conversation; a click opens the conversation across the whole width (cards, the reply box at the bottom),
+// and a reply sent from "To reply" opens the next mail to answer. The box chosen is remembered (localStorage mail_view).
 // The Super Admin's tab; a team member sees it only with the Mail ticks and only for their panels (every
 // /api/mail/* route checks both again). It reads the last 30 days of the Gmail inbox over IMAP and stores nothing
 // on the server. Layout (owner: "ye ui ux bilkul accha nahi"): filters on the left, a tall list in the middle, the
@@ -10,14 +14,10 @@
 // marks it read in Gmail ("Mark unread" undoes it). Filters, search and order: src/lib/chat/mail-filters.ts.
 // An HTML mail is shown in a sandboxed frame (no scripts) with remote pictures blocked until "Show images".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, MailOpen, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
+import { Ban, BadgeCheck, ChevronLeft, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 
-// Owner 2026-10-09 ("open open poora poora bada bada kar"): an open mail takes the whole width by default (the filters and
-// the list step aside; the List button brings them back); the choice is remembered per browser.
-const WIDE_KEY = 'mail_wide';
-const readWide = () => { try { return localStorage.getItem(WIDE_KEY) !== '0'; } catch { return true; } };
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, initials, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, bucketOf, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
@@ -26,13 +26,15 @@ import type { Box, Full, Item, ListEntry, ThreadItem, Ver } from './mail/types';
 interface Props { token: string; onAlert: (type: string, message: string) => void; activePanelId?: string; initialBox?: string | null; initialUid?: number | null }
 
 const REFRESH_MS = 60_000;
-const FILTER_GROUPS: { title: string; icon: typeof Inbox; views: MailView[] }[] = [
-  { title: 'Inbox', icon: Inbox, views: ['all', 'unread'] },
-  { title: 'Verification', icon: BadgeCheck, views: ['unverified', 'verified'] },
-  { title: 'Reply', icon: MessageSquareReply, views: ['notreplied', 'replied'] },
-  { title: 'More', icon: Paperclip, views: ['attach', 'today', 'week'] },
+// The three boxes first (owner 2026-10-11), then everything and the older filters.
+const NAV: { title: string; views: MailView[] }[] = [
+  { title: '', views: ['todo', 'done', 'other'] },
+  { title: '', views: ['all'] },
+  { title: 'Filters', views: ['unread', 'unverified', 'verified', 'attach', 'today', 'week'] },
 ];
-const VIEW_ICON: Partial<Record<MailView, typeof Inbox>> = { all: Inbox, unread: MailIcon, unverified: ShieldQuestion, verified: BadgeCheck, notreplied: Reply, replied: MessageSquareReply, attach: Paperclip, today: Calendar, week: CalendarDays };
+const VIEW_ICON: Partial<Record<MailView, typeof Inbox>> = { todo: Inbox, done: MessageSquareReply, other: Ban, all: Mails, unread: MailIcon, unverified: ShieldQuestion, verified: BadgeCheck, notreplied: Reply, replied: MessageSquareReply, attach: Paperclip, today: Calendar, week: CalendarDays };
+const VIEW_KEY = 'mail_view';
+const readView = (): MailView => { try { const v = localStorage.getItem(VIEW_KEY) as MailView | null; return v && v in VIEW_LABELS ? v : 'todo'; } catch { return 'todo'; } };
 
 export default function MailCard({ token, onAlert, activePanelId, initialBox, initialUid }: Props) {
   const alertRef = useRef(onAlert);
@@ -45,13 +47,12 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
   const [entry, setEntry] = useState<ListEntry | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [down, setDown] = useState<string | null>(null);
-  const [view, setView] = useState<MailView>('all');
-  const [sort, setSort] = useState<MailSort>('unreadfirst');
+  const [view, setViewState] = useState<MailView>('todo');
+  useEffect(() => { setViewState(readView()); }, []);
+  const setView = (v: MailView) => { setViewState(v); try { localStorage.setItem(VIEW_KEY, v); } catch { /* private window */ } };
+  const [sort, setSort] = useState<MailSort>('newest');   // like Gmail (owner 2026-10-11): opening a mail never moves it in the list
   const [q, setQ] = useState('');
   const [openUid, setOpenUid] = useState<number | null>(null);
-  const [wide, setWide] = useState(true);
-  useEffect(() => { setWide(readWide()); }, []);
-  const toggleWide = () => { setWide(w => { try { localStorage.setItem(WIDE_KEY, w ? '0' : '1'); } catch { /* ignore */ } return !w; }); };
   const [mail, setMail] = useState<Full | null>(null);
   const [opening, setOpening] = useState(false);
   const threadSeq = useRef(0);
@@ -289,7 +290,6 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
 
   const box = visibleBoxes.find(b => b.id === boxId) ?? null;
   const panelName = (boxes ?? []).find(b => b.panelId === activePanelId)?.panelName;
-  const nextUnverified = items.find(x => !verified[x.fromAddress]?.length && x.unread) ?? items.find(x => !verified[x.fromAddress]?.length);
 
   if (boxes === null) return <div className="mail-empty"><Loader2 size={18} className="spin" /> Opening Mail…</div>;
   if (visibleBoxes.length === 0) {
@@ -302,19 +302,33 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     );
   }
 
+  const goNext = (from: number) => {
+    // after a reply: the next mail still to reply to, below this one in the list (else the first one), else the list
+    const rest = shown.filter(x => x.uid !== from && bucketOf(x, verified) === 'todo');
+    const i = shown.findIndex(x => x.uid === from);
+    const next = rest.find(x => shown.indexOf(x) > i) ?? rest[0];
+    if (next) void openMail(next.uid); else { setOpenUid(null); setMail(null); }
+  };
+  const pos = openUid ? shown.findIndex(x => x.uid === openUid) : -1;
+
   return (
-    <div className={`mail-app${openUid ? ' mail-open' : ''}${openUid && wide ? ' mail-wide' : ''}`}>
-      {/* Filters (owner 2026-10-08): what a support person sorts the day by */}
-      <nav className="mail-filters" aria-label="Mail filters">
-        {FILTER_GROUPS.map(g => (
-          <div key={g.title} className="mail-fgroup">
-            <div className="mail-ftitle">{g.title}</div>
+    <div className={`mail-app gm${openUid ? ' mail-open' : ''}`}>
+      {/* The boxes (owner 2026-10-11: "Jawab dena hai / Jawab de diya / Customer nahi"), then the other filters */}
+      <nav className="mail-filters" aria-label="Mail boxes">
+        {visibleBoxes.length > 1 ? (
+          <select className="form-input mail-boxsel" value={boxId ?? ''} onChange={e => setBoxId(e.target.value)} aria-label="Gmail inbox">
+            {visibleBoxes.map(b => <option key={b.id} value={b.id}>{b.panelName} · {b.email}</option>)}
+          </select>
+        ) : <div className="mail-box-name" title={box?.email}>{box?.panelName}<span className="meta">{box?.email}</span></div>}
+        {NAV.map((g, gi) => (
+          <div key={gi} className="mail-fgroup">
+            {g.title && <div className="mail-ftitle">{g.title}</div>}
             {g.views.map(v => {
               const Icon = VIEW_ICON[v] || Inbox;
               return (
-                <button type="button" key={v} className="mail-f" aria-pressed={view === v} onClick={() => setView(v)}>
-                  <Icon size={14} /> <span>{VIEW_LABELS[v]}</span>
-                  <b className={v === 'unverified' && counts[v] > 0 ? 'warn' : ''}>{counts[v]}</b>
+                <button type="button" key={v} className={`mail-f${gi === 0 ? ' big' : ''}`} aria-pressed={view === v} onClick={() => { setView(v); setOpenUid(null); setMail(null); }}>
+                  <Icon size={gi === 0 ? 16 : 14} /> <span>{VIEW_LABELS[v]}</span>
+                  <b className={v === 'todo' && counts[v] > 0 ? 'warn' : ''}>{counts[v]}</b>
                 </button>
               );
             })}
@@ -322,106 +336,85 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
         ))}
       </nav>
 
-      <section className="mail-listpane">
-        <div className="mail-listhead">
-          <div className="mail-bar" style={{ border: 0, padding: 0 }}>
-            {visibleBoxes.length > 1 ? (
-              <select className="form-input" value={boxId ?? ''} onChange={e => setBoxId(e.target.value)} aria-label="Gmail inbox" style={{ flex: 1, minWidth: 0 }}>
-                {visibleBoxes.map(b => <option key={b.id} value={b.id}>{b.panelName} · {b.email}</option>)}
+      {!openUid && (
+        <section className="mail-listpane">
+          <div className="mail-listhead">
+            <div className="mail-search">
+              <Search size={15} />
+              <input placeholder="Search mail: sender, subject, words, order number" value={q} onChange={e => setQ(e.target.value)} aria-label="Search mail" />
+            </div>
+            <div className="mail-bar" style={{ border: 0, padding: 0, flexWrap: 'nowrap' }}>
+              <b className="mail-viewname">{VIEW_LABELS[view]} <span className="meta">{shown.length}</span></b>
+              <span style={{ flex: 1 }} />
+              <select className="form-input mail-sort" value={sort} onChange={e => setSort(e.target.value as MailSort)} aria-label="Order">
+                <option value="unreadfirst">Unread first</option>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
               </select>
-            ) : <div className="mail-box-name" title={box?.email}>{box?.panelName} · {box?.email}</div>}
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => boxId && refresh(boxId, false)} disabled={refreshing} title="Read Gmail again">
-              {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
-            </button>
-          </div>
-          <div className="mail-bar" style={{ border: 0, padding: 0, flexWrap: 'nowrap' }}>
-            <div className="mail-search" style={{ flex: 1, minWidth: 0 }}>
-              <Search size={14} />
-              <input placeholder="Search sender, subject or order number" value={q} onChange={e => setQ(e.target.value)} aria-label="Search mail" />
-            </div>
-            <select className="form-input mail-sort" value={sort} onChange={e => setSort(e.target.value as MailSort)} aria-label="Order">
-              <option value="unreadfirst">Unread first</option>
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-            </select>
-          </div>
-          <div className="mail-tabs" role="tablist">
-            {(['all', 'unverified', 'verified'] as MailView[]).map(v => (
-              <button type="button" role="tab" key={v} className="seg-btn" aria-pressed={view === v} onClick={() => setView(v)}>
-                {v === 'all' ? 'All' : VIEW_LABELS[v]} <span className="mail-count">{counts[v]}</span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => boxId && refresh(boxId, false)} disabled={refreshing} title="Read again">
+                {refreshing ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
               </button>
-            ))}
+            </div>
+            {view === 'todo' && <div className="meta">Customers&apos; mails nobody has answered yet. Reply, and the next one opens by itself.</div>}
+            {view === 'other' && <div className="meta">Banks, gateways, tools, newsletters and sales mails: not from a customer, nothing to answer.</div>}
           </div>
-          {view !== 'all' && view !== 'unverified' && view !== 'verified' && (
-            <div className="meta">Showing: <b>{VIEW_LABELS[view]}</b> · <button type="button" className="meta-btn" onClick={() => setView('all')}>Show all</button></div>
-          )}
-        </div>
-        {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
-        {down && <div className="mail-warn">{down}</div>}
-        <div className="mail-rows">
-          {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading Gmail…</div>}
-          {entry && shown.length === 0 && (
-            <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : 'Nothing matches this filter.'}{items.length > 0 && <button type="button" className="btn btn-outline btn-sm" onClick={() => { setView('all'); setQ(''); }}>Clear filters</button>}</div>
-          )}
-          <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} />
-          {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 mails of the last 30 days.</div>}
-        </div>
-        <div className="meta mail-foot">
-          {shown.length} of {items.length} mails{entry ? ` · updated ${agoText(entry.at)}` : ''} · {entry?.store ? `${entry.store.mails} mails saved in ShipTrack${entry.store.bodies < entry.store.mails ? ` (${entry.store.bodies} opened ahead, the rest within minutes)` : ''}${entry.store.syncedAt ? `, synced with Gmail ${agoText(Date.parse(entry.store.syncedAt))}` : ''}${entry.store.error ? ` · Gmail: ${entry.store.error}` : ''}` : entry?.partial ? 'loading attachments and sender checks…' : refreshing && entry ? 'refreshing…' : 'kept ready on the server, refreshed every few minutes'}
-        </div>
-      </section>
+          {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
+          {down && <div className="mail-warn">{down}</div>}
+          <div className="mail-rows">
+            {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading the mails…</div>}
+            {entry && shown.length === 0 && (
+              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
+            )}
+            <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} showVerify={view !== 'other'} />
+            {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 conversations of the last 30 days.</div>}
+          </div>
+          <div className="meta mail-foot">
+            {entry?.store ? `${entry.store.mails} mails saved in ShipTrack${entry.store.bodies < entry.store.mails ? ` (${entry.store.bodies} ready to open at once, the rest within minutes)` : ''}${entry.store.syncedAt ? ` · synced with Gmail ${agoText(Date.parse(entry.store.syncedAt))}` : ''}${entry.store.error ? ` · Gmail: ${entry.store.error}` : ''}` : `${items.length} mails${entry ? ` · updated ${agoText(entry.at)}` : ''}${entry?.partial ? ' · loading attachments and sender checks…' : ''}`}
+          </div>
+        </section>
+      )}
 
-      <section className="mail-readerpane">
-        {!openUid && (
-          <div className="mail-home">
-            <MailOpen size={34} />
-            <h3>Choose a mail to read it</h3>
-            <div className="mail-stats">
-              <button type="button" className="mail-stat warn" onClick={() => setView('unverified')}><b>{counts.unverified}</b><span>not verified</span></button>
-              <button type="button" className="mail-stat" onClick={() => setView('unread')}><b>{counts.unread}</b><span>unread</span></button>
-              <button type="button" className="mail-stat" onClick={() => setView('notreplied')}><b>{counts.notreplied}</b><span>not replied</span></button>
-              <button type="button" className="mail-stat ok" onClick={() => setView('verified')}><b>{counts.verified}</b><span>verified</span></button>
-            </div>
-            {nextUnverified && <button type="button" className="btn btn-primary btn-sm" onClick={() => void openMail(nextUnverified.uid)}><ShieldQuestion size={14} /> Open next not-verified mail</button>}
-            <p className="meta">Verified senders are matched to their order by themselves (their email is on an order and Gmail confirms it is real). The rest wait for you: ask for the Order ID and phone, then press Verify.</p>
-          </div>
-        )}
-        {openUid && !mail && (() => {
-          // The mail's own header from the list shows at once; only the body is still coming.
-          const it = items.find(x => x.uid === openUid);
-          return (
-            <div className="mail-reader">
-              <div className="mail-readbar"><button type="button" className="btn btn-ghost btn-sm mail-back" onClick={() => { setOpenUid(null); setMail(null); }}><ChevronLeft size={16} /> List</button></div>
-              {it && (
-                <header className="mail-head">
-                  <div className="mail-avatar" aria-hidden="true">{initials(it.from)}</div>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <h2>{it.subject}</h2>
-                    <div className="meta"><b>{it.from}</b> · {it.fromAddress}</div>
-                  </div>
-                </header>
-              )}
-              <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening the mail…</div>
-            </div>
-          );
-        })()}
-        {openUid && mail && (
-          <MailReader
-            token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
-            versions={verified[mail.fromAddress] || []}
-            thread={thread} threadLoading={threadLoading} threadFailed={threadFailed}
-            onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
-            onBack={() => { setOpenUid(null); setMail(null); }}
-            wide={wide} onToggleWide={toggleWide}
-            onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
-            onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
-            onShowImages={() => void openMail(mail.uid, true)}
-            onMarkUnread={markUnread}
-            onChanged={() => { if (boxId) void refresh(boxId); }}
-            onSent={() => { patchItems(list => list.map(x => x.uid === mail.uid ? { ...x, answered: true } : x)); setMail(m => (m ? { ...m, answered: true } : m)); if (boxId) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
-          />
-        )}
-      </section>
+      {openUid && (
+        <section className="mail-readerpane">
+          {!mail && (() => {
+            // The mail's own header from the list shows at once; only the body is still coming.
+            const it = items.find(x => x.uid === openUid);
+            return (
+              <div className="mail-reader">
+                <div className="mail-readbar"><button type="button" className="btn btn-ghost btn-sm mail-back" onClick={() => { setOpenUid(null); setMail(null); }}><ChevronLeft size={16} /> {VIEW_LABELS[view]}</button></div>
+                {it && <header className="mail-subjecthead"><h2>{it.subject}</h2></header>}
+                {it && <div className="meta" style={{ marginBottom: '0.5rem' }}><b>{it.from}</b> · {it.fromAddress}</div>}
+                <div className="mail-empty"><Loader2 size={16} className="spin" /> Opening the mail…</div>
+              </div>
+            );
+          })()}
+          {mail && (
+            <MailReader
+              token={token} box={box} mail={mail} canReply={canReply} onAlert={onAlert}
+              versions={verified[mail.fromAddress] || []}
+              thread={thread} threadLoading={threadLoading} threadFailed={threadFailed}
+              onRetryThread={() => { if (boxId && mail) void loadThread(boxId, mail.fromAddress, true, mail.uid); }}
+              onBack={() => { setOpenUid(null); setMail(null); }}
+              backLabel={VIEW_LABELS[view]}
+              position={pos >= 0 ? `${pos + 1} of ${shown.length}` : undefined}
+              bucket={(() => { const it = items.find(x => x.uid === mail.uid); return it ? bucketOf(it, verified) : undefined; })()}
+              onNextAfterSend={view === 'todo'}
+              onPrev={neighbour(shown, openUid, -1) ? () => void openMail(neighbour(shown, openUid, -1) as number) : null}
+              onNext={neighbour(shown, openUid, 1) ? () => void openMail(neighbour(shown, openUid, 1) as number) : null}
+              onShowImages={() => void openMail(mail.uid, true)}
+              onMarkUnread={markUnread}
+              onChanged={() => { if (boxId) void refresh(boxId); }}
+              onSent={() => {
+                const uid = mail.uid;
+                patchItems(list => list.map(x => x.uid === uid ? { ...x, answered: true, replied: true } : x));
+                setMail(m => (m ? { ...m, answered: true } : m));
+                if (boxId) void loadThread(boxId, mail.fromAddress, true, uid);
+                if (view === 'todo') goNext(uid);
+              }}
+            />
+          )}
+        </section>
+      )}
     </div>
   );
 }

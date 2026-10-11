@@ -2611,6 +2611,83 @@ a {
 .mail-reader > * { flex-shrink: 0; }
 .mail-reader > .mail-frame { flex-shrink: 1; }
 
+/* Mail laid out like Gmail (owner 2026-10-11): the boxes | the list across the width, or the open conversation across the width */
+.mail-app.gm { grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.mail-app.gm .mail-listpane, .mail-app.gm .mail-readerpane { border-right: 0; }
+.mail-app.gm .mail-back { display: inline-flex; }
+.gm .mail-filters { padding: 0.75rem 0.5rem; }
+.gm .mail-box-name { display: grid; gap: 0.125rem; padding: 0.25rem 0.5rem 0.75rem; font-size: 0.875rem; font-weight: 800; white-space: normal; }
+.gm .mail-box-name .meta { font-weight: 500; font-size: 0.6875rem; overflow: hidden; text-overflow: ellipsis; }
+.gm .mail-boxsel { width: 100%; margin-bottom: 0.75rem; height: 2rem; font-size: 0.8125rem; }
+.gm .mail-fgroup { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+.gm .mail-fgroup:last-child { border-bottom: 0; }
+.gm .mail-f { border-radius: 0 999px 999px 0; }
+.gm .mail-f.big { font-size: 0.9375rem; padding: 0.5625rem 0.625rem; }
+.gm .mail-f.big b { font-size: 0.8125rem; }
+.gm .mail-f[aria-pressed="true"] { background: var(--primary-light); color: var(--primary); }
+.gm .mail-f[aria-pressed="true"] b { color: var(--primary); }
+.gm .mail-listhead { gap: 0.5rem; padding: 0.75rem 1rem 0.5rem; }
+.gm .mail-search { height: 2.75rem; border-radius: 999px; background: var(--muted, #f1f3f8); border-color: transparent; padding: 0 1rem; }
+.gm .mail-search input { font-size: 0.9375rem; }
+.gm .mail-search:focus-within { background: var(--card-bg, #fff); border-color: var(--primary); box-shadow: var(--shadow-sm); }
+.gm .mail-viewname { font-size: 0.9375rem; }
+.gm .mail-row { grid-template-columns: minmax(9rem, 13rem) auto minmax(0, 1fr) auto 4.5rem; align-items: center; gap: 0.75rem; padding: 0.5rem 1rem; }
+.gm .mail-row .mail-from { font-size: 0.875rem; }
+.gm .mail-row.unread { background: var(--card-bg, #fff); }
+.gm .mail-row:not(.unread) { background: color-mix(in srgb, var(--muted, #f2f4f8) 55%, transparent); }
+.gm .mail-row:hover { box-shadow: inset 0 -1px 0 var(--border), 0 1px 3px rgba(60, 64, 67, 0.18); position: relative; z-index: 1; background: var(--card-bg, #fff); }
+.gm .mail-tags { grid-column: auto; flex-wrap: nowrap; }
+.gm .mail-line { font-size: 0.875rem; min-width: 0; }
+.gm .mail-line .mail-subj { color: var(--fg); grid-column: auto; font-size: inherit; }
+.gm .mail-row.unread .mail-line .mail-subj { font-weight: 700; }
+.gm .mail-snip { color: var(--fg-muted); }
+.gm .mail-icons { display: inline-flex; gap: 0.375rem; align-items: center; }
+.gm .mail-ico.ok { color: hsl(142, 64%, 32%); }
+.gm .mail-when { text-align: right; font-size: 0.75rem; }
+.gm .mail-row.unread .mail-when { font-weight: 700; color: var(--fg); }
+.mail-n { margin-left: 0.375rem; font-size: 0.75rem; font-weight: 500; color: var(--fg-muted); }
+.gm .mail-reader { max-width: 70rem; width: 100%; margin: 0 auto; padding: 0 1.5rem 1.5rem; box-sizing: border-box; }
+.mail-subjecthead { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; margin: 0.25rem 0 0.75rem; }
+.mail-subjecthead h2 { margin: 0; font-size: 1.375rem; font-weight: 500; word-break: break-word; }
+.mail-conv { display: grid; gap: 0; border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; margin-bottom: 0.75rem; }
+.mail-conv-status { display: flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.875rem; background: var(--muted, #f7f7fb); }
+.mail-msg { border-top: 1px solid var(--border); background: var(--card-bg, #fff); }
+.mail-msg:first-child, .mail-conv-status + .mail-msg { border-top: 0; }
+.mail-msg-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; width: 100%; padding: 0.75rem 0.875rem; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; color: var(--fg); }
+.mail-msg-head.static { cursor: default; }
+.mail-msg-head:not(.static):hover { background: var(--primary-light); }
+.mail-msg-who { display: grid; min-width: 0; gap: 0.0625rem; }
+.mail-msg-who b { font-size: 0.875rem; }
+.mail-msg-when { white-space: nowrap; font-size: 0.75rem; }
+.mail-msg-body { padding: 0 0.875rem 0.875rem 3.625rem; display: flex; flex-direction: column; }
+.mail-msg-body .mail-frame { min-height: 52vh; }
+.mail-msg-text { white-space: pre-wrap; font-size: 0.875rem; }
+.mail-msg.ours .mail-msg-who b { color: hsl(142, 64%, 26%); }
+.mail-avatar.sm { width: 2.25rem; height: 2.25rem; font-size: 0.8125rem; }
+.mail-avatar.ours { background: hsl(142, 60%, 90%); color: hsl(142, 64%, 26%); }
+.mail-conv-more { border: 0; border-top: 1px solid var(--border); background: var(--muted, #f7f7fb); padding: 0.5rem; font: inherit; font-size: 0.8125rem; font-weight: 700; color: var(--primary); cursor: pointer; }
+.mail-replybar { display: flex; gap: 0.5rem; flex-wrap: wrap; padding: 0.25rem 0 0.5rem 3.625rem; }
+.mail-replybtn { border-radius: 999px; padding: 0.5rem 1.125rem; }
+.mail-reply.mail-msg { border: 1px solid var(--border); border-radius: 0.75rem; padding: 0 0.875rem 0.875rem; box-shadow: var(--shadow-sm); }
+.mail-reply.mail-msg .mail-msg-head { padding-left: 0; padding-right: 0; }
+@media (max-width: 1180px) {
+  .mail-app.gm { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .gm .mail-filters { padding: 0.5rem; }
+  .gm .mail-fgroup { border-bottom: 0; padding-bottom: 0; }
+  .gm .mail-box-name, .gm .mail-boxsel { display: none; }
+  .gm .mail-f { border-radius: 999px; }
+}
+@media (max-width: 860px) {
+  .gm .mail-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.125rem 0.5rem; }
+  .gm .mail-tags { grid-column: 1 / -1; order: 3; }
+  .gm .mail-line { grid-column: 1 / -1; order: 2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .gm .mail-icons { display: none; }
+  .gm .mail-reader { padding: 0 0.75rem 1rem; }
+  .mail-msg-body { padding-left: 0.875rem; }
+  .mail-replybar { padding-left: 0; }
+  .mail-app.gm.mail-open .mail-filters { display: none; }
+}
+
 /* ── Panel board (owner 2026-10-09): one card per panel at the top of the Orders tab ── */
 .pb { margin-bottom: 1.25rem; }
 .pb-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.625rem; }

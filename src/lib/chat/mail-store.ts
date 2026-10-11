@@ -32,15 +32,38 @@ export async function storeReady(boxId: string, now = Date.now()): Promise<{ ok:
 }
 export function forgetStoreReady(): void { ready.clear(); }
 
-// The list: the last 30 days of INBOX, unread first (as before).
+// The list: the last 30 days of INBOX, ONE row per Gmail conversation (its newest mail; bold while any mail of it is
+// unread), with the first words, whether we wrote in that conversation after it (Sent, or a reply from here), and how
+// many mails the conversation holds (owner 2026-10-11: "Gmail jaisa UI"). Unread first, as before.
 export async function storeList(boxId: string, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
-  const r = await query<StoreRow>(
-    `SELECT ${LIST_COLS} FROM mail_store
-      WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2
-      ORDER BY sent_at DESC LIMIT ${MAX_MAILS + 1}`, [boxId, sinceDate(now)]);
+  const r = await query<StoreRow & { snippet: string | null; replied: boolean; thread_count: number; any_unread: boolean }>(
+    `WITH inbox AS (
+       SELECT ${LIST_COLS}, thread_id, body_text,
+              row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY sent_at DESC) AS rn,
+              bool_or(NOT seen) OVER (PARTITION BY COALESCE(thread_id, 'u' || id)) AS any_unread
+         FROM mail_store
+        WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2)
+     SELECT i.id, i.box_id, i.folder, i.uidvalidity, i.uid, i.from_name, i.from_addr, i.subject, i.sent_at, i.seen, i.answered, i.has_attach, i.auth_pass,
+            i.any_unread,
+            btrim(left(regexp_replace(COALESCE(i.body_text, ''), '\\s+', ' ', 'g'), 180)) AS snippet,
+            (i.answered OR EXISTS (SELECT 1 FROM mail_store s WHERE s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone
+                                     AND s.thread_id = i.thread_id AND s.sent_at > i.sent_at)) AS replied,
+            CASE WHEN i.thread_id IS NULL THEN 1
+                 ELSE (SELECT count(*)::int FROM mail_store t WHERE t.box_id = $1 AND t.thread_id = i.thread_id AND NOT t.gone AND NOT t.local) END AS thread_count
+       FROM inbox i WHERE i.rn = 1
+      ORDER BY i.sent_at DESC LIMIT ${MAX_MAILS + 1}`, [boxId, sinceDate(now)]);
   const truncated = r.rows.length > MAX_MAILS;
   const mails = sortMails(r.rows.slice(0, MAX_MAILS).map(rowToListItem));
   return { mails, unread: mails.filter(m => m.unread).length, truncated, days: MAIL_DAYS };
+}
+
+// Opening a conversation reads all of it: every unread INBOX mail of the same Gmail thread is marked read too.
+export async function storeSeenThread(row: StoreRow): Promise<void> {
+  if (!row.thread_id) return;
+  const r = await query<StoreRow>(
+    `SELECT ${COLS} FROM mail_store WHERE box_id = $1 AND folder = 'inbox' AND thread_id = $2 AND NOT seen AND NOT gone AND NOT local AND id <> $3`,
+    [row.box_id, row.thread_id, row.id]);
+  for (const x of r.rows) await storeFlag(x, 'seen');
 }
 
 // The newest row of a UID in a folder (a folder's uidvalidity rarely changes; the newest copy wins).

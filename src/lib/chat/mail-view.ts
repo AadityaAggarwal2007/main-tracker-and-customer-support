@@ -18,6 +18,11 @@ export interface MailListItem {
   answered: boolean;
   // Gmail's own dmarc=pass: the sender's address is real (automatic verification needs it).
   authPass: boolean;
+  // From the mail store only (owner 2026-10-11, the Gmail-like Mail tab): the first words, whether we wrote in the same
+  // Gmail conversation after this mail, and how many mails the conversation has (one row per conversation, like Gmail).
+  snippet?: string;
+  replied?: boolean;
+  threadCount?: number;
 }
 
 // The start of the window: IMAP SINCE works on whole days, so the day is what counts.

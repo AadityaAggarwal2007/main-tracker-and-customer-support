@@ -693,8 +693,9 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
     assert.ok(/const local: ThreadItem\[\] = \(entry\?\.items \?\? \[\]\)\.filter\(x => \(x\.fromAddress \|\| ''\)\.toLowerCase\(\) === addr\)/.test(card), 'the conversation is built from the list');
     assert.ok(/threadSt && threadSt\.key === curKey/.test(card), 'a slow answer for one sender never shows under another');
-    const th = fs.readFileSync(path.join(SRC, 'components/mail/MailThread.tsx'), 'utf8');
-    assert.ok(/our replies could not be read from Gmail just now/.test(th) && !/if \(failed && !items\)/.test(th), 'a failure never hides their mails');
+    // the conversation cards (MailConversation.tsx since 11 Oct, was MailThread.tsx): a failure is one line, the cards stay
+    const th = fs.readFileSync(path.join(SRC, 'components/mail/MailConversation.tsx'), 'utf8');
+    assert.ok(/the rest of the conversation could not be read just now/.test(th) && !/if \(failed && !items\)/.test(th) && /\{before\.slice\(0, hidden \? 1 : before\.length\)\.map\(card\)\}/.test(th), 'a failure never hides their mails');
     const r = await message.GET(req('GET', '/api/mail/message?box=boxV&uid=11&peek=1&via=read'));
     assert.strictEqual(r.status, 200);
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-inbox.ts'), 'utf8');

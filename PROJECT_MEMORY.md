@@ -73,6 +73,8 @@ Done and live:
   30 s, bodies too; the Mail tab then reads only the database (list, mail, conversation by Gmail thread, reply).
   Before the SQL is run the old memory copy keeps working. Test with a scratch Postgres: `MAIL_STORE_PG=... node
   scripts/ai-tests/mail-store.js`.
+- **Mail looks like Gmail (11 Oct)**: boxes To reply / Replied / Not customers (`mail-filters.ts bucketOf`), one line per
+  conversation across the width, the conversation as cards, Reply at the bottom, Send opens the next mail to answer.
 - **WhatsApp in Chat Support (2026-10-10, first test with Jatin)**: `src/lib/chat/whatsapp.ts` (Cloud API
   send text / template, webhook parse, signature), `whatsapp-inbound.ts` (a message to the business number
   = a chat `source 'whatsapp'`, `visitor_id 'wa:<digits>'`, With team, unread; wamid dedupe), route
