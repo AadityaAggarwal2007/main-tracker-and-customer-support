@@ -1351,8 +1351,10 @@ t('H7: a message that is only a phone number (lookup-guard.ts isBarePhone)', () 
 t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that names the closed-hours note; 7.6 names the week', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
-  // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct).
-  assert.deepStrictEqual(sec.rules.slice(-5).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15']);
+  // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct),
+  // ... then 7.16 (WhatsApp chats are not in Chat Support, owner 11 Oct).
+  assert.deepStrictEqual(sec.rules.slice(-6).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16']);
+  assert.ok(rule('7.16').how === 'code' && /no-reply identity/.test(rule('7.16').text) && /NEVER in Chat Support/.test(rule('7.16').text) && /WhatsApp > Chats/.test(rule('7.16').text) && /never moved to the Manager/.test(rule('7.16').text));
   assert.ok(/Open cases/.test(rule('7.15').text) && /half hour/.test(rule('7.15').text) && /Chikki/.test(rule('7.15').text));
   assert.ok(/30 minutes/.test(rule('7.14').text) && /red bar/.test(rule('7.14').text));
   assert.ok(/fewest open chats/.test(rule('7.13').text) && /absent/.test(rule('7.13').text));

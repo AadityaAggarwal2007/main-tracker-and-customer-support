@@ -144,6 +144,15 @@ async function t(name, fn) {
     ok(!PB.morningRoutine(tot).some((s) => /Critical chargeback risk/.test(s.text)));
   });
 
+  // Owner 2026-10-11: WhatsApp chats are not Chat Support's (they live in WhatsApp > Chats).
+  await t('a WhatsApp chat is never moved to the Manager (its messages still score; the WhatsApp alert still goes)', async () => {
+    S.chats.c1.source = 'whatsapp';
+    const r = await E.runRiskEscalation(MON_1130, true);
+    deq([r.critical, r.moved, r.alerted, S.updates, S.events], [1, 0, 2, [], []]);
+    ok(/c\.merged_into, c\.source\s+FROM conversations c/.test(fs.readFileSync(path.join(SRC, 'lib/chargeback/risk-escalate.ts'), 'utf8')), 'the locked row carries its source');
+    reset(); S.chats.c1.source = 'email';
+    eq((await E.runRiskEscalation(MON_1130, true)).moved, 1, 'an email chat moves as before');
+  });
   await t('the red bar reads the chargeback_risk moves too (escalate-late.ts lateAlerts)', () => {
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/escalate-late.ts'), 'utf8');
     ok(/e\.reason IN \('no_reply_30', 'chargeback_risk'\)/.test(src));

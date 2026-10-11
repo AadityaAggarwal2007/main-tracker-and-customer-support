@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Columns3, ExternalLink, List, Loader2, RefreshCw, Send, X } from 'lucide-react';
+import { Columns3, List, Loader2, RefreshCw, Send, X } from 'lucide-react';
 import PhoneThread, { type ThreadMessage } from './PhoneThread';
 import { SECTION, spin, type Alert } from './types';
 
@@ -10,6 +10,10 @@ import { SECTION, spin, type Alert } from './types';
 // chats (who wrote last, waiting / new, "Replied to automation"); the old one-list view stays as a switch. A click
 // opens the chat in a drawer on the right: the thread as WhatsApp draws it and a reply box (the normal reply route,
 // so the same holder / WhatsApp rules as the inbox). Every panel gets a column; none is hard-coded.
+// Owner 2026-10-11 (13:10): "hamara WhatsApp no-reply identity hai; saari WhatsApp chats Chat Support se nikaal ke
+// WhatsApp tab mein daal do". This tab is now the ONLY place a WhatsApp chat lives: the inbox, its counts and the team
+// automations leave `source = 'whatsapp'` out (waiting-sql.ts NOT_WHATSAPP_SQL), so the "Open in Chat Support" button is
+// gone; the Send and Activity tabs open a chat HERE (`openId`).
 interface PanelSum { id: string; name: string; chats: number; unread: number; today: number; waiting: number }
 interface Chat { id: string; name: string | null; phone: string | null; status: string; unread: number; at: string | null; last: string; lastSender: string | null; panelId: string | null; panel: string | null; automation: boolean; customerMsgs: number; subject: string | null }
 interface Sent { id: string; panelId: string; orderId: string; kind: string; status: string; phone: string | null; text: string; template: string | null; error: string | null; at: string; name: string | null; replied: boolean }
@@ -19,7 +23,7 @@ const WHO: Record<string, string> = { visitor: 'Customer', agent: 'Team', ai: 'C
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true }) : '—');
 const waiting = (c: Chat) => c.status !== 'resolved' && c.lastSender === 'visitor';
 
-export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { token: string; onAlert: Alert; onOpenChat: (conversationId: string) => void; goSend: () => void }) {
+export default function ChatsPanel({ token, onAlert, goSend, openId }: { token: string; onAlert: Alert; goSend: () => void; openId?: string | null }) {
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const [view, setView] = useState<'board' | 'list'>(() => { try { return localStorage.getItem('wa_chats_view') === 'list' ? 'list' : 'board'; } catch { return 'board'; } });
   const [panel, setPanel] = useState<string>(() => { try { return localStorage.getItem('wa_chats_panel') || 'all'; } catch { return 'all'; } });
@@ -81,6 +85,8 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
   const switchView = (v: 'board' | 'list') => { setView(v); setChats(null); try { localStorage.setItem('wa_chats_view', v); } catch { /* private window */ } };
   const pick = (id: string) => { setPanel(id); setChats(null); setOpen(null); try { localStorage.setItem('wa_chats_panel', id); } catch { /* private window */ } };
   const choose = (id: string) => { setOpenSent(null); setOpen(id); setMsgs([]); setText(''); };
+  // Another WhatsApp tab (Send, Activity) asked for a chat: open it here, in the drawer or the list's thread.
+  useEffect(() => { if (openId) choose(openId); }, [openId]);
   const send = async () => {
     const body = text.trim();
     if (!open || !body || sending) return;
@@ -118,7 +124,6 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', width: '100%' }}>
           <span className="chip">{STATUS[cur.status] || cur.status}</span>
           {cur.panel && <span className="chip">{cur.panel}</span>}
-          <button type="button" className="btn btn-sm btn-outline" style={{ gap: 4, marginLeft: 'auto' }} onClick={() => onOpenChat(cur.id)}><ExternalLink size={13} /> Open in Chat Support</button>
         </div>
       )}
       <PhoneThread
@@ -151,7 +156,7 @@ export default function ChatsPanel({ token, onAlert, onOpenChat, goSend }: { tok
           <button type="button" className="btn btn-sm btn-outline" style={{ gap: 4 }} onClick={() => void load()}><RefreshCw size={13} /> Refresh</button>
         </div>
       </div>
-      <div className="meta" style={{ fontSize: '0.75rem' }}>A customer who writes back lands in the column of the brand they dealt with. Click a chat to read it and answer right here: the reply goes out on WhatsApp (within 24 hours of their message).</div>
+      <div className="meta" style={{ fontSize: '0.75rem' }}>A customer who writes back lands in the column of the brand they dealt with. WhatsApp chats live only here, never in Chat Support: the number is ShipTrack&apos;s no-reply identity and the customer is told to email the store. Click a chat to read it; a reply typed here still goes out on WhatsApp (within 24 hours of their message).</div>
 
       {chats === null && <div className="meta"><Loader2 size={14} style={spin} /> Loading…</div>}
 

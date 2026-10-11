@@ -2,11 +2,12 @@
 // why). One chat per customer number per site (`visitor_id = 'wa:<digits>'`, source 'whatsapp'), the
 // customer's profile name as the visitor name until an order proves who they are, every message
 // stored as the customer's (`sender 'visitor'`) with its wamid in `metadata.wa_id` (Meta resends a
-// message it got no 200 for: a wamid already stored is skipped). The chat goes to the team
-// (`agent_handling`, a Closed one reopens): Chikki does not answer on WhatsApp yet, so the inbox
-// shows it under With team > Open case with an unread count, and a reply from the inbox goes back
-// out on WhatsApp (the messages route). Delivery reports (sent / delivered / read / failed) land on
-// our own message's metadata (`wa_status`, `wa_error`), shown in the message's details.
+// message it got no 200 for: a wamid already stored is skipped). The chat is `agent_handling` (a
+// Closed one reopens) and Chikki never answers on WhatsApp. Since 2026-10-11 (owner: the number is a
+// no-reply identity, "saari WhatsApp chats Chat Support se nikaal do") such a chat is NOT in Chat
+// Support at all (waiting-sql.ts NOT_WHATSAPP_SQL): it shows only in WhatsApp > Chats, where a reply
+// goes back out on WhatsApp through the same messages route. Delivery reports (sent / delivered /
+// read / failed) land on our own message's metadata (`wa_status`, `wa_error`).
 
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from './site';

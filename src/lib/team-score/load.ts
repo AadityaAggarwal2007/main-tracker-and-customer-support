@@ -145,6 +145,9 @@ export async function loadScoreInput(days: string[], nowMs: number): Promise<Sco
       // Q1. Candidate chats and the customer's other chats. known = VERIFIED, the app's own test
       // (chatIsVerified in src/lib/chat/verified.ts, used for widget chats AND email threads): order ID
       // + phone proved, or an old phone match. Thanks and convinced count only there (owner A3).
+      // A WhatsApp chat is never team work (owner 2026-10-11: the number is a no-reply identity, WhatsApp chats are
+      // out of Chat Support): left out here, so nothing of it (a reply typed in WhatsApp > Chats, a customer waiting
+      // there) scores or costs points. A frozen day keeps its summary; a recompute reads the rule as it is now.
       const q1 = await c.query(
         `WITH ids AS (
   SELECT DISTINCT m.conversation_id AS id FROM messages m
@@ -161,11 +164,12 @@ SELECT c.id, c.source, c.status, c.merged_into, c.assigned_to,
        CASE WHEN c.source = 'chat' AND c.customer_key IS NOT NULL
             THEN 'k' || md5(c.site_id || ':' || c.customer_key) ELSE 'c' || md5(c.id) END AS cu
   FROM conversations c
- WHERE c.id IN (SELECT id FROM ids)
+ WHERE (c.id IN (SELECT id FROM ids)
     OR (c.source = 'chat' AND c.customer_key IS NOT NULL
         AND (c.site_id, c.customer_key) IN (SELECT c2.site_id, c2.customer_key FROM conversations c2
                                               WHERE c2.id IN (SELECT id FROM ids) AND c2.source = 'chat'
-                                                AND c2.customer_key IS NOT NULL))`,
+                                                AND c2.customer_key IS NOT NULL)))
+   AND c.source <> 'whatsapp'`,
         [iso(loadStartMs), iso(loadEndMs)],
       );
       const convs: InConv[] = q1.rows.map((r: Record<string, unknown>) => ({

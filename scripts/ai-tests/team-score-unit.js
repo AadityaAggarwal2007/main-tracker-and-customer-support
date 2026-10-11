@@ -491,7 +491,7 @@ t('W7 load.ts passes the inbox regexes themselves, not a copy', () => {
 });
 
 // ── W8. Isolation ──────────────────────────────────────────────
-const SKIP_DIRS = new Set(['node_modules', '.next', '.git', 'out', 'build', 'coverage']);
+const SKIP_DIRS = new Set(['node_modules', '.next', '.git', 'out', 'build', 'coverage', '.claude']);  // .claude: agents' worktrees (copies of the repo), not the repo itself
 function walk(rel, out) {
   for (const e of fs.readdirSync(path.join(ROOT, rel), { withFileTypes: true })) {
     const r = rel ? `${rel}/${e.name}` : e.name;

@@ -1679,7 +1679,7 @@ export default function AdminDashboard() {
           )}
           {/* ════════ WHATSAPP (Super Admin only) ════════ */}
           {activeTab === 'whatsapp' && isSuperAdmin(user) && (
-            <WhatsAppPage token={token} onAlert={showAlert} onOpenChat={(id) => router.push(`/admin/chat?open=${encodeURIComponent(id)}`)} />
+            <WhatsAppPage token={token} onAlert={showAlert} />
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && canRefunds(user) && (

@@ -1,5 +1,14 @@
 import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from './waiting';
 
+// ── WhatsApp chats are not Chat Support's (owner 2026-10-11, 13:10: "hamara WhatsApp no-reply identity hai, hum WhatsApp
+// par support nahi dete; saari WhatsApp chats Chat Support se nikaal ke WhatsApp tab mein daal do") ──
+// A customer who writes to the business number gets one fixed "help is by email" reply (whatsapp-autoreply.ts) and the
+// chat lives ONLY in WhatsApp > Chats (ChatsPanel, /api/whatsapp/chats). Every staff list, count and automatic team action
+// that reads `conversations` under the alias c adds this: the inbox list and search, every badge and section count,
+// /api/chat/pending, the Today board, auto-assign, the 30-minute move and its red bar, Team live, the chargeback-risk
+// move. Opening such a chat by its id still works (the WhatsApp tab's reply box posts to the normal reply route).
+export const NOT_WHATSAPP_SQL = `c.source <> 'whatsapp'`;
+
 // ── The "waiting for a reply" SQL ───────────────────────────────
 // Moved word for word out of the inbox list route (src/app/api/chat/conversations/route.ts), so the
 // chat team routes can ask the same question about one chat ("is this customer waiting?" for

@@ -5,7 +5,9 @@
 // half hour, and how many of their chats went to the Manager after 30 minutes without a reply. Then Chikki: its replies
 // per half hour, the chats it finished alone today, the chats it handed to the team, the Refund / Ship again marks it
 // made, and whether it is answering at all (ai-health.ts). Read only; every part in its own try (a missing table
-// zeroes only that part). Nothing stored.
+// zeroes only that part). Nothing stored. WhatsApp chats (owner 2026-10-11: not Chat Support's, NOT_WHATSAPP_SQL) are
+// left out of the chats held / waiting and of Chikki's rows (its only WhatsApp lines are the fixed "help is by email"
+// and STOP replies); a reply event carries no source, so a team reply typed in WhatsApp > Chats still counts as a reply.
 
 import { query } from '@/lib/db';
 import { lastSeenMs, presenceRead, teamEntries } from '@/lib/auth';
@@ -13,7 +15,7 @@ import { can, canAccessPanel } from '@/lib/permissions';
 import { awayMinutes, isOfficeHours, todayOpenMs } from '@/lib/office-hours';
 import { aiHealth, AI_REASON_TEXT } from './ai-health';
 import { loadHolidays } from './holidays';
-import { WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
+import { NOT_WHATSAPP_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
 import { onDuty } from './auto-assign-rules';
 import { SLOT_MS, slotCount, slotLabels } from './team-live-rules';
 
@@ -42,7 +44,7 @@ export async function loadTeamLive(panels: string[] | null, now = Date.now()): P
     `SELECT c.assigned_to AS k, count(*)::int AS held, (count(*) FILTER (WHERE (${WAITING_SINCE_SQL}) IS NOT NULL))::int AS waiting
        FROM conversations c JOIN sites s ON s.id = c.site_id
        ${WAITING_LATERAL}
-      WHERE c.assigned_to IS NOT NULL AND c.status <> 'resolved' AND c.merged_into IS NULL
+      WHERE c.assigned_to IS NOT NULL AND c.status <> 'resolved' AND c.merged_into IS NULL AND ${NOT_WHATSAPP_SQL}
         AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))
       GROUP BY c.assigned_to`, [panels])).rows, [] as { k: string; held: number; waiting: number }[]);
 
@@ -82,7 +84,7 @@ export async function loadTeamLive(panels: string[] | null, now = Date.now()): P
   const ai = await safe('chikki replies', async () => (await query<{ slot: number; n: number }>(
     `SELECT floor(extract(epoch FROM (m.created_at - $2::timestamptz)) / ${SLOT_MS / 1000})::int AS slot, count(*)::int AS n
        FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN sites s ON s.id = c.site_id
-      WHERE m.sender = 'ai' AND m.created_at >= $2::timestamptz AND m.deleted_at IS NULL
+      WHERE m.sender = 'ai' AND m.created_at >= $2::timestamptz AND m.deleted_at IS NULL AND ${NOT_WHATSAPP_SQL}
         AND COALESCE(m.metadata->>'wa_auto_reply', '') <> 'true' AND COALESCE(m.metadata->>'withheld', '') = ''
         AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))
       GROUP BY 1`, [panels, openIso])).rows, [] as { slot: number; n: number }[]);
@@ -94,7 +96,7 @@ export async function loadTeamLive(panels: string[] | null, now = Date.now()): P
               WHERE e.kind = 'status' AND e.to_status = 'human_needed' AND e.actor IN ('ai', 'system') AND e.created_at >= $2::timestamptz
                 AND ($1::text[] IS NULL OR s2.tracker_business_id::text = ANY($1::text[])))::int AS handed
        FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN sites s ON s.id = c.site_id
-      WHERE m.sender = 'ai' AND m.created_at >= $2::timestamptz AND m.deleted_at IS NULL
+      WHERE m.sender = 'ai' AND m.created_at >= $2::timestamptz AND m.deleted_at IS NULL AND ${NOT_WHATSAPP_SQL}
         AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))`, [panels, openIso])).rows[0], { alone: 0, handed: 0 });
   const marks = await safe('chikki marks', async () => (await query<{ n: number }>(
     `SELECT count(*)::int AS n FROM chat_case_events e LEFT JOIN sites s ON s.id::text = e.site_id
