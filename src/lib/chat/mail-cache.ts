@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { listMails, listThread, readMail, setSeen, type MailBoxSecret, type MailFull, type ThreadItem } from './mail-inbox';
+import { listMails, listNewMails, listThread, readMail, setSeen, type MailBoxSecret, type MailFull, type ThreadItem } from './mail-inbox';
+import { sinceDate, sortMails } from './mail-view';
 import type { MailListItem } from './mail-view';
 import type { PoolSlot } from './imap-pool';
 import { autoVerifySenders } from './mail-auto-verify';
@@ -20,7 +21,7 @@ import { autoVerifySenders } from './mail-auto-verify';
 // keeps the Gmail connections alive) and reads the rest of the month's mails ahead a few at a time until every mail
 // is kept, and read / answered flags set from here are written to Gmail and mirrored in the copy.
 
-export interface CachedList { mails: MailListItem[]; unread: number; truncated: boolean; days: number; at: number }
+export interface CachedList { mails: MailListItem[]; unread: number; truncated: boolean; days: number; at: number; fullAt?: number; flagsAt?: number }
 interface CachedMail { mail: MailFull; at: number; bytes: number }
 
 export const LIST_FRESH_MS = 45_000;          // a list this old is answered at once and refreshed behind the screen
@@ -28,7 +29,15 @@ export const LIST_WARM_MS = 50_000;           // the poller (every minute) reads
 export const MAIL_TTL_MS = 24 * 3_600_000;    // a kept mail is forgotten after a day unopened (a mail's text never changes)
 export const MAIL_MAX = 600;                  // and at most this many ...
 export const MAIL_BUDGET_BYTES = 96 * 1024 * 1024;   // ... within this much memory
-export const PREREAD = 10;                    // the poller reads ahead this many not-yet-kept mails per mailbox per minute, newest first, until all are kept
+export const PREREAD = 4;                     // the poller reads ahead this many not-yet-kept mails per mailbox per minute, newest first, until all are kept (10 before 11 Oct: too much for Gmail)
+// Owner 2026-10-11 (the log: Gmail 7-27 s per SEARCH, 13-15 s per sign-in): between two FULL reads (every FULL_EVERY_MS) a
+// refresh asks Gmail only for the mails newer than the kept list, and the kept mails' read / answered flags every
+// FLAGS_EVERY_MS; a mailbox whose last Gmail call was slow skips the read-ahead for SLOW_PAUSE_MS.
+export const FULL_EVERY_MS = 30 * 60_000;
+export const FLAGS_EVERY_MS = 3 * 60_000;
+export const SLOW_MS = 8_000;
+export const SLOW_PAUSE_MS = 5 * 60_000;
+const slowAt = new Map<string, number>();
 
 const lists = new Map<string, CachedList>();
 const inflight = new Map<string, Promise<CachedList>>();
@@ -94,10 +103,19 @@ export function refreshList(box: MailBoxSecret, now = Date.now()): Promise<Cache
   const running = inflight.get(box.id);
   if (running) return running;
   const p = (async () => {
+    const have = lists.get(box.id);
+    const t0 = Date.now();
+    try {
+      if (have && have.fullAt && now - have.fullAt < FULL_EVERY_MS && have.mails.length) return await refreshLight(box, have, now);
+    } catch (e) {
+      slowAt.set(box.id, Date.now());
+      throw e;
+    } finally { if (Date.now() - t0 > SLOW_MS) slowAt.set(box.id, Date.now()); }
     const r = await listMails(box, now, { phase: 'full' });
+    if (Date.now() - t0 > SLOW_MS) slowAt.set(box.id, Date.now());
     try { await autoVerifySenders(box.panelId, r.mails.map(m => ({ email: m.fromAddress, authPass: m.authPass, subject: m.subject }))); }
     catch (e) { console.error('[mail-cache] auto-verify:', (e as Error).message); }
-    const entry: CachedList = { mails: r.mails, unread: r.unread, truncated: r.truncated, days: r.days, at: Date.now() };
+    const entry: CachedList = { mails: r.mails, unread: r.unread, truncated: r.truncated, days: r.days, at: Date.now(), fullAt: Date.now(), flagsAt: Date.now() };
     lists.set(box.id, entry); changed();
     // A mail that left the inbox (archived, deleted) is forgotten.
     const keep = new Set(r.mails.map(m => m.uid));
@@ -106,6 +124,27 @@ export function refreshList(box: MailBoxSecret, now = Date.now()): Promise<Cache
   })().finally(() => inflight.delete(box.id));
   inflight.set(box.id, p);
   return p;
+}
+
+// Between full reads: only the new mails, and the flags every few minutes (see FULL_EVERY_MS). Mails older than the month
+// fall off by their date; one archived / deleted in Gmail falls off at the flags read (or the next full read).
+async function refreshLight(box: MailBoxSecret, have: CachedList, now: number): Promise<CachedList> {
+  const maxUid = have.mails.reduce((m, x) => Math.max(m, x.uid), 0);
+  const wantFlags = !have.flagsAt || now - have.flagsAt >= FLAGS_EVERY_MS;
+  const r = await listNewMails(box, maxUid, wantFlags ? have.mails.map(m => m.uid) : null, now);
+  if (r.fresh.length) {
+    try { await autoVerifySenders(box.panelId, r.fresh.map(m => ({ email: m.fromAddress, authPass: m.authPass, subject: m.subject }))); }
+    catch (e) { console.error('[mail-cache] auto-verify:', (e as Error).message); }
+  }
+  const since = sinceDate(now).getTime();
+  let kept = have.mails.filter(m => Date.parse(m.date) >= since && !(r.gone && r.gone.has(m.uid)));
+  kept = kept.map(m => { const f = r.flags.get(m.uid); return f ? { ...m, unread: f.unread, answered: f.answered } : m; });
+  const seen = new Set(kept.map(m => m.uid));
+  const merged = sortMails([...kept, ...r.fresh.filter(m => !seen.has(m.uid))]);
+  const entry: CachedList = { ...have, mails: merged, unread: merged.filter(x => x.unread).length, at: Date.now(), flagsAt: wantFlags ? Date.now() : have.flagsAt };
+  lists.set(box.id, entry); changed();
+  if (r.gone) for (const [k, v] of Array.from(mails.entries())) if (k.startsWith(`${box.id}:`) && r.gone.has(v.mail.uid)) drop(k);
+  return entry;
 }
 
 // The list for the screen: the kept one at once (refreshed behind it when old), else read now.
@@ -197,9 +236,14 @@ export async function warmMailbox(box: MailBoxSecret, now = Date.now()): Promise
   const list = refreshed ? await refreshList(box, now) : have!;
   const todo = list.mails.filter(m => !cachedMail(box.id, m.uid, false, now)).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   let preread = 0;
+  // Gmail was slow for this mailbox a moment ago: no read-ahead now (it only adds to the load; a click still reads).
+  const slow = slowAt.get(box.id);
+  if (slow && now - slow < SLOW_PAUSE_MS) return { refreshed, preread, left: todo.length };
   for (const m of todo.slice(0, PREREAD)) {
+    const t1 = Date.now();
     const mail = await readMail(box, m.uid, { markRead: false, folder: 'inbox', slot: 'bg' });
     if (mail) { store(mailKey(box.id, m.uid, false), mail, now); preread += 1; }
+    if (Date.now() - t1 > SLOW_MS) { slowAt.set(box.id, Date.now()); break; }
   }
   return { refreshed, preread, left: Math.max(0, todo.length - preread) };
 }
@@ -235,7 +279,7 @@ export async function threadFor(box: MailBoxSecret, address: string, opts: { fre
 }
 
 // For the tests and a sign-out of every mailbox: forget everything.
-export function clearMailServerCache(): void { lists.clear(); inflight.clear(); mails.clear(); threads.clear(); threadReads.clear(); mailBytes = 0; dirty = false; loaded = true; }
+export function clearMailServerCache(): void { slowAt.clear(); lists.clear(); inflight.clear(); mails.clear(); threads.clear(); threadReads.clear(); mailBytes = 0; dirty = false; loaded = true; }
 // For the tests: forget that the file was read, so the next use reads it again.
 export function forgetDiskLoad(): void { loaded = false; }
 export function mailCacheStats(): { lists: number; mails: number; bytes: number } { return { lists: lists.size, mails: mails.size, bytes: mailBytes }; }

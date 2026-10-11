@@ -18,7 +18,10 @@ export interface PoolBox { id: string; email: string; appPassword: string }
 // the server's read-ahead of big mails held 'bg'; now each mailbox has at most 4 connections per process, Gmail allows ~15)
 export type PoolSlot = 'list' | 'read' | 'bg' | 'thread';
 
-const IDLE_MS = 4 * 60_000;
+// 20 minutes (4 before 11 Oct): a sign-in to Gmail took 13-15 s from the server (the log), so a kept connection must not be
+// closed after a short pause; ImapFlow keeps it alive with IDLE meanwhile. At most 4 per mailbox per process stays well
+// under Gmail's ~15 per account.
+const IDLE_MS = 20 * 60_000;
 const G = globalThis as unknown as { __imapPool?: Map<string, Entry> };
 const pool = (): Map<string, Entry> => (G.__imapPool ??= new Map());
 
@@ -62,7 +65,7 @@ async function acquire(key: string, box: PoolBox): Promise<{ client: ImapFlow; e
     drop(key, cur);
   }
   const target = await gmailHost();
-  const client = new ImapFlow({ ...target, port: 993, secure: true, auth: { user: box.email, pass: box.appPassword }, logger: false });
+  const client = new ImapFlow({ ...target, port: 993, secure: true, auth: { user: box.email, pass: box.appPassword }, logger: false, connectionTimeout: 20_000, greetingTimeout: 20_000 });
   const entry = { client, pass: box.appPassword } as Entry;
   // An ImapFlow that errors with no listener would crash the process; a closed one simply leaves the pool.
   client.on('error', () => drop(key, entry));
