@@ -210,9 +210,11 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([f.VIEW_LABELS.active, f.VIEW_LABELS.closed], ['Active cases', 'Closed cases']);
     eq(f.matchesView(asked, 'closed', {}, Date.now(), closed), true); eq(f.matchesView(again, 'active', {}, Date.now(), closed), true);
     eq(f.matchesView(replied, 'closed', {}, Date.now(), {}), true); eq(f.matchesView(replied, 'active', {}, Date.now(), reopened), true);
-    // the screen: a sent reply stamps repliedAt on the row and opens the next active customer from Active cases
+    // the screen: a sent reply stamps repliedAt on EVERY row of that customer (owner 11 Oct 13:02: his other threads too,
+    // as storeList counts a reply to the customer) and opens the next active customer from Active cases
     const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
-    assert.match(card, /replied: true, repliedAt: new Date\(\)\.toISOString\(\)/);
+    assert.match(card, /const at = new Date\(\)\.toISOString\(\);/);
+    assert.match(card, /x\.uid === uid \|\| \(addr && caseAddress\(x\.fromAddress\) === addr\) \? \{ \.\.\.x, answered: true, replied: true, repliedAt: at \}/);
     assert.match(card, /else if \(view === 'active'\) goNext\(uid, x => caseState\(x, cases\) === 'active'\)/);
     // the server side (mail-cases.ts): the chat_settings key, the masked address for the log, and no DELETE anywhere
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-cases.ts'), 'utf8');
@@ -628,6 +630,39 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       // the route answers it too
       const j = await (await routes.messages.GET(req('GET', `/api/mail/messages?box=${BOX}`))).json();
       eq(j.mails.find((m) => m.fromAddress === 'cust@example.com').repliedAt, row.repliedAt);
+    });
+    await t('answered per CUSTOMER, not per thread (owner 11 Oct 13:02, kurtiya: Bhanu\'s two mails, one answer in the first thread): a Sent row to the sender after the mail counts in any thread; to another address, or before the mail, does not', async () => {
+      const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+      const uv = String(G.folders.INBOX.uidValidity), suv = String(G.folders['[Gmail]/Sent Mail'].uidValidity);
+      const B = 'bhanu@gmail.com';
+      // two INBOX threads of one customer: A (uid 70, 3 h ago) and B (uid 71, 2 h ago, his newest mail)
+      await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, from_name, from_addr, subject, sent_at) VALUES
+               ($1, 'inbox', $2, 70, 'TA', 'Bhanu', $3, 'Order not received', now() - interval '3 hours'),
+               ($1, 'inbox', $2, 71, 'TB', 'Bhanu', $3, 'Please reply', now() - interval '2 hours')`, [BOX, uv, B]);
+      // what must NOT count: our mail to him BEFORE his mail B, and a mail to somebody else after it
+      await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, from_addr, to_list, to_addrs, subject, sent_at, seen) VALUES
+               ($1, 'sent', $2, 601, 'TA', 'vastora@store.example', $3, ARRAY[$3]::text[], 'Re: Order not received', now() - interval '150 minutes', true),
+               ($1, 'sent', $2, 602, 'TX', 'vastora@store.example', 'other@gmail.com', ARRAY['other@gmail.com']::text[], 'Hello', now() - interval '30 minutes', true)`, [BOX, suv, B]);
+      const list = async () => (await store.storeList(BOX)).mails.filter((m) => m.fromAddress === B).sort((a, b) => a.uid - b.uid);
+      let rows = await list();
+      deq(rows.map((m) => [m.uid, m.replied, 'repliedAt' in m]), [[70, true, true], [71, false, false]]);   // A answered (601 is after it), B not
+      eq(f.caseState(rows[1], {}), 'active'); eq(f.bucketOf(rows[1], {}), 'todo');
+      // the team answers INSIDE thread A, after B's mail, addressed to him: B is answered too
+      const ins = await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, from_addr, to_list, to_addrs, subject, sent_at, seen) VALUES
+               ($1, 'sent', $2, 603, 'TA', 'vastora@store.example', $3, ARRAY[$3]::text[], 'Re: Order not received', now() - interval '1 hour', true) RETURNING sent_at`, [BOX, suv, B]);
+      rows = await list();
+      deq(rows.map((m) => [m.uid, m.replied]), [[70, true], [71, true]]);
+      eq(rows[1].repliedAt, new Date(ins.rows[0].sent_at).toISOString());
+      eq(f.caseState(rows[1], {}), 'closed'); eq(f.bucketOf(rows[1], {}), 'done');
+      deq(f.customerCase(rows, B, {}, {}), { state: 'closed', closedAt: rows[1].repliedAt, closedBy: 'reply' });   // gmail.com = a customer
+      // a mail Gmail gave no thread id still counts through the address
+      await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, from_addr, subject, sent_at) VALUES ($1, 'inbox', $2, 72, NULL, 'solo@gmail.com', 'No thread', now() - interval '2 hours')`, [BOX, uv]);
+      await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, from_addr, to_list, to_addrs, subject, sent_at, seen) VALUES ($1, 'sent', $2, 604, NULL, 'vastora@store.example', 'solo@gmail.com', ARRAY['solo@gmail.com']::text[], 'Re: No thread', now() - interval '1 hour', true)`, [BOX, suv]);
+      const solo = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'solo@gmail.com');
+      deq([solo.uid, solo.replied, !!solo.repliedAt], [72, true, true]);
+      const other = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'other@gmail.com');
+      eq(other, undefined);                                                       // the Sent row to somebody else made no row and counted for nobody
+      await q(`UPDATE mail_store SET gone = true WHERE box_id = $1 AND uid IN (70, 71, 72, 601, 602, 603, 604)`, [BOX]);
     });
     pool.closeAllImap();
     outbox.closeOutboxTransports();

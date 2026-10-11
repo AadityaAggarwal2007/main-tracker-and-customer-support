@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, BadgeCheck, ChevronLeft, FolderCheck, FolderOpen, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, bucketOf, caseRows, caseState, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, bucketOf, caseAddress, caseRows, caseState, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
@@ -488,9 +488,13 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               onChanged={() => { if (boxId) { void refresh(boxId); if (mail) void loadCustomer(boxId, mail.fromAddress, true); } }}
               onSent={() => {
                 const uid = mail.uid;
+                const addr = caseAddress(mail.fromAddress);
                 // repliedAt now: the reply closes the customer's case at once on this screen (owner 2026-10-11 12:45); the
-                // next list refresh brings the same from the store
-                patchItems(list => list.map(x => x.uid === uid ? { ...x, answered: true, replied: true, repliedAt: new Date().toISOString() } : x));
+                // next list refresh brings the same from the store. Every mail of this customer on the list, not only the
+                // one answered (owner 2026-10-11 13:02: a customer's second mail in another Gmail thread stayed To reply
+                // after the team answered the first; storeList counts a reply to the customer, whatever the thread).
+                const at = new Date().toISOString();
+                patchItems(list => list.map(x => x.uid === uid || (addr && caseAddress(x.fromAddress) === addr) ? { ...x, answered: true, replied: true, repliedAt: at } : x));
                 setMail(m => (m ? { ...m, answered: true } : m));
                 if (boxId) void loadThread(boxId, mail.fromAddress, true, uid);
                 if (view === 'todo') goNext(uid);

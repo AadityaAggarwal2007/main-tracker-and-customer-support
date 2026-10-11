@@ -5,7 +5,7 @@
 export type MailView = 'todo' | 'done' | 'other' | 'active' | 'closed' | 'all' | 'unread' | 'unverified' | 'verified' | 'notreplied' | 'replied' | 'attach' | 'today' | 'week';
 export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
-// repliedAt: when we last wrote in the conversation after this mail (ISO; the mail store only, mail-store.ts storeList).
+// repliedAt: when we last wrote to this customer after this mail, in any conversation (ISO; the mail store only, mail-store.ts storeList).
 export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
@@ -89,8 +89,9 @@ const time = (it: FilterItem) => Date.parse(it.date) || 0;
 // ── The three boxes (owner 2026-10-11: "Jawab dena hai / Jawab de diya / Customer nahi") ──
 // A customer: a sender verified for an order, or a person writing from a personal mailbox (Gmail, Yahoo, Outlook ...)
 // that is not a no-reply / notification address. Everything else (newsletters, banks, gateways, tools, sales pitches
-// sent through mailing services) is "Not customers". A customer's mail is "Replied" once we wrote in the same Gmail
-// conversation after it (or Gmail marks it answered), else "To reply".
+// sent through mailing services) is "Not customers". A customer's mail is "Replied" once we wrote to that customer
+// after it, in the same Gmail conversation or any other (storeList's replied, owner 2026-10-11 13:02: two mails of one
+// customer in two threads, one answer), or Gmail marks it answered; else "To reply".
 const PERSONAL = /@(gmail|googlemail|yahoo|ymail|rocketmail|outlook|hotmail|live|msn|icloud|me|mac|rediffmail|rediff|aol|proton|protonmail|pm|zoho|yandex|gmx|mail|inbox)\.[a-z.]{2,8}$/i;
 const ROBOT = /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?|newsletters?|news|marketing|promotions?|offers?|updates?|info|hello|team|billing|accounts?|admin|support|feedback|digest)([._+-]|@)/i;
 export function isCustomerMail(it: FilterItem, v: VerifiedMap): boolean {
