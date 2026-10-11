@@ -67,11 +67,13 @@ export async function storeSeenThread(row: StoreRow): Promise<void> {
   for (const x of r.rows) await storeFlag(x, 'seen');
 }
 
-// The newest row of a UID in a folder (a folder's uidvalidity rarely changes; the newest copy wins).
+// The row of a UID in a folder: the copy still in the folder first (owner 2026-10-11, live: Gmail renumbered one
+// mailbox's folder and the old, empty copy of a UID was picked, so the mail and the reply went to Gmail live and timed
+// out), then one whose body is copied, then the newest uidvalidity.
 export async function storeRow(boxId: string, folder: StoreFolder, uid: number): Promise<StoreRow | null> {
   return queryOne<StoreRow>(
     `SELECT ${COLS} FROM mail_store WHERE box_id = $1 AND folder = $2 AND uid = $3 AND NOT local
-      ORDER BY uidvalidity DESC LIMIT 1`, [boxId, folder, uid]);
+      ORDER BY gone ASC, (body_state = 'done') DESC, uidvalidity DESC LIMIT 1`, [boxId, folder, uid]);
 }
 
 // One mail for the screen: from the copy when its body is in; null = not copied yet (the route reads Gmail then).
@@ -110,7 +112,7 @@ export async function storeThread(boxId: string, address: string, uid: number | 
   let threadId: string | null = null;
   if (uid) {
     const t = await queryOne<{ thread_id: string | null }>(
-      `SELECT thread_id FROM mail_store WHERE box_id = $1 AND folder = 'inbox' AND uid = $2 ORDER BY uidvalidity DESC LIMIT 1`, [boxId, uid]);
+      `SELECT thread_id FROM mail_store WHERE box_id = $1 AND folder = 'inbox' AND uid = $2 ORDER BY gone ASC, uidvalidity DESC LIMIT 1`, [boxId, uid]);
     threadId = t?.thread_id || null;
   }
   const r = await query<StoreRow>(

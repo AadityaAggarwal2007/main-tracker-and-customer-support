@@ -427,6 +427,17 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       await Promise.all([outbox.runOutbox(), outbox.runOutbox(), outbox.runOutbox()]);
       eq(G.sent.filter((m) => m.text.startsWith('Joined.')).length, 1);
     });
+    await t('a gone copy of a UID (an older Gmail numbering, body never copied) is never the one opened or replied to', async () => {
+      const f = G.folders.INBOX;
+      const uv = String(f.uidValidity);
+      const row = await store.storeRow(BOX, 'inbox', 13);
+      eq(row.uidvalidity, uv);
+      await q(`INSERT INTO mail_store (box_id, folder, uidvalidity, uid, from_addr, subject, sent_at, gone) VALUES ($1, 'inbox', $2, 13, 'cust@example.com', 'old copy', now(), true) ON CONFLICT DO NOTHING`, [BOX, String(f.uidValidity + 999n)]);
+      const again = await store.storeRow(BOX, 'inbox', 13);
+      deq([again.uidvalidity, again.body_state], [uv, 'done']);
+      const orig = await store.storeOriginal(BOX, 13);
+      assert.ok(orig && orig.row.id === row.id, 'the reply uses the live copy');
+    });
     pool.closeAllImap();
     outbox.closeOutboxTransports();
     await db.getPool().end();
