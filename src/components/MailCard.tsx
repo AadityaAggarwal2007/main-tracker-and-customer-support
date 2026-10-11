@@ -168,8 +168,11 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     }
     setOpening(true);
     if (!images && !cached) setMail(null);
+    // Never a spinner for ever (owner 2026-10-11, "ni open ho rha"): after 35 s it says Gmail is slow and the row can be clicked again.
+    const ctl = new AbortController();
+    const cut = setTimeout(() => ctl.abort(), 35_000);
     try {
-      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(id)}&uid=${uid}${images ? '&images=1' : ''}`, { headers: auth, cache: 'no-store' });
+      const r = await fetch(`/api/mail/message?box=${encodeURIComponent(id)}&uid=${uid}${images ? '&images=1' : ''}`, { headers: auth, cache: 'no-store', signal: ctl.signal });
       const d = await r.json().catch(() => ({}));
       if (seq !== openSeq.current) return;
       if (!r.ok) { alertRef.current('error', d.error || 'Could not open that mail.'); setOpenUid(null); return; }
@@ -177,8 +180,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
       setMail(d.mail);
       patchItems(list => list.map(x => x.uid === uid ? { ...x, unread: false } : x),
         Array.isArray(d.verified) && d.verified.length ? { ...(mailCache.lists.get(id)?.verified ?? {}), [d.mail.fromAddress]: d.verified } : undefined);
-    } catch { if (seq === openSeq.current) { alertRef.current('error', 'Could not open that mail.'); setOpenUid(null); } }
-    finally { if (seq === openSeq.current) setOpening(false); }
+    } catch { if (seq === openSeq.current) { alertRef.current('error', 'Gmail is very slow right now: the mail could not be opened. Click it again in a moment.'); setOpenUid(null); } }
+    finally { clearTimeout(cut); if (seq === openSeq.current) setOpening(false); }
   }, [auth, patchItems]);
 
   // The mailbox and the open mail are remembered for the next refresh (owner 2026-10-10; the admin page restores them

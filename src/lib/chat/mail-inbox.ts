@@ -121,6 +121,55 @@ export async function listMails(box: MailBoxSecret, now = Date.now(), opts: { fr
   return res;
 }
 
+// ── The light refresh (owner 2026-10-11: the server log showed Gmail taking 7-27 s for one SEARCH and 13-15 s to sign in:
+// re-reading every mailbox's whole list (structure + headers of 140-200 mails) every minute, from two server processes, got
+// the accounts throttled) ──
+// Only what is NEW since the kept list's highest UID (Gmail's UIDs only grow), with the full fields, and, when asked, the
+// read / answered flags of the kept mails (FLAGS only: tiny). No SEARCH. A full read stays for once every half hour.
+export async function listNewMails(box: MailBoxSecret, afterUid: number, flagUids: number[] | null, now = Date.now()): Promise<{ fresh: MailListItem[]; flags: Map<number, { unread: boolean; answered: boolean }>; gone: Set<number> | null }> {
+  const t0 = Date.now();
+  const res = await withImap(box, async (c) => {
+    const lock = await c.getMailboxLock('INBOX', { readOnly: true });
+    try {
+      const fresh: MailListItem[] = [];
+      const uidNext = Number((c.mailbox as { uidNext?: number } | false || {}).uidNext || 0);
+      if (!uidNext || uidNext > afterUid + 1) {
+        for await (const m of c.fetch(`${afterUid + 1}:*`, { uid: true, flags: true, envelope: true, bodyStructure: true, headers: ['authentication-results'] }, { uid: true })) {
+          if (m.uid <= afterUid) continue;   // "N:*" always returns the last mail even when nothing is newer
+          const from = m.envelope?.from?.[0];
+          const flags = m.flags ?? new Set<string>();
+          const date = m.envelope?.date ? new Date(m.envelope.date) : new Date(now);
+          if (date.getTime() < sinceDate(now).getTime()) continue;
+          fresh.push({
+            uid: m.uid,
+            from: (from?.name || from?.address || '').trim() || '(unknown sender)',
+            fromAddress: (from?.address || '').toLowerCase(),
+            subject: (m.envelope?.subject || '').trim() || '(no subject)',
+            date: date.toISOString(),
+            unread: !flags.has('\\Seen'),
+            hasAttachment: hasAttachmentPart(m.bodyStructure as StructNode | undefined),
+            answered: flags.has('\\Answered'),
+            authPass: gmailAuthPassed(firstAuthResults(m.headers as Buffer | undefined)),
+          });
+        }
+      }
+      const flags = new Map<number, { unread: boolean; answered: boolean }>();
+      let gone: Set<number> | null = null;
+      if (flagUids && flagUids.length) {
+        for await (const m of c.fetch(flagUids.join(','), { uid: true, flags: true }, { uid: true })) {
+          const f = m.flags ?? new Set<string>();
+          flags.set(m.uid, { unread: !f.has('\\Seen'), answered: f.has('\\Answered') });
+        }
+        gone = new Set(flagUids.filter(u => !flags.has(u)));   // archived / deleted since
+      }
+      return { fresh, flags, gone };
+    } finally { lock.release(); }
+  }, 'list');
+  const total = Date.now() - t0;
+  if (total > 2000) console.log(`[mail-timing] list new box=${box.id} new=${res.fresh.length} flags=${res.flags.size} total=${total}ms`);
+  return res;
+}
+
 export type MailFolder = 'inbox' | 'sent';
 
 // Gmail's Sent folder path (it is called "[Gmail]/Sent Mail" in English and differs by language): found by its

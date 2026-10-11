@@ -126,9 +126,19 @@ const PKG_STUBS = {
       get box() { return this.path === '[Gmail]/Sent Mail' ? S.sentbox : S.msgs; }
       async getMailboxLock(box, o) { if (S.lockFailOnce && this.reusedOnce) { S.lockFailOnce = false; throw new Error('Connection not available'); } this.reusedOnce = true; this.path = box; S.locks.push({ box, readOnly: !!(o && o.readOnly) }); return { release() {} }; }
       async search(q) { S.searches.push(q); const l = this.box; return l.map((m, i) => i + 1).filter((i) => (!q.from || l[i - 1].from.address === q.from) && (!q.to || (l[i - 1].to && l[i - 1].to.address === q.to))); }
-      fetch(seqs, q) {
+      // The selected mailbox's next UID (mail-inbox.ts listNewMails reads it after the lock).
+      get mailbox() { const l = this.box || []; return { uidNext: l.reduce((m, x) => Math.max(m, x.uid), 0) + 1 }; }
+      fetch(seqs, q, o) {
         S.fetchQueries.push(q);
-        const list = seqs.map((s) => this.box[s - 1]);
+        let list;
+        if (typeof seqs === 'string' && o && o.uid) {
+          // "N:*" = UIDs from N (IMAP always returns the last mail even when nothing is newer); "1,2,3" = those UIDs.
+          S.uidFetches = (S.uidFetches || []); S.uidFetches.push(seqs);
+          const all = this.box.slice().sort((a, b) => a.uid - b.uid);
+          const star = seqs.match(/^(\d+):\*$/);
+          list = star ? all.filter((m) => m.uid >= Number(star[1])) : all.filter((m) => seqs.split(',').map(Number).includes(m.uid));
+          if (star && !list.length && all.length) list = [all[all.length - 1]];
+        } else list = seqs.map((s) => this.box[s - 1]);
         return (async function* () {
           for (const m of list) {
             yield {
@@ -651,6 +661,34 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-inbox.ts'), 'utf8');
     assert.ok(/\}, 'thread'\);/.test(src), 'listThread runs on the thread slot');
   });
+  await t('Gmail diet (owner 11 Oct, the log: 7-27 s per SEARCH, 13-15 s per sign-in): between full reads only NEW mails are fetched; flags every few minutes; an archived mail falls off; a full read every half hour; a slow Gmail pauses the read-ahead', async () => {
+    const box = await inbox.mailboxFor(OWNER, 'boxV');
+    const t0 = Date.now();
+    await mcache.listCached(box, t0);
+    const searches = S.searches.length;
+    // a new mail arrives in Gmail
+    S.msgs.push({ uid: 30, seen: false, answered: false, date: new Date(t0).toISOString(), from: { name: 'New', address: 'new@example.com' }, subject: 'Brand new', source: 'From: New <new@example.com>\r\nSubject: Brand new\r\n\r\nhi' });
+    let l = await mcache.refreshList(box, t0 + 60_000);
+    assert.strictEqual(S.searches.length, searches, 'no SEARCH'); assert.ok(l.mails.some((m) => m.uid === 30), 'the new mail is in');
+    assert.ok(S.uidFetches.includes('15:*') || S.uidFetches.some((x) => /^\d+:\*$/.test(x)));
+    const flagReads = () => S.uidFetches.filter((x) => /,/.test(x) || /^\d+$/.test(x)).length;
+    const f0 = flagReads();
+    // a mail read in Gmail's own screen + one archived: picked up at the flags read (3 minutes), not every minute
+    S.msgs.find((m) => m.uid === 12).seen = true; S.msgs = S.msgs.filter((m) => m.uid !== 14);
+    l = await mcache.refreshList(box, t0 + 2 * 60_000);
+    assert.strictEqual(flagReads(), f0, 'no flags read within 3 minutes');
+    l = await mcache.refreshList(box, t0 + 2 * 60_000 + mcache.FLAGS_EVERY_MS);
+    assert.strictEqual(flagReads(), f0 + 1); assert.strictEqual(l.mails.find((m) => m.uid === 12).unread, false); assert.ok(!l.mails.some((m) => m.uid === 14), 'archived: gone');
+    // half an hour on: a full read again
+    await mcache.refreshList(box, t0 + mcache.FULL_EVERY_MS + 1);
+    assert.strictEqual(S.searches.length, searches + 1, 'a full read every half hour');
+    // a slow Gmail: the read-ahead waits
+    mcache.clearMailServerCache(); S.connectDelay = 0;
+    const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-cache.ts'), 'utf8');
+    assert.ok(/PREREAD = 4;/.test(src) && /SLOW_PAUSE_MS/.test(src) && /if \(slow && now - slow < SLOW_PAUSE_MS\) return/.test(src));
+    const pool = fs.readFileSync(path.join(SRC, 'lib/chat/imap-pool.ts'), 'utf8');
+    assert.ok(/IDLE_MS = 20 \* 60_000/.test(pool) && /connectionTimeout: 20_000/.test(pool), 'connections kept 20 minutes; a sign-in never waits past 20 s');
+  });
   await t('conversation (owner 11 Oct, "abhi bhi nahi khul raha, kisi panel mein"): THEIR mails come from the list the screen already has (no Gmail call), only our replies are asked of the server, and a failure there keeps the rest on screen; an earlier mail of theirs opens on the click\'s connection', async () => {
     const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
     assert.ok(/const local: ThreadItem\[\] = \(entry\?\.items \?\? \[\]\)\.filter\(x => \(x\.fromAddress \|\| ''\)\.toLowerCase\(\) === addr\)/.test(card), 'the conversation is built from the list');
@@ -720,7 +758,9 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     // old copy: answered at once, read again behind the screen
     const box = await inbox.mailboxFor(OWNER, 'boxV');
     const stale = await mcache.listCached(box, Date.now() + mcache.LIST_FRESH_MS + 1);
-    assert.strictEqual(stale.cached, true); await new Promise((r) => setTimeout(r, 30)); assert.strictEqual(S.searches.length, 4, 'one background read');
+    assert.strictEqual(stale.cached, true); await new Promise((r) => setTimeout(r, 30));
+    assert.strictEqual(S.searches.length, 3, 'the background read is the LIGHT one (owner 11 Oct: no SEARCH between full reads)');
+    assert.ok((S.uidFetches || []).some((x) => /^\d+:\*$/.test(x)), 'only the mails newer than the kept list were asked for');
     mcache.clearMailServerCache(); assert.strictEqual(mcache.mailCacheStats().lists, 0);
   });
   await t('cache: a mail opened twice is downloaded once; the copy is marked read in Gmail with one flag call; Mark unread and a reply update the copy; a peek never marks read', async () => {
@@ -760,9 +800,9 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     assert.strictEqual((await (await messages.GET(req('GET', '/api/mail/messages?box=boxV'))).json()).cached, true); assert.strictEqual(S.searches.length, 1);
     // warmMailboxes never throws: a mailbox Gmail refuses is logged and the next one still warms
     S.authFail = true; await mcache.warmMailboxes([box]); S.authFail = false;
-    // the old-copy warm reads again and forgets a mail that left the inbox
+    // the old-copy warm reads again and forgets a mail that left the inbox (since 11 Oct at the flags read, every FLAGS_EVERY_MS)
     S.msgs = S.msgs.filter((m) => m.uid !== 12);
-    const later = await mcache.warmMailbox(box, Date.now() + mcache.LIST_WARM_MS + 1);
+    const later = await mcache.warmMailbox(box, Date.now() + Math.max(mcache.LIST_WARM_MS, mcache.FLAGS_EVERY_MS) + 1);
     assert.strictEqual(later.refreshed, true); assert.strictEqual(later.left, 0); assert.strictEqual(mcache.mailCacheStats().mails, 3, 'uid 12 forgotten');
     // a big inbox is read ahead a few per minute, newest first, until every mail is kept
     mcache.clearMailServerCache(); S.fetchOneOpts = [];
@@ -770,7 +810,9 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     const w1 = await mcache.warmMailbox(box); assert.strictEqual(w1.preread, mcache.PREREAD); assert.strictEqual(w1.left, 25 - mcache.PREREAD);
     assert.ok(mcache.cachedMail('boxV', 224) && !mcache.cachedMail('boxV', 200), 'the newest first');
     const w2 = await mcache.warmMailbox(box); assert.strictEqual(w2.refreshed, false); assert.strictEqual(w2.preread, mcache.PREREAD);
-    const w3 = await mcache.warmMailbox(box); assert.strictEqual(w3.preread, 5); assert.strictEqual(w3.left, 0); assert.strictEqual(mcache.mailCacheStats().mails, 25);
+    let w3 = w2, runs = 2;
+    while (w3.left > 0 && runs < 20) { w3 = await mcache.warmMailbox(box); runs++; }
+    assert.strictEqual(w3.left, 0); assert.strictEqual(mcache.mailCacheStats().mails, 25); assert.strictEqual(runs, Math.ceil(25 / mcache.PREREAD), 'a few per minute until every mail is kept');
   });
   await t('cache: the copy is written to one file on disk (mode 0600, never the App Password) and read back after a restart, so the tab answers at once with no Gmail call', async () => {
     const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'mail-cache-'));
