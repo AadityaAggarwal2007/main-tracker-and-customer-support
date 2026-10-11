@@ -61,6 +61,23 @@ export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
     h.failedToday = r.rows[0]?.failed ?? 0; h.waitingToday = r.rows[0]?.waiting ?? 0;
   } catch (e) { ignoreMissing(e, 'automation'); }
   try {
+    const at = `COALESCE(w.sent_at, CASE WHEN w.status = 'pending' THEN w.due_at ELSE w.updated_at END)`;
+    const r = await query<{ kind: string; status: string; n: number }>(
+      `SELECT w.kind, w.status, count(*)::int AS n FROM wa_auto_sends w
+        WHERE ${at} >= ${IST_TODAY} AND ${at} < ${IST_TODAY} + interval '1 day' GROUP BY 1, 2`);
+    const t = { placedWent: 0, placedRead: 0, trackingWent: 0, trackingRead: 0, failed: 0, skipped: 0, dueLater: 0 };
+    for (const x of r.rows) {
+      const went = ['sent', 'delivered', 'read'].includes(x.status);
+      if (went && x.kind === 'placed') t.placedWent += x.n;
+      if (went && x.kind === 'tracking') t.trackingWent += x.n;
+      if (x.status === 'read') { if (x.kind === 'placed') t.placedRead += x.n; else t.trackingRead += x.n; }
+      if (x.status === 'failed') t.failed += x.n;
+      if (x.status === 'skipped') t.skipped += x.n;
+      if (x.status === 'pending') t.dueLater += x.n;
+    }
+    h.today = t;
+  } catch (e) { ignoreMissing(e, 'today'); }
+  try {
     h.stopped = (await stoppedNumbers()).size;
   } catch (e) { ignoreMissing(e, 'stopped'); }
   return h;

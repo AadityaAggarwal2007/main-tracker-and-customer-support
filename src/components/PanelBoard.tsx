@@ -176,10 +176,23 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
                 <dd>{wa.used24h}{wa.limit ? <span className="meta" title={wa.limitFrom === 'saved' ? 'The limit typed in WhatsApp > Setup (from WhatsApp Manager)' : "Meta's limit for the number"}> / {wa.limit.toLocaleString('en-IN')}</span> : <span className="meta"> / {wa.tier === 'TIER_UNLIMITED' ? 'no limit' : 'limit not set (WhatsApp > Setup)'}</span>}</dd>
                 {wa.limit ? <div className="pb-wa-bar" aria-hidden="true"><i style={{ width: `${pct}%`, background: pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--success)' }} /></div> : null}
               </div>
-              <div className={wa.failedToday ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.failedToday}</dd></div>
-              <div><dt>Waiting to go</dt><dd>{wa.waitingToday}</dd></div>
+              {!wa.today && <div className={wa.failedToday ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.failedToday}</dd></div>}
+              <div title="Tracking links (48 hours after the order) and order messages queued to go later, every day together"><dt>Queued for later</dt><dd>{wa.waitingToday}</dd></div>
               <div title="Customers who wrote STOP: the automation never messages them"><dt>Wrote STOP</dt><dd>{wa.stopped}</dd></div>
             </dl>
+            {wa.today && (
+              <>
+                <div className="meta" style={{ marginTop: '0.625rem', fontWeight: 700 }}>Today&apos;s automation (India day)</div>
+                <dl className="pb-wa-nums" style={{ marginTop: '0.25rem' }}>
+                  <div title="Order placed messages that went today"><dt>Order placed sent</dt><dd>{wa.today.placedWent}<span className="meta"> · {wa.today.placedRead} read</span></dd></div>
+                  <div title="Tracking-link messages that went today"><dt>Tracking links sent</dt><dd>{wa.today.trackingWent}<span className="meta"> · {wa.today.trackingRead} read</span></dd></div>
+                  <div className={wa.today.failed ? 'pb-hot' : ''}><dt>Failed today</dt><dd>{wa.today.failed}</dd></div>
+                  <div title="Not sent on purpose (no number, cancelled, too old, wrote STOP): reasons in WhatsApp > Automation"><dt>Skipped today</dt><dd>{wa.today.skipped}</dd></div>
+                  <div title="Due later today (tracking links wait for office hours)"><dt>Still to go today</dt><dd>{wa.today.dueLater}</dd></div>
+                </dl>
+                <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={openWhatsApp}>See today&apos;s list: what went, why, at night</button>
+              </>
+            )}
             {waLines.length > 0 && (
               <ul className="pb-needs" style={{ marginTop: '0.5rem' }}>
                 {waLines.map((l, k) => <li key={k} className={`pb-need pb-${l.tone === 'danger' ? 'danger' : 'warn'}`}><button type="button" className="pb-need-btn" onClick={openWhatsApp}>{l.text}</button></li>)}
