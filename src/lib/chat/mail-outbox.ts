@@ -149,6 +149,7 @@ async function sendOne(id: string): Promise<'sent' | 'failed' | 'pending' | 'tak
   try {
     await sendRow(row);
     await query(`UPDATE mail_outbox SET status = 'sent', sent_at = now(), error = NULL, updated_at = now() WHERE id = $1`, [row.id]);
+    console.log(`[mail-outbox] id=${row.id} box=${row.box_id} sent (try ${row.tries})`);
     return 'sent';
   } catch (e) {
     dropTransport(row.box_id);

@@ -52,12 +52,15 @@ export async function POST(request: NextRequest) {
     box = body.box ?? null; uidRaw = body.uid; textRaw = body.text; includeQuote = body.includeQuote !== false;
   }
   const uid = parseUid(uidRaw);
-  if (!uid) return NextResponse.json({ error: 'uid required' }, { status: 400 });
+  // Every Send leaves one line in the PM2 log (owner 2026-10-11: a reply "sent" from the Mail tab left no trace anywhere).
+  const note = (what: string) => console.log(`[mail-send] box=${box || '-'} uid=${uid || '-'} ${what}`);
+  if (!uid) { note('refused: no uid'); return NextResponse.json({ error: 'uid required' }, { status: 400 }); }
   const clean = cleanReply(textRaw);
-  if ('error' in clean) return NextResponse.json({ error: clean.error }, { status: 400 });
+  if ('error' in clean) { note(`refused: ${clean.error}`); return NextResponse.json({ error: clean.error }, { status: 400 }); }
   const a = await mailAccess(request, box, 'reply');
-  if ('error' in a) return a.error;
+  if ('error' in a) { note(`refused: no access (${a.error.status})`); return a.error; }
   if (hasFormLink(clean.text)) {
+    note('refused: form link');
     return NextResponse.json({ error: "Refund forms go only through 'Send refund form' (Super Admin, Refund section). Remove the form link." }, { status: 403 });
   }
 
@@ -98,12 +101,14 @@ export async function POST(request: NextRequest) {
         await storeFlag(orig.row, 'answered').catch((e) => console.error('[mail] answered flag:', (e as Error).message));
         await storeLocalSent(a.box.id, { messageId: built.messageId, threadId: orig.row.thread_id, fromName: built.fromName, fromAddr: a.box.email, to: built.to, subject: built.subject, text });
         if (queued) void runOutbox();
+        note(queued ? `queued in the outbox${orig.hasBody ? '' : ' (no body copied: without the quote)'}` : 'sent directly (no outbox table)');
         return NextResponse.json({ ok: true, to: built.to, files: replyFiles.length, queued });
       }
-      console.warn(`[mail-send] box=${a.box.id} uid=${uid}: not in the mail store, sending the old way (reads Gmail first)`);
-    }
+      note('not in the mail store, sending the old way (reads Gmail first)');
+    } else note('mail store not ready for this mailbox, sending the old way (reads Gmail first)');
     const sent = await sendMailReply(a.box, uid, stripLinkJunk(clean.text).text, { includeQuote, files: replyFiles });
     noteAnswered(a.box.id, uid);
+    note('sent the old way');
     return NextResponse.json({ ok: true, to: sent.to, files: replyFiles.length });
-  } catch (e) { return mailFail(e); }
+  } catch (e) { note(`failed: ${(e as Error).message}`); return mailFail(e); }
 }
