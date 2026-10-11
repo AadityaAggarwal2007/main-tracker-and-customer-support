@@ -162,6 +162,10 @@ Done and live:
   mails carry no order number / customer email / phone of ours. Added "Link order" on an alert (Super Admin / Manager)
   + what the mail mentions in Study. Owner ticked Sunny's 3 permissions. AI down + visitor typed order ID + phone: the
   code verifies it itself (`ai-down-check.ts`, rulebook 1.8).
+- **11 Oct morning:** owner: Mail "Conversation" still spinning on every panel (his tab was also old: Cmd+Shift+R).
+  Conversation now built from the list (their mails, instant) + the server's Sent read behind it; Gmail errors logged as
+  `[mail-error]` / `[mail-timing] thread`. Owner also: "mail ka UI/UX bahut bura, kuch samajh nahi aata" -> redesign
+  proposed (chat-style conversation, Reply needed / Replied / Not customers), waiting for his yes.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
