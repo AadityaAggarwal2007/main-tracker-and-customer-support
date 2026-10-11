@@ -6,7 +6,7 @@ import { parseUid } from '@/lib/chat/mail-view';
 import { autoVerifySenders } from '@/lib/chat/mail-auto-verify';
 import { verifiedSenders } from '@/lib/chat/mail-verify';
 import { can } from '@/lib/permissions';
-import { storeFlag, storeMail, storeReady, storeRow } from '@/lib/chat/mail-store';
+import { storeFlag, storeMail, storeReady, storeRow, storeSeenThread } from '@/lib/chat/mail-store';
 
 // GET /api/mail/message?box=&uid=[&images=1][&peek=1]: opens one mail. It is marked read in Gmail, like opening
 // it in Gmail, unless peek=1. The HTML comes back already wrapped for a sandboxed frame (mail-view.ts).
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
         const mail = kept ?? await readMail(a.box, uid, { markRead: false, images, folder, slot });
         if (!mail) return NextResponse.json({ error: 'That mail is no longer in the inbox.' }, { status: 404 });
         if (folder === 'sent') return NextResponse.json({ mail, verified: [] }, { headers: { 'Cache-Control': 'no-store' } });
-        if (!peek && !row.seen) { await storeFlag(row, 'seen'); }
+        if (!peek) { if (!row.seen) await storeFlag(row, 'seen'); await storeSeenThread(row); }
         const shown = { ...mail, unread: peek ? !row.seen : false };
         await autoVerifySenders(a.box.panelId, [{ email: shown.fromAddress, authPass: shown.authPass, subject: shown.subject, text: shown.text }]);
         const verified = await verifiedSenders(a.box.panelId, [shown.fromAddress]);
