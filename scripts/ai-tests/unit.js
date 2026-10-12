@@ -1302,6 +1302,13 @@ t('suggest: email conversations get short complete mails with the store\'s own n
   assert.ok(/Regards, Support Team/.test(sg.suggestInstruction({ ...base, channel: 'email' })));
   for (const txt of [mail, chat, none]) assert.ok(!/Vastora support team/.test(txt), 'the instruction never hard-codes one panel');
 });
+t('suggest + Sudharo routes take email conversations too (owner 12 Oct: on VASTRIKA an email chat said "Suggestions are for chat conversations only"; 9 Oct had changed only the comment)', () => {
+  const rd = (f) => fs.readFileSync(path.resolve(__dirname, '../../src/app/api/chat', f), 'utf8');
+  const sug = rd('conversations/[id]/suggest/route.ts'), pol = rd('polish/route.ts');
+  assert.ok(/conv\.source !== 'chat' && conv\.source !== 'email'/.test(sug), 'suggest route lets an email conversation through');
+  assert.ok(!/conv\.source !== 'chat'\)/.test(sug), 'no chat-only check left in the suggest route');
+  assert.ok(/conv\.source !== 'chat' && conv\.source !== 'email'/.test(pol), 'Sudharo route lets an email conversation through');
+});
 t('suggest: the sender is the team, so "our team will" becomes "we will" (seen live 4 Oct)', () => {
   assert.strictEqual(sg.asTeam("You're most welcome, Kiran! Our team will get back to you here tomorrow morning after 10 AM."), "You're most welcome, Kiran! We will get back to you here tomorrow morning after 10 AM.");
   assert.strictEqual(sg.asTeam('Happy to help! The team will review your request and reply here.'), 'Happy to help! We will review your request and reply here.');
