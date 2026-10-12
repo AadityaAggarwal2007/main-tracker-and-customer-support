@@ -24,7 +24,7 @@ async function loadConv(request: NextRequest, id: string) {
     [id]
   );
   if (!conv || !canAccessPanel(user, conv.tracker_business_id)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
-  if (conv.source !== 'chat') return { res: NextResponse.json({ error: 'Suggestions are for chat conversations only' }, { status: 409 }) };
+  if (conv.source !== 'chat' && conv.source !== 'email') return { res: NextResponse.json({ error: 'Suggestions are for chat and email conversations only' }, { status: 409 }) };
   if (conv.status === 'resolved') return { res: NextResponse.json({ error: 'This chat is closed' }, { status: 409 }) };
   if (!conv.verified_order_id && !conv.phone_match_order_id) return { res: NextResponse.json({ error: 'Suggestions are for verified customers only' }, { status: 409 }) };
   const actor = staffActor(user);
