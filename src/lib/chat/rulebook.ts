@@ -109,6 +109,8 @@ export const RULEBOOK: RuleSection[] = [
         text: 'A message about a known delay before the customer asks. Not built: you postponed it.' },
       { id: '4.11', how: 'code', from: '4 Oct', title: 'Late order on the tracking page: one story',
         text: 'From 10:00 the morning after the estimated date, an order still at Out for Delivery shows the delay reason on its tracking page (the same ladder as 4.7, by late days: 1 festive volume, 2-4 network load, 5+ the team following up), one new honest activity line a day for 5 days (never a courier scan that did not happen), and a revised date: +3 days for late days 1-2, +6 for days 3-5, then no date until your team confirms it. Chikki reads the same page data: it quotes the revised date (or says the team will confirm it) and starts from the page\'s reason. Delivered, cancelled and returned orders are left alone.' },
+      { id: '4.12', how: 'told', from: 'Your decision, 12 Oct', title: 'Never guesses what a product has',
+        text: 'Chikki only knows a product\'s name on the order and what a saved answer or store note says about it. It never says a product has or does not have a feature (lights, battery, size, material, colour, what comes in the box) unless a saved answer or note says so or the name itself does; asked about something it does not know, it says the team will confirm (a verified customer goes to the team; a visitor is asked for the order ID and phone first). Seen live on 12 Oct: it told a customer her jhumka has no light, and it does. Put such product facts in Saved answers for that panel.' },
     ],
   },
   {

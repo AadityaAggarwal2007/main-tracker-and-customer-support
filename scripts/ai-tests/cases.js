@@ -522,4 +522,10 @@ module.exports = [
     ...verifiedCtx('Out for Delivery', '2026-10-04'), history: [V('kab aayega')],
     mock: [{ content: 'Aapka order Out for Delivery hai, estimated delivery 4 October 2026. Kripya apna phone number reachable rakhiye.' }],
     expect: { match: [/reachable/], requests: 1 }, offlineOnly: true },
+  // Owner 2026-10-12 (VASTRIKA): a customer asked whether the jhumka she ordered lights up; Chikki said "inmein koi light
+  // ya LED feature nahi hai". It does light up. Chikki only knows a product's name: never claim or deny a feature.
+  { id: 'product-feature-not-guessed', title: 'Does my jhumka light up? Chikki does not know: never says no (or yes), the team confirms',
+    ...verifiedCtx('Order Placed', '2026-10-24', { products: ['viral 12 piece jhumka with Box Hamper', 'Golden Lantern Pearl Tassel Jhumka Earrings'] }),
+    history: [V('Maine jo jhumka order kiya hai usne kya light jalega')],
+    expect: { notMatch: [/(light|led)[^.?!\n]{0,60}(nahi|nhi|not|no)\b|\b(no|not|nahi|nhi)\b[^.?!\n]{0,30}(light|led)\b|(nahi|nhi) jal|regular jhumka|traditional design/i, /(haan|yes)[^.?!\n]{0,40}light[^.?!\n]{0,20}jal/i], match: [/team|confirm/i] } },
 ];
