@@ -169,7 +169,7 @@ SELECT c.id, c.source, c.status, c.merged_into, c.assigned_to,
         AND (c.site_id, c.customer_key) IN (SELECT c2.site_id, c2.customer_key FROM conversations c2
                                               WHERE c2.id IN (SELECT id FROM ids) AND c2.source = 'chat'
                                                 AND c2.customer_key IS NOT NULL)))
-   AND c.source <> 'whatsapp'`,
+   AND c.source NOT IN ('whatsapp', 'email')`,
         [iso(loadStartMs), iso(loadEndMs)],
       );
       const convs: InConv[] = q1.rows.map((r: Record<string, unknown>) => ({

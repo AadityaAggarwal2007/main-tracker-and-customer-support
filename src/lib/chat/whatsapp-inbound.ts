@@ -5,7 +5,7 @@
 // message it got no 200 for: a wamid already stored is skipped). The chat is `agent_handling` (a
 // Closed one reopens) and Chikki never answers on WhatsApp. Since 2026-10-11 (owner: the number is a
 // no-reply identity, "saari WhatsApp chats Chat Support se nikaal do") such a chat is NOT in Chat
-// Support at all (waiting-sql.ts NOT_WHATSAPP_SQL): it shows only in WhatsApp > Chats, where a reply
+// Support at all (waiting-sql.ts CHAT_SUPPORT_SQL): it shows only in WhatsApp > Chats, where a reply
 // goes back out on WhatsApp through the same messages route. Delivery reports (sent / delivered /
 // read / failed) land on our own message's metadata (`wa_status`, `wa_error`).
 

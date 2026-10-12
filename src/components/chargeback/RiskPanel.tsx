@@ -92,6 +92,7 @@ export default function RiskPanel({ token, onAlert }: { token: string; onAlert: 
               <span className={`chip ${ACTION_CHIP[i.action.key] || 'chip-muted'}`}>{ACTION_NAME[i.action.key] || i.action.key}</span>
               <span style={{ fontSize: '0.8125rem', fontWeight: 600, flex: 1, minWidth: 200 }}>{i.action.text}</span>
               {i.chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(i.chatId)}`}><MessageCircle size={13} /> Open chat</a>}
+              {!i.chatId && i.channels.includes('email') && <a className="btn btn-outline btn-sm" href="/admin?tab=mail"><Mail size={13} /> Open Mail</a>}
             </div>
           </div>
         ))}

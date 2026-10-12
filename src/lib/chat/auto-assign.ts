@@ -5,7 +5,7 @@
 // or With team with the customer waiting: Chikki's own chats are never given out), the Manager is not in the queue
 // (he gets the escalations), nobody logged in = nobody gets a chat (they stay in the open pool, visible to everyone).
 // A Refund / Ship again chat is the Manager's and never given out here; a WhatsApp chat is not Chat Support's at all (owner
-// 2026-10-11, NOT_WHATSAPP_SQL in waiting-sql.ts). Claimed with "WHERE assigned_to IS NULL", so
+// 2026-10-11, CHAT_SUPPORT_SQL in waiting-sql.ts). Claimed with "WHERE assigned_to IS NULL", so
 // the two PM2 processes never give one chat twice; the customer's other open chats nobody holds go with it, as on a
 // first reply. Logged as a 'claim' by the system (reason 'auto_assign'). Never throws.
 
@@ -14,7 +14,7 @@ import { lastSeenMs, presenceRead, teamEntries, teamLoaded } from '@/lib/auth';
 import { can, canAccessPanel } from '@/lib/permissions';
 import { awayMinutes, isOfficeHours, todayOpenMs } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
-import { NOT_WHATSAPP_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
+import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
 import { logChatEvent, setSystemActor } from './team-routing';
 import { onDuty, pickAssignee, type Candidate } from './auto-assign-rules';
 
@@ -50,7 +50,7 @@ export async function runAutoAssign(now = Date.now()): Promise<AssignRun> {
          FROM conversations c
          JOIN sites s ON s.id = c.site_id
          ${WAITING_LATERAL}
-        WHERE c.assigned_to IS NULL AND c.merged_into IS NULL AND c.case_kind IS NULL AND ${NOT_WHATSAPP_SQL}
+        WHERE c.assigned_to IS NULL AND c.merged_into IS NULL AND c.case_kind IS NULL AND ${CHAT_SUPPORT_SQL}
           AND (c.status = 'human_needed' OR (c.status = 'agent_handling' AND (${WAITING_SINCE_SQL}) IS NOT NULL))
         ORDER BY c.last_message_at ASC NULLS LAST
         LIMIT ${MAX_PER_RUN}`
@@ -63,7 +63,7 @@ export async function runAutoAssign(now = Date.now()): Promise<AssignRun> {
     const loads = new Map<string, number>();
     const l = await query<{ assigned_to: string; n: number }>(
       `SELECT assigned_to, count(*)::int AS n FROM conversations
-        WHERE assigned_to IS NOT NULL AND status <> 'resolved' AND merged_into IS NULL AND source <> 'whatsapp' GROUP BY assigned_to`
+        WHERE assigned_to IS NOT NULL AND status <> 'resolved' AND merged_into IS NULL AND source NOT IN ('whatsapp', 'email') GROUP BY assigned_to`
     );
     for (const r of l.rows) loads.set(r.assigned_to, r.n);
 

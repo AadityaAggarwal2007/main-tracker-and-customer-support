@@ -44,7 +44,8 @@ export async function verifiedSenders(businessId: string | null, addresses: stri
       `SELECT v.email, v.order_id, v.verified_by_name, v.verified_at,
               (SELECT c.id FROM conversations c JOIN sites s ON s.id = c.site_id
                 WHERE s.tracker_business_id::text = v.business_id AND c.verified_order_id = v.order_id AND c.merged_into IS NULL
-                ORDER BY (c.source = 'chat') DESC, c.last_message_at DESC NULLS LAST LIMIT 1) AS chat_id
+                  AND c.source = 'chat'
+                ORDER BY c.last_message_at DESC NULLS LAST LIMIT 1) AS chat_id
          FROM mail_verifications v
         WHERE v.business_id = $1 AND v.removed_at IS NULL AND v.email = ANY($2::text[])
         ORDER BY v.verified_at DESC`,

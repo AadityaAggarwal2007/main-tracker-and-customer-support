@@ -110,9 +110,9 @@ async function t(name, fn) {
   // Owner 2026-10-11: WhatsApp chats are not Chat Support's (they live in WhatsApp > Chats).
   await t('WhatsApp chats are left out of the chats held / waiting and of Chikki\'s rows; a reply event still counts', async () => {
     await live.loadTeamLive(null, IST(12, 10, 40));
-    ok(/c\.merged_into IS NULL AND c\.source <> 'whatsapp'/.test(S.args.held.q), 'held / waiting');
-    ok(/m\.deleted_at IS NULL AND c\.source <> 'whatsapp'/.test(S.args.ai.q), 'Chikki\'s replies');
-    ok(/m\.deleted_at IS NULL AND c\.source <> 'whatsapp'/.test(S.args.counts.q), 'Chikki\'s chats');
+    ok(/c\.merged_into IS NULL AND c\.source NOT IN \('whatsapp', 'email'\)/.test(S.args.held.q), 'held / waiting');
+    ok(/m\.deleted_at IS NULL AND c\.source NOT IN \('whatsapp', 'email'\)/.test(S.args.ai.q), 'Chikki\'s replies');
+    ok(/m\.deleted_at IS NULL AND c\.source NOT IN \('whatsapp', 'email'\)/.test(S.args.counts.q), 'Chikki\'s chats');
     ok(!/whatsapp/.test(S.args.replies.q), 'a team reply typed in WhatsApp > Chats is still a reply');
   });
   await t('a missing table or a failed read zeroes only its own part; the board always answers', async () => {

@@ -67,9 +67,9 @@ async function moveToManager(item: RiskItem, leads: Set<string>, now: number): P
               c.verified_order_id, c.phone_match_order_id, c.merged_into, c.source
          FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1 FOR NO KEY UPDATE OF c`, [item.chatId])).rows[0];
     if (!c || c.status === 'resolved' || c.merged_into) return false;
-    // A WhatsApp chat is not Chat Support's (owner 2026-10-11: the number is a no-reply identity): its messages still count
-    // as risk signals (risk.ts), but it is never moved to the Manager; the WhatsApp alert below still goes.
-    if (c.source === 'whatsapp') return false;
+    // A WhatsApp or email chat is not Chat Support's (owner 2026-10-11 / 2026-10-12: WhatsApp > Chats, the Mail tab): its
+    // messages still count as risk signals (risk.ts), but it is never moved to the Manager; the WhatsApp alert below still goes.
+    if (c.source === 'whatsapp' || c.source === 'email') return false;
     if (c.assigned_to === OWNER_KEY || (c.assigned_to && leads.has(c.assigned_to))) return false;
     const before = await client.query(
       `SELECT 1 FROM chat_events WHERE conversation_id = $1 AND reason = $2 AND created_at > now() - interval '7 days' LIMIT 1`, [c.id, RISK_REASON]);

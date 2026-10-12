@@ -696,7 +696,7 @@ async function handle(q, p, tx) {
     else if (q.includes("c.status = 'human_needed' AND c.case_kind IS NULL")) caseOk = (c) => c.case_kind == null;
     else throw new Error('fake db: the pending count without its case condition');
     // Owner 2026-10-11: a WhatsApp chat is never counted (R72); the fake plays the condition only when the route sends it.
-    const waOk = q.includes("c.source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+    const waOk = q.includes("c.source NOT IN ('whatsapp', 'email')") ? (c) => c.source !== 'whatsapp' && c.source !== 'email' : () => true;
     const hits = db.convs.filter((c) => c.status === 'human_needed' && !c.merged_into && caseOk(c) && waOk(c));
     db.pending = { sql: q, params: p, ids: hits.map((c) => c.id) };
     const keys = new Set(hits.map((c) => (c.customer_key && c.source === 'chat' ? `k:${c.site_id}:${c.customer_key}` : 'c:' + c.id)));
@@ -4053,10 +4053,12 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
 
   // ── R72: WhatsApp chats are not Chat Support's (owner 2026-10-11, "saari WhatsApp chats Chat Support se nikaal do") ──
   await t('R72 a source = whatsapp chat is in no list (the search too), no count (badge, Open / Closed case, topic / case / lead counts) and not in the Needs you badge; opening it by id still works', async () => {
-    const WA = "c.source <> 'whatsapp'";
+    const WA = "c.source NOT IN ('whatsapp', 'email')";
     at(ist(16, 0, 2));
     newConv({ id: 'r72w', source: 'whatsapp', status: 'human_needed', visitor_id: 'wa:919876543210', visitor_phone: '+919876543210' });
     newConv({ id: 'r72c', status: 'human_needed' });
+    // Owner 2026-10-12: email chats live in the Mail tab, outside Chat Support, the same way.
+    newConv({ id: 'r72m', source: 'email', status: 'human_needed', visitor_id: 'email:asha@example.com' });
     let r = await list('owner');
     status(r, 200);
     ok(db.list.sql.includes(WA) && db.list.sql.includes('c.merged_into IS NULL'), 'the list leaves WhatsApp chats out');
@@ -4076,11 +4078,11 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const pr = await mod.pending.GET(req('owner', undefined, { method: 'GET', url: 'http://x/api/chat/pending' }));
     status(pr, 200);
     ok(db.pending.sql.includes(WA), 'the Needs you badge leaves WhatsApp chats out');
-    ok(db.pending.ids.includes('r72c') && !db.pending.ids.includes('r72w'), 'counted: the chat-box chat, not the WhatsApp one');
+    ok(db.pending.ids.includes('r72c') && !db.pending.ids.includes('r72w') && !db.pending.ids.includes('r72m'), 'counted: the chat-box chat, not the WhatsApp or email one');
     // The route's own text: the condition is pushed BEFORE scopeConditions is copied, so every count carries it.
     const src = fs.readFileSync(path.join(SRC, 'app/api/chat/conversations/route.ts'), 'utf8');
-    ok(src.indexOf('conditions.push(NOT_WHATSAPP_SQL);') < src.indexOf('const scopeConditions = [...conditions];'));
-    eq(wsql.NOT_WHATSAPP_SQL, WA);
+    ok(src.indexOf('conditions.push(CHAT_SUPPORT_SQL);') < src.indexOf('const scopeConditions = [...conditions];'));
+    eq(wsql.CHAT_SUPPORT_SQL, WA);
     // Opening the chat by its id is unchanged (the WhatsApp tab's reply box posts to the normal reply route).
     const th = await thread('owner', 'r72w');
     status(th, 200);

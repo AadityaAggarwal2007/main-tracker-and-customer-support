@@ -131,9 +131,9 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     S.queries = [];
     await server.loadPanelBoard(null, true);
     const chats = S.queries.find((q) => /FROM conversations c JOIN sites s/.test(q.sql)).sql;
-    assert.ok(/c\.status <> 'resolved' AND c\.source <> 'whatsapp'/.test(chats), 'Needs you / waiting / overdue / cases');
+    assert.ok(/c\.status <> 'resolved' AND c\.source NOT IN \('whatsapp', 'email'\)/.test(chats), 'Needs you / waiting / overdue / cases');
     const today = S.queries.find((q) => /FROM messages m JOIN conversations c/.test(q.sql)).sql;
-    assert.ok(/m\.deleted_at IS NULL AND c\.source <> 'whatsapp'/.test(today), 'customers who wrote / team replies today');
+    assert.ok(/m\.deleted_at IS NULL AND c\.source NOT IN \('whatsapp', 'email'\)/.test(today), 'customers who wrote / team replies today');
     assert.ok(/loadWaHealth\(now\)/.test(fs.readFileSync(path.join(SRC, 'lib/panel-board-server.ts'), 'utf8')), 'the WhatsApp number box is still read');
   });
   // Corrections (owner 2026-10-11): the board's line, the routine step and the loader's own read (corrections-read.ts).

@@ -40,7 +40,7 @@ const db = {
       S.sqlSeen = q;
       const cutoff = Date.parse(p[0]), opened = Date.parse(p[1]);
       // Owner 2026-10-11: a WhatsApp chat is never moved; the fake plays the condition only when the worker sends it.
-      const waOk = q.includes("c.source <> 'whatsapp'") ? (c) => c.source !== 'whatsapp' : () => true;
+      const waOk = q.includes("c.source NOT IN ('whatsapp', 'email')") ? (c) => c.source !== 'whatsapp' && c.source !== 'email' : () => true;
       const rows = S.convs.filter((c) => c.assigned_to && c.assigned_to !== 'owner' && c.status !== 'resolved' && !c.merged_into && !c.case_kind && c.waiting_since && waOk(c))
         .map((c) => ({ ...c, waited_from: iso(Math.max(Date.parse(c.waiting_since), Date.parse(c.assigned_at || 0), opened)) }))
         .filter((c) => Date.parse(c.waited_from) <= cutoff);
@@ -132,10 +132,10 @@ async function t(name, fn) {
     const r = await late.runLateEscalation(IST(12, 11));
     eq(r.moved, 1);
     deq([wa.assigned_to, wa.status, late30.assigned_to], ['u-rahul', 'agent_handling', 'u-sunny']);
-    ok(/c\.case_kind IS NULL AND c\.source <> 'whatsapp'\) x/.test(S.sqlSeen), 'the worker\'s query leaves WhatsApp chats out');
+    ok(/c\.case_kind IS NULL AND c\.source NOT IN \('whatsapp', 'email'\)\) x/.test(S.sqlSeen), 'the worker\'s query leaves WhatsApp chats out');
     ok(S.events.every((e) => e.conversationId === late30.id));
     await late.lateAlerts(['P1']);
-    ok(/AND c\.source <> 'whatsapp'/.test(S.alertSql), 'the red bar leaves WhatsApp chats out');
+    ok(/AND c\.source NOT IN \('whatsapp', 'email'\)/.test(S.alertSql), 'the red bar leaves WhatsApp chats out');
   });
   await t('the red bar: the last 2 hours of these moves in the login\'s panels, with who had it, who got it and how long', async () => {
     S.alertsRows = [{ id: '7', conversation_id: 'c9', at: new Date(IST(12, 11)), meta: { from_name: 'Rahul', to_name: 'Sunny', waited_min: 34 }, customer: 'Asmita', reason: 'no_reply_30' },

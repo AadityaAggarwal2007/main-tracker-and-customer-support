@@ -151,7 +151,8 @@ async function t(name, fn) {
     deq([r.critical, r.moved, r.alerted, S.updates, S.events], [1, 0, 2, [], []]);
     ok(/c\.merged_into, c\.source\s+FROM conversations c/.test(fs.readFileSync(path.join(SRC, 'lib/chargeback/risk-escalate.ts'), 'utf8')), 'the locked row carries its source');
     reset(); S.chats.c1.source = 'email';
-    eq((await E.runRiskEscalation(MON_1130, true)).moved, 1, 'an email chat moves as before');
+    eq((await E.runRiskEscalation(MON_1130, true)).moved, 0, 'an email chat is not Chat Support\'s either (owner 12 Oct: the Mail tab)');
+    reset(); eq((await E.runRiskEscalation(MON_1130, true)).moved, 1, 'a chat-box chat moves as before');
   });
   await t('the red bar reads the chargeback_risk moves too (escalate-late.ts lateAlerts)', () => {
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/escalate-late.ts'), 'utf8');

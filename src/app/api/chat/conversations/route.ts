@@ -5,7 +5,7 @@ import { parseInboxSearch } from '@/lib/chat/inbox-search';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
-import { NOT_WHATSAPP_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
+import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can, isTeamLead, panelScope } from '@/lib/permissions';
 import { lateAlerts } from '@/lib/chat/escalate-late';
@@ -184,7 +184,7 @@ export async function GET(request: NextRequest) {
   // A WhatsApp chat is never here (owner 2026-10-11: the number is a no-reply identity, "saari WhatsApp chats Chat
   // Support se nikaal do"): it lives in WhatsApp > Chats. Pushed before scopeConditions is copied, so the list, the
   // search and every count (badge, sections, topic / case / lead counts, My chats, Team chats) leave it out together.
-  conditions.push(NOT_WHATSAPP_SQL);
+  conditions.push(CHAT_SUPPORT_SQL);
 
   // The panel scope alone, for the topic counts (positions $1.. are the same). For a team member every count
   // (the badge, Open / Closed case, the problem tabs) is over their own chats too.
