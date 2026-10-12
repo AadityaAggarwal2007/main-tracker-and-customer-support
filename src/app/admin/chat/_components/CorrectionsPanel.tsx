@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, ExternalLink, Loader2, Mail, MapPin, MessageCircle, Package, RefreshCw, RotateCcw, Wrench, X } from 'lucide-react';
 import { can, isTeamLead } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
-import { DONE_NOTE_MAX, ageText, kindLabel, type CorrectionAction, type CorrectionCounts } from '@/lib/chat/corrections-rules';
+import { DONE_NOTE_MAX, ageText, changedLine, kindLabel, type CorrectionAction, type CorrectionCounts } from '@/lib/chat/corrections-rules';
 import type { CorrectionListRow } from '@/lib/chat/corrections';
 import type { OrderAddress } from '@/lib/chat/order-address';
+import { ITEMS_SHARED_ERROR } from '@/lib/chat/order-items';
 import type { AuthUser, Business, StaffAddress, StaffOrderItems } from '../_lib/types';
 import { timeAgo } from '../_lib/inbox';
 import { Chip } from './chips';
@@ -19,7 +20,13 @@ import { AddressDialog, ItemsDialog } from './OrderLine';
 // (PATCH /api/chat/conversations/[id]/address and /items; ShipTrack only, never Shopify or the courier). A Mail-tab
 // row with no chat has Open mail only: the order editors work through a chat (the Orders tab has none). Nothing
 // here is sent to a customer. Reads GET /api/corrections every minute while visible.
-type Tab = 'pending' | 'done';
+// Owner 2026-10-12 ("kuch bhi changes ke baad ... replied aur active jaisa segment"): three segments like the Mail
+// tab's cases: Active (nothing changed on the order yet, oldest first, red after a day), Changed (the address or the
+// items were edited after the correction was written: it moves there by itself and waits for Mark done), Done
+// (done + cancelled). The segment is remembered (localStorage corr_tab).
+type Tab = 'active' | 'changed' | 'done';
+const TAB_KEY = 'corr_tab';
+const savedTab = (): Tab => { try { const v = localStorage.getItem(TAB_KEY); return v === 'changed' || v === 'done' ? v : 'active'; } catch { return 'active'; } };
 interface Data { rows: CorrectionListRow[]; counts: CorrectionCounts }
 
 export default function CorrectionsPanel({ token, user, businesses, onOpenChat, onAlert }: {
@@ -27,7 +34,9 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
   onOpenChat: (conversationId: string) => void;
   onAlert: (type: 'success' | 'error', message: string) => void;
 }) {
-  const [tab, setTab] = useState<Tab>('pending');
+  const [tab, setTabState] = useState<Tab>('active');
+  useEffect(() => { setTabState(savedTab()); }, []);
+  const setTab = (t: Tab) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* private window */ } };
   const [panel, setPanel] = useState('');
   const [data, setData] = useState<Data | null>(null);
   const [err, setErr] = useState('');
@@ -85,6 +94,7 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       if (!res.ok) { setEdit(null); onAlert('error', j.error || 'Could not open that chat'); return; }
       const address = kind === 'address' && j.address_editable ? (j.order_address as StaffAddress) : null;
       const items = kind === 'items' && j.items_editable ? (j.order_items as StaffOrderItems) : null;
+      if (kind === 'items' && j.order_items?.shared) { setEdit(null); onAlert('error', ITEMS_SHARED_ERROR); return; }
       if (!address && !items) { setEdit(null); onAlert('error', kind === 'address' ? 'This order\'s address cannot be changed from here (open the chat).' : 'This order\'s items cannot be changed from here (open the chat).'); return; }
       setEdit({ row, kind, address, items, busy: false, error: '' });
     } catch { setEdit(null); onAlert('error', 'Could not open that chat'); }
@@ -96,7 +106,8 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       const res = await fetch(`/api/chat/conversations/${edit.row.conversation_id}/address`, { method: 'PATCH', headers: auth, body: JSON.stringify(a) });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save the address' }); return; }
-      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Address updated in ShipTrack · order ${edit.row.order_id}. Now mark the correction done.`);
+      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Address updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
+      void load(true);
     } catch { setEdit({ ...edit, busy: false, error: 'Could not save the address' }); }
   };
   const saveItems = async (items: { product_name: string; quantity: number; price: number | null }[]) => {
@@ -106,7 +117,8 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       const res = await fetch(`/api/chat/conversations/${edit.row.conversation_id}/items`, { method: 'PATCH', headers: auth, body: JSON.stringify({ items }) });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save the items' }); return; }
-      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Items updated in ShipTrack · order ${edit.row.order_id}. Now mark the correction done.`);
+      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Items updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
+      void load(true);
     } catch { setEdit({ ...edit, busy: false, error: 'Could not save the items' }); }
   };
 
@@ -117,13 +129,14 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       <div className="tl-head">
         <div>
           <div className="tl-title"><Wrench size={18} style={{ verticalAlign: '-3px' }} /> Corrections</div>
-          <div className="meta">What customers asked to change on their orders. {lead ? 'You fix the order and mark it done.' : 'The Super Admin and the Manager fix the order and mark it done.'}{c ? ` · ${c.pending} pending${c.overdue ? `, ${c.overdue} over 24 h` : ''} · ${c.done_today} done today` : ''}</div>
+          <div className="meta">What customers asked to change on their orders. {lead ? 'You fix the order and mark it done.' : 'The Super Admin and the Manager fix the order and mark it done.'}{c ? ` · ${c.active ?? c.pending} active${c.overdue ? `, ${c.overdue} over 24 h` : ''}${c.changed ? ` · ${c.changed} changed, to mark done` : ''} · ${c.done_today} done today` : ''}</div>
         </div>
         <button type="button" className="btn btn-outline btn-sm" onClick={() => load()} disabled={busy}><RefreshCw size={14} /> Refresh</button>
       </div>
       <div className="corr-bar">
         <div className="seg">
-          <button type="button" className="seg-btn" aria-pressed={tab === 'pending'} onClick={() => setTab('pending')}>Pending{c && c.pending > 0 ? ` (${c.pending})` : ''}</button>
+          <button type="button" className="seg-btn" aria-pressed={tab === 'active'} onClick={() => setTab('active')} title="Nothing changed on the order yet">Active{c && (c.active ?? c.pending) > 0 ? ` (${c.active ?? c.pending})` : ''}</button>
+          <button type="button" className="seg-btn" aria-pressed={tab === 'changed'} onClick={() => setTab('changed')} title="The address or items were changed after the request: check and mark done">Changed{c && (c.changed ?? 0) > 0 ? ` (${c.changed})` : ''}</button>
           <button type="button" className="seg-btn" aria-pressed={tab === 'done'} onClick={() => setTab('done')}>Done</button>
         </div>
         {panels.length > 1 && (
@@ -135,7 +148,7 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       </div>
       {err && <div className="chat-note" style={{ color: 'var(--danger)' }}>{err}</div>}
       {!data && !err && <div className="tl-empty"><Loader2 size={18} style={{ animation: 'spin 0.6s linear infinite' }} /></div>}
-      {data && data.rows.length === 0 && <div className="tl-empty">{tab === 'pending' ? 'No correction is waiting.' : 'Nothing done yet.'}</div>}
+      {data && data.rows.length === 0 && <div className="tl-empty">{tab === 'active' ? 'No correction is waiting.' : tab === 'changed' ? 'Nothing changed and waiting for Mark done.' : 'Nothing done yet.'}</div>}
       {data && data.rows.length > 0 && (
         <div className="corr-list">
           {data.rows.map((r) => (
@@ -145,7 +158,9 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
                 <b className="truncate">{who(r)}</b>
                 <span className="meta">· order {r.order_id}{panels.length > 1 && r.panel_name ? ` · ${r.panel_name}` : ''}</span>
                 <span style={{ flex: 1 }} />
-                {r.status === 'pending'
+                {r.status === 'pending' && r.segment === 'changed'
+                  ? <Chip tone="ok" title="The order was changed after this request: check it and mark it done">Changed</Chip>
+                  : r.status === 'pending'
                   ? <Chip tone={r.overdue ? 'danger' : 'warn'} title={r.overdue ? 'Waiting over a day' : 'Waiting'}>{r.overdue ? `Waiting ${ageText(r.age_ms)}` : `Pending · ${ageText(r.age_ms)}`}</Chip>
                   : <Chip tone={r.status === 'done' ? 'ok' : 'muted'}>{r.status === 'done' ? 'Done' : 'Cancelled'}</Chip>}
               </div>
@@ -154,6 +169,7 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
                 <span className="meta">by {r.created_by_name || 'team'} · {timeAgo(r.created_at)}</span>
               </div>
               <div className="corr-note">{r.note}</div>
+              {r.status === 'pending' && r.segment === 'changed' && <div className="corr-changed">{changedLine(r)}</div>}
               {r.status !== 'pending' && (
                 <div className="meta">{r.status === 'done' ? 'Done' : 'Cancelled'}{r.done_by_name ? ` by ${r.done_by_name}` : ''}{r.done_at ? ` · ${timeAgo(r.done_at)}` : ''}{r.done_note ? ` · “${r.done_note}”` : ''}</div>
               )}

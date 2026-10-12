@@ -158,7 +158,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     order_items: orderItems,
-    items_editable: !!orderItems && !!conversation.verified_order_id && can(user, 'orders.update'),
+    items_editable: !!orderItems && !orderItems.shared && !!conversation.verified_order_id && can(user, 'orders.update'),
     team_log: teamLog,
     staff: await staffBlock(conversation, user),
     hot_lock: hotLockBlock(conversation, user),

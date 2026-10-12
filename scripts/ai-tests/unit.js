@@ -1693,6 +1693,20 @@ t('corrections-rules: the kinds and their labels; cleanCorrection validates and 
   assert.deepStrictEqual([corr.ACTION_STATUS.done, corr.ACTION_STATUS.cancel, corr.ACTION_STATUS.reopen], ['done', 'cancelled', 'pending']);
   assert.deepStrictEqual(corr.ACTION_FROM.reopen, ['done', 'cancelled']); assert.ok(corr.isCorrectionAction('cancel') && !corr.isCorrectionAction('finish'));
 });
+t('corrections-rules (owner 12 Oct): Active / Changed / Done from the status and the change times; what changed; the newest change; the Changed line', () => {
+  const T = '2026-10-12T06:00:00.000Z', U = '2026-10-12T07:00:00.000Z';
+  assert.strictEqual(corr.correctionSegment({ status: 'pending' }), 'active');
+  assert.strictEqual(corr.correctionSegment({ status: 'pending', address_changed_at: null, items_changed_at: null }), 'active');
+  assert.strictEqual(corr.correctionSegment({ status: 'pending', items_changed_at: T }), 'changed');
+  assert.strictEqual(corr.correctionSegment({ status: 'done', items_changed_at: T }), 'done');
+  assert.strictEqual(corr.correctionSegment({ status: 'cancelled' }), 'done');
+  assert.deepStrictEqual([corr.changedWhat(T, null), corr.changedWhat(null, T), corr.changedWhat(T, U), corr.changedWhat(null, null)], ['address', 'items', 'both', null]);
+  assert.strictEqual(corr.changedAt(T, U), U); assert.strictEqual(corr.changedAt(null, null), null);
+  const now = Date.parse(U) + 3 * 3600000;
+  assert.strictEqual(corr.changedLine({ changed_what: 'address', changed_by_name: 'Sunny', changed_at: U }, now), 'Changed · Address · by Sunny · 3 h ago');
+  assert.strictEqual(corr.changedLine({ changed_what: 'items', changed_by_name: null, changed_at: U }, now), 'Changed · Items · 3 h ago');
+  assert.deepStrictEqual(corr.CORRECTION_SEGMENTS, ['active', 'changed', 'done']);
+});
 t('corrections-rules: pendingAge / isOverdue (a pending row over 24 h; a done row never), ageText, the line for the thread, the ask-to-verify lines name the widget\'s own button', () => {
   const now = Date.UTC(2026, 9, 12, 6, 0);
   const at = (h) => new Date(now - h * 3600000).toISOString();

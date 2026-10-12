@@ -97,8 +97,35 @@ export function correctionLine(row: { status: string; kinds: readonly string[]; 
   return `Correction ${row.status === 'done' ? 'done' : 'cancelled'}${closer} · ${kindsText(row.kinds)} · asked by ${by}`;
 }
 
-// The counts next to the Corrections section and on the Today board.
-export interface CorrectionCounts { pending: number; overdue: number; done_today: number }
+// Active / Changed / Done (owner 2026-10-12: "kuch bhi changes ke baad ... replied aur active jaisa segment"): a pending
+// correction becomes CHANGED by itself once the team edited the order's address or items in ShipTrack after it was
+// written (corrections-read.ts CHANGED_SQL); it still waits for Mark done. Done = done + cancelled.
+export type CorrectionSegment = 'active' | 'changed' | 'done';
+export const CORRECTION_SEGMENTS: CorrectionSegment[] = ['active', 'changed', 'done'];
+const timeOf = (v: string | Date | null | undefined): number => (v == null ? NaN : v instanceof Date ? v.getTime() : Date.parse(String(v)));
+export function correctionSegment(row: { status: string; address_changed_at?: string | Date | null; items_changed_at?: string | Date | null }): CorrectionSegment {
+  if (row.status !== 'pending') return 'done';
+  return Number.isFinite(timeOf(row.address_changed_at)) || Number.isFinite(timeOf(row.items_changed_at)) ? 'changed' : 'active';
+}
+export type ChangedWhat = 'address' | 'items' | 'both';
+export function changedWhat(addressAt: string | Date | null | undefined, itemsAt: string | Date | null | undefined): ChangedWhat | null {
+  const a = Number.isFinite(timeOf(addressAt)), i = Number.isFinite(timeOf(itemsAt));
+  return a && i ? 'both' : a ? 'address' : i ? 'items' : null;
+}
+// The newest of the two change times (ISO), or null.
+export function changedAt(addressAt: string | Date | null | undefined, itemsAt: string | Date | null | undefined): string | null {
+  const t = Math.max(...[timeOf(addressAt), timeOf(itemsAt)].filter(Number.isFinite));
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+// "Changed · Address + items · by Sunny · 5 min ago": the line on a Changed row.
+export function changedLine(row: { changed_what: ChangedWhat | null; changed_by_name?: string | null; changed_at: string | null }, now = Date.now()): string {
+  const what = row.changed_what === 'both' ? 'Address + items' : row.changed_what === 'address' ? 'Address' : row.changed_what === 'items' ? 'Items' : 'Order';
+  const age = row.changed_at ? ageText(Math.max(0, now - timeOf(row.changed_at))) : '';
+  return `Changed · ${what}${row.changed_by_name ? ` · by ${row.changed_by_name}` : ''}${age ? ` · ${age} ago` : ''}`;
+}
+
+// The counts next to the Corrections section and on the Today board. pending = active + changed.
+export interface CorrectionCounts { pending: number; overdue: number; done_today: number; active?: number; changed?: number }
 
 // "Ask the customer to verify" (owner answer 2b): the line the team member puts in the reply box and still presses
 // Send. The widget's own form is titled "Verify yourself and continue a chat" (public/widget.js), so the customer

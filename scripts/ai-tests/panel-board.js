@@ -150,9 +150,10 @@ const t = async (name, fn) => { S.queries = []; S.fail = null; S.missing = new S
     assert.deepStrictEqual([step.text, step.count, step.done], ['Every correction done (Chat Support > Corrections)', 3, false]);
     assert.ok(rules.morningRoutine(rules.summarize([base])).find((x) => x.go === 'corrections').done);
     assert.ok(rules.urgency({ ...base, correctionsOverdue: 1, correctionsPending: 1 }) > rules.urgency({ ...base, correctionsPending: 1 }));
-    // the loader: GROUP BY business_id on order_corrections, pending and overdue; a missing table = zero
+    // the loader: GROUP BY business_id on order_corrections, ACTIVE ones only (owner 12 Oct: a Changed row is not
+    // waiting) and overdue; a missing table = zero
     const realQuery = db.query;
-    db.query = async (sql, p) => (/FROM order_corrections x WHERE x\.status = 'pending' AND x\.business_id = ANY/.test(sql) ? { rows: [{ business_id: 'A', pending: '2', overdue: '1' }], rowCount: 1 } : realQuery(sql, p));
+    db.query = async (sql, p) => (/FROM order_corrections x WHERE x\.status = 'pending' AND NOT \(EXISTS[\s\S]*order_address_changes[\s\S]*order_item_changes[\s\S]*\) AND x\.business_id = ANY/.test(sql) ? { rows: [{ business_id: 'A', pending: '2', overdue: '1' }], rowCount: 1 } : realQuery(sql, p));
     try {
       const r = await server.loadPanelBoard(null, true);
       assert.deepStrictEqual([r[0].correctionsPending, r[0].correctionsOverdue, r[1].correctionsPending, r[1].correctionsOverdue], [2, 1, 0, 0]);
