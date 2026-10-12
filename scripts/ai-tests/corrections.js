@@ -13,7 +13,7 @@ const HOUR = 3600000;
 const S = {};
 function reset() {
   Object.assign(S, {
-    rows: [], seq: 0, missing: false, logs: [], user: null,
+    rows: [], seq: 0, missing: false, logs: [], user: null, changes: [], noChangeTables: false,
     convs: [
       { id: 'c-ver', site_id: 'S1', tracker_business_id: 'P1', source: 'chat', verified_order_id: '#1553', verified_via: 'form', merged_into: null, assigned_to: null, status: 'agent_handling' },
       { id: 'c-mail', site_id: 'S1', tracker_business_id: 'P1', source: 'email', verified_order_id: '#1601', verified_via: 'mail', merged_into: null, assigned_to: null, status: 'human_needed' },
@@ -43,11 +43,20 @@ const USERS = {
 const norm = (q) => q.replace(/\s+/g, ' ').trim();
 const gone = () => Object.assign(new Error('relation "order_corrections" does not exist'), { code: '42P01' });
 const inScope = (r, scope) => scope == null || scope.includes(r.business_id);
+// Owner 2026-10-12, Active / Changed: the Edit address / Edit items history after the correction, same panel + order.
+const changesOf = (r) => S.changes.filter((c) => c.order_id === r.order_id && c.business_id === r.business_id && c.at > r.created_at.getTime());
+const isChanged = (r, q) => /order_address_changes/.test(q) && changesOf(r).length > 0;
+const changeCols = (r) => {
+  const ch = changesOf(r), t = (k) => { const xs = ch.filter((c) => c.kind === k).map((c) => c.at); return xs.length ? new Date(Math.max(...xs)) : null; };
+  const last = ch.slice().sort((a, b) => b.at - a.at)[0];
+  return { address_changed_at: t('address'), items_changed_at: t('items'), changed_by_name: last ? last.by : null };
+};
 const db = {
   query: async (raw, p = []) => {
     const q = norm(raw);
     if (!/order_corrections/.test(q)) throw new Error('fake db: ' + q.slice(0, 100));
     if (S.missing) throw gone();
+    if (S.noChangeTables && /order_address_changes|order_item_changes/.test(q)) throw Object.assign(new Error('relation "order_item_changes" does not exist'), { code: '42P01' });
     if (/^INSERT INTO order_corrections/.test(q)) {
       const row = { id: String(++S.seq), business_id: p[0], source: p[1], conversation_id: p[2], mail_box_id: p[3], mail_uid: p[4], customer_email: p[5], order_id: p[6], kinds: p[7], note: p[8],
         status: 'pending', created_by: p[9], created_by_name: p[10], created_at: new Date(S.now ?? Date.now()), done_by: null, done_by_name: null, done_at: null, done_note: null, updated_at: new Date(S.now ?? Date.now()) };
@@ -55,22 +64,24 @@ const db = {
     }
     if (/WHERE x\.conversation_id = \$1 ORDER BY/.test(q)) return { rows: S.rows.filter((r) => r.conversation_id === p[0]).sort((a, b) => (b.status === 'pending') - (a.status === 'pending')) };
     if (/WHERE x\.mail_box_id = \$1 AND x\.mail_uid = \$2/.test(q)) return { rows: S.rows.filter((r) => r.mail_box_id === p[0] && r.mail_uid === p[1]) };
-    if (/SELECT DISTINCT x\.conversation_id/.test(q)) return { rows: S.rows.filter((r) => r.status === 'pending' && p[0].includes(r.conversation_id)).map((r) => ({ conversation_id: r.conversation_id })) };
-    if (/count\(\*\)::int AS n FROM order_corrections x WHERE x\.status = 'pending'/.test(q)) return { rows: [{ n: S.rows.filter((r) => r.status === 'pending' && inScope(r, p[0])).length }] };
+    if (/SELECT DISTINCT x\.conversation_id/.test(q)) return { rows: S.rows.filter((r) => r.status === 'pending' && !isChanged(r, q) && p[0].includes(r.conversation_id)).map((r) => ({ conversation_id: r.conversation_id })) };
+    if (/count\(\*\)::int AS n FROM order_corrections x WHERE x\.status = 'pending'/.test(q)) return { rows: [{ n: S.rows.filter((r) => r.status === 'pending' && !isChanged(r, q) && inScope(r, p[0])).length }] };
     if (/GROUP BY x\.business_id/.test(q)) {
       const out = {};
-      for (const r of S.rows) if (r.status === 'pending' && p[0].includes(r.business_id)) { const o = (out[r.business_id] ??= { business_id: r.business_id, pending: 0, overdue: 0 }); o.pending++; if (Date.now() - r.created_at.getTime() >= 24 * HOUR) o.overdue++; }
+      for (const r of S.rows) if (r.status === 'pending' && !isChanged(r, q) && p[0].includes(r.business_id)) { const o = (out[r.business_id] ??= { business_id: r.business_id, pending: 0, overdue: 0 }); o.pending++; if (Date.now() - r.created_at.getTime() >= 24 * HOUR) o.overdue++; }
       return { rows: Object.values(out) };
     }
     if (/AS done_today/.test(q)) {
       const rows = S.rows.filter((r) => inScope(r, p[0]));
-      return { rows: [{ pending: rows.filter((r) => r.status === 'pending').length, overdue: rows.filter((r) => r.status === 'pending' && Date.now() - r.created_at.getTime() >= 24 * HOUR).length, done_today: rows.filter((r) => r.status === 'done').length }] };
+      S.countSql = q;
+      return { rows: [{ pending: rows.filter((r) => r.status === 'pending').length, overdue: rows.filter((r) => r.status === 'pending' && !isChanged(r, q) && Date.now() - r.created_at.getTime() >= 24 * HOUR).length, done_today: rows.filter((r) => r.status === 'done').length, changed: rows.filter((r) => r.status === 'pending' && isChanged(r, q)).length }] };
     }
     if (/\(SELECT b\.name FROM businesses b/.test(q)) {
       S.listSql = q;
       const rows = S.rows.filter((r) => inScope(r, p[0]) && (p[1] == null || p[1].includes(r.status)))
         .sort((a, b) => ((b.status === 'pending') - (a.status === 'pending')) || (a.status === 'pending' ? a.created_at - b.created_at : (b.done_at || b.updated_at) - (a.done_at || a.updated_at)));
-      return { rows: rows.map((r) => { const c = S.convs.find((x) => x.id === r.conversation_id); return { ...r, panel_name: S.panels[r.business_id] || null, customer_name: S.orders[`${r.business_id}|${r.order_id}`] || null, chat_verified: !!c && c.verified_order_id === r.order_id && !c.merged_into }; }) };
+      const withCols = /AS address_changed_at/.test(q) && /order_address_changes/.test(q);
+      return { rows: rows.map((r) => { const c = S.convs.find((x) => x.id === r.conversation_id); return { ...r, panel_name: S.panels[r.business_id] || null, customer_name: S.orders[`${r.business_id}|${r.order_id}`] || null, chat_verified: !!c && c.verified_order_id === r.order_id && !c.merged_into, ...(withCols ? changeCols(r) : { address_changed_at: null, items_changed_at: null, changed_by_name: null }) }; }) };
     }
     if (/WHERE x\.id = \$1 AND \(\$2::text\[\] IS NULL/.test(q)) return { rows: S.rows.filter((r) => r.id === p[0] && inScope(r, p[1])).map((r) => ({ ...r })) };
     if (/^UPDATE order_corrections x SET status = 'pending'/.test(q)) {
@@ -196,7 +207,7 @@ async function t(name, fn) {
     const all = await get('owner', '?status=pending');
     eq(all.status, 200);
     deq(all.body.rows.map((r) => [r.note, r.customer_name, r.panel_name, r.overdue, r.chat_verified]), [['old one', 'Asmita Rao', 'vastora', true, true], ['newer', 'Asha', 'vastora', false, true], ['kurtiya', 'Priya K', 'kurtiya', false, true]]);
-    deq(all.body.counts, { pending: 3, overdue: 1, done_today: 0 });
+    deq(all.body.counts, { pending: 3, overdue: 1, done_today: 0, active: 3, changed: 0 });
     ok(all.body.rows[0].age_ms >= 30 * HOUR - 5000);
     deq((await get('priya', '?status=pending')).body.rows.map((r) => r.note), ['kurtiya'], 'Priya sees only P2');
     eq((await get('priya', '?status=pending&panel=P1')).status, 404);
@@ -209,7 +220,7 @@ async function t(name, fn) {
     delete S.now; await patch('owner', '2', { action: 'cancel' });
     const done = await get('owner', '?status=done');
     deq(done.body.rows.map((r) => [r.note, r.status]), [['newer', 'cancelled'], ['old one', 'done']]);
-    deq(done.body.counts, { pending: 1, overdue: 0, done_today: 1 });
+    deq(done.body.counts, { pending: 1, overdue: 0, done_today: 1, active: 1, changed: 0 });
     eq((await get('owner')).body.rows.length, 3, 'no status = everything');
   });
   await t('done / cancel / reopen: the Super Admin and the Manager (team.lead) only; a member 403; the note at most 300; wrong state 409; another panel 404; the log never holds the note', async () => {
@@ -253,6 +264,47 @@ async function t(name, fn) {
     eq(await read.pendingCorrectionCount(null), 0);
     eq((await read.correctionsByPanel(['P1'])).size, 0);
     eq((await get('reader', '?box=box1&uid=4410')).body.rows.length, 0, 'the Mail tab line is simply empty');
+  });
+  // Owner 2026-10-12: "kuch bhi changes ke baad ... replied aur active jaisa segment".
+  await t('Active / Changed / Done: an Edit address / Edit items on that panel\'s order AFTER the correction moves it to Changed by itself (with who and what); a change before it, or on another panel\'s order with the same number, keeps it Active; the badge, the row chip, the board and "over 24 h" count Active only; without the history tables nothing is Changed', async () => {
+    const a = await post('rahul', { conversationId: 'c-ver', kinds: ['address'], note: 'New flat number' });
+    const b = await post('rahul', { conversationId: 'c-legacy', kinds: ['size'], note: 'M instead of L' });
+    eq(a.status, 200); eq(b.status, 200);
+    const ra = S.rows.find((r) => r.conversation_id === 'c-ver'), rb = S.rows.find((r) => r.conversation_id === 'c-legacy');
+    ra.created_at = new Date(Date.now() - 30 * HOUR); rb.created_at = new Date(Date.now() - 2 * HOUR);
+    // Before the correction (ignored), another panel's #1553 (ignored), then the real one by Sunny.
+    S.changes.push({ kind: 'address', order_id: '#1553', business_id: 'P1', at: ra.created_at.getTime() - 60000, by: 'Old' });
+    S.changes.push({ kind: 'items', order_id: '#1553', business_id: 'P2', at: Date.now() - 60000, by: 'Elsewhere' });
+    let r = await get('owner', '?status=active');
+    deq(r.body.rows.map((x) => x.conversation_id).sort(), ['c-legacy', 'c-ver']);
+    eq(r.body.counts.changed, 0); eq(r.body.counts.overdue, 1, 'the 30-hour-old one is late while nothing changed');
+    S.changes.push({ kind: 'address', order_id: '#1553', business_id: 'P1', at: Date.now() - 5 * 60000, by: 'Sunny' });
+    S.changes.push({ kind: 'items', order_id: '#1553', business_id: 'P1', at: Date.now() - 10 * 60000, by: 'Rahul' });
+    r = await get('owner', '?status=active');
+    deq(r.body.rows.map((x) => x.conversation_id), ['c-legacy']);
+    deq([r.body.counts.pending, r.body.counts.active, r.body.counts.changed, r.body.counts.overdue], [2, 1, 1, 0], 'a Changed row is never "over 24 h"');
+    r = await get('rahul', '?status=changed');
+    eq(r.status, 200);
+    eq(r.body.rows.length, 1);
+    const ch = r.body.rows[0];
+    deq([ch.conversation_id, ch.segment, ch.changed_what, ch.changed_by_name, ch.overdue], ['c-ver', 'changed', 'both', 'Sunny', false]);
+    ok(/^Changed · Address \+ items · by Sunny · 5 min ago$/.test(rules.changedLine(ch)), rules.changedLine(ch));
+    r = await get('owner', '?status=pending');
+    deq(r.body.rows.map((x) => x.segment).sort(), ['active', 'changed'], 'pending = both, for old callers');
+    // The light reads count Active only.
+    eq(await read.pendingCorrectionCount(null), 1);
+    deq(Array.from(await read.pendingCorrectionConvIds(['c-ver', 'c-legacy'])), ['c-legacy']);
+    deq((await read.correctionsByPanel(['P1'])).get('P1'), { pending: 1, overdue: 0 });
+    // Mark done still moves it to Done.
+    eq((await patch('sunny', ch.id, { action: 'done' })).status, 200);
+    r = await get('owner', '?status=done');
+    deq(r.body.rows.map((x) => x.segment), ['done']);
+    // Without order_address_changes / order_item_changes (42P01 naming them): nothing is Changed, nothing breaks.
+    S.noChangeTables = true;
+    r = await get('owner', '?status=active');
+    eq(r.status, 200); deq(r.body.rows.map((x) => x.conversation_id), ['c-legacy']);
+    eq(r.body.counts.changed, 0);
+    eq(await read.pendingCorrectionCount(null), 1);
   });
   await t('the light reads: the inbox row chip, the sidebar badge (in scope), the board\'s per-panel pending / overdue', async () => {
     S.now = Date.now() - 30 * HOUR; await post('rahul', { conversationId: 'c-ver', kinds: ['address'], note: 'a' });

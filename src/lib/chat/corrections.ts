@@ -6,10 +6,10 @@ import { verifiedSenders } from './mail-verify';
 import { maskOrder } from './team-verify-rules';
 import type { MailBoxInfo } from './mail-inbox';
 import {
-  ACTION_FROM, ACTION_STATUS, CORRECTION_TEXT, OVERDUE_MS, cleanCorrection, cleanDoneNote, isCorrectionAction,
-  type CorrectionAction, type CorrectionCounts,
+  ACTION_FROM, ACTION_STATUS, CORRECTION_TEXT, OVERDUE_MS, changedAt, changedWhat, cleanCorrection, cleanDoneNote, correctionSegment, isCorrectionAction,
+  type ChangedWhat, type CorrectionAction, type CorrectionCounts, type CorrectionSegment,
 } from './corrections-rules';
-import { CORRECTION_COLS, missingCorrections, type CorrectionRow } from './corrections-read';
+import { CORRECTION_COLS, missingCorrections, withChanges, type CorrectionRow } from './corrections-read';
 
 // ── Corrections: the database side with the rights (owner 2026-10-11) ────────────────────────────────
 // Rules in corrections-rules.ts; the light reads (thread, inbox rows, board) in corrections-read.ts. Here:
@@ -42,6 +42,13 @@ export interface CorrectionListRow extends CorrectionRow {
   chat_verified: boolean;
   overdue: boolean;
   age_ms: number;
+  // Owner 2026-10-12: Active / Changed / Done. Changed = the order's address or items were edited after this was written.
+  segment: CorrectionSegment;
+  changed_at: string | null;
+  changed_what: ChangedWhat | null;
+  changed_by_name: string | null;
+  address_changed_at?: string | Date | null;
+  items_changed_at?: string | Date | null;
 }
 export interface CorrectionList { rows: CorrectionListRow[]; counts: CorrectionCounts; installed: boolean }
 
@@ -115,15 +122,18 @@ export async function listCorrections(user: AuthUser, opts: { status?: string | 
     if (!canAccessPanel(user, opts.panel)) return refuse(404, 'Not found');
     panels = [opts.panel];
   }
-  // 'pending' or 'done' (done + cancelled together: the Done tab); anything else = everything.
-  const status = opts.status === 'pending' ? ['pending'] : opts.status === 'done' ? ['done', 'cancelled'] : null;
+  // 'active' / 'changed' (both pending; owner 2026-10-12), 'pending' (both), 'done' (done + cancelled: the Done tab);
+  // anything else = everything.
+  const seg = opts.status === 'active' || opts.status === 'changed' ? opts.status : null;
+  const status = opts.status === 'pending' || seg ? ['pending'] : opts.status === 'done' ? ['done', 'cancelled'] : null;
   const now = opts.now ?? Date.now();
   try {
-    const r = await query<CorrectionListRow>(
+    const r = await withChanges<CorrectionListRow>((_changed, cols) =>
       `SELECT ${CORRECTION_COLS},
               (SELECT b.name FROM businesses b WHERE b.id::text = x.business_id LIMIT 1) AS panel_name,
               (SELECT NULLIF(btrim(o.customer_name), '') FROM orders o WHERE o.order_id = x.order_id AND o.business_id::text = x.business_id ORDER BY o.created_at DESC LIMIT 1) AS customer_name,
-              COALESCE((SELECT c.verified_order_id = x.order_id AND c.merged_into IS NULL FROM conversations c WHERE c.id = x.conversation_id), false) AS chat_verified
+              COALESCE((SELECT c.verified_order_id = x.order_id AND c.merged_into IS NULL FROM conversations c WHERE c.id = x.conversation_id), false) AS chat_verified,
+              ${cols}
          FROM order_corrections x
         WHERE ($1::text[] IS NULL OR x.business_id = ANY($1::text[]))
           AND ($2::text[] IS NULL OR x.status = ANY($2::text[]))
@@ -132,20 +142,30 @@ export async function listCorrections(user: AuthUser, opts: { status?: string | 
                  COALESCE(x.done_at, x.updated_at) DESC
         LIMIT 300`,
       [panels, status]);
-    const c = await query<{ pending: number; overdue: number; done_today: number }>(
+    const c = await withChanges<{ pending: number; overdue: number; done_today: number; changed: number }>((changed) =>
       `SELECT count(*) FILTER (WHERE x.status = 'pending')::int AS pending,
-              count(*) FILTER (WHERE x.status = 'pending' AND x.created_at <= now() - interval '${Math.round(OVERDUE_MS / 3600000)} hours')::int AS overdue,
-              count(*) FILTER (WHERE x.status = 'done' AND x.done_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')::int AS done_today
+              count(*) FILTER (WHERE x.status = 'pending' AND NOT ${changed} AND x.created_at <= now() - interval '${Math.round(OVERDUE_MS / 3600000)} hours')::int AS overdue,
+              count(*) FILTER (WHERE x.status = 'done' AND x.done_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')::int AS done_today,
+              count(*) FILTER (WHERE x.status = 'pending' AND ${changed})::int AS changed
          FROM order_corrections x WHERE ($1::text[] IS NULL OR x.business_id = ANY($1::text[]))`,
       [panels]);
-    const rows = r.rows.map((row) => {
+    let rows: CorrectionListRow[] = r.rows.map((row) => {
       const raw = row.created_at as unknown;
       const at = raw instanceof Date ? raw.getTime() : Date.parse(String(raw));
       const age = Number.isFinite(at) ? Math.max(0, now - at) : 0;
-      return { ...row, chat_verified: row.chat_verified === true, age_ms: age, overdue: row.status === 'pending' && age >= OVERDUE_MS };
+      const segment = correctionSegment(row);
+      return {
+        ...row, chat_verified: row.chat_verified === true, age_ms: age, overdue: segment === 'active' && age >= OVERDUE_MS, segment,
+        changed_at: changedAt(row.address_changed_at, row.items_changed_at), changed_what: changedWhat(row.address_changed_at, row.items_changed_at),
+        changed_by_name: row.changed_by_name ?? null,
+      };
     });
-    const k = c.rows[0] || { pending: 0, overdue: 0, done_today: 0 };
-    return { ok: true, value: { rows, counts: { pending: Number(k.pending) || 0, overdue: Number(k.overdue) || 0, done_today: Number(k.done_today) || 0 }, installed: true } };
+    // Changed: the newest change first; Active keeps the oldest first.
+    if (seg) rows = rows.filter((x) => x.segment === seg);
+    if (seg === 'changed') rows.sort((a, b) => Date.parse(b.changed_at || '0') - Date.parse(a.changed_at || '0'));
+    const k = c.rows[0] || { pending: 0, overdue: 0, done_today: 0, changed: 0 };
+    const pending = Number(k.pending) || 0, changedN = Number(k.changed) || 0;
+    return { ok: true, value: { rows, counts: { pending, overdue: Number(k.overdue) || 0, done_today: Number(k.done_today) || 0, active: Math.max(0, pending - changedN), changed: changedN }, installed: true } };
   } catch (e) {
     if (missingCorrections(e)) return refuse(503, CORRECTION_TEXT.notInstalled);
     throw e;

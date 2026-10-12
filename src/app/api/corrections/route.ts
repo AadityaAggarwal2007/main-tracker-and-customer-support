@@ -8,7 +8,7 @@ import { listForMail } from '@/lib/chat/corrections-read';
 export const dynamic = 'force-dynamic';
 
 // ── /api/corrections (owner 2026-10-11, "Correction") ──────────────────────────────────────────
-// GET ?status=pending|done[&panel=<business id>]: every correction of the login's panels (chat.view), pending oldest
+// GET ?status=active|changed|pending|done[&panel=<business id>]: every correction of the login's panels (chat.view), pending oldest
 // first, with the counts {pending, overdue, done_today}. GET ?box=<mailbox id>&uid=<n>: the open mail's own rows
 // (the Mail tab's "Correction pending" line; Mail access). 503 in plain words until order-corrections.sql is run.
 export async function GET(request: NextRequest) {

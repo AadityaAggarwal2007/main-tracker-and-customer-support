@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel } from '@/lib/permissions';
-import { cleanItems, sameItems, type OrderItem } from '@/lib/chat/order-items';
+import { ITEMS_SHARED_ERROR, cleanItems, sameItems, type OrderItem } from '@/lib/chat/order-items';
 import { toItem } from '@/lib/chat/order-items-db';
 
 export const dynamic = 'force-dynamic';
@@ -50,6 +50,10 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       );
       if (cur.rows.length !== 1) return { status: 404, body: { error: 'The order is not in this panel' } };
       const o = cur.rows[0];
+      // Owner 2026-10-12: order_items has only order_id. When another panel has an order with the same number, its
+      // lines sit under the same number and the DELETE below would wipe them too: refuse, change nothing.
+      const twin = await db.query(`SELECT 1 FROM orders WHERE order_id = $1 AND business_id::text IS DISTINCT FROM $2::text LIMIT 1`, [o.order_id, String(o.business_id)]);
+      if (twin.rows.length) return { status: 409, body: { error: ITEMS_SHARED_ERROR } };
       const old = await db.query<{ id: string; brand: string | null; product_name: string | null; quantity: number | null; price: unknown }>(
         `SELECT id, brand, product_name, quantity, price
            FROM order_items
