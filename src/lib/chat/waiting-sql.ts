@@ -1,13 +1,18 @@
 import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from './waiting';
 
-// ── WhatsApp chats are not Chat Support's (owner 2026-10-11, 13:10: "hamara WhatsApp no-reply identity hai, hum WhatsApp
-// par support nahi dete; saari WhatsApp chats Chat Support se nikaal ke WhatsApp tab mein daal do") ──
-// A customer who writes to the business number gets one fixed "help is by email" reply (whatsapp-autoreply.ts) and the
-// chat lives ONLY in WhatsApp > Chats (ChatsPanel, /api/whatsapp/chats). Every staff list, count and automatic team action
-// that reads `conversations` under the alias c adds this: the inbox list and search, every badge and section count,
-// /api/chat/pending, the Today board, auto-assign, the 30-minute move and its red bar, Team live, the chargeback-risk
-// move. Opening such a chat by its id still works (the WhatsApp tab's reply box posts to the normal reply route).
-export const NOT_WHATSAPP_SQL = `c.source <> 'whatsapp'`;
+// ── Chat Support is the website chat box only: WhatsApp and email chats live outside it ──
+// WhatsApp (owner 2026-10-11, 13:10: "hamara WhatsApp no-reply identity hai, hum WhatsApp par support nahi dete; saari
+// WhatsApp chats Chat Support se nikaal ke WhatsApp tab mein daal do"): a customer who writes to the business number gets
+// one fixed "help is by email" reply (whatsapp-autoreply.ts) and the chat lives ONLY in WhatsApp > Chats (ChatsPanel,
+// /api/whatsapp/chats). Email (owner 2026-10-12: "email ki chat aur chat support ki chat mix mat kar ... jaisa whatsapp
+// ki chats bahar hai, email ki chats bhi bahar karde sari"): the team answers mail in the Mail tab (mail_store); the
+// email poller (email.ts) still files each mail as a `source = 'email'` conversation (sender checks, health, the
+// chargeback-risk signals read it), but Chat Support never lists or counts it. Every staff list, count and automatic
+// team action that reads `conversations` under the alias c adds this: the inbox list and search, every badge and
+// section count, /api/chat/pending, the Today board, auto-assign, the 30-minute move and its red bar, Team live, the
+// chargeback-risk move, the team score. Opening such a chat by its id still works (the WhatsApp tab's reply box posts to
+// the normal reply route).
+export const CHAT_SUPPORT_SQL = `c.source NOT IN ('whatsapp', 'email')`;
 
 // ── The "waiting for a reply" SQL ───────────────────────────────
 // Moved word for word out of the inbox list route (src/app/api/chat/conversations/route.ts), so the

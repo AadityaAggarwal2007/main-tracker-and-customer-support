@@ -168,14 +168,16 @@ function factsFor(o: OrderRow, chats: ChatRow[], cbOrders: OrderRow[]) {
   };
 }
 
-// The order's chat to open / move: an open one over a Closed one, and (owner 2026-10-11: WhatsApp chats are not Chat
-// Support's, they live in WhatsApp > Chats) a chat-box / email chat over a WhatsApp one; then the latest. A WhatsApp chat
-// is named only when the customer wrote nowhere else, and risk-escalate.ts never moves it.
-const isWa = (c: ChatRow) => c.source === 'whatsapp';
+// The order's chat to open / move: an open one over a Closed one, and only a website chat-box chat (owner 2026-10-11 /
+// 2026-10-12: WhatsApp chats live in WhatsApp > Chats and email chats in the Mail tab, never in Chat Support); then the
+// latest. A customer who wrote only by email / WhatsApp has no chat here (chatId null: the channel icons say where they
+// wrote) and risk-escalate.ts moves nothing for them; their messages still score.
+const inChatSupport = (c: ChatRow) => c.source !== 'whatsapp' && c.source !== 'email';
 function itemOf(o: OrderRow, r: RiskResult, chats: ChatRow[], f: ReturnType<typeof factsFor>): RiskItem {
-  const open = chats.filter((c) => c.status !== 'resolved');
-  const best = [...(open.length ? open : chats)]
-    .sort((a, b) => Number(isWa(a)) - Number(isWa(b)) || Date.parse(b.last_message_at || '0') - Date.parse(a.last_message_at || '0'))[0];
+  const box = chats.filter(inChatSupport);
+  const open = box.filter((c) => c.status !== 'resolved');
+  const best = [...(open.length ? open : box)]
+    .sort((a, b) => Date.parse(b.last_message_at || '0') - Date.parse(a.last_message_at || '0'))[0];
   return {
     ...r, orderId: o.order_id, businessId: o.business_id, panelName: o.panel_name || 'Panel', customerName: (o.customer_name || '').replace(/\.$/, ''),
     placedAt: o.created_at, total: o.total, status: isDelivered(o) ? 'Delivered' : String(o.tracking_status || 'Order Placed'),

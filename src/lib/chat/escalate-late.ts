@@ -4,7 +4,7 @@
 // Every minute (the chat-email-poll cron) during office hours: a chat held by a team member (not the Manager, not the
 // Super Admin), not Closed, not a Refund / Ship again chat, whose customer has been waiting (the inbox's own waiting
 // rule: "ok / thanks" never counts) for 30+ office minutes since max(their message, when the member got the chat, 10:00
-// today) goes to the Manager. Never a WhatsApp chat (owner 2026-10-11: those are not Chat Support's, NOT_WHATSAPP_SQL),
+// today) goes to the Manager. Never a WhatsApp chat (owner 2026-10-11: those are not Chat Support's, CHAT_SUPPORT_SQL),
 // and the red bar never names one. The chat goes to the Manager (pickManager: one who is around, the fewest open chats; none = the Super Admin), status as
 // a transfer gives it (a verified customer: Needs you). One 'transfer' event by the system, reason 'no_reply_30', with
 // who had it and how long the customer waited: the inbox's red bar for the whole team reads these (lateAlerts). The
@@ -15,7 +15,7 @@ import { teamEntries } from '@/lib/auth';
 import { can } from '@/lib/permissions';
 import { isOfficeHours, todayOpenMs } from '@/lib/office-hours';
 import { loadHolidays } from './holidays';
-import { NOT_WHATSAPP_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
+import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
 import { OWNER_KEY, transferStatus } from './team-rules';
 import { isKnownCustomer, logChatEvent, nameOfKey, pickManager, setSystemActor } from './team-routing';
 
@@ -47,7 +47,7 @@ export async function runLateEscalation(now = Date.now()): Promise<LateRun> {
            JOIN sites s ON s.id = c.site_id
            ${WAITING_LATERAL}
           WHERE c.assigned_to IS NOT NULL AND c.assigned_to <> '${OWNER_KEY}' AND c.status <> 'resolved'
-            AND c.merged_into IS NULL AND c.case_kind IS NULL AND ${NOT_WHATSAPP_SQL}) x
+            AND c.merged_into IS NULL AND c.case_kind IS NULL AND ${CHAT_SUPPORT_SQL}) x
         WHERE x.waiting_since IS NOT NULL AND x.waited_from <= $1::timestamptz
         ORDER BY x.waited_from ASC LIMIT 40`,
       [cutoff, opened]
@@ -100,7 +100,7 @@ export async function lateAlerts(panels: string[] | null): Promise<LateAlert[]> 
          JOIN sites s ON s.id = c.site_id
         WHERE e.reason IN ('no_reply_30', 'chargeback_risk') AND e.created_at > now() - interval '2 hours'
           AND ($1::text[] IS NULL OR s.tracker_business_id::text = ANY($1::text[]))
-          AND ${NOT_WHATSAPP_SQL}
+          AND ${CHAT_SUPPORT_SQL}
         ORDER BY e.created_at DESC LIMIT 10`,
       [panels]
     );

@@ -206,8 +206,8 @@ const ro = (o = {}) => ({ orderId: '#1', businessId: 'b', placedAt: NOW - 15 * D
     eq(again, L, 'cached for two minutes');
   });
 
-  // Owner 2026-10-11: WhatsApp chats are not Chat Support's; "the chat" to open / move is a chat-box / email one when there is one.
-  await t('list: a newer open WhatsApp chat of the same customer never becomes "the chat"; it is named only when they wrote nowhere else', async () => {
+  // Owner 2026-10-11 / 2026-10-12: WhatsApp and email chats are not Chat Support's; "the chat" to open / move is a chat-box one only.
+  await t('list: a newer open WhatsApp chat of the same customer never becomes "the chat"; with no chat-box chat there is none (the icons say where they wrote)', async () => {
     S.chats.push({ id: 'c7', business_id: 'bizA', source: 'whatsapp', status: 'agent_handling', verified_order_id: null, customer_key: null, visitor_id: 'wa:919811111111', visitor_phone: '+919811111111', health_score: 10, case_kind: null, reshipped_at: null, assigned_to: 'u2', last_message_at: iso(NOW - 1 * H) });
     S.msgs.push(['c7', 'visitor', 'hello, order kab aayega', NOW - 2 * H], ['c7', 'visitor', 'I will dispute this with my bank', NOW - 1 * H]);
     let L = await K.loadRiskList(null, NOW + 5 * 60_000, true);
@@ -215,7 +215,9 @@ const ro = (o = {}) => ({ orderId: '#1', businessId: 'b', placedAt: NOW - 15 * D
     eq(o1.chatId, 'c1', 'the chat-box chat, although the WhatsApp one is newer'); eq(o1.holder, 'u1');
     S.chats = S.chats.filter((c) => c.id !== 'c1');
     L = await K.loadRiskList(null, NOW + 6 * 60_000, true);
-    eq(L.items.find((i) => i.orderId === '#2001').chatId, 'c7', 'nowhere else: the WhatsApp chat is named (and never moved: risk-escalate.ts)');
+    const o1b = L.items.find((i) => i.orderId === '#2001');
+    eq(o1b.chatId, null, 'no chat-box chat: no chat to open in Chat Support (a WhatsApp chat lives in WhatsApp > Chats)');
+    ok(o1b.channels.includes('whatsapp'), 'their WhatsApp messages still count');
   });
   await t('study: each real chargeback -> its order (email / phone), wrote first or silent, and the signs before', async () => {
     const St = await K.loadStudy(null);

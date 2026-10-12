@@ -12,7 +12,7 @@ import { SECTION, spin, type Alert } from './types';
 // so the same holder / WhatsApp rules as the inbox). Every panel gets a column; none is hard-coded.
 // Owner 2026-10-11 (13:10): "hamara WhatsApp no-reply identity hai; saari WhatsApp chats Chat Support se nikaal ke
 // WhatsApp tab mein daal do". This tab is now the ONLY place a WhatsApp chat lives: the inbox, its counts and the team
-// automations leave `source = 'whatsapp'` out (waiting-sql.ts NOT_WHATSAPP_SQL), so the "Open in Chat Support" button is
+// automations leave `source = 'whatsapp'` out (waiting-sql.ts CHAT_SUPPORT_SQL), so the "Open in Chat Support" button is
 // gone; the Send and Activity tabs open a chat HERE (`openId`).
 interface PanelSum { id: string; name: string; chats: number; unread: number; today: number; waiting: number }
 interface Chat { id: string; name: string | null; phone: string | null; status: string; unread: number; at: string | null; last: string; lastSender: string | null; panelId: string | null; panel: string | null; automation: boolean; customerMsgs: number; subject: string | null }

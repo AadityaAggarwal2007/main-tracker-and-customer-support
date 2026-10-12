@@ -281,8 +281,8 @@ async function t(name, fn) {
     ok(/conversation_id\s+text,/.test(sql), 'conversations.id is text (chat-tables.sql)');
     for (const k of rules.CORRECTION_KIND_KEYS) ok(sql.includes(k) || k === 'other' || k === 'pack' || k === 'bogo', k);
     const rb = require(path.join(SRC, 'lib/chat/rulebook.ts'));
-    const rule = rb.RULEBOOK.find((s) => s.key === 'team').rules.slice(-1)[0];
-    ok(rule.id === '7.17' && /Correction/.test(rule.title) && /Manager/.test(rule.text) && /nothing is ever sent/i.test(rule.text), 'rulebook 7.17 at the end of section 7');
+    const rule = rb.RULEBOOK.find((s) => s.key === 'team').rules.find((r) => r.id === '7.17');
+    ok(rule && /Correction/.test(rule.title) && /Manager/.test(rule.text) && /nothing is ever sent/i.test(rule.text), 'rulebook 7.17 in section 7');
     ok(/corrections\.js/.test(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')), 'in npm run test:ai');
   });
 

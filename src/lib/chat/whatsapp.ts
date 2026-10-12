@@ -2,7 +2,7 @@
 // The official WhatsApp Cloud API (Meta). One business number for the whole install: a customer who
 // writes to it becomes a chat with `source = 'whatsapp'` (whatsapp-inbound.ts). Since 2026-10-11 (owner:
 // the number is a no-reply identity) that chat is NOT in Chat Support: it shows only in WhatsApp > Chats
-// (waiting-sql.ts NOT_WHATSAPP_SQL), and a reply typed there goes back through this file.
+// (waiting-sql.ts CHAT_SUPPORT_SQL), and a reply typed there goes back through this file.
 //
 // Settings in /etc/tracker/.env (names only in .env.example, values never in Git or chat):
 //   WHATSAPP_CLOUD_TOKEN       the System User token (sending; shared with the chargeback alert)
