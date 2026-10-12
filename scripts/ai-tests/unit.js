@@ -1377,6 +1377,9 @@ t('rulebook: 7.10 (owner 4 Oct) is a code rule in section 7', () => {
 t('rulebook: 4.11 (owner 4 Oct) is a code rule at the end of section 4', () => {
   const rule = (id) => rb.RULEBOOK.flatMap((s) => s.rules).find((r) => r.id === id);
   assert.ok(rb.RULE_IDS.has('4.11') && rule('4.11').how === 'code');
+  // 4.12 (owner 12 Oct, the light-up jhumka): a product feature is never guessed; the locked rules carry the same paragraph.
+  assert.ok(rb.RULE_IDS.has('4.12') && rule('4.12').how === 'told' && /never says a product has or does not have a feature/.test(rule('4.12').text));
+  assert.ok(/Products: all you know about a product is its name on the order[^\n]*Never say a product has or does not have a feature/.test(fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/ai-prompt.ts'), 'utf8')), 'the locked rules tell Chikki');
   assert.ok(/revised date/.test(rule('4.11').text) && /5 days/.test(rule('4.11').text));
 });
 
