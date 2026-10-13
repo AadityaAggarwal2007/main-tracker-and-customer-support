@@ -16,18 +16,22 @@ const s = global.__wh;
 async function query(sql, params = []) {
   const q = sql.replace(/\\s+/g, ' ').trim();
   if (/^INSERT INTO orders/.test(q)) { s.ordersInserted++; return { rows: [], rowCount: 1 }; }
-  if (/^INSERT INTO order_items/.test(q)) {
-    for (let i = 0; i < params.length; i += 5) s.items.push({ order_id: params[i], brand: params[i + 1], product_name: params[i + 2], quantity: params[i + 3], price: params[i + 4] });
-    return { rows: [], rowCount: params.length / 5 };
+  if (/^INSERT INTO order_items \\(order_id, brand, product_name, quantity, price, business_id\\)/.test(q)) {
+    for (let i = 0; i < params.length; i += 6) s.items.push({ order_id: params[i], brand: params[i + 1], product_name: params[i + 2], quantity: params[i + 3], price: params[i + 4], business_id: params[i + 5] });
+    return { rows: [], rowCount: params.length / 6 };
   }
-  if (/^DELETE FROM order_items/.test(q)) { s.items = []; return { rows: [], rowCount: 0 }; }
+  // Owner 2026-10-13: only this panel's lines of the number go; another panel's #9001 stays.
+  if (/^DELETE FROM order_items WHERE order_id = \\$1 AND business_id IS NOT DISTINCT FROM \\$2::uuid$/.test(q)) {
+    const before = s.items.length; s.items = s.items.filter((i) => !(i.order_id === params[0] && (i.business_id ?? null) === (params[1] ?? null)));
+    return { rows: [], rowCount: before - s.items.length };
+  }
   if (/^(INSERT INTO tracking_history|UPDATE orders)/.test(q)) return { rows: [], rowCount: 1 };
   throw new Error('fake db: unexpected SQL ' + q.slice(0, 80));
 }
 async function queryOne(sql, params = []) {
   const q = sql.replace(/\\s+/g, ' ').trim();
   if (/SELECT shopify_webhook_secret FROM businesses/.test(q)) return { shopify_webhook_secret: 'test-secret' };
-  if (/SELECT order_id FROM orders WHERE order_id = \\$1 AND source_store = \\$2/.test(q)) return s.existing ? { order_id: params[0] } : null;
+  if (/SELECT order_id, business_id FROM orders WHERE order_id = \\$1 AND source_store = \\$2/.test(q)) return s.existing ? { order_id: params[0], business_id: 'P1' } : null;
   if (/SELECT id FROM email_logs/.test(q)) return { id: 1 };
   throw new Error('fake db: unexpected SQL ' + q.slice(0, 80));
 }
@@ -64,13 +68,17 @@ let n = 0;
   assert.strictEqual(r.body.action, 'created');
   assert.deepStrictEqual(seen.items.map((i) => i.product_name), ['Jhumka box - Silver / pack-of-3', 'Jhumka box - Gold / pack-of-3', 'Classic Bag', 'Old Line']);
   assert.deepStrictEqual(seen.items.map((i) => [i.quantity, i.price]), [[1, 128], [1, 128], [2, 50], [1, 50]]);
+  assert.ok(seen.items.every((i) => i.business_id === 'P1'), 'every new line carries the panel');
   n++;
+  // Another panel's order with the same number (#9001 on P2): its line must survive this panel's update.
+  seen.items.push({ order_id: '#9001', brand: 'kurtiya', product_name: 'P2 kurti', quantity: 1, price: 99, business_id: 'P2' });
   // The same order sent again (an update): items replaced, still with the full names, not doubled.
   seen.existing = true;
   const r2 = await post(order(LINES));
   assert.strictEqual(r2.body.action, 'updated');
-  assert.strictEqual(seen.items.length, 4);
-  assert.strictEqual(seen.items[1].product_name, 'Jhumka box - Gold / pack-of-3');
+  assert.strictEqual(seen.items.filter((i) => i.business_id === 'P1').length, 4);
+  assert.ok(seen.items.some((i) => i.business_id === 'P2' && i.product_name === 'P2 kurti'), 'the other panel\'s line of the same number stays');
+  assert.strictEqual(seen.items.filter((i) => i.business_id === 'P1')[1].product_name, 'Jhumka box - Gold / pack-of-3');
   n++;
   console.log(`WEBHOOK-ITEMS: ${n} groups passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

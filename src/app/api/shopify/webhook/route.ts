@@ -217,8 +217,8 @@ export async function POST(request: NextRequest) {
 
 
     // 9. Check if order already exists (dedup by order_id + source_store)
-    const existing = await queryOne<{ order_id: string }>(
-      `SELECT order_id FROM orders WHERE order_id = $1 AND source_store = $2`,
+    const existing = await queryOne<{ order_id: string; business_id: string | null }>(
+      `SELECT order_id, business_id FROM orders WHERE order_id = $1 AND source_store = $2`,
       [orderId, sourceStore]
     );
 
@@ -250,19 +250,21 @@ export async function POST(request: NextRequest) {
         updateParams
       );
 
-      // Replace items
-      await query(`DELETE FROM order_items WHERE order_id = $1`, [orderId]);
+      // Replace items: only THIS order's panel's lines (owner 2026-10-13: the same order number is often another
+      // panel's order too, and a delete by the number alone wiped that panel's lines; order-items-panel.sql).
+      const itemsPanel = existing.business_id ?? (businessId || null);
+      await query(`DELETE FROM order_items WHERE order_id = $1 AND business_id IS NOT DISTINCT FROM $2::uuid`, [orderId, itemsPanel]);
       if (lineItems.length > 0) {
-        const colCount = 5;
+        const colCount = 6;
         const placeholders = lineItems.map(
           (_: unknown, j: number) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
         ).join(', ');
         const params: unknown[] = [];
         lineItems.forEach((item: { brand: string; product_name: string; quantity: number; price: number }) => {
-          params.push(orderId, item.brand, item.product_name, item.quantity, item.price);
+          params.push(orderId, item.brand, item.product_name, item.quantity, item.price, itemsPanel);
         });
         await query(
-          `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`,
+          `INSERT INTO order_items (order_id, brand, product_name, quantity, price, business_id) VALUES ${placeholders}`,
           params
         );
       }
@@ -331,18 +333,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to create order' }, { status: 500 });
     }
 
-    // 11. Insert line items
+    // 11. Insert line items, with the order's panel (the same as the order row above; owner 2026-10-13).
     if (lineItems.length > 0) {
-      const colCount = 5;
+      const colCount = 6;
       const placeholders = lineItems.map(
         (_: unknown, j: number) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
       const params: unknown[] = [];
       lineItems.forEach((item: { brand: string; product_name: string; quantity: number; price: number }) => {
-        params.push(orderId, item.brand, item.product_name, item.quantity, item.price);
+        params.push(orderId, item.brand, item.product_name, item.quantity, item.price, businessId || null);
       });
       await query(
-        `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`,
+        `INSERT INTO order_items (order_id, brand, product_name, quantity, price, business_id) VALUES ${placeholders}`,
         params
       );
     }
