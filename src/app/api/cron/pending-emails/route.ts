@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
            ) FILTER (WHERE oi.id IS NOT NULL), '[]'::json
          ) AS order_items
        FROM orders o
-       LEFT JOIN order_items oi ON oi.order_id = o.order_id
+       LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
        WHERE o.customer_email IS NOT NULL
          AND o.customer_email != ''
          AND o.customer_email LIKE '%@%'

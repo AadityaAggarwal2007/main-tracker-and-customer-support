@@ -302,7 +302,9 @@ export async function POST(request: NextRequest) {
     const existingOrderIdsArr = Array.from(existingOrderIds);
     for (let i = 0; i < existingOrderIdsArr.length; i += BATCH_SIZE) {
       const batch = existingOrderIdsArr.slice(i, i + BATCH_SIZE);
-      await query(`DELETE FROM order_items WHERE order_id = ANY($1::text[])`, [batch]);
+      // Only THIS panel's lines (owner 2026-10-13): the same order number is often another panel's order too, and
+      // deleting by the number alone wiped that panel's lines (order_items.business_id, order-items-panel.sql).
+      await query(`DELETE FROM order_items WHERE order_id = ANY($1::text[]) AND business_id IS NOT DISTINCT FROM $2::uuid`, [batch, forcedBusinessId]);
     }
 
     // ═══ STEP 5: Batch-INSERT all items ═══
@@ -318,16 +320,16 @@ export async function POST(request: NextRequest) {
 
     for (let i = 0; i < allItems.length; i += BATCH_SIZE) {
       const batch = allItems.slice(i, i + BATCH_SIZE);
-      const colCount = 5;
+      const colCount = 6;
       const placeholders = batch.map(
         (_, j) => `(${Array.from({ length: colCount }, (_, k) => `$${j * colCount + k + 1}`).join(', ')})`
       ).join(', ');
       const params: unknown[] = [];
       batch.forEach(item => {
-        params.push(item.order_id, item.brand, item.product_name, item.quantity, item.price);
+        params.push(item.order_id, item.brand, item.product_name, item.quantity, item.price, forcedBusinessId);
       });
       await query(
-        `INSERT INTO order_items (order_id, brand, product_name, quantity, price) VALUES ${placeholders}`
+        `INSERT INTO order_items (order_id, brand, product_name, quantity, price, business_id) VALUES ${placeholders}`
         , params
       );
     }

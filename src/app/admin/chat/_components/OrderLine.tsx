@@ -153,12 +153,6 @@ export function ItemsLine({ items, editable, onEdit }: { items: StaffOrderItems;
           </Chip>
         </>
       )}
-      {items.shared && (
-        <>
-          {' '}
-          <Chip tone="warn" title="This order number is also an order of another panel. The items list mixes both orders' lines, so it cannot be edited here yet.">Order number on 2 panels</Chip>
-        </>
-      )}
       {editable && (
         <button type="button" onClick={onEdit} title="Change the order items" className="btn btn-outline btn-sm"
           style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', marginLeft: '0.375rem' }}>

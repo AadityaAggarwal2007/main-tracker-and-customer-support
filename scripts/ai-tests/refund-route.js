@@ -343,14 +343,14 @@ on(/^UPDATE messages SET metadata = COALESCE\(metadata, '\{\}'::jsonb\) \|\| jso
   if (m) setRow(tx, m, { ...m, metadata: { ...(m.metadata || {}), emailed: !!v } });
   return { rows: [], rowCount: m ? 1 : 0 };
 });
-on(/^SELECT o\.id, o\.order_id, o\.customer_name, o\.customer_mobile, o\.payment_method, o\.financial_status, o\.order_total, o\.tracking_status, o\.delivered_at, o\.is_cancelled, o\.created_at FROM orders o WHERE o\.order_id = \$1 AND o\.business_id::text = \$2::text LIMIT 2$/,
-  ([o, b]) => rows(ordersOf(o, b).map((x) => pick(x, ['id', 'order_id', 'customer_name', 'customer_mobile', 'payment_method', 'financial_status', 'order_total', 'tracking_status', 'delivered_at', 'is_cancelled', 'created_at']))));
+on(/^SELECT o\.id, o\.order_id, o\.customer_name, o\.customer_mobile, o\.payment_method, o\.financial_status, o\.order_total, o\.tracking_status, o\.delivered_at, o\.is_cancelled, o\.created_at, o\.business_id FROM orders o WHERE o\.order_id = \$1 AND o\.business_id::text = \$2::text LIMIT 2$/,
+  ([o, b]) => rows(ordersOf(o, b).map((x) => pick(x, ['id', 'order_id', 'customer_name', 'customer_mobile', 'payment_method', 'financial_status', 'order_total', 'tracking_status', 'delivered_at', 'is_cancelled', 'created_at', 'business_id']))));
 on(/^SELECT o\.customer_mobile, o\.tracking_status, o\.delivered_at, o\.is_cancelled FROM orders o WHERE o\.order_id = \$1 AND o\.business_id::text = \$2::text LIMIT 2$/,
   ([o, b]) => rows(ordersOf(o, b).map((x) => pick(x, ['customer_mobile', 'tracking_status', 'delivered_at', 'is_cancelled']))));
 on(/^SELECT o\.order_total, o\.customer_mobile, o\.tracking_status, o\.delivered_at, o\.is_cancelled FROM orders o WHERE o\.order_id = \$1 AND o\.business_id::text = \$2::text LIMIT 2$/,
   ([o, b]) => rows(ordersOf(o, b).map((x) => pick(x, ['order_total', 'customer_mobile', 'tracking_status', 'delivered_at', 'is_cancelled']))));
-on(/^SELECT product_name, quantity, price FROM order_items WHERE order_id = \$1 ORDER BY id LIMIT 50$/,
-  ([o]) => rows(T.order_items.filter((i) => i.order_id === o).sort((a, b) => a.id - b.id).slice(0, 50).map((i) => pick(i, ['product_name', 'quantity', 'price']))));
+on(/^SELECT product_name, quantity, price FROM order_items WHERE order_id = \$1 AND business_id IS NOT DISTINCT FROM \$2::uuid ORDER BY id LIMIT 50$/,
+  ([o, b]) => rows(T.order_items.filter((i) => i.order_id === o && (i.business_id ?? null) === (b ?? null)).sort((a, b) => a.id - b.id).slice(0, 50).map((i) => pick(i, ['product_name', 'quantity', 'price']))));
 // server.ts: links (Send side)
 on(/^SELECT id, status, revoked_reason, created_at, expires_at, opened_count, last_opened_at, conversation_id, message_id FROM refund_links WHERE business_id = \$1 AND order_id = \$2 AND status = 'active' (LIMIT 1|FOR UPDATE)$/,
   async ([b, o], tx, q) => {
@@ -376,6 +376,9 @@ on(/^UPDATE refund_links SET status = 'revoked', revoked_reason = 'reissued', re
 on(/^INSERT INTO refund_links \(id, token_hash, conversation_id, site_id, business_id, order_id, order_uuid, order_snapshot, channel, lang, message_id, expires_at\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8::jsonb, \$9, \$10, \$11, now\(\) \+ interval '7 days'\)$/,
   (p, tx) => {
     const [id, token_hash, conversation_id, site_id, business_id, order_id, order_uuid, snap, channel, lang, message_id] = p;
+    // Owner 2026-10-13: another panel's order with the same number never lends its lines to this snapshot.
+    if (String(typeof snap === 'string' ? snap : JSON.stringify(snap)).includes('OTHER PANEL LINE')) throw new Error('refund snapshot carries another panel\'s line');
+    if (!String(typeof snap === 'string' ? snap : JSON.stringify(snap)).includes('Kurta Set')) throw new Error('refund snapshot lost the order\'s own line');
     const l = { id, token_hash, conversation_id, site_id, business_id, order_id, order_uuid, order_snapshot: json(snap), channel, lang, status: 'active',
       revoked_reason: null, replaced_by: null, message_id, created_by: 'owner', created_at: now(), expires_at: new Date(NOW + 7 * DAY), opened_count: 0,
       first_opened_at: null, last_opened_at: null, submitted_at: null, revoked_at: null };
@@ -698,7 +701,9 @@ function mkOrder(o = {}) {
   T.orders.push({ id: nodeCrypto.randomUUID(), order_id, business_id: BIZ, customer_name: name, customer_mobile: `+91 ${phone}`, payment_method: 'COD',
     financial_status: 'pending', order_total: '1299.00', tracking_status: 'Delivered', delivered_at: new Date(NOW - 3 * DAY), is_cancelled: false,
     created_at: new Date(NOW - 12 * DAY), ...o, order_id });
-  T.order_items.push({ id: ++itemSeq, order_id, product_name: 'Kurta Set - Blue / M', quantity: 1, price: '1299.00' });
+  T.order_items.push({ id: ++itemSeq, order_id, business_id: BIZ, product_name: 'Kurta Set - Blue / M', quantity: 1, price: '1299.00' });
+  // Owner 2026-10-13: the same order number on another panel; its line must never reach this panel's snapshot.
+  T.order_items.push({ id: ++itemSeq, order_id, business_id: 'other-panel', product_name: 'OTHER PANEL LINE', quantity: 1, price: '1.00' });
   return order_id;
 }
 function mkConv(order, o = {}) {

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel } from '@/lib/permissions';
-import { ITEMS_SHARED_ERROR, cleanItems, sameItems, type OrderItem } from '@/lib/chat/order-items';
+import { cleanItems, sameItems, type OrderItem } from '@/lib/chat/order-items';
 import { toItem } from '@/lib/chat/order-items-db';
 
 export const dynamic = 'force-dynamic';
@@ -50,16 +50,12 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       );
       if (cur.rows.length !== 1) return { status: 404, body: { error: 'The order is not in this panel' } };
       const o = cur.rows[0];
-      // Owner 2026-10-12: order_items has only order_id. When another panel has an order with the same number, its
-      // lines sit under the same number and the DELETE below would wipe them too: refuse, change nothing.
-      const twin = await db.query(`SELECT 1 FROM orders WHERE order_id = $1 AND business_id::text IS DISTINCT FROM $2::text LIMIT 1`, [o.order_id, String(o.business_id)]);
-      if (twin.rows.length) return { status: 409, body: { error: ITEMS_SHARED_ERROR } };
       const old = await db.query<{ id: string; brand: string | null; product_name: string | null; quantity: number | null; price: unknown }>(
         `SELECT id, brand, product_name, quantity, price
            FROM order_items
-          WHERE order_id = $1
+          WHERE order_id = $1 AND business_id IS NOT DISTINCT FROM $2::uuid
           ORDER BY created_at, id`,
-        [o.order_id]
+        [o.order_id, o.business_id]
       );
       const before: OrderItem[] = old.rows.map(toItem);
       const cleaned = cleanItems(raw);
@@ -78,16 +74,18 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
       // Our own rows pass the keep-team-items trigger for this transaction only.
       await db.query(`SET LOCAL app.team_items_edit = '1'`);
-      await db.query(`DELETE FROM order_items WHERE order_id = $1`, [o.order_id]);
+      // Only this panel's lines: the same order number is often another panel's order (owner 2026-10-13,
+      // order_items.business_id from order-items-panel.sql).
+      await db.query(`DELETE FROM order_items WHERE order_id = $1 AND business_id IS NOT DISTINCT FROM $2::uuid`, [o.order_id, o.business_id]);
       // created_at steps by a millisecond per line so the rows read back in the team's order.
-      const colCount = 6;
+      const colCount = 7;
       const placeholders = after.map(
-        (_, j) => `($${j * colCount + 1}, $${j * colCount + 2}, $${j * colCount + 3}, $${j * colCount + 4}, $${j * colCount + 5}, now() + ($${j * colCount + 6}::int * interval '1 millisecond'))`
+        (_, j) => `($${j * colCount + 1}, $${j * colCount + 2}, $${j * colCount + 3}, $${j * colCount + 4}, $${j * colCount + 5}, now() + ($${j * colCount + 6}::int * interval '1 millisecond'), $${j * colCount + 7}::uuid)`
       ).join(', ');
       const values: unknown[] = [];
-      after.forEach((i, j) => { values.push(o.order_id, brand, i.product_name, i.quantity, i.price, j); });
+      after.forEach((i, j) => { values.push(o.order_id, brand, i.product_name, i.quantity, i.price, j, o.business_id); });
       const ins = await db.query<{ id: string; product_name: string | null; quantity: number | null; price: unknown }>(
-        `INSERT INTO order_items (order_id, brand, product_name, quantity, price, created_at)
+        `INSERT INTO order_items (order_id, brand, product_name, quantity, price, created_at, business_id)
          VALUES ${placeholders}
          RETURNING id, product_name, quantity, price`,
         values
