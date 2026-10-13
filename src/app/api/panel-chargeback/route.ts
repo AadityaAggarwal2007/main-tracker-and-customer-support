@@ -4,12 +4,14 @@ import { query, queryOne } from '@/lib/db';
 import { checkMailbox, looksLikeEmail, normalizeAppPassword } from '@/lib/chat/mailbox-check';
 import { panelChargeback, savePanelSettings } from '@/lib/chargeback/store';
 import { GATEWAYS } from '@/lib/chargeback/parse';
-import { whatsappConfigured } from '@/lib/chargeback/notify';
+import { chargebackWhatsAppSetup, notifyChargeback } from '@/lib/chargeback/alert-send';
+import { whatsappNumber } from '@/lib/chargeback/parse';
 
 // ── Chargeback protection for one panel (owner 2026-10-08), Super Admin only ──────────────────
-// GET    ?businessId=             the chargeback Gmail, the WhatsApp number, the gateway checklist, whether WhatsApp is set up
+// GET    ?businessId=[&fresh=1]   the chargeback Gmail, the WhatsApp number, the gateway checklist, whether WhatsApp is set up
+//                                  (`whatsappSetup`: token, the shiptrack_alert template's status; alert-send.ts)
 // POST   { businessId, email, appPassword }   connect the panel's ONE chargeback Gmail (checked by signing in once)
-// PATCH  { businessId, whatsapp? , gateway?: { key, done } }
+// PATCH  { businessId, whatsapp? , gateway?: { key, done } } | { businessId, action: 'test' } (one test alert to the saved number)
 // DELETE ?businessId=             disconnect it (its past alerts stay)
 // The App Password is never sent back. This Gmail is only read: nothing is ever sent from it and the AI never sees it.
 function owner(request: NextRequest) {
@@ -24,7 +26,8 @@ export async function GET(request: NextRequest) {
   if (!ID.test(businessId)) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
   try {
     const d = await panelChargeback(businessId);
-    return NextResponse.json({ ...d, whatsappReady: whatsappConfigured(), gatewayList: GATEWAYS.map(g => ({ key: g.key, label: g.label })) });
+    const wa = await chargebackWhatsAppSetup(new URL(request.url).searchParams.get('fresh') === '1');
+    return NextResponse.json({ ...d, whatsappReady: wa.ready, whatsappSetup: wa, gatewayList: GATEWAYS.map(g => ({ key: g.key, label: g.label })) });
   } catch (e) {
     console.error('[chargeback] panel:', (e as Error).message);
     return NextResponse.json({ error: 'Could not read the chargeback settings.' }, { status: 500 });
@@ -81,9 +84,25 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   const user = owner(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: { businessId?: unknown; whatsapp?: unknown; gateway?: { key: unknown; done: unknown } } = {};
+  let body: { businessId?: unknown; whatsapp?: unknown; gateway?: { key: unknown; done: unknown }; action?: unknown } = {};
   try { body = await request.json(); } catch { /* handled below */ }
   const businessId = typeof body.businessId === 'string' ? body.businessId : '';
+  if (body.action === 'test') {
+    // One test alert to this panel's saved number, the same way a real chargeback goes (owner 2026-10-14).
+    if (!ID.test(businessId)) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
+    try {
+      const d = await panelChargeback(businessId);
+      const to = whatsappNumber(d.whatsapp || '');
+      if (!to) return NextResponse.json({ error: 'Save the WhatsApp number first.' }, { status: 400 });
+      const b = await queryOne<{ name: string }>(`SELECT name FROM businesses WHERE id::text = $1::text`, [businessId]);
+      const r = await notifyChargeback(to, { panel: b?.name || 'Panel', gateway: 'TEST', order: 'TEST (no real chargeback)' });
+      if (r === 'sent') return NextResponse.json({ ok: true });
+      return NextResponse.json({ error: r === 'not_configured' ? 'WhatsApp alert is not ready yet (see the line under the number).' : `Not sent: ${r.replace(/^failed: /, '')}` }, { status: 409 });
+    } catch (e) {
+      console.error('[chargeback] test alert:', (e as Error).message);
+      return NextResponse.json({ error: 'Could not send the test.' }, { status: 500 });
+    }
+  }
   if (!ID.test(businessId) || (body.whatsapp === undefined && !body.gateway)) return NextResponse.json({ error: 'businessId and a change are required' }, { status: 400 });
   try {
     const r = await savePanelSettings(businessId, user.displayName || user.username, { whatsapp: body.whatsapp, gateway: body.gateway });

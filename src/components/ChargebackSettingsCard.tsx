@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Loader2, ShieldAlert, Trash2 } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
+import { SHIPTRACK_ALERT_PRESET } from '@/lib/chat/whatsapp-brand-rules';
 
 interface Data {
   installed: boolean;
@@ -16,6 +17,8 @@ interface Data {
   whatsapp: string;
   gateways: Record<string, { done: boolean; by: string; at: string }>;
   whatsappReady: boolean;
+  // alert-send.ts (owner 2026-10-14): token on the server, the "shiptrack_alert" template's status at Meta.
+  whatsappSetup?: { ready: boolean; token: boolean; envTemplate: boolean; template: { name: string; status: string } | null; error: string | null };
   gatewayList: { key: string; label: string }[];
 }
 
@@ -28,10 +31,10 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
   const [busy, setBusy] = useState('');
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     setLoading(true);
     try {
-      const r = await fetch(`/api/panel-chargeback?businessId=${encodeURIComponent(businessId)}`, { headers: auth, cache: 'no-store' });
+      const r = await fetch(`/api/panel-chargeback?businessId=${encodeURIComponent(businessId)}${fresh ? '&fresh=1' : ''}`, { headers: auth, cache: 'no-store' });
       const j = await r.json().catch(() => ({}));
       if (r.ok) { setD(j); setWa(j.whatsapp || ''); } else { setD(null); onAlert('error', j.error || 'Could not read the chargeback settings.'); }
     } catch { setD(null); }
@@ -53,6 +56,18 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
 
   const connect = async () => {
     if (await call('connect', 'POST', { businessId, email, appPassword: pass })) { setEmail(''); setPass(''); onAlert('success', 'Chargeback Gmail connected. New mail in it will raise an alert.'); await load(); }
+  };
+  // The ShipTrack alert template, made from here (owner 2026-10-14: "template banala"): the same preset as WhatsApp >
+  // Templates > "ShipTrack alert template"; Meta reviews it (usually minutes), then alerts go by themselves.
+  const makeTemplate = async () => {
+    const p = SHIPTRACK_ALERT_PRESET;
+    if (await call('tpl', 'POST', { name: p.name, language: p.language, category: p.category, header: p.header, body: p.body, footer: p.footer, examples: [...p.examples] }, '/api/whatsapp/templates')) {
+      onAlert('success', 'Template sent to Meta for review. It is usually approved within minutes; alerts start by themselves after that.');
+      await load(true);
+    }
+  };
+  const sendTest = async () => {
+    if (await call('test', 'PATCH', { businessId, action: 'test' })) onAlert('success', `Test alert sent to ${d?.whatsapp}. Check the phone.`);
   };
   const remove = async () => {
     if (!window.confirm(`Disconnect the CHARGEBACK Gmail of ${panelName}?\n\nOld alerts stay. New chargeback mails will no longer be seen. (The customer support Gmail is a different account and is not touched.)`)) return;
@@ -115,9 +130,32 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
               <input className="form-input" style={{ flex: 1, minWidth: 180, maxWidth: 280 }} placeholder="919876543210" inputMode="tel" value={wa} onChange={e => setWa(e.target.value)} />
               <button className="btn btn-outline btn-sm" disabled={busy === 'wa' || wa === d.whatsapp} onClick={saveWa}>Save number</button>
             </div>
-            <div className="meta" style={{ marginTop: '0.375rem', color: d.whatsappReady ? undefined : 'var(--danger)' }}>
-              {d.whatsappReady ? 'WhatsApp sending is set up on the server.' : 'WhatsApp sending is not set up on the server yet (it needs the WhatsApp Business token and a message template). Until then the alert shows only in ShipTrack.'}
-            </div>
+            {(() => {
+              const w = d.whatsappSetup;
+              const st = w?.template?.status || '';
+              const line = (color: string | undefined, text: string) => <div className="meta" style={{ marginTop: '0.375rem', color }}>{text}</div>;
+              if (d.whatsappReady) return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.375rem' }}>
+                  <span className="meta t-ok"><CheckCircle2 size={12} /> WhatsApp alert is set up{w?.envTemplate ? '' : ' (template "shiptrack_alert")'}: every chargeback mail sends one message to this number (panel, gateway and order only).</span>
+                  <button className="btn btn-outline btn-sm" disabled={busy === 'test' || !d.whatsapp} onClick={sendTest}>{busy === 'test' ? <Loader2 size={14} className="spin" /> : null} Send a test</button>
+                </div>
+              );
+              if (!w || !w.token) return line('var(--danger)', 'WhatsApp is not set up on the server (WHATSAPP_CLOUD_TOKEN / WHATSAPP_PHONE_NUMBER_ID). Until then the alert shows only in ShipTrack.');
+              if (w.error) return line('var(--danger)', `Could not read the WhatsApp templates: ${w.error}`);
+              if (!w.template) return (
+                <div style={{ marginTop: '0.375rem' }}>
+                  <div className="meta" style={{ color: 'var(--danger)' }}>One step left: the WhatsApp alert template is not made yet. Until then the alert shows only in ShipTrack.</div>
+                  <button className="btn btn-primary btn-sm" style={{ marginTop: '0.375rem' }} disabled={busy === 'tpl'} onClick={makeTemplate}>{busy === 'tpl' ? <Loader2 size={14} className="spin" /> : null} Create the alert template</button>
+                </div>
+              );
+              if (st === 'PENDING') return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.375rem' }}>
+                  <span className="meta" style={{ color: 'var(--warn, #b45309)' }}>Template "shiptrack_alert" is waiting for Meta's approval (usually minutes). Alerts start by themselves once it is approved.</span>
+                  <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => void load(true)}>Check again</button>
+                </div>
+              );
+              return line('var(--danger)', `Template "shiptrack_alert" is ${st || 'not usable'} at Meta. Open WhatsApp > Templates to fix it.`);
+            })()}
           </div>
 
           {/* 3. Gateway checklist */}
