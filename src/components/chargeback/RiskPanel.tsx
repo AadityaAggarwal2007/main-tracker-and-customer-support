@@ -4,12 +4,13 @@
 // GET /api/chargebacks/risk: every prepaid order of the last 45 days whose customer sounds like a chargeback is coming,
 // riskiest first, with the reasons and the ONE next step (src/lib/chargeback/risk-rules.ts). Open chat goes to the chat.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Mail, MessageCircle, RefreshCw, Smartphone } from 'lucide-react';
+import { History, Loader2, Mail, MessageCircle, RefreshCw, Smartphone } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
+import ChargebackHistory from './ChargebackHistory';
 
 type Level = 'watch' | 'high' | 'critical';
 interface Item {
-  orderId: string; panelName: string; customerName: string; total: number; status: string; score: number; level: Level;
+  orderId: string; businessId: string; panelName: string; customerName: string; total: number; status: string; score: number; level: Level;
   signals: { key: string; points: number; text: string }[]; action: { key: string; text: string };
   daysLate: number; waitingHours: number | null; lastCustomerAt: number | null; channels: string[];
   chatId: string | null; holder: string | null; caseKind: 'refund' | 'reship' | null;
@@ -28,6 +29,7 @@ export default function RiskPanel({ token, onAlert }: { token: string; onAlert: 
   const [show, setShow] = useState<Level | 'all'>('all');
   const [panel, setPanel] = useState('');
   const [action, setAction] = useState('');
+  const [histOf, setHistOf] = useState<string | null>(null);   // the order whose history is open
 
   const load = useCallback(async (fresh = false) => {
     setLoading(true);
@@ -93,7 +95,9 @@ export default function RiskPanel({ token, onAlert }: { token: string; onAlert: 
               <span style={{ fontSize: '0.8125rem', fontWeight: 600, flex: 1, minWidth: 200 }}>{i.action.text}</span>
               {i.chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(i.chatId)}`}><MessageCircle size={13} /> Open chat</a>}
               {!i.chatId && i.channels.includes('email') && <a className="btn btn-outline btn-sm" href="/admin?tab=mail"><Mail size={13} /> Open Mail</a>}
+              <button type="button" className="btn btn-outline btn-sm" aria-expanded={histOf === `${i.businessId}|${i.orderId}`} onClick={() => setHistOf(histOf === `${i.businessId}|${i.orderId}` ? null : `${i.businessId}|${i.orderId}`)}><History size={13} /> History</button>
             </div>
+            {histOf === `${i.businessId}|${i.orderId}` && <ChargebackHistory token={token} businessId={i.businessId} orderId={i.orderId} onAlert={onAlert} />}
           </div>
         ))}
       </div>

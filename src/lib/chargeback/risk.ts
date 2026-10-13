@@ -10,24 +10,24 @@ import { chargebackKind } from './parse';
 import { SIGNAL_NAME, contactCandidates, levelOf, scoreOrder, type Channel, type RiskMsg, type RiskOrder, type RiskResult, type SignalKey } from './risk-rules';
 
 export const RISK_DAYS = 45;
-const MATCH_DAYS = 120;
+export const MATCH_DAYS = 120;
 const missing = (e: unknown) => ['42P01', '42703'].includes((e as { code?: string })?.code || '');
 async function safe<T>(what: string, fn: () => Promise<T>, fallback: T): Promise<T> {
   try { return await fn(); } catch (e) { if (!missing(e)) console.error(`[risk] ${what}:`, (e as Error).message); return fallback; }
 }
 const digits = (s: unknown) => String(s ?? '').replace(/[^0-9]/g, '');
-const NOT_COD = `NOT (lower(COALESCE(o.payment_method, '')) = 'cod' OR lower(COALESCE(o.payment_method, '')) LIKE '%cash on delivery%')`;
-const ORDER_COLS = `o.order_id, o.business_id::text AS business_id, b.name AS panel_name, o.customer_name, o.created_at,
+export const NOT_COD = `NOT (lower(COALESCE(o.payment_method, '')) = 'cod' OR lower(COALESCE(o.payment_method, '')) LIKE '%cash on delivery%')`;
+export const ORDER_COLS = `o.order_id, o.business_id::text AS business_id, b.name AS panel_name, o.customer_name, o.created_at,
        o.estimated_delivery::text AS estimated_delivery, o.tracking_status, o.delivered_at, o.order_total::float AS total,
        lower(COALESCE(o.customer_email, '')) AS email, right(regexp_replace(COALESCE(o.customer_mobile, ''), '[^0-9]', '', 'g'), 10) AS phone10,
        o.payment_method`;
 
-interface OrderRow {
+export interface OrderRow {
   order_id: string; business_id: string; panel_name: string | null; customer_name: string | null; created_at: string;
   estimated_delivery: string | null; tracking_status: string | null; delivered_at: string | null; total: number;
   email: string; phone10: string; payment_method: string | null;
 }
-interface ChatRow {
+export interface ChatRow {
   id: string; business_id: string; source: string; status: string; verified_order_id: string | null; customer_key: string | null;
   visitor_id: string; visitor_phone: string | null; health_score: number | null; case_kind: 'refund' | 'reship' | null;
   reshipped_at: string | null; assigned_to: string | null; last_message_at: string | null;
@@ -37,14 +37,14 @@ export interface RiskItem extends RiskResult {
   status: string; chatId: string | null; holder: string | null; caseKind: 'refund' | 'reship' | null;
 }
 
-const isDelivered = (o: OrderRow) => !!o.delivered_at || String(o.tracking_status || '').trim().toLowerCase() === 'delivered';
+export const isDelivered = (o: OrderRow) => !!o.delivered_at || String(o.tracking_status || '').trim().toLowerCase() === 'delivered';
 const channelOf = (source: string): Channel => (source === 'email' ? 'email' : source === 'whatsapp' ? 'whatsapp' : 'chat');
 
 // ── The chats and messages behind a set of orders ──
-interface Gathered { chatsOf: Map<string, ChatRow[]>; msgsOf: Map<string, RiskMsg[]> }
+export interface Gathered { chatsOf: Map<string, ChatRow[]>; msgsOf: Map<string, RiskMsg[]> }
 const okey = (o: { business_id: string; order_id: string }) => `${o.business_id}|${digits(o.order_id)}`;
 
-async function gather(orders: OrderRow[]): Promise<Gathered> {
+export async function gather(orders: OrderRow[]): Promise<Gathered> {
   const chatsOf = new Map<string, ChatRow[]>(), msgsOf = new Map<string, RiskMsg[]>();
   if (!orders.length) return { chatsOf, msgsOf };
   const panels = Array.from(new Set(orders.map((o) => o.business_id)));

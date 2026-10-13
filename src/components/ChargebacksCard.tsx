@@ -5,10 +5,11 @@
 // (and takes the red Chargeback tag off that customer's chat). Super Admin only; every /api/chargebacks route
 // checks again. The gateway mail's details stay in the Gmail itself; this shows who, what and which order.
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronDown, ExternalLink, Loader2, MessageCircle, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ClipboardCopy, ExternalLink, Loader2, MessageCircle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { agoText } from '@/app/admin/_lib/format';
 import RiskPanel from '@/components/chargeback/RiskPanel';
 import StudyPanel from '@/components/chargeback/StudyPanel';
+import ChargebackHistory from '@/components/chargeback/ChargebackHistory';
 
 interface Alert {
   id: string; business_id: string; panel_name: string | null; received_at: string; from_address: string; from_name: string;
@@ -93,6 +94,20 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
       onAlert('success', `Linked to order ${j.orderId}.`); setLinkNo(''); onChanged?.(); await load();
     } catch { onAlert('error', 'Could not link it.'); }
   };
+  // "Copy all for Claude" (owner 2026-10-13): every real chargeback of the last 120 days with its order's chats, Gmail
+  // and WhatsApp, masked, to paste into Claude.
+  const [copyingAll, setCopyingAll] = useState(false);
+  const copyAll = async () => {
+    setCopyingAll(true);
+    try {
+      const r = await fetch('/api/chargebacks/history?all=1', { headers: auth, cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not read the chargebacks.'); return; }
+      await navigator.clipboard.writeText(j.text || '');
+      onAlert('success', `Copied ${j.count} chargeback(s) with their chats, Gmail and WhatsApp (names, phones, emails and links hidden). Paste it to Claude.`);
+    } catch { onAlert('error', 'Could not copy: the browser did not allow it.'); }
+    finally { setCopyingAll(false); }
+  };
   const toggle = (a: Alert) => {
     const next = openId === a.id ? null : a.id;
     setOpenId(next); setNote(''); setLinkNo('');
@@ -103,6 +118,7 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
         <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-outline btn-sm" onClick={copyAll} disabled={copyingAll} title="Every chargeback of the last 120 days with the order's chats, Gmail and WhatsApp, as text with names, phones, emails and links hidden">{copyingAll ? <Loader2 size={14} className="spin" /> : <ClipboardCopy size={14} />} Copy all for Claude</button>
         {VIEWS.map(v => <button key={v.key} type="button" className="seg-btn" aria-pressed={view === v.key} onClick={() => setView(v.key)}>{v.label}</button>)}
         <button type="button" className="btn btn-outline btn-sm" onClick={load} disabled={loading}>{loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Refresh</button>
       </div>
@@ -158,6 +174,7 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
                   )}
                   {a.status === 'done' && <span className="meta">Done by {a.done_by_name}{a.note ? ` · ${a.note}` : ''}</span>}
                 </div>
+                {a.kind !== 'other' && <ChargebackHistory key={`${a.id}|${a.order_id || ''}`} token={token} alertId={a.id} onAlert={onAlert} onLinked={() => { onChanged?.(); void load(); }} />}
               </div>
             )}
           </div>
