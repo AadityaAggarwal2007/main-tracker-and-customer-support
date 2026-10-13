@@ -111,14 +111,14 @@ function evaluate(c, result, usage) {
     for (let n = 0; n < repeat; n++) {
       Object.assign(state, {
         history: rowsFor(c.history), verifiedOrderId: c.verified || null, fresh: c.fresh || null, verified: !!c.verified,
-        facts: c.facts || null, health: c.health ?? (process.env.HEALTH ? Number(process.env.HEALTH) : null), effortSettings: effortFor(c),
+        facts: c.facts || null, otherChannel: c.otherChannel || null, health: c.health ?? (process.env.HEALTH ? Number(process.env.HEALTH) : null), effortSettings: effortFor(c),
         brain: c.brain || (live ? state.liveBrain || [] : []), brainError: !!c.brainError, faqs: c.faqs || (live ? state.liveFaqs || [] : []), examples: c.examples || (live ? state.liveExamples || [] : []), lookups: c.lookups || {}, script: live ? [] : JSON.parse(JSON.stringify(c.mock || [])), requests: [], responses: [],
       });
       let result, err = null, usage;
       quiet();
       usage = { brain: [] };
       const t0 = Date.now();
-      try { result = await getAIResponse('test-conv', sitePrompt, null, null, 'chat', siteId, usage); } catch (e) { err = e; }
+      try { result = await getAIResponse('test-conv', sitePrompt, c.panel || null, null, 'chat', siteId, usage); } catch (e) { err = e; }
       const secs = ((Date.now() - t0) / 1000).toFixed(1);
       loud();
       const fails = err ? [`threw: ${err.message}`] : evaluate(c, result, usage);

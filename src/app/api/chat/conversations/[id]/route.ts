@@ -6,6 +6,7 @@ import { query, withTransaction } from '@/lib/db';
 import { loadOrderFacts } from '@/lib/chat/order-facts';
 import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
 import { listForConversation } from '@/lib/chat/corrections-read';
+import { chatMailOffer } from '@/lib/chat/chat-mail';
 import { loadOrderAddress } from '@/lib/chat/order-address-db';
 import { loadOrderItems } from '@/lib/chat/order-items-db';
 import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
@@ -143,6 +144,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const chargebackOpen = (await openChargebackKeys([{ business_id: cbBiz, order_id: conversation.verified_order_id }])).has(chargebackKey(cbBiz, conversation.verified_order_id));
   // Corrections (owner 2026-10-11): this chat's rows, pending first; a missing table = none (corrections-read.ts).
   const corrections = await listForConversation(params.id);
+  // "Gmail too" under the reply box (owner 2026-10-13, chat-mail.ts): where a website chat's reply would also be mailed
+  // (the address masked), or why it cannot; null for any other chat or a login that does not reply.
+  const mailOffer = conversation.source === 'chat' && can(user, 'chat.reply') ? await chatMailOffer(params.id) : null;
 
   return NextResponse.json({
     as_of: asOf,
@@ -155,6 +159,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     order_facts: orderFacts,
     chargeback_open: chargebackOpen,
     corrections,
+    mail_offer: mailOffer,
     order_address: orderAddress,
     address_editable: !!orderAddress && !!conversation.verified_order_id && can(user, 'orders.update'),
     order_items: orderItems,

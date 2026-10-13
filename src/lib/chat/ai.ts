@@ -23,6 +23,7 @@ import { looksHinglish } from './escalation';
 import { FORM_VERIFY_ASK, dropFormMentions } from '@/lib/refund/link-mask';
 import { dropDisputeAdvice } from './dispute-advice';
 import { codAlreadyToldNote } from './cod';
+import { otherChannelLine } from './customer-mail';
 import { brainSection, selectNotes, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
 import { EFFORT_PLAN, effortFor, effortScore, groupFor, newEffortUsage, type EffortUsage } from './effort';
@@ -384,6 +385,10 @@ export async function getAIResponse(
       console.error('[AI] brain read failed:', (err as Error)?.message);
     }
   }
+
+  // The chat and the Gmail are one customer (owner 2026-10-13, customer-mail.ts): a verified customer who has also
+  // written on the other channel gets ONE line (a count and a date, never the mails' text). Never stops a reply.
+  if (verifiedOrderId) systemPrompt += await otherChannelLine(conversationId, verifiedOrderId, trackerBusinessId || null, channel === 'email' ? 'email' : 'chat');
 
   // How our team handles this situation (brain-examples.ts): 1-2 approved replies from the
   // store's own team to a customer in the same situation (refund, wrong tracking, anger...), as a

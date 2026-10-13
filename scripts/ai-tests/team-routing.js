@@ -58,6 +58,8 @@ stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 // The red Chargeback tag (src/lib/chargeback/store.ts): no open alert here; the tag has its own test (chargeback.js).
 stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new Set(), chargebackKey: (b, o) => b + "|" + o };');
 // Corrections (owner 2026-10-11, corrections-read.ts): its own suite (corrections.js); the thread and the list only carry its light reads here.
+// "Gmail too" (owner 2026-10-13, chat-mail.ts): the reply route and the thread only call it; nothing is mailed here.
+stub('chat-mail', 'module.exports = { chatMailOffer: async (id) => (global.__mailOffer ? global.__mailOffer(id) : null), sendChatAsMail: async (...a) => { (global.__chatMail = global.__chatMail || []).push(a); return { ok: true, queued: true, to: "te***@x.com" }; }, noteChatMail: async (...a) => { (global.__chatMailNotes = global.__chatMailNotes || []).push(a); } };');
 stub('corrections-read', 'module.exports = { listForConversation: async () => [], pendingCorrectionConvIds: async () => new Set(), pendingCorrectionCount: async () => 0 };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
@@ -761,15 +763,15 @@ async function handle(q, p, tx) {
     const c = conv(p[0]);
     return rows(c && c.site_id === p[1] ? [pick(c, ['id', 'site_id', 'status', 'merged_into'])] : []);
   }
-  if ((m = q.match(/^SELECT id, conversation_id, sender, CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content, CASE WHEN deleted_at IS NULL THEN (metadata(?: - 'agent')?) END AS metadata, created_at, edited_at, \(deleted_at IS NOT NULL\) AS deleted, GREATEST\(created_at, edited_at, deleted_at\) AS changed_at FROM messages WHERE conversation_id = \$1 AND (.*) ORDER BY created_at ASC$/))) {
-    const stripAgent = m[1] !== 'metadata';
+  if ((m = q.match(/^SELECT id, conversation_id, sender, CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content, CASE WHEN deleted_at IS NULL THEN (metadata(?: - 'agent')?(?: - 'mail')?) END AS metadata, created_at, edited_at, \(deleted_at IS NOT NULL\) AS deleted, GREATEST\(created_at, edited_at, deleted_at\) AS changed_at FROM messages WHERE conversation_id = \$1 AND (.*) ORDER BY created_at ASC$/))) {
+    const stripAgent = /- 'agent'/.test(m[1]), stripMail = /- 'mail'/.test(m[1]);
     const visibleOnly = / AND deleted_at IS NULL/.test(m[2]);
     return rows(db.messages
       .filter((x) => x.conversation_id === p[0] && x.sender !== 'tool_result' && !(x.metadata && x.metadata.hidden) && x.content && x.content.trim())
       .filter((x) => !visibleOnly || !x.deleted_at)
       .map((x) => {
         let meta = null;
-        if (!x.deleted_at && x.metadata) { meta = clone(x.metadata); if (stripAgent) delete meta.agent; }
+        if (!x.deleted_at && x.metadata) { meta = clone(x.metadata); if (stripAgent) delete meta.agent; if (stripMail) delete meta.mail; }
         return { id: x.id, conversation_id: x.conversation_id, sender: x.sender, content: x.deleted_at ? '' : x.content, metadata: meta,
           created_at: x.created_at, edited_at: x.edited_at || null, deleted: !!x.deleted_at, changed_at: x.deleted_at || x.created_at };
       }));
@@ -1826,7 +1828,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     const files = [{ id: 'f'.repeat(64), url: '/api/widget/files/x', name: 'label.png', mimeType: 'image/png', size: 10, kind: 'image', status: 'sent' }];
     db.messages.push(
       { id: 'w1', conversation_id: 'r16', sender: 'visitor', content: 'where is my order', metadata: null, created_at: '2026-10-02T10:00:00.000Z' },
-      { id: 'w2', conversation_id: 'r16', sender: 'agent', content: '📎 label.png', metadata: { agent: 'anurag', attachments: files, captionless: true }, created_at: '2026-10-02T10:01:00.000Z' },
+      { id: 'w2', conversation_id: 'r16', sender: 'agent', content: '📎 label.png', metadata: { agent: 'anurag', attachments: files, captionless: true, mail: { to: 'cu***@gmail.com', state: 'queued' } }, created_at: '2026-10-02T10:01:00.000Z' },
       { id: 'w3', conversation_id: 'r16', sender: 'agent', content: 'gone', metadata: { agent: 'rahul' }, created_at: '2026-10-02T10:02:00.000Z', deleted_at: '2026-10-02T10:03:00.000Z' },
       { id: 'w4', conversation_id: 'r16', sender: 'tool_result', content: '{}', metadata: { hidden: true }, created_at: '2026-10-02T10:01:30.000Z' },
     );
@@ -1837,6 +1839,7 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     deq(r.body.messages.map((x) => x.id), ['w1', 'w2']);
     deq(r.body.messages[1].metadata, { attachments: files, captionless: true });
     ok(r.body.messages.every((x) => !x.metadata || !('agent' in x.metadata)));
+    ok(r.body.messages.every((x) => !x.metadata || !('mail' in x.metadata)), 'where a reply was also mailed (chat-mail.ts, owner 13 Oct) is staff only');
     eq(r.headers['Access-Control-Allow-Origin'], '*');
     r = await get('&since=2026-10-02T09:00:00.000Z&changes=1');
     const gone = r.body.messages.find((x) => x.id === 'w3');
@@ -4197,6 +4200,38 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     newConv({ id: 'r73l2', status: 'human_needed' });
     status(await verify('rahul', 'r73l2', { orderId: '7204', phone: '9000000004' }), 200, 'after 15 minutes Rahul may again');
     global.__verifyOrder = null; global.__verifyCalls = [];
+  });
+
+  // ── R74: "Gmail too" (owner 2026-10-13, chat-mail.ts) ───
+  await t('R74 Gmail too: a website chat\'s reply with alsoEmail is saved first, then also mailed (once, after the commit, the result on the answer); never without the tick, never for an email / WhatsApp chat, never when the reply is refused; the thread says where it would go', async () => {
+    global.__chatMail = []; global.__chatMailNotes = [];
+    newConv({ id: 'r74a', status: 'agent_handling', assigned_to: ANURAG, verified_order_id: '#7401', verified_via: 'form' });
+    let r = await reply('anurag', 'r74a', 'Your new parcel is booked, tracking soon.', { alsoEmail: true });
+    status(r, 200);
+    deq(r.body.mail, { ok: true, queued: true, to: 'te***@x.com' });
+    deq(global.__chatMail, [['r74a', 'Your new parcel is booked, tracking soon.', 'Anurag']], 'the saved text, by the replier');
+    eq(global.__chatMailNotes.length, 1); eq(global.__chatMailNotes[0][0], agentMsgs('r74a')[0].id, 'noted on the saved message');
+    r = await reply('anurag', 'r74a', 'Only in the chat.');
+    status(r, 200); ok(!('mail' in r.body)); eq(global.__chatMail.length, 1, 'no tick, no mail');
+    r = await reply('anurag', 'r74a', 'yes', { alsoEmail: 'yes' });
+    eq(global.__chatMail.length, 1, 'only a real true ticks it');
+    newConv({ id: 'r74e', source: 'email', status: 'human_needed', verified_order_id: '#7402' });
+    global.__emails.length = 0;
+    r = await reply('anurag', 'r74e', 'By email anyway.', { alsoEmail: true });
+    status(r, 200); deq([r.body.emailed, global.__emails.length, global.__chatMail.length], [true, 1, 1], 'an email chat goes by email as always, never twice');
+    newConv({ id: 'r74w', source: 'whatsapp', status: 'agent_handling', visitor_id: 'wa:919876543210' });
+    global.__wa = [];
+    r = await reply('anurag', 'r74w', 'On WhatsApp.', { alsoEmail: true });
+    status(r, 200); eq(global.__chatMail.length, 1, 'never for WhatsApp');
+    newConv({ id: 'r74h', status: 'agent_handling', assigned_to: RAHUL, verified_order_id: '#7403' });
+    r = await reply('anurag', 'r74h', 'Not my chat.', { alsoEmail: true });
+    status(r, 409); eq(global.__chatMail.length, 1, 'a refused reply mails nothing');
+    global.__mailOffer = (id) => (id === 'r74a' ? { to: 'cu***@gmail.com' } : null);
+    let g = await thread('anurag', 'r74a');
+    deq(g.body.mail_offer, { to: 'cu***@gmail.com' });
+    g = await thread('anurag', 'r74e');
+    eq(g.body.mail_offer, null, 'only a website chat');
+    global.__mailOffer = null;
   });
 
   Object.assign(console, realConsole);

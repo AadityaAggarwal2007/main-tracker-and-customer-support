@@ -3,7 +3,7 @@
 // Suggested replies (owner 2026-10-04): above the reply box, 3 drafts Chikki wrote for this
 // team member's next reply (suggest-run.ts). A click puts one in the box; the team member sends
 // it or edits it. Pure presentation: the page fetches and records.
-import { Loader2, RotateCw, Sparkles } from 'lucide-react';
+import { Loader2, RotateCw, Sparkles, X } from 'lucide-react';
 import type { SuggestLang } from '@/lib/chat/suggest';
 
 export interface SuggestState {
@@ -21,12 +21,13 @@ const LANGS: { key: SuggestLang; label: string; title: string }[] = [
   { key: 'hi', label: 'Hinglish', title: 'Hinglish' },
 ];
 
-export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLang }: {
+export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLang, onClose }: {
   state: SuggestState | null;
   replyOpen: boolean;
   onPick: (index: number) => void;
   onRefresh: () => void;
   onLang: (lang: SuggestLang) => void;
+  onClose?: () => void;
 }) {
   if (!state) return null;
   return (
@@ -46,6 +47,11 @@ export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLan
           onClick={onRefresh} style={{ width: 24, height: 24 }}>
           {state.loading ? <Loader2 size={13} style={{ animation: 'spin 0.6s linear infinite' }} /> : <RotateCw size={13} />}
         </button>
+        {onClose && (
+          <button type="button" className="btn-icon" title="Hide" aria-label="Hide the suggested replies" onClick={onClose} style={{ width: 24, height: 24 }}>
+            <X size={13} />
+          </button>
+        )}
       </div>
       {state.loading && state.options.length === 0 && (
         <p className="meta" style={{ margin: 0 }}>Chikki is drafting…</p>

@@ -1,11 +1,12 @@
 'use client';
 
-import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck, LayoutTemplate } from 'lucide-react';
+import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck, LayoutTemplate, Sparkles, Mail } from 'lucide-react';
+import { CHAT_MAIL_WHY_NOT } from '@/lib/chat/chat-mail-rules';
 import { ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, formatFileSize } from '@/lib/chat/attachment-rules';
-import type { Conversation, PendingFile } from '../_lib/types';
+import type { Conversation, MailOffer, PendingFile } from '../_lib/types';
 import { draggingFiles } from '../_lib/inbox';
 
-export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver, openTemplate }: {
+export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver, openTemplate, onSuggest, suggestOpen, mailOffer, alsoMail, setAlsoMail }: {
   activeConv: Conversation | null;
   addFiles: (files: File[]) => void;
   composerHint: string;
@@ -22,6 +23,13 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
   polishDraft?: () => Promise<void>;
   // WhatsApp chat (owner 2026-10-10): opens the template picker (the only message after 24 h of silence).
   openTemplate?: () => void;
+  // Suggested replies only when asked (owner 2026-10-13): the button opens / closes them; absent = not offered here.
+  onSuggest?: () => void;
+  suggestOpen?: boolean;
+  // "Gmail too" (owner 2026-10-13, chat-mail.ts): the tick for this one message, or why it is off; null = no line.
+  mailOffer?: MailOffer;
+  alsoMail?: boolean;
+  setAlsoMail?: (v: boolean) => void;
   polishing?: boolean;
   readOnlyReply: string;
   removeFile: (key: string) => void;
@@ -187,6 +195,21 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                           <span className="chat-polish-label">Template</span>
                         </button>
                       )}
+                      {onSuggest && (
+                        <button
+                          type="button"
+                          className={`btn ${suggestOpen ? 'btn-primary' : 'btn-outline'}`}
+                          title={suggestOpen ? 'Hide the suggested replies' : 'Chikki drafts 3 replies for you to pick from (a few seconds)'}
+                          aria-label="Suggested replies"
+                          aria-pressed={!!suggestOpen}
+                          disabled={sending}
+                          onClick={onSuggest}
+                          style={{ padding: '0 0.625rem', flexShrink: 0, gap: '0.25rem' }}
+                        >
+                          <Sparkles size={15} />
+                          <span className="chat-polish-label">Suggestions</span>
+                        </button>
+                      )}
                       {polishDraft && (
                         <button
                           type="button"
@@ -215,6 +238,18 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                           : <Send size={16} />}
                       </button>
                     </div>
+                    {/* "Gmail too" (owner 2026-10-13): this one message also goes by mail to the email on the customer's order */}
+                    {mailOffer && 'to' in mailOffer && setAlsoMail && (
+                      <label className="chat-mail-tick" title="The same text also goes by mail from this panel's support Gmail, as &quot;Update on your order&quot;. Use it for an important update.">
+                        <input type="checkbox" checked={!!alsoMail} disabled={!replyOpen || sending} onChange={e => setAlsoMail(e.target.checked)} />
+                        <Mail size={13} /> Also send by Gmail to <b>{mailOffer.to}</b>
+                      </label>
+                    )}
+                    {mailOffer && 'why' in mailOffer && (
+                      <p className="chat-mail-tick meta" title={CHAT_MAIL_WHY_NOT[mailOffer.why]}>
+                        <Mail size={13} /> Gmail: {CHAT_MAIL_WHY_NOT[mailOffer.why]}
+                      </p>
+                    )}
                   </div>
   );
 }

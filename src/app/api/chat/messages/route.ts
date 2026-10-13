@@ -10,6 +10,7 @@ import { can } from '@/lib/permissions';
 import { canAct, claimsOnAct } from '@/lib/chat/team-rules';
 import { reshipInReply } from '@/lib/chat/reship';
 import { recordSent } from '@/lib/chat/suggest-run';
+import { noteChatMail, sendChatAsMail, type ChatMailResult } from '@/lib/chat/chat-mail';
 import {
   STARTING_MESSAGE, actionError, actionsReady, heldMessage, holderOf, lockChatGroup, logChatEvent, setActor, staffActor, takeFor,
 } from '@/lib/chat/team-routing';
@@ -52,7 +53,9 @@ export async function POST(request: NextRequest) {
   try {
     // suggestionId + suggestionIndex (optional): the reply started from a suggested draft
     // (suggest-run.ts); recorded after the save, never a reason to refuse the reply.
-    const { conversationId, content, attachmentIds, suggestionId, suggestionIndex, template } = await request.json();
+    // alsoEmail (owner 2026-10-13): the team member ticked "Gmail too": a website chat's reply also goes by mail to the
+    // email on the verified order (chat-mail.ts), after the chat message is saved.
+    const { conversationId, content, attachmentIds, suggestionId, suggestionIndex, template, alsoEmail } = await request.json();
     // A WhatsApp template (whatsapp-templates.ts): { name, language, params[] }. The content is the template's
     // text with the values filled in (what the chat record shows); Meta gets the template by name.
     const tpl = template && typeof template === 'object' && typeof template.name === 'string' && /^[a-z0-9_]{1,512}$/.test(template.name)
@@ -261,7 +264,15 @@ export async function POST(request: NextRequest) {
       if (waError) console.error('[whatsapp] reply not sent:', waError);
     }
 
-    return NextResponse.json({ message, emailed, whatsapp });
+    // "Gmail too" on a website chat (owner 2026-10-13): the saved reply's text also goes by mail; a failure is reported,
+    // the chat reply stays.
+    let mail: ChatMailResult | null = null;
+    if (alsoEmail === true && conversation.source === 'chat') {
+      mail = hasText ? await sendChatAsMail(conversationId, message.content, actor.name) : { ok: false, error: 'Only text goes by Gmail: type a message' };
+      await noteChatMail(message.id, mail);
+    }
+
+    return NextResponse.json({ message, emailed, whatsapp, ...(mail ? { mail } : {}) });
   } catch (err) {
     if (err instanceof ReplyError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

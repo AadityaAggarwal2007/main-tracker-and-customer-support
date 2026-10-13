@@ -5,8 +5,8 @@ import { verifiedEmailsForChat } from '@/lib/chat/mail-verify';
 import { storeFromAddresses, storeReady } from '@/lib/chat/mail-store';
 import { can, canAccessPanel } from '@/lib/permissions';
 
-// GET /api/mail/by-chat?conversationId=<id>: the emails (last 30 days, live from Gmail) of the addresses verified
-// for this chat's verified order. Only for a login with Open Mail AND Chat Support, for a panel it may use. It is
+// GET /api/mail/by-chat?conversationId=<id>: the emails (last 30 days) of this chat's customer: the address on its
+// verified order (owner 2026-10-13) and the addresses verified for that order in the Mail tab. Only for a login with Open Mail AND Chat Support, for a panel it may use. It is
 // asked for when someone presses "Emails" in the thread, never by the thread's own polling.
 export async function GET(request: NextRequest) {
   const a = mailUser(request, 'view');
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   try {
     const info = await verifiedEmailsForChat(id);
     if (!info || !canAccessPanel(a.user, info.businessId)) return NextResponse.json({ error: 'Chat not found.' }, { status: 404 });
-    if (!info.orderId) return NextResponse.json({ orderId: null, emails: [], mails: [] });
+    if (!info.orderId) return NextResponse.json({ orderId: null, emails: [], mails: [], orderEmail: null });
     const boxes = (await mailboxesForSite(a.user, info.siteId)).slice(0, 3);
     const mails: Array<Record<string, unknown>> = [];
     let failed = 0;
@@ -35,6 +35,6 @@ export async function GET(request: NextRequest) {
       }
     }
     mails.sort((x, y) => (Date.parse(String(y.date)) || 0) - (Date.parse(String(x.date)) || 0));
-    return NextResponse.json({ orderId: info.orderId, emails: info.emails, mails: mails.slice(0, 15), hasMailbox: boxes.length > 0, failed }, { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ orderId: info.orderId, emails: info.emails, orderEmail: info.orderEmail, mails: mails.slice(0, 15), hasMailbox: boxes.length > 0, failed }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) { return mailFail(e); }
 }

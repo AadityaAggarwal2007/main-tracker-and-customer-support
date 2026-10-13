@@ -130,22 +130,31 @@ export async function removeVerification(user: AuthUser, box: MailBoxSecret, ema
   return { ok: true };
 }
 
-// The chat thread's side: the verified order of a chat and the sender addresses verified for that order.
-export async function verifiedEmailsForChat(conversationId: string): Promise<{ siteId: string; businessId: string | null; orderId: string | null; emails: string[] } | null> {
+// The chat thread's side: the verified order of a chat and its customer's Gmail addresses: the email ON the order first
+// (owner 2026-10-13: "chat aur Gmail ek hi admi, chahe kaise bhi verify kia ho": the chat proved the order, the order
+// names the email), then the addresses verified for that order in the Mail tab. Any verification counts, an old one too.
+export async function verifiedEmailsForChat(conversationId: string): Promise<{ siteId: string; businessId: string | null; orderId: string | null; emails: string[]; orderEmail: string | null } | null> {
   const c = await queryOne<{ site_id: string; business_id: string | null; verified_order_id: string | null; verified_via: string | null }>(
     `SELECT c.site_id, s.tracker_business_id::text AS business_id, c.verified_order_id, c.verified_via
        FROM conversations c JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
     [conversationId]
   );
   if (!c) return null;
-  const out = { siteId: c.site_id, businessId: c.business_id, orderId: c.verified_order_id, emails: [] as string[] };
-  if (!c.verified_order_id || !c.business_id || c.verified_via === 'legacy') return { ...out, orderId: null };
+  const out = { siteId: c.site_id, businessId: c.business_id, orderId: c.verified_order_id, emails: [] as string[], orderEmail: null as string | null };
+  if (!c.verified_order_id || !c.business_id) return { ...out, orderId: null };
+  try {
+    const o = await queryOne<{ email: string | null }>(
+      `SELECT lower(btrim(customer_email)) AS email FROM orders WHERE business_id::text = $1::text AND order_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [c.business_id, c.verified_order_id]);
+    const oe = String(o?.email || '').trim().toLowerCase();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(oe)) { out.orderEmail = oe; out.emails.push(oe); }
+  } catch (e) { console.error('[mail] order email for chat:', (e as Error).message); }
   try {
     const r = await query<{ email: string }>(
       `SELECT email FROM mail_verifications WHERE business_id = $1 AND order_id = $2 AND removed_at IS NULL ORDER BY verified_at DESC`,
       [c.business_id, c.verified_order_id]
     );
-    out.emails = r.rows.map(x => x.email);
+    for (const x of r.rows) if (!out.emails.includes(x.email.toLowerCase())) out.emails.push(x.email.toLowerCase());
   } catch (e) {
     if (!missingTable(e)) console.error('[mail] verified emails for chat:', (e as Error).message);
   }

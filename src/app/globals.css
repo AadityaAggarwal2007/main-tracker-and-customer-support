@@ -2939,3 +2939,11 @@ a {
 .cbh-ch { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--fg-muted); font-size: 0.75rem; }
 .cbh-subject { font-weight: 600; margin-top: 0.125rem; }
 .cbh-text { white-space: pre-wrap; word-break: break-word; margin-top: 0.125rem; }
+
+/* "Gmail too" under the reply box (owner 2026-10-13, chat-mail.ts) */
+.chat-mail-tick { display: flex; align-items: center; gap: 0.375rem; margin: 0.375rem 0 0; font-size: 0.75rem; color: var(--fg-muted); cursor: pointer; flex-wrap: wrap; }
+.chat-mail-tick input { width: 15px; height: 15px; accent-color: var(--primary); }
+.chat-mail-tick b { color: var(--fg); font-weight: 600; }
+p.chat-mail-tick { cursor: default; }
+/* The thread's top folded (owner 2026-10-13): one line, Details opens the rest */
+.th-toggle { margin-left: 0.25rem; }

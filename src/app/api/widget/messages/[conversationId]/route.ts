@@ -24,7 +24,7 @@ export async function OPTIONS() { return widgetPreflight(); }
 // row would come back on every poll.
 //
 // metadata goes out without `agent` (the staff login that sent a reply): the customer only ever
-// meets "Vastora Support" (master rules 40-41). widget.js reads only `attachments` and
+// meets "Vastora Support" (master rules 40-41). Nor `mail` (where a reply was also sent by Gmail, chat-mail.ts). widget.js reads only `attachments` and
 // `captionless` from it.
 export async function GET(
   request: NextRequest,
@@ -52,7 +52,7 @@ export async function GET(
     const messages = await query(
       `SELECT id, conversation_id, sender,
               CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content,
-              CASE WHEN deleted_at IS NULL THEN metadata - 'agent' END AS metadata,
+              CASE WHEN deleted_at IS NULL THEN metadata - 'agent' - 'mail' END AS metadata,
               created_at, edited_at,
               (deleted_at IS NOT NULL) AS deleted,
               GREATEST(created_at, edited_at, deleted_at) AS changed_at
