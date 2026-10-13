@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { BadgeCheck, ChevronDown, ChevronUp, Copy, Loader2, MapPin, MessageCircle, Package, ShieldQuestion, Wallet } from 'lucide-react';
+import { BadgeCheck, ChevronDown, ChevronUp, Copy, Loader2, MapPin, MessageCircle, Package, Send, ShieldQuestion, Truck, Undo2, Wallet } from 'lucide-react';
 import type { Customer, CustomerOrder } from './types';
 
 const day = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—');
@@ -11,10 +11,37 @@ const rupees = (n: number | null) => (n == null ? '' : `₹${Math.round(n).toLoc
 // placed / estimated dates, the items, payment + total, the city, Copy tracking link and Open chat; not verified = the
 // orders placed with this email as hints and the Verify button. Read only. On a desktop it is the right column; on a
 // narrow screen it sits above the conversation folded into one line (the Customer / Verify line) that opens on a tap.
-export default function CustomerCard({ customer, loading, onVerify, onAlert }: {
+export default function CustomerCard({ customer, loading, onVerify, onAlert, token, onChanged }: {
   customer: Customer | null; loading: boolean; onVerify?: () => void; onAlert: (type: string, message: string) => void;
+  // Refund / Ship again from the Mail tab (owner 2026-10-13): the same PATCH as a chat, then the card is read again.
+  token?: string; onChanged?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // The Super Admin / the Manager mark it (the email chat goes to Chat Support's Refund / Ship again list); a team member
+  // sends it to the Manager with one line, as in a chat. Nothing is sent to the customer.
+  const markCase = async (chatId: string, kind: 'refund' | 'reship') => {
+    if (!token || busy) return;
+    const name = kind === 'refund' ? 'Refund' : 'Ship again';
+    let body: Record<string, unknown>;
+    if (customer?.cases === 'mark') {
+      if (!confirm(`Put this customer in ${name}? It shows in Chat Support > ${name}. The customer is not told anything.`)) return;
+      body = { caseKind: kind };
+    } else {
+      const note = window.prompt(`Send to the Manager as ${name}: one line, what does the customer need?`);
+      if (note == null) return;
+      body = { forward: kind, note };
+    }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/chat/conversations/${encodeURIComponent(chatId)}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not mark it.'); return; }
+      onAlert('success', 'forward' in body ? `Sent to ${j.holder_name || 'the Manager'} as ${name}.` : `In ${name}: it shows in Chat Support > ${name}.`);
+      onChanged?.();
+    } catch { onAlert('error', 'Could not mark it.'); }
+    finally { setBusy(false); }
+  };
   const copy = async (link: string) => {
     try { await navigator.clipboard.writeText(link); onAlert('success', 'Tracking link copied.'); }
     catch { onAlert('error', 'Could not copy. Select the link and copy it.'); }
@@ -50,6 +77,21 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert }: {
         {o.facts?.tracking_link && <button type="button" className="btn btn-outline btn-sm" onClick={() => copy(o.facts!.tracking_link!)}><Copy size={13} /> Copy tracking link</button>}
         {o.chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(o.chatId)}`}><MessageCircle size={13} /> Open chat</a>}
       </div>
+      {/* Refund / Ship again for a customer who writes by email (owner 2026-10-13): on their email chat, listed in Chat Support */}
+      {o.emailChat && o.emailChat.caseKind && (
+        <div className="mail-cust-case">
+          <span className={`chip ${o.emailChat.caseKind === 'refund' ? 'chip-warn' : 'chip-info'}`}>{o.emailChat.caseKind === 'refund' ? 'In Refund' : 'In Ship again'}</span>
+          {o.emailChat.caseBy && <span className="meta">by {o.emailChat.caseBy}</span>}
+          <a className="btn btn-ghost btn-sm" href={`/admin/chat?open=${encodeURIComponent(o.emailChat.id)}`}>Open in Chat Support</a>
+        </div>
+      )}
+      {o.emailChat && !o.emailChat.caseKind && customer?.cases && o.emailChat.verified && token && (
+        <div className="mail-cust-case">
+          {customer.cases === 'forward' && <span className="meta"><Send size={12} /> Send to Manager:</span>}
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o.emailChat!.id, 'refund')}><Undo2 size={13} /> Refund</button>
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o.emailChat!.id, 'reship')}><Truck size={13} /> Ship again</button>
+        </div>
+      )}
     </div>
   );
 

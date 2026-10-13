@@ -1,5 +1,5 @@
 import { query } from '@/lib/db';
-import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
+import { CASE_SECTION_SQL, CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { chargebackKind } from '@/lib/chargeback/parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
@@ -66,19 +66,21 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
 
   const chats = by(await safe('chats', async () => (await query<{ business_id: string; needs_you: string; email_waiting: string; waiting: string; overdue: string; refund_cases: string; reship_to_ship: string }>(
     `SELECT s.tracker_business_id::text AS business_id,
-            count(DISTINCT CASE WHEN c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship')
+            count(DISTINCT CASE WHEN ${CHAT_SUPPORT_SQL} AND c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship')
                                 THEN COALESCE('k:' || c.site_id || ':' || NULLIF(CASE WHEN c.source = 'chat' THEN c.customer_key END, ''), 'c:' || c.id) END) AS needs_you,
-            count(*) FILTER (WHERE c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship') AND c.source = 'email') AS email_waiting,
-            count(DISTINCT CASE WHEN (${WAITING_SINCE_SQL}) IS NOT NULL
+            count(*) FILTER (WHERE ${CHAT_SUPPORT_SQL} AND c.status = 'human_needed' AND (c.case_kind IS NULL OR c.case_kind = 'reship') AND c.source = 'email') AS email_waiting,
+            count(DISTINCT CASE WHEN ${CHAT_SUPPORT_SQL} AND (${WAITING_SINCE_SQL}) IS NOT NULL
                                 THEN COALESCE('k:' || c.site_id || ':' || NULLIF(CASE WHEN c.source = 'chat' THEN c.customer_key END, ''), 'c:' || c.id) END) AS waiting,
-            count(DISTINCT CASE WHEN (${WAITING_SINCE_SQL}) < now() - interval '${WAITING_OVERDUE_HOURS} hours'
+            count(DISTINCT CASE WHEN ${CHAT_SUPPORT_SQL} AND (${WAITING_SINCE_SQL}) < now() - interval '${WAITING_OVERDUE_HOURS} hours'
                                 THEN COALESCE('k:' || c.site_id || ':' || NULLIF(CASE WHEN c.source = 'chat' THEN c.customer_key END, ''), 'c:' || c.id) END) AS overdue,
             count(*) FILTER (WHERE c.case_kind = 'refund' AND c.status <> 'resolved') AS refund_cases,
             count(*) FILTER (WHERE c.case_kind = 'reship' AND c.status <> 'resolved' AND c.reshipped_at IS NULL) AS reship_to_ship
        FROM conversations c JOIN sites s ON s.id = c.site_id
        ${WAITING_LATERAL}
-      WHERE s.tracker_business_id::text = ANY($1::text[]) AND c.merged_into IS NULL AND c.status <> 'resolved' AND ${CHAT_SUPPORT_SQL}
+      WHERE s.tracker_business_id::text = ANY($1::text[]) AND c.merged_into IS NULL AND c.status <> 'resolved' AND ${CASE_SECTION_SQL}
       GROUP BY s.tracker_business_id`, [ids])).rows, []));
+  // (WHERE = CASE_SECTION_SQL: the Refund / Ship again counts include email customers, owner 2026-10-13; every other
+  // number above keeps them out with CHAT_SUPPORT_SQL.)
 
   const orders = by(await safe('orders', async () => (await query<{ business_id: string; today: string; late: string }>(
     `SELECT business_id::text AS business_id,

@@ -28,5 +28,7 @@ export interface CustomerOrder {
   facts: { order_id: string; placed_on: string | null; status: string; mode: string; delivered: boolean; eta: string | null; eta_estimated: boolean; late: { daysPast: number } | null; tracking_link: string | null; tracking_id: string | null } | null;
   items: { product_name: string; quantity: number; price: number | null }[];
   place: { city: string; state: string; pincode: string } | null;
+  // The sender's email chat (owner 2026-10-13): Refund / Ship again is marked on it (mail-customer.ts).
+  emailChat?: { id: string; status: string; verified: boolean; caseKind: 'refund' | 'reship' | null; caseBy: string | null } | null;
 }
-export interface Customer { email: string; ordersAllowed: boolean; verified: CustomerOrder[]; hints: { orderId: string; placedOn: string | null; status: string | null }[] }
+export interface Customer { email: string; ordersAllowed: boolean; verified: CustomerOrder[]; hints: { orderId: string; placedOn: string | null; status: string | null }[]; cases?: 'mark' | 'forward' | null }

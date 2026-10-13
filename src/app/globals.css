@@ -2947,3 +2947,6 @@ a {
 p.chat-mail-tick { cursor: default; }
 /* The thread's top folded (owner 2026-10-13): one line, Details opens the rest */
 .th-toggle { margin-left: 0.25rem; }
+
+/* Refund / Ship again on a mail customer's card (owner 2026-10-13) */
+.mail-cust-case { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }

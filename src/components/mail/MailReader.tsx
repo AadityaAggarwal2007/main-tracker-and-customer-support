@@ -288,7 +288,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
 
       {replyBox}
       </div>
-      <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />
+      <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} token={token} onChanged={onChanged} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />
       </div>
       {corrOpen && (
         <CorrectionDialog who="sender" verified={versions.length > 0} orders={versions.map(v => v.orderId)} busy={corrBusy} error={corrError}
