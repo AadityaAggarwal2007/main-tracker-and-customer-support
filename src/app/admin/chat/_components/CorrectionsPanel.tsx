@@ -43,7 +43,8 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
   // Mark done asks for a note first (one row at a time); every other action goes at once.
   const [doneFor, setDoneFor] = useState<{ id: string; note: string } | null>(null);
   const [acting, setActing] = useState<string | null>(null);
-  const [edit, setEdit] = useState<{ row: CorrectionListRow; kind: 'address' | 'items'; address: StaffAddress | null; items: StaffOrderItems | null; busy: boolean; error: string } | null>(null);
+  // chatId: the verified chat the edit goes through (the row's own, or one /api/corrections/:id/chat found or made)
+  const [edit, setEdit] = useState<{ row: CorrectionListRow; chatId: string; kind: 'address' | 'items'; address: StaffAddress | null; items: StaffOrderItems | null; busy: boolean; error: string } | null>(null);
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const lead = isTeamLead(user);
   const canEditOrder = can(user, 'orders.update') && can(user, 'chat.view');
@@ -84,24 +85,32 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
 
   // Edit address / Edit items: the chat's own thread answer carries the order's address and lines and whether this
   // login may change them (the same GET the open chat uses), then the same dialogs and PATCH routes.
+  // A row with no verified chat for its order (a Mail correction, owner 2026-10-13) first asks the server for one:
+  // the customer's email chat, found or made and verified for that order (POST /api/corrections/:id/chat).
   const openEdit = async (row: CorrectionListRow, kind: 'address' | 'items') => {
-    if (!row.conversation_id) return;
-    setEdit({ row, kind, address: null, items: null, busy: true, error: '' });
+    setEdit({ row, chatId: '', kind, address: null, items: null, busy: true, error: '' });
     try {
-      const res = await fetch(`/api/chat/conversations/${row.conversation_id}`, { headers: { Authorization: `Bearer ${token}`, ...activeHeaders() } });
+      let chatId = row.conversation_id && row.chat_verified ? row.conversation_id : '';
+      if (!chatId) {
+        const c = await fetch(`/api/corrections/${row.id}/chat`, { method: 'POST', headers: auth });
+        const cj = await c.json().catch(() => ({}));
+        if (!c.ok || !cj.chatId) { setEdit(null); onAlert('error', cj.error || 'Could not open the order for editing'); return; }
+        chatId = String(cj.chatId);
+      }
+      const res = await fetch(`/api/chat/conversations/${chatId}`, { headers: { Authorization: `Bearer ${token}`, ...activeHeaders() } });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit(null); onAlert('error', j.error || 'Could not open that chat'); return; }
       const address = kind === 'address' && j.address_editable ? (j.order_address as StaffAddress) : null;
       const items = kind === 'items' && j.items_editable ? (j.order_items as StaffOrderItems) : null;
       if (!address && !items) { setEdit(null); onAlert('error', kind === 'address' ? 'This order\'s address cannot be changed from here (open the chat).' : 'This order\'s items cannot be changed from here (open the chat).'); return; }
-      setEdit({ row, kind, address, items, busy: false, error: '' });
+      setEdit({ row, chatId, kind, address, items, busy: false, error: '' });
     } catch { setEdit(null); onAlert('error', 'Could not open that chat'); }
   };
   const saveAddress = async (a: OrderAddress) => {
-    if (!edit?.row.conversation_id) return;
+    if (!edit?.chatId) return;
     setEdit({ ...edit, busy: true, error: '' });
     try {
-      const res = await fetch(`/api/chat/conversations/${edit.row.conversation_id}/address`, { method: 'PATCH', headers: auth, body: JSON.stringify(a) });
+      const res = await fetch(`/api/chat/conversations/${edit.chatId}/address`, { method: 'PATCH', headers: auth, body: JSON.stringify(a) });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save the address' }); return; }
       setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Address updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
@@ -109,10 +118,10 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
     } catch { setEdit({ ...edit, busy: false, error: 'Could not save the address' }); }
   };
   const saveItems = async (items: { product_name: string; quantity: number; price: number | null }[]) => {
-    if (!edit?.row.conversation_id) return;
+    if (!edit?.chatId) return;
     setEdit({ ...edit, busy: true, error: '' });
     try {
-      const res = await fetch(`/api/chat/conversations/${edit.row.conversation_id}/items`, { method: 'PATCH', headers: auth, body: JSON.stringify({ items }) });
+      const res = await fetch(`/api/chat/conversations/${edit.chatId}/items`, { method: 'PATCH', headers: auth, body: JSON.stringify({ items }) });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save the items' }); return; }
       setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Items updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
@@ -176,14 +185,13 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
                 {r.mail_box_id && r.mail_uid && (
                   <a className="btn btn-outline btn-sm" href={`/admin?tab=mail&box=${encodeURIComponent(r.mail_box_id)}&uid=${r.mail_uid}`}><ExternalLink size={13} /> Open mail</a>
                 )}
-                {canEditOrder && r.status === 'pending' && r.conversation_id && r.chat_verified && (
+                {/* Every pending row (owner 2026-10-13: a Mail correction had no chat to edit from): a row without a
+                    verified chat gets one on the click (openEdit). */}
+                {canEditOrder && r.status === 'pending' && (
                   <>
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => openEdit(r, 'address')} title="Change the delivery address in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address</button>
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => openEdit(r, 'items')} title="Change the order's items in ShipTrack (not Shopify, not the courier)"><Package size={13} /> Edit items</button>
+                    <button type="button" className="btn btn-outline btn-sm" disabled={!!edit?.busy} onClick={() => openEdit(r, 'address')} title="Change the delivery address in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address</button>
+                    <button type="button" className="btn btn-outline btn-sm" disabled={!!edit?.busy} onClick={() => openEdit(r, 'items')} title="Change the order's items in ShipTrack (not Shopify, not the courier)"><Package size={13} /> Edit items</button>
                   </>
-                )}
-                {canEditOrder && r.status === 'pending' && !(r.conversation_id && r.chat_verified) && (
-                  <span className="meta" title="The address and items are changed from the customer's verified chat; this correction has none (or that chat is verified for another order)">No chat to edit the order from</span>
                 )}
                 {lead && r.status === 'pending' && (
                   <>

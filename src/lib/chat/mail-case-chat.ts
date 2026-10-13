@@ -16,7 +16,10 @@ import { verifiedSenders } from './mail-verify';
 export type CaseChatResult = { ok: true; chatId: string; created: boolean } | { ok: false; status: number; error: string };
 const sameOrder = (a: string | null | undefined, b: string) => String(a || '').replace(/^#/, '') === String(b || '').replace(/^#/, '');
 
-export async function ensureMailCaseChat(box: { panelId: string | null; siteId?: string | null }, email: string, orderId: string): Promise<CaseChatResult> {
+// opts.reopen false (a correction's Edit address / Edit items, owner 2026-10-13): the chat's status is left alone and a
+// new one is made Closed, because only the order is being edited, nobody is answering in that chat.
+export async function ensureMailCaseChat(box: { panelId: string | null; siteId?: string | null }, email: string, orderId: string, opts: { reopen?: boolean } = {}): Promise<CaseChatResult> {
+  const reopen = opts.reopen !== false;
   if (!box.panelId) return { ok: false, status: 409, error: 'This Gmail has no panel.' };
   const vers = (await verifiedSenders(box.panelId, [email]))[email] || [];
   const ver = vers.find(v => sameOrder(v.orderId, orderId));
@@ -36,9 +39,9 @@ export async function ensureMailCaseChat(box: { panelId: string | null; siteId?:
           SET verified_order_id = $2,
               verified_at = CASE WHEN verified_order_id = $2 THEN verified_at ELSE now() END,
               verified_via = CASE WHEN verified_order_id = $2 THEN verified_via ELSE 'mail' END,
-              status = CASE WHEN status = 'resolved' THEN 'agent_handling' ELSE status END,
+              status = CASE WHEN status = 'resolved' AND $3 THEN 'agent_handling' ELSE status END,
               updated_at = now()
-        WHERE id = $1`, [row.id, order]);
+        WHERE id = $1`, [row.id, order, reopen]);
     return { ok: true, chatId: row.id, created: false };
   }
 
@@ -50,9 +53,9 @@ export async function ensureMailCaseChat(box: { panelId: string | null; siteId?:
     `INSERT INTO conversations
        (id, site_id, visitor_id, visitor_name, status, source, unread_count, last_message_at, created_at, updated_at,
         verified_order_id, verified_at, verified_via)
-     VALUES (gen_random_uuid()::text, $1, $2, $3, 'agent_handling', 'email', 0, now(), now(), now(), $4, now(), 'mail')
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $5, 'email', 0, now(), now(), now(), $4, now(), 'mail')
      RETURNING id`,
-    [site.rows[0].id, `email:${email}`, email, order]);
+    [site.rows[0].id, `email:${email}`, email, order, reopen ? 'agent_handling' : 'resolved']);
   console.log(`[mail-case] email chat made for a verified sender, panel=${box.panelId}`);
   return { ok: true, chatId: made.rows[0].id, created: true };
 }
