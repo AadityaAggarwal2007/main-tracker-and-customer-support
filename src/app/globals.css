@@ -2629,6 +2629,14 @@ a {
 .gm .mail-box-name { display: grid; gap: 0.125rem; padding: 0.25rem 0.5rem 0.75rem; font-size: 0.875rem; font-weight: 800; white-space: normal; }
 .gm .mail-box-name .meta { font-weight: 500; font-size: 0.6875rem; overflow: hidden; text-overflow: ellipsis; }
 .gm .mail-boxsel { width: 100%; margin-bottom: 0.75rem; height: 2rem; font-size: 0.8125rem; }
+/* The panel's Gmails as buttons: Support Gmail / Chargeback Gmail (owner 2026-10-13) */
+.mail-boxtabs { display: grid; gap: 0.25rem; margin-bottom: 0.75rem; }
+.mail-boxtab { display: grid; gap: 0.0625rem; text-align: left; padding: 0.4375rem 0.625rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card-bg); color: var(--fg); font: inherit; font-size: 0.8125rem; font-weight: 700; cursor: pointer; min-width: 0; }
+.mail-boxtab .meta { font-weight: 500; font-size: 0.6875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-boxtab:hover { border-color: var(--border-strong); }
+.mail-boxtab.active { border-color: var(--primary); background: var(--primary-light); }
+.mail-boxtab.cb.active { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.mail-boxnote { margin: -0.375rem 0 0.75rem; font-size: 0.6875rem; line-height: 1.4; }
 .gm .mail-fgroup { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
 .gm .mail-fgroup:last-child { border-bottom: 0; }
 .gm .mail-f { border-radius: 0 999px 999px 0; }
@@ -2721,6 +2729,9 @@ a {
   .gm .mail-filters { padding: 0.5rem; }
   .gm .mail-fgroup { border-bottom: 0; padding-bottom: 0; }
   .gm .mail-box-name, .gm .mail-boxsel { display: none; }
+  .mail-boxtabs { display: flex; gap: 0.375rem; overflow-x: auto; margin-bottom: 0.5rem; }
+  .mail-boxtab { flex: 0 0 auto; max-width: 70vw; }
+  .mail-boxnote { margin: 0 0 0.5rem; }
   .gm .mail-f { border-radius: 999px; }
 }
 @media (max-width: 860px) {

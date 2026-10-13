@@ -7,6 +7,7 @@ import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { canAccessPanel, type PermissionHolder } from '@/lib/permissions';
 import { buildEmailHtml, sendEmailReply } from './email';
+import { cbBoxRows, isCbBox, type CbBoxRow } from './mail-cb-box';
 import { MAX_MAILS, MAIL_DAYS, addressLabel, firstAuthResults, frameHtml, gmailAuthPassed, hasRemoteImages, replyBodyHtml, replyBodyText, replySubject, sinceDate, sortMails, textToHtml, type MailListItem } from './mail-view';
 
 // ── The Mail tab, server side (owner 2026-10-08) ──────────────────────────────────────────────
@@ -15,7 +16,9 @@ import { MAX_MAILS, MAIL_DAYS, addressLabel, firstAuthResults, frameHtml, gmailA
 // Who may use it is decided by the routes (mail-access.ts) and by mailboxFor(): the Super Admin sees every
 // panel's Gmail, a member only the panels they are limited to, and only with the Mail ticks.
 
-export interface MailBoxInfo { id: string; email: string; siteName: string; panelId: string | null; panelName: string }
+// kind 'chargeback' (owner 2026-10-13): the panel's chargeback Gmail, id `cb:<row id>` (mail-cb-box.ts); sharedWith =
+// the other panels reading the same Gmail (their customers' mails are left out of this panel's list).
+export interface MailBoxInfo { id: string; email: string; siteName: string; panelId: string | null; panelName: string; kind?: 'support' | 'chargeback'; sharedWith?: string[] }
 export interface MailBoxSecret extends MailBoxInfo { appPassword: string; siteId: string }
 
 const ALL_BOXES_SQL = `SELECT se.id, se.email, se.app_password, s.id AS site_id, s.name AS site_name,
@@ -27,16 +30,25 @@ const ALL_BOXES_SQL = `SELECT se.id, se.email, se.app_password, s.id AS site_id,
 interface BoxRow { id: string; email: string; app_password: string; site_id: string; site_name: string; panel_id: string | null; panel_name: string | null }
 const toBox = (r: BoxRow): MailBoxSecret => ({ id: r.id, email: r.email, appPassword: r.app_password, siteId: r.site_id, siteName: r.site_name, panelId: r.panel_id, panelName: r.panel_name || r.site_name });
 const publicBox = ({ appPassword: _p, siteId: _s, ...rest }: MailBoxSecret): MailBoxInfo => rest;
+const cbBox = (r: CbBoxRow): MailBoxSecret => ({
+  ...toBox({ ...r, site_id: r.site_id || '' }), kind: 'chargeback', sharedWith: (r.shared_with || []).filter(Boolean),
+});
 
-// The mailboxes this login may open (the panel check is the real gate).
+// The mailboxes this login may open (the panel check is the real gate): the support Gmails, then the chargeback ones.
 export async function mailboxesFor(user: PermissionHolder): Promise<MailBoxInfo[]> {
   const r = await query<BoxRow>(`${ALL_BOXES_SQL} ORDER BY b.name NULLS LAST, se.created_at ASC`);
-  return r.rows.filter(x => canAccessPanel(user, x.panel_id)).map(x => publicBox(toBox(x)));
+  const support = r.rows.filter(x => canAccessPanel(user, x.panel_id)).map(x => publicBox(toBox(x)));
+  const cb = (await cbBoxRows()).filter(x => canAccessPanel(user, x.panel_id)).map(x => publicBox(cbBox(x)));
+  return [...support, ...cb];
 }
 
 // One mailbox with its secret, only when this login may open it; null otherwise (the route answers 404).
 export async function mailboxFor(user: PermissionHolder, id: string): Promise<MailBoxSecret | null> {
   if (!id) return null;
+  if (isCbBox(id)) {
+    const row = (await cbBoxRows(id))[0];
+    return row && canAccessPanel(user, row.panel_id) ? cbBox(row) : null;
+  }
   const r = await query<BoxRow>(`${ALL_BOXES_SQL} WHERE se.id = $1`, [id]);
   const row = r.rows[0];
   if (!row || !canAccessPanel(user, row.panel_id)) return null;

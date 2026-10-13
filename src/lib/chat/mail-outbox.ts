@@ -13,6 +13,7 @@
 // (42P01) outboxInstalled() is false and the route sends the old way, inside the request.
 import nodemailer from 'nodemailer';
 import { query, queryOne } from '@/lib/db';
+import { cbBoxRows, isCbBox } from './mail-cb-box';
 import { replyMailMessage } from './reply-mail';
 
 interface ErrCode { code?: string }
@@ -89,7 +90,12 @@ export async function claimOutbox(id: string): Promise<OutboxRow | null> {
 // The mailbox's own address, name and App Password (site_emails), read for one send and never returned. Not through
 // mail-inbox.ts (that file imports email.ts, which calls this one: no import cycle).
 interface BoxRow { email: string; app_password: string; site_name: string }
+// A chargeback Gmail (`cb:<row id>`, mail-cb-box.ts) answers from itself, as "<panel> Support".
 async function boxSecret(boxId: string): Promise<BoxRow | null> {
+  if (isCbBox(boxId)) {
+    const r = (await cbBoxRows(boxId))[0];
+    return r ? { email: r.email, app_password: r.app_password, site_name: r.site_name } : null;
+  }
   return queryOne<BoxRow>(`SELECT se.email, se.app_password, s.name AS site_name FROM site_emails se JOIN sites s ON s.id = se.site_id WHERE se.id = $1`, [boxId]);
 }
 

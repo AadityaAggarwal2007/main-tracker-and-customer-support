@@ -39,6 +39,8 @@ const CASE_VIEW = (v: MailView) => v === 'active' || v === 'closed';
 const VIEW_KEY = 'mail_view';
 const readView = (): MailView => { try { const v = localStorage.getItem(VIEW_KEY) as MailView | null; return v && v in VIEW_LABELS ? v : 'todo'; } catch { return 'todo'; } };
 
+const boxKind = (b: Box) => b.kind === 'chargeback' ? 'Chargeback Gmail' : 'Support Gmail';
+
 export default function MailCard({ token, onAlert, activePanelId, initialBox, initialUid }: Props) {
   const alertRef = useRef(onAlert);
   alertRef.current = onAlert;
@@ -391,11 +393,22 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     <div className={`mail-app gm${openUid ? ' mail-open' : ''}`}>
       {/* The boxes (owner 2026-10-11: "Jawab dena hai / Jawab de diya / Customer nahi"), then the other filters */}
       <nav className="mail-filters" aria-label="Mail boxes">
+        {/* The Gmails of the panel as buttons (owner 2026-10-13: the chargeback Gmail gets customers' mails too, so it is a
+            box here next to the support Gmail; shown on a phone as well). */}
         {visibleBoxes.length > 1 ? (
-          <select className="form-input mail-boxsel" value={boxId ?? ''} onChange={e => setBoxId(e.target.value)} aria-label="Gmail inbox">
-            {visibleBoxes.map(b => <option key={b.id} value={b.id}>{b.panelName} · {b.email}</option>)}
-          </select>
-        ) : <div className="mail-box-name" title={box?.email}>{box?.panelName}<span className="meta">{box?.email}</span></div>}
+          <div className="mail-boxtabs" role="tablist" aria-label="Gmail inbox">
+            {visibleBoxes.map(b => (
+              <button key={b.id} type="button" role="tab" aria-selected={b.id === boxId} title={b.email}
+                className={`mail-boxtab${b.id === boxId ? ' active' : ''}${b.kind === 'chargeback' ? ' cb' : ''}`} onClick={() => setBoxId(b.id)}>
+                <span>{boxKind(b)}{activePanelId ? '' : ` · ${b.panelName}`}</span>
+                <span className="meta">{b.email}</span>
+              </button>
+            ))}
+          </div>
+        ) : <div className="mail-box-name" title={box?.email}>{box?.panelName}{box?.kind === 'chargeback' ? ' · Chargeback Gmail' : ''}<span className="meta">{box?.email}</span></div>}
+        {box?.kind === 'chargeback' && (box.sharedWith?.length ?? 0) > 0 && (
+          <p className="meta mail-boxnote">Shared with {box.sharedWith!.join(', ')}: their customers&rsquo; mails are in their own box; a mail we cannot place shows in both.</p>
+        )}
         {NAV.map((g, gi) => (
           <div key={gi} className="mail-fgroup">
             {g.title && <div className="mail-ftitle">{g.title}</div>}
