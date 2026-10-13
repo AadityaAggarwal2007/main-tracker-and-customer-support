@@ -43,6 +43,7 @@ import NextStep from './_components/NextStep';
 import ThreadHeader from './_components/ThreadHeader';
 import Composer from './_components/Composer';
 import Suggestions, { type SuggestState } from './_components/Suggestions';
+import type { MailOffer } from './_lib/types';
 import type { SuggestLang } from '@/lib/chat/suggest';
 import MessageRow from './_components/MessageRow';
 import ConversationRow from './_components/ConversationRow';
@@ -129,6 +130,16 @@ export default function ChatSupportPage() {
   // "Correction" (owner 2026-10-11): the dialog, and the open chat's own rows from the thread's answer.
   const [correctionEdit, setCorrectionEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   const [threadCorrections, setThreadCorrections] = useState<{ id: string; rows: CorrectionRow[] } | null>(null);
+  // "Gmail too" (owner 2026-10-13, chat-mail.ts): where this website chat's reply would also be mailed (masked), or why
+  // not; the tick is for one message and goes off after each send and on another chat.
+  const [mailOffer, setMailOffer] = useState<{ id: string; offer: MailOffer } | null>(null);
+  const [alsoMail, setAlsoMail] = useState(false);
+  // The top of an open chat (owner 2026-10-13: "sirf naam, Transfer, Close, Remove dikhe; baaki jab hum bolein"):
+  // closed by default, one Details button opens the facts, address, items, mark, subject and "What to do next";
+  // remembered in this browser.
+  const [topOpen, setTopOpenState] = useState(false);
+  useEffect(() => { try { setTopOpenState(localStorage.getItem('chat_top_open') === '1'); } catch { /* private window */ } }, []);
+  const setTopOpen = (v: boolean) => { setTopOpenState(v); try { localStorage.setItem('chat_top_open', v ? '1' : '0'); } catch { /* private window */ } };
   // Chat team (owner, 2026-10-01). From the list's answer: who is on the team (names on rows, the
   // transfer list), this login's key ('owner' for the Super Admin) and its own open chats (My chats).
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -163,6 +174,8 @@ export default function ChatSupportPage() {
   // with the reply so the server records whether it was edited).
   const [sugg, setSugg] = useState<SuggestState | null>(null);
   const [suggLang, setSuggLang] = useState<SuggestLang>('auto');
+  // Suggested replies only when asked (owner 2026-10-13: "suggestion jab hum bulayein"): the chat they were asked in.
+  const [suggOpenFor, setSuggOpenFor] = useState<string | null>(null);
   const [polishing, setPolishing] = useState(false);
   const pickedRef = useRef<{ id: string; index: number } | null>(null);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -348,6 +361,7 @@ export default function ChatSupportPage() {
       setOrderInfo({ id, facts: data.order_facts ?? null, address: data.order_address ?? null, editable: !!data.address_editable, items: data.order_items ?? null, itemsEditable: !!data.items_editable });
       setThreadRefund({ id, state: data.refund_form ?? null });
       setThreadCorrections({ id, rows: Array.isArray(data.corrections) ? data.corrections : [] });
+      setMailOffer({ id, offer: (data.mail_offer ?? null) as MailOffer });
       // The older messages "Load older" put on screen stay; a different chat starts clean.
       const keep = sameChatRef.current === id;
       sameChatRef.current = id;
@@ -827,11 +841,15 @@ export default function ChatSupportPage() {
     }
   }, [token]);
 
+  // Drafted only once the team member pressed Suggestions in this chat (owner 2026-10-13: no AI spend on chats where
+  // nobody wants them); while open, a new customer message drafts again (the server's cache per message stays).
+  const suggOpen = !!activeId && suggOpenFor === activeId;
   useEffect(() => {
     pickedRef.current = null;
-    if (!suggestShown || !activeId) { setSugg(null); return; }
+    if (!suggestShown || !activeId || !suggOpen) { setSugg(null); return; }
     fetchSuggestions(activeId, suggLang, false);
-  }, [activeId, lastCustomerId, suggLang, suggestShown, fetchSuggestions]);
+  }, [activeId, lastCustomerId, suggLang, suggestShown, suggOpen, fetchSuggestions]);
+  useEffect(() => { setAlsoMail(false); }, [activeId]);
 
   const pickSuggestion = (index: number) => {
     if (!sugg || !sugg.options[index]) return;
@@ -906,6 +924,7 @@ export default function ChatSupportPage() {
           content: text,
           ...(files.length > 0 ? { attachmentIds: files.map(p => p.id) } : {}),
           ...(picked && text ? { suggestionId: picked.id, suggestionIndex: picked.index } : {}),
+          ...(alsoMail && text && activeConv?.source === 'chat' ? { alsoEmail: true } : {}),
         }),
       });
       const data = await res.json();
@@ -928,6 +947,11 @@ export default function ChatSupportPage() {
       if (data.emailed === false) {
         showAlert('error', 'Saved, but the email did not go out — check the mailbox settings');
       }
+      if (data.mail) {
+        if (data.mail.ok) showAlert('success', data.mail.queued ? `Sent in the chat, and the mail to ${data.mail.to} is on its way` : `Sent in the chat and by mail to ${data.mail.to}`);
+        else showAlert('error', `Sent in the chat, but not by mail: ${data.mail.error || 'unknown reason'}`);
+      }
+      setAlsoMail(false);
       if (data.whatsapp && data.whatsapp.ok === false) {
         showAlert('error', `Saved, but WhatsApp did not take it: ${data.whatsapp.error || 'unknown reason'}`);
       }
@@ -1451,11 +1475,11 @@ export default function ChatSupportPage() {
                 {/* Thread header */}
                 {/* The top of the chat (header, address, items, what to do next) scrolls on its own, so the messages keep their room (owner 2026-10-08) */}
                 <div className="chat-top">
-                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} removeVerify={removeVerify} />
+                <ThreadHeader activeAddress={activeAddress} activeItems={activeItems} itemsEditable={itemsEditable} setItemsEdit={setItemsEdit} setReshipEdit={setReshipEdit} activeConv={activeConv} activeHealth={activeHealth} activeOrder={activeOrder} activePhoneMatch={activePhoneMatch} activePromise={activePromise} activeSubject={activeSubject} activeVerifiedOrder={activeVerifiedOrder} activeVerifiedVia={activeVerifiedVia} activeWaiting={activeWaiting} addressEditable={addressEditable} canCases={canCases} canReply={canReply} changeStatus={changeStatus} closeConversation={closeConversation} fetchThread={fetchThread} forText={forText} holderAway={holderAway} holderIsMe={holderIsMe} hotLock={hotLock} markCase={markCase} readOnlyText={readOnlyText} setAddrEdit={setAddrEdit} setTeamLogOpen={setTeamLogOpen} setTransferEdit={setTransferEdit} setForwardEdit={setForwardEdit} simple={simple} showAlert={showAlert} staff={staff} takeLabel={takeLabel} teamLog={teamLog} teamLogOpen={teamLogOpen} threadRefund={threadRefund} token={token} user={user} withText={withText} insertDraft={insertDraft} removeVerify={removeVerify} topOpen={topOpen} setTopOpen={setTopOpen} />
 
-                <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} canVerify={!!staff?.can_verify} onVerify={() => setVerifyEdit({ convId: activeConv.id, busy: false, error: '' })}
-                  canCorrect={!!staff?.can_correct} onCorrect={() => setCorrectionEdit({ convId: activeConv.id, busy: false, error: '' })} />
-                {threadCorrections?.id === activeConv.id && <CorrectionLine rows={threadCorrections.rows} />}
+                {topOpen && <NextStep conv={activeConv} order={activeOrder} subjectLabel={activeSubject?.label ?? null} health={activeHealth?.score ?? null} waitingSince={activeWaiting} promiseDue={!!activePromise} heldByName={staff?.holder?.name ?? null} heldByMe={holderIsMe} canReply={canReply} canVerify={!!staff?.can_verify} onVerify={() => setVerifyEdit({ convId: activeConv.id, busy: false, error: '' })}
+                  canCorrect={!!staff?.can_correct} onCorrect={() => setCorrectionEdit({ convId: activeConv.id, busy: false, error: '' })} />}
+                {topOpen && threadCorrections?.id === activeConv.id && <CorrectionLine rows={threadCorrections.rows} />}
                 </div>
 
                 {/* Messages */}
@@ -1515,12 +1539,14 @@ export default function ChatSupportPage() {
                 )}
 
                 {/* Suggested replies (owner 2026-10-04), then the composer */}
-                {suggestShown && sugg?.convId === activeConv.id && (
+                {suggestShown && suggOpen && sugg?.convId === activeConv.id && (
                   <Suggestions state={sugg} replyOpen={replyOpen} onPick={pickSuggestion}
-                    onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} />
+                    onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} onClose={() => setSuggOpenFor(null)} />
                 )}
                 {activeConv.status !== 'resolved' && canReply && (
-                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} openTemplate={activeConv.source === 'whatsapp' ? () => setTemplateEdit({ convId: activeConv.id, busy: false }) : undefined} />
+                  <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} openTemplate={activeConv.source === 'whatsapp' ? () => setTemplateEdit({ convId: activeConv.id, busy: false }) : undefined}
+                    onSuggest={suggestShown ? () => setSuggOpenFor(suggOpen ? null : activeConv.id) : undefined} suggestOpen={suggOpen}
+                    mailOffer={activeConv.source === 'chat' && mailOffer?.id === activeConv.id ? mailOffer.offer : null} alsoMail={alsoMail} setAlsoMail={setAlsoMail} />
                 )}
               </>
             )}

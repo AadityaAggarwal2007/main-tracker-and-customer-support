@@ -74,7 +74,7 @@ export async function retryOutbox(id: string, boxId: string): Promise<boolean> {
 
 interface OutboxRow {
   id: string; box_id: string; to_addr: string; subject: string; text_body: string; html_body: string; message_id: string;
-  in_reply_to: string | null; refs: string | null; files: OutboxFile[] | null; tries: number;
+  in_reply_to: string | null; refs: string | null; files: OutboxFile[] | null; tries: number; reply_uid?: string | number | null;
 }
 
 // The claim: one process gets the row, the other sees nothing back.
@@ -82,7 +82,7 @@ export async function claimOutbox(id: string): Promise<OutboxRow | null> {
   return queryOne<OutboxRow>(
     `UPDATE mail_outbox SET status = 'sending', claimed_at = now(), tries = tries + 1, updated_at = now()
       WHERE id = $1 AND (status = 'pending' OR (status = 'sending' AND claimed_at < now() - $2 * interval '1 millisecond'))
-      RETURNING id::text AS id, box_id, to_addr, subject, text_body, html_body, message_id, in_reply_to, refs, files, tries`,
+      RETURNING id::text AS id, box_id, to_addr, subject, text_body, html_body, message_id, in_reply_to, refs, files, tries, reply_uid`,
     [id, OUTBOX_STALE_MS]);
 }
 
@@ -124,6 +124,8 @@ async function sendRow(row: OutboxRow): Promise<void> {
     fromEmail: box.email, fromName: `${box.site_name} Support`, toEmail: row.to_addr, subject: row.subject,
     htmlBody: row.html_body, textBody: row.text_body, replyToMessageId: row.in_reply_to, references: row.refs,
     attachments: files.length ? files : undefined, messageId: row.message_id,
+    // A row that answers no mail (no uid, no In-Reply-To) is a new mail: a chat reply sent by Gmail too (chat-mail.ts).
+    fresh: row.reply_uid == null && !row.in_reply_to,
   });
   const t = transportFor(row.box_id, box);
   let timer: ReturnType<typeof setTimeout> | undefined;

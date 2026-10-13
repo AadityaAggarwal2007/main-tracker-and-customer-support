@@ -97,6 +97,11 @@ const db = {
       const o = S.orders.find((x) => x.order_id.replace(/\D/g, '') === id && x.phone === params[1] && x.panel === params[2]);
       return o ? { order_id: o.order_id, customer_name: o.name } : null;
     }
+    // The email ON the chat's verified order (owner 2026-10-13, verifiedEmailsForChat), inside the chat's panel.
+    if (/SELECT lower\(btrim\(customer_email\)\) AS email FROM orders WHERE business_id::text = \$1::text AND order_id = \$2/.test(sql)) {
+      const e = (S.orderEmailOf || {})[`${params[0]}|${params[1]}`];
+      return e ? { email: e } : null;
+    }
     if (/FROM conversations c JOIN sites s ON s\.id = c\.site_id WHERE c\.id = \$1/.test(sql)) return params[0] === 'chat-1' ? S.chat : (params[0] === 'chat-other' ? { ...S.chat, site_id: 'siteK', business_id: 'bizK' } : null);
     return null;
   },
@@ -467,7 +472,18 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     assert.deepStrictEqual(S.connects, ['vastora@store.example'], 'only this panel\'s Gmail');
     assert.ok(d.mails.length > 0 && d.mails.every((m) => m.boxId === 'boxV'));
     S.chat = { ...S.chat, verified_order_id: null }; d = await (await get('chat-1')).json(); assert.deepStrictEqual(d.emails, []); assert.strictEqual(d.mails.length, 0);
-    S.chat = { ...S.chat, verified_order_id: '#1553', verified_via: 'legacy' }; d = await (await get('chat-1')).json(); assert.strictEqual(d.orderId, null, 'an old check is not a verification');
+    // Owner 2026-10-13 ("chahe kaise bhi verify kia ho"): an old check counts too; the email ON the order comes first,
+    // and a verified one that is the same address is not listed twice.
+    S.chat = { ...S.chat, verified_order_id: '#1553', verified_via: 'legacy' }; d = await (await get('chat-1')).json();
+    assert.strictEqual(d.orderId, '#1553', 'an old check counts (owner 13 Oct)'); assert.deepStrictEqual(d.emails, ['cust@example.com']);
+    S.orderEmailOf = { 'bizV|#1553': 'order.owner@gmail.com' };
+    d = await (await get('chat-1')).json();
+    assert.deepStrictEqual(d.emails, ['order.owner@gmail.com', 'cust@example.com']); assert.strictEqual(d.orderEmail, 'order.owner@gmail.com');
+    S.orderEmailOf = { 'bizV|#1553': 'CUST@example.com ' }; d = await (await get('chat-1')).json();
+    assert.deepStrictEqual(d.emails, ['cust@example.com'], 'the same address once');
+    S.orderEmailOf = { 'bizK|#1553': 'other.panel@gmail.com' }; d = await (await get('chat-1')).json();
+    assert.deepStrictEqual(d.emails, ['cust@example.com'], 'never another panel\'s order of the same number');
+    S.orderEmailOf = {};
     S.chat = { ...S.chat, verified_via: 'form' };
     authState.user = member({ perms: ['chat.view'] }); assert.strictEqual((await get('chat-1')).status, 403, 'no Open Mail');
     authState.user = member({ perms: ['mail.view'] }); assert.strictEqual((await get('chat-1')).status, 403, 'no Chat Support');

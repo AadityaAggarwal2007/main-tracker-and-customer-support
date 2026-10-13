@@ -7,10 +7,14 @@ export interface ReplyMailInput {
   htmlBody: string; textBody: string; replyToMessageId?: string | null; references?: string | null;
   attachments?: { filename: string; content: Buffer; contentType: string }[];
   messageId?: string;   // our own Message-ID (the Mail tab's store matches Gmail's Sent copy by it)
+  // A new mail, not a reply (a chat reply also sent by Gmail, chat-mail.ts, owner 2026-10-13): the subject stays as it
+  // is (no "Re:"). Only when it answers no mail (no replyToMessageId).
+  fresh?: boolean;
 }
 
 export function replyMailMessage(x: ReplyMailInput) {
-  const replySubject = x.subject && !x.subject.startsWith('Re:') ? `Re: ${x.subject}` : (x.subject || 'Re: Your enquiry');
+  const replySubject = x.fresh && !x.replyToMessageId && x.subject ? x.subject
+    : x.subject && !x.subject.startsWith('Re:') ? `Re: ${x.subject}` : (x.subject || 'Re: Your enquiry');
   const headers: Record<string, string> = {};
   if (x.replyToMessageId) {
     headers['In-Reply-To'] = x.replyToMessageId;

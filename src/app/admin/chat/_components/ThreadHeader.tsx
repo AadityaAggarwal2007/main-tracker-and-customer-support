@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone, Send } from 'lucide-react';
 import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
@@ -20,7 +19,7 @@ import CustomerEmails from './CustomerEmails';
 //          with the urgency chips (Waiting, Came back, Critical 77%), the team-only line.
 // On a phone the chips scroll sideways, the facts truncate to one line, and the actions are a
 // bar under the header: Take over, Transfer, and ⋯ for the rest (MoreMenu).
-export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, setForwardEdit, simple, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft, removeVerify }: {
+export default function ThreadHeader({ activeAddress, activeItems, itemsEditable, setItemsEdit, setReshipEdit, activeConv, activeHealth, activeOrder, activePhoneMatch, activePromise, activeSubject, activeVerifiedOrder, activeVerifiedVia, activeWaiting, addressEditable, canCases, canReply, changeStatus, closeConversation, fetchThread, forText, holderAway, holderIsMe, hotLock, markCase, readOnlyText, setAddrEdit, setTeamLogOpen, setTransferEdit, setForwardEdit, simple, showAlert, staff, takeLabel, teamLog, teamLogOpen, threadRefund, token, user, withText, insertDraft, removeVerify, topOpen, setTopOpen }: {
   activeAddress: StaffAddress | null;
   activeItems: StaffOrderItems | null;
   itemsEditable: boolean;
@@ -67,10 +66,12 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   withText: string;
   // Puts text into the reply box (the "Copy link" button, owner 2026-10-05); undefined = this login cannot reply here.
   insertDraft?: (text: string) => void;
+  // Owner 2026-10-13 ("sirf naam, Transfer, Close, Remove dikhe; baaki jab hum bolein"): the first line only; Details
+  // opens the order line, address, items, emails, the mark, the subject and the team line (remembered by the page).
+  topOpen: boolean;
+  setTopOpen: (v: boolean) => void;
 }) {
-  // The full address and Edit sit behind "Details": open on a laptop, closed on a phone. The
-  // header only mounts in the browser once a thread has loaded, so the width is known here.
-  const [detailsOpen, setDetailsOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches);
+  const detailsOpen = topOpen;
 
   const closed = closedInfo(activeConv);
   // Who has it, or the status: "With Rahul" / "Needs you" / "With AI" / "Closed · support";
@@ -112,6 +113,10 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
           <Chip tone={statusTone(activeConv.status)} title={statusTitle}>
             {statusText}{forText ? ` · ${forText}` : ''}
           </Chip>
+          <button type="button" className="meta-btn th-toggle" aria-expanded={topOpen} onClick={() => setTopOpen(!topOpen)}
+            title={topOpen ? 'Fold the order, address, items and what to do next' : 'The order, address, items, the case, the subject and what to do next'}>
+            Details <ChevronDown />
+          </button>
         </div>
       </div>
 
@@ -193,8 +198,8 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
         </div>
       )}
 
-      {/* Row 2: the order in one line, the panel and the phone; Details opens the address */}
-      <div className="th-row th-facts meta">
+      {/* Row 2: the order in one line, the panel and the phone (behind Details since 2026-10-13) */}
+      {topOpen && <div className="th-row th-facts meta">
         <span className="truncate">
           {activeOrder && <><OrderLine facts={activeOrder} place={place} onInsert={insertDraft} /> · </>}
           {activeConv.panel_name || activeConv.site_name}
@@ -202,13 +207,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
             <> · <a href={`tel:${activeConv.visitor_phone}`}><Phone size={10} style={{ verticalAlign: '-1px' }} /> {activeConv.visitor_phone}</a></>
           )}
         </span>
-        {(activeAddress || activeItems) && activeConv && (
-          <button type="button" className="meta-btn" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(o => !o)}
-            title="The delivery address and the items on this order">
-            Details <ChevronDown />
-          </button>
-        )}
-      </div>
+      </div>}
       {(activeAddress || activeItems) && activeConv && detailsOpen && (
         <div className="th-details meta">
           {activeAddress && (
@@ -230,13 +229,13 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       )}
 
       {/* The Gmail addresses verified for this order (owner 2026-10-08): only with Open Mail */}
-      {activeConv && activeVerifiedOrder && activeVerifiedVia !== 'legacy' && can(user, 'mail.view') && (
+      {topOpen && activeConv && activeVerifiedOrder && can(user, 'mail.view') && (
         <CustomerEmails token={token} conversationId={activeConv.id} orderId={activeVerifiedOrder} />
       )}
 
       {/* Ship again's second state (owner 2026-10-03): was the new parcel sent? "To ship" until a reply
           carries the new tracking link / AWB or someone presses Mark reshipped; then Reshipped + AWB. */}
-      {canReply && activeConv.case_kind === 'reship' && (
+      {topOpen && canReply && activeConv.case_kind === 'reship' && (
         <div className="th-row th-case meta">
           <ReshipChip c={activeConv} big />
           {activeConv.reship_link && (
@@ -252,7 +251,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       )}
 
       {/* The Refund / Ship again mark: who, when, and (Super Admin, Refund) where the form stands */}
-      {canReply && canCases && !isVisitorChat(activeConv) && activeConv.case_kind && (
+      {topOpen && canReply && canCases && !isVisitorChat(activeConv) && activeConv.case_kind && (
         <div className="th-row th-case meta">
           <CaseChip kind={activeConv.case_kind} by={activeConv.case_marked_by} at={activeConv.case_marked_at} status={activeConv.status} role={activeConv.case_mark_role} big />
           {activeConv.case_kind === 'refund' && canRefunds(user) && threadRefund?.id === activeConv.id && threadRefund.state && (
@@ -264,7 +263,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
 
       {/* Why Refund / Ship again is off (the server's staff.mark_note), as a small line of its own on
           every screen size: a phone has no hover (owner answer A6, 2026-10-02). */}
-      {canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
+      {topOpen && canReply && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && staff && !staff.can_mark_case && staff.mark_note && (
         <div className="meta" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
           Refund / Ship again: {staff.mark_note}
         </div>
@@ -272,7 +271,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
 
       {/* Why Close / Hand to AI are off on a hot chat (the server's hot_lock.lock_reason), the same
           kind of line, on every screen size: a phone has no hover (owner 2026-10-02). */}
-      {canReply && staff?.can_act && activeConv.status !== 'resolved' && hotLock?.lock_reason && (
+      {topOpen && canReply && staff?.can_act && activeConv.status !== 'resolved' && hotLock?.lock_reason && (
         <div className="meta" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
           <Lock size={10} style={{ verticalAlign: '-1px', marginRight: 3 }} />Close / Hand to AI: {hotLock.lock_reason}
         </div>
@@ -280,7 +279,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
 
       {/* Chikki's own Refund mark (owner 2026-10-02): the customer was told a refund form will come
           in this chat; the Super Admin or the Manager sends it. Until a form link or a request exists. */}
-      {canReply && canCases && canRefunds(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
+      {topOpen && canReply && canCases && canRefunds(user) && activeConv.case_kind === 'refund' && activeConv.case_marked_by === AUTO_MARK_NAME
         && threadRefund?.id === activeConv.id && threadRefund.state && !threadRefund.state.link && !threadRefund.state.request && (
         <div className="meta t-warn" style={{ flexBasis: '100%', minWidth: 0, wordBreak: 'break-word' }}>
           Chikki promised a refund form - press Send refund form
@@ -288,7 +287,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
       )}
 
       {/* The customer's current concern, with how urgent it is: Waiting, Came back, Critical 77% */}
-      {(activeSubject || activeHealth || activeWaiting || activePromise || cameBack) && (
+      {topOpen && (activeSubject || activeHealth || activeWaiting || activePromise || cameBack) && (
         <div className="th-row th-subject" title={subjectTitle}>
           {activeSubject && <Chip tone={subjectTone(activeSubject.label)}>{displaySubjectLabel(activeSubject.label)}</Chip>}
           <span className="summary truncate">{activeSubject?.summary || ''}</span>
@@ -304,7 +303,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
           note never ends up pasted into a reply: the customer and the AI never see it. */}
       {(() => {
         const lastTransfer = teamLog.find(e => e.kind === 'transfer');
-        if (!lastTransfer) return null;
+        if (!lastTransfer || !topOpen) return null;
         const me = staff?.me ?? null;
         const side = (key: string | null, name: string | null) => (!key ? 'open pool' : me && key === me ? 'You' : name || 'a former member');
         const line = `${side(lastTransfer.from_owner, lastTransfer.from_name)} → ${side(lastTransfer.to_owner, lastTransfer.to_name)} · ${logTime(lastTransfer.created_at)}${lastTransfer.note ? ` · ${lastTransfer.note}` : ''}`;

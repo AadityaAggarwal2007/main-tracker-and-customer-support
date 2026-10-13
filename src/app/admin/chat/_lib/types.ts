@@ -276,3 +276,7 @@ export interface StaffAddress extends OrderAddress { order_id: string; edited_at
 // order-items-edit.sql). From GET /api/chat/conversations/[id] (order_items, items_editable).
 export interface StaffOrderItem { id: string; product_name: string; quantity: number; price: number | null }
 export interface StaffOrderItems { order_id: string; items: StaffOrderItem[]; edited_at: string | null; edited_by: string | null }
+
+// "Gmail too" under the reply box (owner 2026-10-13; chat-mail.ts chatMailOffer): where a website chat's reply would
+// also be mailed (the address masked), or why it cannot (chat-mail-rules.ts CHAT_MAIL_WHY_NOT); null = not offered.
+export type MailOffer = { to: string } | { why: 'not_verified' | 'no_email' | 'no_gmail' } | null;

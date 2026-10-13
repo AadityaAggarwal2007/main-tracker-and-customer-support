@@ -61,6 +61,8 @@ stub('suggest-run', 'module.exports = { recordSent: async () => {} };');
 // The red Chargeback tag (src/lib/chargeback/store.ts): no open alert here; the tag has its own test (chargeback.js).
 stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new Set(), chargebackKey: (b, o) => b + "|" + o };');
 // Corrections (owner 2026-10-11, corrections-read.ts): its own suite (corrections.js); the thread and the list only carry its light reads here.
+// "Gmail too" (owner 2026-10-13, chat-mail.ts): the reply route and the thread only call it; nothing is mailed here.
+stub('chat-mail', 'module.exports = { chatMailOffer: async () => null, sendChatAsMail: async () => ({ ok: true, queued: true, to: "te***@x.com" }), noteChatMail: async () => {} };');
 stub('corrections-read', 'module.exports = { listForConversation: async () => [], pendingCorrectionConvIds: async () => new Set(), pendingCorrectionCount: async () => 0 };');
 stub('refund-server', 'module.exports = { refundThreadState: async () => ({ can_send: true, block: null, block_text: null, link: null, request: null }), refundMarkLocked: async () => false };');
 
