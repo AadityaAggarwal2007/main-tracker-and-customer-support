@@ -111,7 +111,7 @@ const ORDER_SELECT_SQL = `SELECT
            FILTER (WHERE oi.product_name IS NOT NULL), '{}'
          ) AS products
        FROM orders o
-       LEFT JOIN order_items oi ON oi.order_id = o.order_id
+       LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
        LEFT JOIN businesses b ON b.id = o.business_id`;
 
 const ORDER_GROUP_SQL = `GROUP BY

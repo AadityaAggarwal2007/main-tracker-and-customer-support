@@ -101,19 +101,11 @@ export async function GET(request: NextRequest) {
     paramIdx++;
   }
 
-  // Brand filter — find order_ids matching the brand
-  let brandOrderIds: string[] | null = null;
+  // Brand filter: orders that have a line of this brand. The line must belong to the order's OWN panel (order
+  // numbers repeat across panels; owner 2026-10-13, order_items.business_id from order-items-panel.sql).
   if (brand) {
-    const brandResult = await query<{ order_id: string }>(
-      `SELECT DISTINCT order_id FROM order_items WHERE brand = $1`,
-      [brand]
-    );
-    if (brandResult.rows.length === 0) {
-      return NextResponse.json({ orders: [], total: 0, page, limit });
-    }
-    brandOrderIds = brandResult.rows.map(r => r.order_id);
-    conditions.push(`o.order_id = ANY($${paramIdx}::text[])`);
-    params.push(brandOrderIds);
+    conditions.push(`EXISTS (SELECT 1 FROM order_items bi WHERE bi.order_id = o.order_id AND bi.business_id IS NOT DISTINCT FROM o.business_id AND bi.brand = $${paramIdx})`);
+    params.push(brand);
     paramIdx++;
   }
 
@@ -143,7 +135,7 @@ export async function GET(request: NextRequest) {
          '[]'::json
        ) AS order_items
      FROM orders o
-     LEFT JOIN order_items oi ON oi.order_id = o.order_id
+     LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
      ${whereClause}
      GROUP BY o.id
      ORDER BY o.created_at DESC
@@ -175,7 +167,7 @@ export async function GET(request: NextRequest) {
   if (store) { countConditions.push(`o.source_store = $${cpIdx}`); countParams.push(store); cpIdx++; }
   if (effectiveBusinessIds.length === 1) { countConditions.push(`o.business_id = $${cpIdx}`); countParams.push(effectiveBusinessIds[0]); cpIdx++; }
   else if (effectiveBusinessIds.length > 1) { countConditions.push(`o.business_id = ANY($${cpIdx}::uuid[])`); countParams.push(effectiveBusinessIds); cpIdx++; }
-  if (brand && brandOrderIds) { countConditions.push(`o.order_id = ANY($${cpIdx}::text[])`); countParams.push(brandOrderIds); cpIdx++; }
+  if (brand) { countConditions.push(`EXISTS (SELECT 1 FROM order_items bi WHERE bi.order_id = o.order_id AND bi.business_id IS NOT DISTINCT FROM o.business_id AND bi.brand = $${cpIdx})`); countParams.push(brand); cpIdx++; }
 
   const countWhere = countConditions.length > 0 ? `WHERE ${countConditions.join(' AND ')}` : '';
   const statusCountsResult = await query<{ tracking_status: string; is_cancelled: boolean; cnt: string }>(

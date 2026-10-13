@@ -7,7 +7,6 @@ import { activeHeaders } from '@/lib/presence-client';
 import { DONE_NOTE_MAX, ageText, changedLine, kindLabel, type CorrectionAction, type CorrectionCounts } from '@/lib/chat/corrections-rules';
 import type { CorrectionListRow } from '@/lib/chat/corrections';
 import type { OrderAddress } from '@/lib/chat/order-address';
-import { ITEMS_SHARED_ERROR } from '@/lib/chat/order-items';
 import type { AuthUser, Business, StaffAddress, StaffOrderItems } from '../_lib/types';
 import { timeAgo } from '../_lib/inbox';
 import { Chip } from './chips';
@@ -94,7 +93,6 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       if (!res.ok) { setEdit(null); onAlert('error', j.error || 'Could not open that chat'); return; }
       const address = kind === 'address' && j.address_editable ? (j.order_address as StaffAddress) : null;
       const items = kind === 'items' && j.items_editable ? (j.order_items as StaffOrderItems) : null;
-      if (kind === 'items' && j.order_items?.shared) { setEdit(null); onAlert('error', ITEMS_SHARED_ERROR); return; }
       if (!address && !items) { setEdit(null); onAlert('error', kind === 'address' ? 'This order\'s address cannot be changed from here (open the chat).' : 'This order\'s items cannot be changed from here (open the chat).'); return; }
       setEdit({ row, kind, address, items, busy: false, error: '' });
     } catch { setEdit(null); onAlert('error', 'Could not open that chat'); }

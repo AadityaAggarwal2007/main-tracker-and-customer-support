@@ -1589,6 +1589,37 @@ t('upload route: no panel is ever created from a CSV, an existing order updates 
   assert.ok(post.indexOf('checkOwnerPassword') < post.indexOf('INSERT INTO businesses'), 'the password is checked first');
 });
 
+t('order items belong to their panel (owner 13 Oct: 2,223 order numbers are orders of two or three panels; kurtiya #1918 showed 13 lines): every read joins the order\'s own panel, the CSV upload and the team\'s edit delete / insert only their panel\'s lines', () => {
+  const SRC = path.resolve(__dirname, '../../src');
+  const files = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.tsx?$/.test(e.name)) files.push(f); } };
+  walk(SRC);
+  let joins = 0;
+  for (const f of files) {
+    const txt = fs.readFileSync(f, 'utf8');
+    for (const m of txt.matchAll(/JOIN order_items (\w+) ON ([^\n`]*)/g)) {
+      joins++;
+      assert.ok(/business_id IS NOT DISTINCT FROM o\.business_id/.test(m[2]), `${path.relative(SRC, f)}: order_items joined without the panel: ${m[0]}`);
+    }
+    // A DELETE of order lines by the number alone wipes the other panels' lines. Only the frozen Shopify webhook (the
+    // trigger trg_items_panel gives its new rows their panel) and the panel delete (numbers no other panel has) keep it.
+    for (const m of txt.matchAll(/DELETE FROM order_items\s+WHERE ([^`]*)`/g)) {
+      const rel = path.relative(SRC, f);
+      if (/business_id/.test(m[1])) continue;
+      assert.ok(['app/api/shopify/webhook/route.ts', 'app/api/businesses/route.ts'].includes(rel), `${rel}: DELETE FROM order_items without the panel: ${m[0]}`);
+    }
+  }
+  assert.ok(joins >= 8, 'the reads were found: ' + joins);
+  const up = fs.readFileSync(path.join(SRC, 'app/api/upload/route.ts'), 'utf8');
+  assert.ok(/INSERT INTO order_items \(order_id, brand, product_name, quantity, price, business_id\)/.test(up) && /item\.price, forcedBusinessId\)/.test(up), 'the upload writes its panel on every line');
+  const it = fs.readFileSync(path.join(SRC, 'app/api/chat/conversations/[id]/items/route.ts'), 'utf8');
+  assert.ok(/INSERT INTO order_items \(order_id, brand, product_name, quantity, price, created_at, business_id\)/.test(it) && /WHERE order_id = \$1 AND business_id IS NOT DISTINCT FROM \$2::uuid/.test(it), 'the team\'s item edit reads, deletes and writes its own panel\'s lines');
+  const rf = fs.readFileSync(path.join(SRC, 'lib/refund/server-send.ts'), 'utf8');
+  assert.ok(/FROM order_items WHERE order_id = \$1 AND business_id IS NOT DISTINCT FROM \$2::uuid/.test(rf), 'the refund form\'s order snapshot');
+  const sql = fs.readFileSync(path.resolve(__dirname, '../../order-items-panel.sql'), 'utf8');
+  assert.ok(/ADD COLUMN IF NOT EXISTS business_id uuid/.test(sql) && /CREATE TRIGGER trg_items_panel/.test(sql) && /SET LOCAL app\.team_items_edit = '1'/.test(sql) && !/DELETE FROM/i.test(sql.replace(/--[^\n]*/g, '')), 'the SQL file: additive, fills the panel, never deletes');
+});
+
 t('panel names: the same store written another way ("X" / "X Store", one letter apart) is refused on create and rename (owner 2026-10-08)', () => {
   const pn = load('panel-name', '../../src/lib');
   const sim = (a, b) => pn.panelNamesSimilar(a, b);

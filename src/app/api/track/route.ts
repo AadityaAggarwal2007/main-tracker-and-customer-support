@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
          ) AS order_items
        FROM orders o
        LEFT JOIN businesses b ON b.id = o.business_id
-       LEFT JOIN order_items oi ON oi.order_id = o.order_id
+       LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
        WHERE o.tracking_token = $1
        GROUP BY o.id, b.origin_city`,
       [token]
@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
          ) AS order_items
        FROM orders o
        LEFT JOIN businesses b ON b.id = o.business_id
-       LEFT JOIN order_items oi ON oi.order_id = o.order_id
+       LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
        WHERE o.order_id = $1
        GROUP BY o.id, b.origin_city`,
       [orderId]

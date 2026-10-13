@@ -18,8 +18,6 @@ export interface OrderItem {
 }
 
 export const MAX_ITEMS = 10;
-// Owner 2026-10-12: the same order number is also an order of another panel; order_items cannot tell their lines apart.
-export const ITEMS_SHARED_ERROR = 'This order number is also used by another panel, so its items are mixed with that order\'s and cannot be changed here yet. Nothing was changed.';
 export const MAX_QUANTITY = 20;
 export const MAX_PRICE = 100000;
 const MIN_NAME = 2;

@@ -13,10 +13,6 @@ export interface StaffOrderItems {
   // When and by whom the team last changed them here (null = as they came from Shopify / the CSV).
   edited_at: string | null;
   edited_by: string | null;
-  // Owner 2026-10-12 (kurtiya #1918 showed 13 lines from three panels): order_items has only order_id, so when the
-  // SAME order number is also an order of another panel their lines are mixed here and cannot be told apart. Such
-  // an order's items are shown but never edited (the PATCH would replace the other panels' lines too).
-  shared: boolean;
 }
 
 interface ItemsRow {
@@ -24,7 +20,6 @@ interface ItemsRow {
   items: { id: string; product_name: string | null; quantity: number | null; price: unknown }[] | null;
   items_edited_at?: string | Date | null;
   items_edited_by?: string | null;
-  shared?: boolean | null;
 }
 
 export const toItem = (r: { product_name: string | null; quantity: number | null; price: unknown }): OrderItem => ({
@@ -43,10 +38,9 @@ export async function loadOrderItems(
               json_agg(json_build_object('id', oi.id, 'product_name', oi.product_name, 'quantity', oi.quantity, 'price', oi.price)
                        ORDER BY oi.created_at, oi.id)
               FILTER (WHERE oi.id IS NOT NULL), '[]'::json
-            ) AS items,
-            EXISTS (SELECT 1 FROM orders o2 WHERE o2.order_id = o.order_id AND o2.business_id IS DISTINCT FROM o.business_id) AS shared
+            ) AS items
        FROM orders o
-       LEFT JOIN order_items oi ON oi.order_id = o.order_id
+       LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
       WHERE o.order_id = $1 AND o.business_id::text = $2::text
       GROUP BY o.id
       LIMIT 2`;
@@ -62,7 +56,6 @@ export async function loadOrderItems(
       items: (Array.isArray(r.items) ? r.items : []).map((i) => ({ id: String(i.id), ...toItem(i) })),
       edited_at: at && !Number.isNaN(at.getTime()) ? at.toISOString() : null,
       edited_by: r.items_edited_by ?? null,
-      shared: r.shared === true,
     };
   } catch (err) {
     console.error('[chat/order-items] load error:', (err as Error)?.message);

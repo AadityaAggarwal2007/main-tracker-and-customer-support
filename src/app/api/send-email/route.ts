@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
            b.tracking_domain AS biz_tracking_domain,
            b.primary_color AS biz_primary_color
          FROM orders o
-         LEFT JOIN order_items oi ON oi.order_id = o.order_id
+         LEFT JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
          LEFT JOIN businesses b ON b.id = o.business_id
          WHERE o.order_id = ANY($1::text[])
          GROUP BY o.id, b.id`,

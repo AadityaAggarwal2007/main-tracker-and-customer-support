@@ -17,14 +17,15 @@ import {
 
 // ── Orders (spec 2.6): panel-scoped, exactly one row ───────────
 const ORDER_SQL = `SELECT o.id, o.order_id, o.customer_name, o.customer_mobile, o.payment_method, o.financial_status, o.order_total,
-       o.tracking_status, o.delivered_at, o.is_cancelled, o.created_at
+       o.tracking_status, o.delivered_at, o.is_cancelled, o.created_at, o.business_id
   FROM orders o WHERE o.order_id = $1 AND o.business_id::text = $2::text LIMIT 2`;
 async function readOrder(db: Db, orderId: string, business: string): Promise<Row | null> {
   const r = await db.query(ORDER_SQL, [orderId, business]);
   return r.rows.length === 1 ? r.rows[0] : null;
 }
 async function snapshotOf(db: Db, o: Row): Promise<Record<string, unknown>> {
-  const items = await db.query(`SELECT product_name, quantity, price FROM order_items WHERE order_id = $1 ORDER BY id LIMIT 50`, [o.order_id]);
+  // Only this panel's lines: order numbers repeat across panels (owner 2026-10-13, order-items-panel.sql).
+  const items = await db.query(`SELECT product_name, quantity, price FROM order_items WHERE order_id = $1 AND business_id IS NOT DISTINCT FROM $2::uuid ORDER BY id LIMIT 50`, [o.order_id, o.business_id ?? null]);
   return {
     order_id: o.order_id,
     customer_name: o.customer_name ?? null,

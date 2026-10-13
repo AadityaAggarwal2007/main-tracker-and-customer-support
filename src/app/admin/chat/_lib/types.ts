@@ -275,4 +275,4 @@ export interface StaffAddress extends OrderAddress { order_id: string; edited_at
 // The order's items (product / colour lines) the team may change from the chat (owner 2026-10-03;
 // order-items-edit.sql). From GET /api/chat/conversations/[id] (order_items, items_editable).
 export interface StaffOrderItem { id: string; product_name: string; quantity: number; price: number | null }
-export interface StaffOrderItems { order_id: string; items: StaffOrderItem[]; edited_at: string | null; edited_by: string | null; shared?: boolean }
+export interface StaffOrderItems { order_id: string; items: StaffOrderItem[]; edited_at: string | null; edited_by: string | null }
