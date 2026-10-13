@@ -42,3 +42,12 @@ export async function sendChargebackWhatsApp(
     clearTimeout(timer);
   }
 }
+
+// The one-line text for the shared ShipTrack alert template (owner 2026-10-14: "chargeback pa msg bhejna ka lia kah rha
+// ha setup nai ha, kar aur template banala"): when no own chargeback template is set, alert-send.ts sends this as
+// {{1}} of the approved "shiptrack_alert" template. Panel, gateway and order only: no customer data.
+export function chargebackAlertText(vars: { panel: string; gateway: string; order: string }): string {
+  const order = vars.order && vars.order !== 'not found' ? `order ${vars.order}` : 'order not found in the mail';
+  const t = `CHARGEBACK mail on ${vars.panel} (gateway: ${vars.gateway || 'unknown'}, ${order}). Open Chargebacks in ShipTrack and answer the gateway before its deadline.`;
+  return t.replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').slice(0, 600);
+}

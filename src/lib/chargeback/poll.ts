@@ -6,7 +6,7 @@ import { gmailHost } from '@/lib/chat/imap-pool';
 import { matchByContact } from './risk';
 import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
-import { sendChargebackWhatsApp } from './notify';
+import { notifyChargeback } from './alert-send';
 
 // ── Reading each panel's chargeback Gmail (owner 2026-10-08) ──────────────────────────────────
 // Called by the existing every-minute chat-email-poll cron (src/lib/chat/email.ts pollAllMailboxes), so the VPS
@@ -179,7 +179,7 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
   try {
     const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [target.business_id]);
     const to = whatsappNumber(s?.whatsapp_number || '');
-    if (to) notify = await sendChargebackWhatsApp(to, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' });
+    if (to) notify = await notifyChargeback(to, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' });
   } catch (e) { notify = 'failed: could not send'; console.error('[chargeback] notify:', (e as Error).message); }
   await query(`UPDATE chargeback_alerts SET notify_status = $2 WHERE id = $1`, [ins.id, notify]).catch(() => undefined);
   return true;
