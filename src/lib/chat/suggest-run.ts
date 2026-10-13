@@ -35,7 +35,12 @@ export interface Suggestion {
   cached: boolean;
 }
 
-interface Row { id: string; sender: string; content: string | null }
+export interface Row { id: string; sender: string; content: string | null }
+
+// The Mail tab (owner 2026-10-13, "gmail pa grammer sudharna wala aur suggestion wala bhi dede"): a mail conversation is
+// not a chat, so mail-suggest.ts hands the conversation in (`rows`, the customer's mails as 'visitor') with the sender's
+// verified order (none = drafts without order facts) and a key for the cache (`conv.id` = mail:<box>:<thread>).
+export interface SuggestSource { rows: Row[]; orderId: string | null }
 
 // The chat as the drafts see it: the last SUGGEST_HISTORY visible messages, oldest first.
 async function loadHistory(conversationId: string): Promise<Row[]> {
@@ -79,10 +84,11 @@ async function ask(messages: ChatCompletionCreateParamsNonStreaming['messages'],
   return null;
 }
 
-export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: SuggestLang, refresh: boolean): Promise<Suggestion | { error: string }> {
-  const orderId = conv.verified_order_id || conv.phone_match_order_id;
-  if (!orderId) return { error: 'Suggestions are for verified customers only' };
-  const rows = await loadHistory(conv.id);
+export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: SuggestLang, refresh: boolean, src?: SuggestSource): Promise<Suggestion | { error: string }> {
+  const orderId = src ? src.orderId : (conv.verified_order_id || conv.phone_match_order_id);
+  if (!orderId && !src) return { error: 'Suggestions are for verified customers only' };
+  const rows = src ? src.rows : await loadHistory(conv.id);
+  if (!rows.length) return { error: 'Nothing to answer yet.' };
   const afterId = lastCustomer(rows)?.id || null;
 
   if (!refresh) {
@@ -143,7 +149,7 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
   let orderJson: string | null = null;
   const courierNames: string[] = [];
   try {
-    const found = await lookupVerifiedOrder(orderId, conv.tracker_business_id);
+    const found = orderId ? await lookupVerifiedOrder(orderId, conv.tracker_business_id) : { found: false as const, orders: [] };
     if (found.found && found.orders[0]) {
       const { courier, ...rest } = found.orders[0];
       if (courier) courierNames.push(courier);
@@ -218,11 +224,11 @@ export async function recordSent(conversationId: string, suggestionId: string, i
 // "Sudharo": the team member's draft with its spelling and grammar fixed. The draft itself comes
 // back whenever the model's answer is not a plain correction (acceptPolish). Recorded as a
 // 'polish' row; never throws.
-export async function polishDraft(conv: SuggestConv, actorKey: string, draft: string): Promise<string> {
+export async function polishDraft(conv: SuggestConv, actorKey: string, draft: string, src?: SuggestSource): Promise<string> {
   const text = draft.trim().slice(0, POLISH_MAX_CHARS);
   if (!text) return text;
   let latest: string | null = null;
-  try { latest = lastCustomer(await loadHistory(conv.id))?.content || null; } catch { /* context only */ }
+  try { latest = lastCustomer(src ? src.rows : await loadHistory(conv.id))?.content || null; } catch { /* context only */ }
   const res = await ask(
     [{ role: 'system', content: POLISH_INSTRUCTION }, { role: 'user', content: polishUserMessage(text, latest) }],
     Math.min(1200, Math.ceil(text.length / 2) + 200), 0, POLISH_TIMEOUT_MS,

@@ -111,7 +111,7 @@ You are not replying yourself. A member of ${team} has this ${email ? 'email con
 ${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this ${email ? 'conversation' : 'chat'}.
 
 ORDER FACTS
-${ctx.orderJson || 'No verified order facts are available: give no status or date.'}
+${ctx.orderJson || 'No verified order facts are available: give no status or date. If the customer asks about an order, ask for the order ID and the full phone number on the order (that is how we check it is them).'}
 
 Output ONLY this JSON, nothing before or after it:
 {"options": ["option 1", "option 2", "option 3"]}`;
