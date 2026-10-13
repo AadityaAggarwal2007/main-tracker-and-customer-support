@@ -49,9 +49,26 @@ const db = {
       if (S.failOrders) throw new Error('db down');
       return { rows: S.orders.filter(([pn, , e]) => p[0].includes(pn) && p[1].includes(e)).map(([pn, , e]) => ({ email: e, panel: pn })) };
     }
-    if (/FROM mail_verifications/.test(q)) return { rows: S.verified.filter(([pn, e]) => p[0].includes(pn) && p[1].includes(e)).map(([pn, e]) => ({ email: e, panel: pn })) };
+    if (/AS panel FROM mail_verifications/.test(q)) return { rows: S.verified.filter(([pn, e]) => p[0].includes(pn) && p[1].includes(e)).map(([pn, e]) => ({ email: e, panel: pn })) };
     if (/SELECT DISTINCT order_id, business_id::text AS panel FROM orders/.test(q)) {
       return { rows: S.orders.filter(([pn, o]) => p[0].includes(pn) && p[1].includes(o)).map(([pn, o]) => ({ order_id: o, panel: pn })) };
+    }
+    if (/FROM mail_verifications v/.test(q)) return { rows: (S.mv || []).filter((v) => v.panel === p[0] && p[1].includes(v.email)).map((v) => ({ email: v.email, order_id: v.order, verified_by_name: 'auto', verified_at: new Date(), chat_id: null })) };
+    if (/SELECT c.id, c.status, c.verified_order_id, c.case_kind FROM conversations c/.test(q)) {
+      const rows = (S.chats || []).filter((c) => c.panel === p[0] && c.visitor === p[1] && c.source === 'email');
+      rows.sort((a, b) => (b.verified_order_id === p[2]) - (a.verified_order_id === p[2]));
+      return { rows: rows.slice(0, 1) };
+    }
+    if (/^ ?UPDATE conversations SET verified_order_id = \$2/.test(q)) {
+      const c = S.chats.find((x) => x.id === p[0]);
+      if (c.verified_order_id !== p[1]) c.verified_via = 'mail';
+      c.verified_order_id = p[1]; if (c.status === 'resolved') c.status = 'agent_handling'; return { rows: [], rowCount: 1 };
+    }
+    if (/SELECT s.id FROM sites s WHERE s.tracker_business_id/.test(q)) return { rows: (S.sites || []).filter((x) => x.panel === p[0]).map((x) => ({ id: x.id })).slice(0, 1) };
+    if (/INSERT INTO conversations/.test(q)) {
+      const id = 'new' + ((S.chats || []).length + 1);
+      S.chats.push({ id, panel: (S.sites.find((x) => x.id === p[0]) || {}).panel, site: p[0], visitor: p[1], source: 'email', status: 'agent_handling', verified_order_id: p[3], verified_via: 'mail', case_kind: null });
+      return { rows: [{ id }] };
     }
     throw new Error('fake db: ' + q.slice(0, 90));
   },
@@ -67,6 +84,7 @@ const oR = Module._resolveFilename;
 Module._resolveFilename = function (r, parent, ...x) { if (fakes[r]) return r; if (r.startsWith('@/')) return oR.call(this, path.join(SRC, r.slice(2)), parent, ...x); return oR.call(this, r, parent, ...x); };
 const oL = Module._load; Module._load = function (r, ...x) { return fakes[r] || oL.call(this, r, ...x); };
 const C = require(path.join(SRC, 'lib/chat/mail-cb-box.ts'));
+const CC = require(path.join(SRC, 'lib/chat/mail-case-chat.ts'));
 const I = require(path.join(SRC, 'lib/chat/mail-inbox.ts'));
 
 const owner = { role: 'admin', businessIds: null };
@@ -147,6 +165,35 @@ async function t(name, fn) {
     ok(/Chargeback Gmail/.test(card) && /mail-boxtabs/.test(card) && /Shared with/.test(card));
     const poll = fs.readFileSync(path.join(SRC, 'lib/chargeback/poll.ts'), 'utf8');
     ok(/search\(\{ uid: `\$\{last \+ 1\}:\*` \}\)/.test(poll), 'the chargeback poller reads by uid, so the Mail tab marking read changes nothing for it');
+  });
+
+
+  await t('case chat (owner 13 Oct, Anurag): Refund / Ship again from Mail always gets the verified sender\'s email chat: an unverified one is verified, a Closed one reopened, none = made; never for an unverified order, never re-points a chat marked for another order', async () => {
+    S.mv = [{ panel: 'P2', email: 'mohit@gmail.com', order: '#1948' }, { panel: 'P2', email: 'new@gmail.com', order: '#2001' }, { panel: 'P2', email: 'two@gmail.com', order: '#3000' }];
+    S.sites = [{ id: 's2', panel: 'P2' }];
+    S.chats = [
+      { id: 'e1', panel: 'P2', visitor: 'email:mohit@gmail.com', source: 'email', status: 'resolved', verified_order_id: null, case_kind: null },
+      { id: 'e2', panel: 'P2', visitor: 'email:two@gmail.com', source: 'email', status: 'agent_handling', verified_order_id: '#2999', case_kind: 'refund' },
+    ];
+    const box = { panelId: 'P2', siteId: 's2' };
+    const a = await CC.ensureMailCaseChat(box, 'mohit@gmail.com', '1948');
+    deq(a, { ok: true, chatId: 'e1', created: false });
+    const e1 = S.chats.find((c) => c.id === 'e1');
+    eq(e1.verified_order_id, '#1948'); eq(e1.verified_via, 'mail'); eq(e1.status, 'agent_handling');
+    const b = await CC.ensureMailCaseChat(box, 'new@gmail.com', '#2001');
+    eq(b.created, true); const nb = S.chats.find((c) => c.id === b.chatId);
+    deq([nb.visitor, nb.source, nb.verified_order_id, nb.verified_via, nb.site], ['email:new@gmail.com', 'email', '#2001', 'mail', 's2']);
+    const c = await CC.ensureMailCaseChat(box, 'two@gmail.com', '#3000');
+    eq(c.created, true, 'a chat marked for another order is never re-pointed');
+    eq(S.chats.find((x) => x.id === 'e2').verified_order_id, '#2999');
+    const d = await CC.ensureMailCaseChat(box, 'mohit@gmail.com', '#9999');
+    deq([d.ok, d.status], [false, 409]);
+    const e = await CC.ensureMailCaseChat({ panelId: 'P1' }, 'mohit@gmail.com', '#1948');
+    eq(e.ok, false, 'verified in another panel only');
+    const card = fs.readFileSync(path.join(SRC, 'components/mail/CustomerCard.tsx'), 'utf8');
+    ok(/\/api\/mail\/case-chat/.test(card) && !/o\.emailChat && !o\.emailChat\.caseKind && customer\?\.cases && o\.emailChat\.verified/.test(card), 'the buttons no longer need an existing verified email chat');
+    const route = fs.readFileSync(path.join(SRC, 'app/api/mail/case-chat/route.ts'), 'utf8');
+    ok(/can\(a\.user, 'chat\.cases'\)/.test(route) && /mailAccess\(request/.test(route));
   });
 
   console.log(`mail-cb-box: ${pass} passed, ${fail} failed`);
