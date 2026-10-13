@@ -67,7 +67,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
     }
   };
   const sendTest = async () => {
-    if (await call('test', 'PATCH', { businessId, action: 'test' })) onAlert('success', `Test alert sent to ${d?.whatsapp}. Check the phone.`);
+    if (await call('test', 'PATCH', { businessId, action: 'test' })) onAlert('success', `Test alert sent to ${d?.whatsapp}. Check the phone${(d?.whatsapp || '').includes(',') ? 's' : ''}.`);
   };
   const remove = async () => {
     if (!window.confirm(`Disconnect the CHARGEBACK Gmail of ${panelName}?\n\nOld alerts stay. New chargeback mails will no longer be seen. (The customer support Gmail is a different account and is not touched.)`)) return;
@@ -125,9 +125,10 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
 
           {/* 2. WhatsApp */}
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Step A · WhatsApp number for the alert</div>
+            <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Step A · WhatsApp numbers for the alert</div>
+            <div className="meta" style={{ marginBottom: '0.375rem' }}>Up to 5 numbers, with a comma between them (country code first, e.g. 919876543210). Every number gets the alert.</div>
             <div className="mail-bar" style={{ border: 0, padding: 0 }}>
-              <input className="form-input" style={{ flex: 1, minWidth: 180, maxWidth: 280 }} placeholder="919876543210" inputMode="tel" value={wa} onChange={e => setWa(e.target.value)} />
+              <input className="form-input" style={{ flex: 1, minWidth: 220, maxWidth: 520 }} placeholder="919876543210, 919812345678" inputMode="tel" value={wa} onChange={e => setWa(e.target.value)} />
               <button className="btn btn-outline btn-sm" disabled={busy === 'wa' || wa === d.whatsapp} onClick={saveWa}>Save number</button>
             </div>
             {(() => {
@@ -136,7 +137,7 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
               const line = (color: string | undefined, text: string) => <div className="meta" style={{ marginTop: '0.375rem', color }}>{text}</div>;
               if (d.whatsappReady) return (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.375rem' }}>
-                  <span className="meta t-ok"><CheckCircle2 size={12} /> WhatsApp alert is set up{w?.envTemplate ? '' : ' (template "shiptrack_alert")'}: every chargeback mail sends one message to this number (panel, gateway and order only).</span>
+                  <span className="meta t-ok"><CheckCircle2 size={12} /> WhatsApp alert is set up{w?.envTemplate ? '' : ' (template "shiptrack_alert")'}: every chargeback mail sends one message to each number above (panel, gateway and order only).</span>
                   <button className="btn btn-outline btn-sm" disabled={busy === 'test' || !d.whatsapp} onClick={sendTest}>{busy === 'test' ? <Loader2 size={14} className="spin" /> : null} Send a test</button>
                 </div>
               );

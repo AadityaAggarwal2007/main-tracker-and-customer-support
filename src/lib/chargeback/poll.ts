@@ -4,7 +4,7 @@ import { query, queryOne } from '@/lib/db';
 import { friendlyMailError, mailErrorText, noteMailboxCheck } from '@/lib/chat/mailbox-status';
 import { gmailHost } from '@/lib/chat/imap-pool';
 import { matchByContact } from './risk';
-import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumber } from './parse';
+import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumbers } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { notifyChargeback } from './alert-send';
 
@@ -174,12 +174,18 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
     } catch (e) { console.error('[chargeback] chat tag:', (e as Error).message); }
   }
 
-  // The WhatsApp message goes to the number of the panel it was routed to (never blocks the alert).
+  // The WhatsApp message goes to every number of the panel it was routed to (up to 5, owner 2026-10-14; never blocks
+  // the alert). The alert keeps 'sent' when at least one went, else the first answer ('not_configured' / 'failed: ...').
   let notify = 'no_number';
   try {
     const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [target.business_id]);
-    const to = whatsappNumber(s?.whatsapp_number || '');
-    if (to) notify = await notifyChargeback(to, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' });
+    const to = whatsappNumbers(s?.whatsapp_number || '').numbers;
+    const results: string[] = [];
+    for (const n of to) results.push(await notifyChargeback(n, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' }));
+    if (results.length) {
+      const sent = results.filter((r) => r === 'sent').length;
+      notify = sent === results.length ? 'sent' : sent > 0 ? `sent ${sent} of ${results.length}; ${results.find((r) => r !== 'sent')}` : results[0];
+    }
   } catch (e) { notify = 'failed: could not send'; console.error('[chargeback] notify:', (e as Error).message); }
   await query(`UPDATE chargeback_alerts SET notify_status = $2 WHERE id = $1`, [ins.id, notify]).catch(() => undefined);
   return true;
