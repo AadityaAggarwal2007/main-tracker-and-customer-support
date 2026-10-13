@@ -154,7 +154,7 @@ export default function ChatSupportPage() {
   const [teamLogOpen, setTeamLogOpen] = useState(false);
   const [transferEdit, setTransferEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
   // Forward to Manager (owner 2026-10-10): the dialog's state.
-  const [forwardEdit, setForwardEdit] = useState<{ convId: string; busy: boolean; error: string } | null>(null);
+  const [forwardEdit, setForwardEdit] = useState<{ convId: string; busy: boolean; error: string; kind?: 'refund' | 'reship' } | null>(null);
   // The red bar (owner 2026-10-10): chats moved to the Manager after 30 minutes without a reply, from the list's answer.
   const [teamAlerts, setTeamAlerts] = useState<TeamAlert[]>([]);
   // A WhatsApp template to send in this chat (owner 2026-10-10): the only message after 24 h of silence.
@@ -541,7 +541,7 @@ export default function ChatSupportPage() {
   const sendForward = async (kind: 'refund' | 'reship', note: string) => {
     if (!forwardEdit || !token) return;
     const convId = forwardEdit.convId;
-    setForwardEdit({ convId, busy: true, error: '' });
+    setForwardEdit({ convId, busy: true, error: '', kind });
     try {
       const res = await fetch(`/api/chat/conversations/${convId}`, {
         method: 'PATCH',
@@ -552,7 +552,7 @@ export default function ChatSupportPage() {
       if (!res.ok) {
         const why = (d.error as string) || 'Could not send it to the Manager';
         if (res.status === 409) { setForwardEdit(null); showAlert('error', why); }
-        else setForwardEdit({ convId, busy: false, error: why });
+        else setForwardEdit({ convId, busy: false, error: why, kind });
         fetchThread(convId, true);
         fetchConversations(true);
         return;
@@ -562,7 +562,7 @@ export default function ChatSupportPage() {
       fetchThread(convId, true);
       fetchConversations(true);
     } catch {
-      setForwardEdit({ convId, busy: false, error: 'Could not send it to the Manager' });
+      setForwardEdit({ convId, busy: false, error: 'Could not send it to the Manager', kind });
     }
   };
 
@@ -1576,7 +1576,7 @@ export default function ChatSupportPage() {
           <TemplateDialog token={token} busy={templateEdit.busy} onCancel={() => setTemplateEdit(null)} onSend={sendTemplate} />
         )}
         {forwardEdit && activeConv?.id === forwardEdit.convId && (
-          <ForwardDialog busy={forwardEdit.busy} error={forwardEdit.error} onCancel={() => setForwardEdit(null)} onSend={sendForward} />
+          <ForwardDialog busy={forwardEdit.busy} error={forwardEdit.error} initialKind={forwardEdit.kind} onCancel={() => setForwardEdit(null)} onSend={sendForward} />
         )}
         {transferEdit && staff && activeConv?.id === transferEdit.convId && (
           <TransferDialog targets={staff.transfer_to} team={team} me={staff.me} busy={transferEdit.busy} error={transferEdit.error}
