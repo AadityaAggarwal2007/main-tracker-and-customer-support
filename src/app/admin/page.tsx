@@ -14,6 +14,7 @@ import { clearMailCache } from '@/components/mail/cache';
 import ChargebacksCard from '@/components/ChargebacksCard';
 import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
 import WhatsAppPage from '@/components/whatsapp/WhatsAppPage';
+import ProductStatsCard from '@/components/ProductStatsCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
 import { can, canChargebacks, canRefunds, isSuperAdmin, isTeamLead, type Permission } from '@/lib/permissions';
@@ -24,12 +25,12 @@ import {
   Check, AlertCircle, ShoppingBag,
   Loader2, Trash2, Building2, Plus,
   Settings, Trophy, Undo2, ShieldAlert, Sun,
-  MessageSquareText,
+  MessageSquareText, Store,
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
 
-const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks', 'whatsapp'];
+const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks', 'whatsapp', 'shopify'];
 import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
@@ -432,6 +433,7 @@ export default function AdminDashboard() {
       : activeTab === 'refunds' ? canRefunds(user)
       : activeTab === 'chargebacks' ? canChargebacks(user)
       : activeTab === 'whatsapp' ? isSuperAdmin(user)
+      : activeTab === 'shopify' ? isSuperAdmin(user) || isTeamLead(user)
       : activeTab === 'mail' ? can(user, 'mail.view') : true;
     if (!ok) setActiveTab('today');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1000,6 +1002,8 @@ export default function AdminDashboard() {
     // Owner 2026-10-09: the day's board, every panel at once; anyone logged in sees their own panels.
     { id: 'today' as TabType, label: 'Today', icon: Sun, show: true },
     { id: 'orders' as TabType, label: 'Orders', icon: ShoppingBag, show: hasPermission('view_orders') },
+    // Owner 2026-10-13: orders by the team's own collections and chosen products. The Super Admin and the Manager.
+    { id: 'shopify' as TabType, label: 'Shopify', icon: Store, show: isSuperAdmin(user) || isTeamLead(user) },
     { id: 'upload' as TabType, label: 'Upload CSV', icon: Upload, show: hasPermission('upload_csv') },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings, show: hasPermission('manage_businesses') },
     { id: 'team' as TabType, label: 'Team', icon: Users, show: hasPermission('manage_team') },
@@ -1027,7 +1031,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? 'Team score' : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? 'Team score' : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab === 'shopify' ? 'Shopify' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1678,6 +1682,10 @@ export default function AdminDashboard() {
           {/* ════════ CHARGEBACKS (Super Admin only) ════════ */}
           {activeTab === 'chargebacks' && canChargebacks(user) && (
             <div className="animate-fade-in-up"><ChargebacksCard token={token} onAlert={showAlert} onChanged={() => { void refreshChargebackCounts(); }} /></div>
+          )}
+          {/* ════════ SHOPIFY: orders by collection / product (Super Admin + Manager) ════════ */}
+          {activeTab === 'shopify' && (isSuperAdmin(user) || isTeamLead(user)) && (
+            <div className="animate-fade-in-up"><ProductStatsCard key={activePanelId || 'all'} token={token} panelId={activePanelId} panelName={businesses.find(b => b.id === activePanelId)?.name || ''} onAlert={showAlert} /></div>
           )}
           {/* ════════ WHATSAPP (Super Admin only) ════════ */}
           {activeTab === 'whatsapp' && isSuperAdmin(user) && (
