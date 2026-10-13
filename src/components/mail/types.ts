@@ -1,7 +1,7 @@
 // Shapes the Mail tab reads from /api/mail/* (the server side: src/lib/chat/mail-inbox.ts).
 import type { CasesMap } from '@/lib/chat/mail-filters';
 export type { CasesMap, MailCase } from '@/lib/chat/mail-filters';
-export interface Box { id: string; email: string; siteName: string; panelId: string | null; panelName: string; status: { ok: boolean; error: string | null; checkedAt: number } | null }
+export interface Box { id: string; email: string; siteName: string; panelId: string | null; panelName: string; kind?: 'support' | 'chargeback'; sharedWith?: string[]; status: { ok: boolean; error: string | null; checkedAt: number } | null }
 // convCount: in the Active / Closed cases lists (one row per customer), how many conversations the list holds of them (owner 2026-10-11)
 // repliedAt: when we last wrote in the conversation after this mail (the store only; a reply closes the case, owner 2026-10-11 12:45)
 export interface Item { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; authPass?: boolean; snippet?: string; replied?: boolean; repliedAt?: string; threadCount?: number; convCount?: number }

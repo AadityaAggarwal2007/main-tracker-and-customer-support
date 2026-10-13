@@ -26,6 +26,7 @@ import { withPooledImap, type PoolBox } from './imap-pool';
 import { mailErrorText } from './mailbox-status';
 import { firstAuthResults, gmailAuthPassed, sinceDate } from './mail-view';
 import { autoVerifySenders } from './mail-auto-verify';
+import { cbBoxRows } from './mail-cb-box';
 import {
   BODIES_PER_RUN, BODY_BATCH, BODY_MAX_TRIES, FLAGS_EVERY_MS, FRESH_BODIES_MAX, GONE_EVERY_MS, GONE_NEEDS_MS, INBOX_BODIES_MIN_MS, LEASE_MS,
   PRUNE_DAYS, SYNC_BUDGET_MS, addrList, addrText, bodyFromParsed, type StoreFolder,
@@ -410,7 +411,9 @@ export async function loadSyncBoxes(): Promise<SyncBox[]> {
   const r = await query<{ id: string; email: string; app_password: string; panel_id: string | null }>(
     `SELECT se.id::text AS id, se.email, se.app_password, s.tracker_business_id::text AS panel_id
        FROM site_emails se JOIN sites s ON s.id = se.site_id ORDER BY se.created_at ASC`);
-  return r.rows.map(x => ({ id: x.id, email: x.email, appPassword: x.app_password, panelId: x.panel_id }));
+  // The chargeback Gmails too (owner 2026-10-13, mail-cb-box.ts): one copy per panel's box.
+  const cb = (await cbBoxRows()).map(x => ({ id: x.id, email: x.email, appPassword: x.app_password, panelId: x.panel_id }));
+  return [...r.rows.map(x => ({ id: x.id, email: x.email, appPassword: x.app_password, panelId: x.panel_id })), ...cb];
 }
 
 // The loop: every 30 seconds in each server process (started by the minute cron, email.ts); the lease decides which
