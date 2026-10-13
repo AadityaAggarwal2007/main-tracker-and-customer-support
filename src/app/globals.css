@@ -2880,3 +2880,43 @@ a {
 .corr-actions { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .corr-done-form { display: flex; gap: 0.375rem; align-items: center; flex-wrap: wrap; }
 .corr-done-form .form-input { flex: 1; min-width: 12rem; }
+
+/* ═══ Shopify tab: orders by product and collection (owner 2026-10-13, ProductStatsCard.tsx) ═══ */
+.ps-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
+.ps-top { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ps-top .seg-btn { white-space: nowrap; }
+.ps-title { font-size: 1.125rem; font-weight: 700; margin: 0; flex: 1; min-width: 10rem; }
+.ps-dates { display: inline-flex; align-items: center; gap: 0.375rem; }
+.ps-dates .form-input { width: auto; padding: 0.25rem 0.5rem; }
+.ps-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 0.75rem 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.ps-total { border-color: var(--primary); }
+.ps-figs { display: flex; flex-wrap: wrap; gap: 0.375rem 1rem; font-size: 0.9375rem; }
+.ps-figs b { font-size: 1.125rem; }
+.ps-figs-sm { font-size: 0.8125rem; }
+.ps-figs-sm b { font-size: 0.9375rem; }
+.ps-section-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.ps-section-head h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+.ps-section-head .meta { flex: 1; min-width: 12rem; }
+.ps-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.75rem; }
+.ps-group-top { display: flex; align-items: center; gap: 0.25rem; }
+.ps-group-name { flex: 1; display: flex; align-items: center; gap: 0.25rem; background: none; border: 0; padding: 0; font-weight: 700; font-size: 0.9375rem; color: var(--fg); cursor: pointer; text-align: left; min-width: 0; }
+.ps-rows { display: flex; flex-direction: column; }
+.ps-row { display: grid; grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem 6.5rem 2.25rem; align-items: center; gap: 0.5rem; padding: 0.3125rem 0; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+.ps-group-top + .ps-figs + .ps-head, .ps-card > .ps-head { border-bottom: 1px solid var(--border-strong); }
+.ps-head { font-weight: 600; }
+.ps-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ps-row-name { display: flex; align-items: center; gap: 0.25rem; background: none; border: 0; padding: 0; color: var(--fg); text-align: left; cursor: pointer; min-width: 0; font: inherit; }
+.ps-row-name:disabled { cursor: default; }
+.ps-variants { padding-left: 1.25rem; background: var(--bg-subtle); border-radius: 6px; }
+.ps-row-v { font-size: 0.8125rem; color: var(--fg-muted); }
+.ps-watch-line { display: grid; grid-template-columns: minmax(0, 1fr) 2.25rem; align-items: start; }
+.ps-watch-line .ps-row { grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem 6.5rem; }
+.ps-search { display: flex; align-items: center; gap: 0.375rem; color: var(--fg-muted); }
+.ps-search .form-input { flex: 1; }
+.ps-picks, .ps-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ps-x { background: none; border: 0; padding: 0 0 0 0.25rem; cursor: pointer; color: inherit; vertical-align: middle; }
+.ps-edit label { margin-top: 0.25rem; }
+@media (max-width: 640px) {
+  .ps-row { grid-template-columns: minmax(0, 1fr) 3rem 3rem 5rem 2rem; font-size: 0.8125rem; }
+  .ps-watch-line .ps-row { grid-template-columns: minmax(0, 1fr) 3rem 3rem 5rem; }
+}
