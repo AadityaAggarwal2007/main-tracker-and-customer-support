@@ -1,7 +1,7 @@
 import { query, queryOne } from '@/lib/db';
 import type { AuthUser } from '@/lib/auth';
 import {
-  groupLines, parseSetup, productLines, rangeOf, setupKey, totalsOf, watchLines,
+  groupLines, parseSetup, productLines, rangeDays, rangeOf, setupKey, totalsOf, watchLines,
   type GroupLine, type ItemRow, type ProductGroup, type ProductLine, type ProductSetup, type RangeKey, type Totals,
 } from './product-stats';
 
@@ -28,7 +28,8 @@ export async function saveSetup(businessId: string, setup: ProductSetup, user: A
 }
 
 export interface ProductStats {
-  range: { range: RangeKey; from: string; to: string; label: string };
+  range: { range: RangeKey; from: string; to: string; label: string; days: string };
+  at: string;              // when this answer was read
   totals: Totals;          // every not-cancelled order of the range that has lines
   cancelled: number;       // cancelled orders placed in the range (not counted anywhere above)
   products: ProductLine[];
@@ -42,8 +43,9 @@ export async function loadProductStats(businessId: string, opts: { range?: strin
   const r = rangeOf(opts.range, opts.now ?? Date.now(), opts.from, opts.to);
   const from = new Date(r.from).toISOString(), to = new Date(r.to).toISOString();
   const [lines, cancelled, setup] = await Promise.all([
-    query<{ order: string; product_name: string | null; quantity: number | null; price: unknown; cod: boolean }>(
-      `SELECT o.id::text AS "order", oi.product_name, oi.quantity, oi.price, ${COD_SQL} AS cod
+    query<{ order: string; product_name: string | null; quantity: number | null; price: unknown; cod: boolean; at: unknown }>(
+      `SELECT o.id::text AS "order", oi.product_name, oi.quantity, oi.price, ${COD_SQL} AS cod,
+              (extract(epoch FROM o.created_at) * 1000)::float8 AS at
          FROM orders o
          JOIN order_items oi ON oi.order_id = o.order_id AND oi.business_id IS NOT DISTINCT FROM o.business_id
         WHERE o.business_id::text = $1::text AND o.created_at >= $2 AND o.created_at < $3
@@ -58,10 +60,10 @@ export async function loadProductStats(businessId: string, opts: { range?: strin
   ]);
   const capped = lines.length > LINES_MAX;
   const rows: ItemRow[] = lines.slice(0, LINES_MAX).filter((l) => l.product_name)
-    .map((l) => ({ order: l.order, product_name: String(l.product_name), quantity: Number(l.quantity) || 1, price: Number(l.price) || 0, cod: l.cod === true }));
+    .map((l) => ({ order: l.order, product_name: String(l.product_name), quantity: Number(l.quantity) || 1, price: Number(l.price) || 0, cod: l.cod === true, at: l.at == null ? undefined : Number(l.at) }));
   const products = productLines(rows);
   return {
-    range: { range: r.range, from, to, label: r.label },
+    range: { range: r.range, from, to, label: r.label, days: rangeDays(r.from, r.to) }, at: new Date().toISOString(),
     totals: totalsOf(rows), cancelled,
     products, groups: groupLines(setup.groups, rows, products), watch: watchLines(setup.watch, products),
     setup, capped,

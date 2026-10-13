@@ -115,6 +115,47 @@ async function t(name, fn) { try { await fn(); pass++; console.log('  ok  ' + na
     deq([r.body.groups[0].name, r.body.groups[0].orders], ['Jhumka', 1]);
     ok(S.sql.every((q) => !/DELETE|UPDATE orders|UPDATE order_items/i.test(q)), 'never changes an order');
   });
+  await t('dates (owner 13 Oct, "kitna purana data ha"): first / last order of a collection, India dates and times, the range days', async () => {
+    const at = (iso) => Date.parse(iso);
+    const rows = [
+      { order: 'a', product_name: 'Kurti - Red', quantity: 1, price: 10, cod: false, at: at('2026-10-07T04:30:00Z') },   // 7 Oct 10:00 IST
+      { order: 'b', product_name: 'Kurti - Blue', quantity: 1, price: 10, cod: false, at: at('2026-10-13T03:10:00Z') },  // 13 Oct 8:40 IST
+      { order: 'c', product_name: 'Jhumka', quantity: 1, price: 10, cod: false, at: at('2026-10-12T20:00:00Z') },        // 13 Oct 1:30 IST
+    ];
+    const p = R.productLines(rows);
+    const g = R.groupLines([{ id: 'g1', name: 'Kurti', products: [], words: ['kurti'] }], rows, p)[0];
+    deq([g.first, g.last], [rows[0].at, rows[1].at]);
+    deq([R.dayText(g.first), R.timeText(g.last), R.timeText(rows[2].at)], ['7 Oct', '13 Oct, 8:40 AM', '13 Oct, 1:30 AM']);
+    eq(R.timeText(at('2026-10-13T06:45:00Z')), '13 Oct, 12:15 PM');
+    deq([R.totalsOf([]).first, R.totalsOf([]).last], [null, null]);
+    deq([R.totalsOf([{ order: 'x', product_name: 'A', quantity: 1, price: 1, cod: false }]).first], [null], 'a row without a time');
+    const now = Date.parse('2026-10-13T03:30:00Z');
+    const r7 = R.rangeOf('7d', now), r1 = R.rangeOf('today', now);
+    deq([R.rangeDays(r7.from, r7.to), R.rangeDays(r1.from, r1.to)], ['7 Oct – 13 Oct', '13 Oct']);
+  });
+  await t('Copy from panel (owner 13 Oct, "asa same kurtiya ma bhi karde"): the other panel\'s collections are ADDED, a name already here stays, nothing is deleted, only panels the login sees', async () => {
+    const m = R.mergeGroups([{ id: 'mine1', name: 'Kurti', products: ['X'], words: [] }],
+      [{ id: 'th1', name: 'kurti', products: [], words: ['kurti'] }, { id: 'th2', name: 'Jewellery', products: [], words: ['jhumka'] }], 1);
+    deq(m.groups.map((g) => [g.name, g.words, g.products]), [['Kurti', [], ['X']], ['Jewellery', ['jhumka'], []]]);
+    deq([m.added, m.skipped], [['Jewellery'], ['kurti']]);
+    ok(m.groups[1].id !== 'th2', 'a new id');
+    S.settings = {};
+    S.settings[`product_setup:${P1}`] = JSON.stringify({ groups: [{ id: 'g-kurti', name: 'Kurti', products: [], words: ['kurti', 'palazzo'] }, { id: 'g-jew', name: 'Jewellery', products: [], words: ['jhumka'] }], watch: ['A'] });
+    S.settings[`product_setup:${P2}`] = JSON.stringify({ groups: [{ id: 'g-old', name: 'Jewellery', products: ['Old'], words: [] }], watch: ['B'] });
+    eq((await post('rahul', { businessId: P2, copyFrom: P1 })).status, 403);
+    eq((await post('sunnyP2', { businessId: P2, copyFrom: P1 })).status, 404, 'a Manager limited to P2 cannot copy from P1');
+    eq((await post('owner', { businessId: P2, copyFrom: P2 })).status, 400, 'not from itself');
+    eq((await post('owner', { businessId: P2, copyFrom: 'x' })).status, 400);
+    let r = await post('sunny', { businessId: P2, copyFrom: P1 });
+    eq(r.status, 200);
+    deq([r.body.copied.added, r.body.copied.skipped], [['Kurti'], ['Jewellery']]);
+    const saved = JSON.parse(S.settings[`product_setup:${P2}`]);
+    deq(saved.groups.map((g) => [g.name, g.words, g.products]), [['Jewellery', [], ['Old']], ['Kurti', ['kurti', 'palazzo'], []]], 'P2 keeps its own Jewellery');
+    deq(saved.watch, ['B'], 'the watch list is not copied');
+    deq(JSON.parse(S.settings[`product_setup:${P1}`]).groups.length, 2, 'the source is untouched');
+    S.settings[`product_setup:${P1}`] = JSON.stringify({ groups: [], watch: [] });
+    eq((await post('owner', { businessId: P2, copyFrom: P1 })).status, 400, 'nothing to copy');
+  });
   console.log(`PRODUCT-STATS: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
   if (fail) process.exit(1);
 })();

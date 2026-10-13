@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Eye, Layers, Loader2, Pencil, Plus, RefreshCw, Search, ShoppingBag, Trash2, X } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronRight, Copy, Eye, Layers, Loader2, Pencil, Plus, RefreshCw, Search, ShoppingBag, Trash2, X } from 'lucide-react';
 import {
-  MAX_GROUPS, MAX_WATCH, RANGES, rupees,
+  MAX_GROUPS, MAX_WATCH, RANGES, dayText, rupees, timeText,
   type GroupLine, type ProductGroup, type ProductLine, type RangeKey, type Totals,
 } from '@/lib/product-stats';
 
@@ -11,7 +11,8 @@ import {
 // product list karke unka count"). The active panel's orders by the team's own collections, a watch list of chosen
 // products, and every product with its colours / sizes. Super Admin and Manager. Reads GET /api/product-stats.
 interface Stats {
-  range: { range: RangeKey; label: string };
+  range: { range: RangeKey; label: string; days: string };
+  at: string;
   totals: Totals; cancelled: number;
   products: ProductLine[]; groups: GroupLine[]; watch: ProductLine[];
   setup: { groups: ProductGroup[]; watch: string[] };
@@ -22,6 +23,13 @@ type Edit = { id: string | null; name: string; words: string; products: string[]
 const RANGE_KEY = 'ps_range';
 const readRange = (): RangeKey => { try { const v = localStorage.getItem(RANGE_KEY); return (RANGES.some((r) => r.key === v) ? v : 'today') as RangeKey; } catch { return 'today'; } };
 const n = (v: number) => v.toLocaleString('en-IN');
+
+// When the orders behind these numbers were placed: "Orders from 7 Oct to 13 Oct · newest 13 Oct, 8:40 AM".
+function Span({ t }: { t: Totals }) {
+  if (t.first == null || t.last == null) return null;
+  const a = dayText(t.first), b = dayText(t.last);
+  return <div className="meta ps-span"><CalendarDays size={12} /> Orders from {a}{a === b ? '' : ` to ${b}`} · newest {timeText(t.last)}</div>;
+}
 
 function Figures({ t, small }: { t: Totals; small?: boolean }) {
   return (
@@ -79,8 +87,9 @@ const Head = ({ watch }: { watch?: boolean }) => (
   <div className="ps-row ps-head meta"><span>Product</span><span className="ps-num">Orders</span><span className="ps-num">Pieces</span><span className="ps-num">₹</span>{watch && <span />}</div>
 );
 
-export default function ProductStatsCard({ token, panelId, panelName, onAlert }: {
+export default function ProductStatsCard({ token, panelId, panelName, panels, onAlert }: {
   token: string; panelId: string; panelName: string;
+  panels: { id: string; name: string }[];   // the other panels this login sees: "Copy from" lists them
   onAlert: (type: 'success' | 'error', message: string) => void;
 }) {
   const [range, setRangeState] = useState<RangeKey>('today');
@@ -94,6 +103,7 @@ export default function ProductStatsCard({ token, panelId, panelName, onAlert }:
   const [edit, setEdit] = useState<Edit | null>(null);
   const [pick, setPick] = useState('');
   const [watchPick, setWatchPick] = useState('');
+  const [copying, setCopying] = useState(false);
   useEffect(() => { setRangeState(readRange()); }, []);
   const setRange = (r: RangeKey) => { setRangeState(r); try { localStorage.setItem(RANGE_KEY, r); } catch { /* private window */ } };
 
@@ -113,12 +123,25 @@ export default function ProductStatsCard({ token, panelId, panelName, onAlert }:
   }, [token, panelId, range, from, to]);
   useEffect(() => { void load(); }, [load]);
 
-  const save = async (body: { groups?: ProductGroup[]; watch?: string[] }) => {
+  const save = async (body: { groups?: ProductGroup[]; watch?: string[]; copyFrom?: string }) => {
     const res = await fetch('/api/product-stats', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ businessId: panelId, ...body }) });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || 'Could not save');
     await load(true);
+    return j as { copied?: { added: string[]; skipped: string[] } };
   };
+  const copyFrom = async (id: string) => {
+    const src = panels.find((p) => p.id === id);
+    if (!src || !confirm(`Add ${src.name}'s collections to ${panelName}? Collections ${panelName} already has (same name) stay as they are; nothing is deleted.`)) return;
+    setCopying(true);
+    try {
+      const j = await save({ copyFrom: id });
+      const added = j.copied?.added ?? [], skipped = j.copied?.skipped ?? [];
+      onAlert('success', added.length ? `Added ${added.join(', ')} from ${src.name}${skipped.length ? ` (already here: ${skipped.join(', ')})` : ''}` : `Nothing new: ${panelName} already has ${skipped.join(', ')}`);
+    } catch (e) { onAlert('error', (e as Error).message); }
+    finally { setCopying(false); }
+  };
+  const others = panels.filter((p) => p.id !== panelId);
 
   const groups = data?.setup.groups ?? [];
   const watch = data?.setup.watch ?? [];
@@ -176,15 +199,23 @@ export default function ProductStatsCard({ token, panelId, panelName, onAlert }:
       {data && t && (
         <>
           <div className="ps-card ps-total">
-            <div className="meta">{data.range.label} · orders placed, not cancelled{data.cancelled ? ` · ${n(data.cancelled)} cancelled not counted` : ''}</div>
+            <div className="meta">{data.range.range === 'custom' ? data.range.days : `${data.range.range === 'yesterday' ? 'Yesterday' : data.range.label} (${data.range.days})`} · orders placed, not cancelled{data.cancelled ? ` · ${n(data.cancelled)} cancelled not counted` : ''} · updated {timeText(Date.parse(data.at))}</div>
             <Figures t={t} />
+            <Span t={t} />
             {data.capped && <div className="meta" style={{ color: 'var(--warning)' }}>Too many lines for these days: pick fewer days for exact numbers.</div>}
           </div>
 
           {/* Collections */}
           <div className="ps-section-head">
             <Layers size={16} /><h3>Collections</h3>
+            <span className="chip chip-info"><CalendarDays size={11} /> {data.range.days}</span>
             <span className="meta">Your own groups: pick products or type words like &ldquo;jhumka&rdquo;. An order counts once in a collection.</span>
+            {others.length > 0 && (
+              <select className="form-input ps-copy" value="" disabled={copying} aria-label="Copy collections from another panel" onChange={(e) => { if (e.target.value) void copyFrom(e.target.value); }}>
+                <option value="">{copying ? 'Copying…' : 'Copy from panel…'}</option>
+                {others.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            )}
             {groups.length < MAX_GROUPS && <button type="button" className="btn btn-primary btn-sm" onClick={() => { setEdit({ id: null, name: '', words: '', products: [], busy: false, error: '' }); setPick(''); }}><Plus size={13} /> New collection</button>}
           </div>
           {data.groups.length === 0 && !edit && <div className="meta">No collection yet. Make one, for example &ldquo;Jhumka&rdquo; with the word jhumka.</div>}
@@ -193,12 +224,13 @@ export default function ProductStatsCard({ token, panelId, panelName, onAlert }:
               <div key={g.id} className="ps-card">
                 <div className="ps-group-top">
                   <button type="button" className="ps-group-name" onClick={() => setOpenGroup(openGroup === g.id ? null : g.id)} aria-expanded={openGroup === g.id}>
-                    {openGroup === g.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {g.name} <span className="meta">· {g.products.length} products</span>
+                    {openGroup === g.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {g.name} <span className="meta">· {g.products.length} {g.products.length === 1 ? 'product' : 'products'}</span>
                   </button>
                   <button type="button" className="btn btn-ghost btn-sm" title="Edit" onClick={() => { const s = groups.find((x) => x.id === g.id); if (s) { setEdit({ id: s.id, name: s.name, words: s.words.join(', '), products: s.products, busy: false, error: '' }); setPick(''); } }}><Pencil size={13} /></button>
                   <button type="button" className="btn btn-ghost btn-sm" title="Delete" onClick={() => dropGroup(g)}><Trash2 size={13} /></button>
                 </div>
                 <Figures t={g} small />
+                {g.orders > 0 ? <Span t={g} /> : <div className="meta ps-span"><CalendarDays size={12} /> No orders in {data.range.days}</div>}
                 {openGroup === g.id && <><Head /><ProductRows items={g.products} /></>}
               </div>
             ))}

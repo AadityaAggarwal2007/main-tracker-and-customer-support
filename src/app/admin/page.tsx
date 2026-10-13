@@ -1685,7 +1685,7 @@ export default function AdminDashboard() {
           )}
           {/* ════════ SHOPIFY: orders by collection / product (Super Admin + Manager) ════════ */}
           {activeTab === 'shopify' && (isSuperAdmin(user) || isTeamLead(user)) && (
-            <div className="animate-fade-in-up"><ProductStatsCard key={activePanelId || 'all'} token={token} panelId={activePanelId} panelName={businesses.find(b => b.id === activePanelId)?.name || ''} onAlert={showAlert} /></div>
+            <div className="animate-fade-in-up"><ProductStatsCard key={activePanelId || 'all'} token={token} panelId={activePanelId} panelName={businesses.find(b => b.id === activePanelId)?.name || ''} panels={businesses.map(b => ({ id: b.id, name: b.name }))} onAlert={showAlert} /></div>
           )}
           {/* ════════ WHATSAPP (Super Admin only) ════════ */}
           {activeTab === 'whatsapp' && isSuperAdmin(user) && (
