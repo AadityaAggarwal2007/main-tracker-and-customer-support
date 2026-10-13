@@ -18,6 +18,10 @@ export interface MailCustomerOrder {
   facts: OrderFacts | null;
   items: { product_name: string; quantity: number; price: number | null }[];
   place: { city: string; state: string; pincode: string } | null;
+  // The sender's EMAIL chat (the poller files every mail as one; owner 2026-10-13: "gmail ma bhi refund and ship
+  // again"): Refund / Ship again is marked on it (the same PATCH as a chat) and it then sits in Chat Support's Refund /
+  // Ship again list. Only with chat.view.
+  emailChat: { id: string; status: string; verified: boolean; caseKind: 'refund' | 'reship' | null; caseBy: string | null } | null;
 }
 export interface MailCustomerHint { orderId: string; placedOn: string | null; status: string | null }
 export interface MailCustomer {
@@ -25,6 +29,9 @@ export interface MailCustomer {
   ordersAllowed: boolean;       // false = the login has no orders.view: only the verified order ids and the chat
   verified: MailCustomerOrder[];
   hints: MailCustomerHint[];    // only when not verified
+  // Who may put a verified sender in Refund / Ship again from here: 'mark' (the Super Admin and the Manager, with
+  // chat.cases), 'forward' (a team member with chat.cases: Send to Manager), null. The PATCH decides again.
+  cases?: 'mark' | 'forward' | null;
 }
 
 export const isCod = (method: string | null | undefined): boolean => /^cod$|cash on delivery/i.test(String(method || '').trim());
@@ -36,7 +43,19 @@ export async function loadMailCustomer(panelId: string | null, emailRaw: string,
   if (!panelId || !email) return out;
   const vers = (await verifiedSenders(panelId, [email]))[email] || [];
   for (const v of vers.slice(0, MAX_VERIFIED)) {
-    const o: MailCustomerOrder = { orderId: v.orderId, chatId: allow.chat ? v.chatId : null, byName: v.byName, customerName: null, payment: null, total: null, facts: null, items: [], place: null };
+    const o: MailCustomerOrder = { orderId: v.orderId, chatId: allow.chat ? v.chatId : null, byName: v.byName, customerName: null, payment: null, total: null, facts: null, items: [], place: null, emailChat: null };
+    if (allow.chat) {
+      try {
+        const c = await query<{ id: string; status: string; verified_order_id: string | null; case_kind: 'refund' | 'reship' | null; case_marked_by: string | null }>(
+          `SELECT c.id, c.status, c.verified_order_id, c.case_kind, c.case_marked_by
+             FROM conversations c JOIN sites s ON s.id = c.site_id
+            WHERE s.tracker_business_id::text = $1::text AND c.source = 'email' AND lower(c.visitor_id) = $2 AND c.merged_into IS NULL
+            ORDER BY (c.verified_order_id = $3) DESC NULLS LAST, c.last_message_at DESC NULLS LAST LIMIT 1`,
+          [panelId, `email:${email}`, v.orderId]);
+        const row = c.rows[0];
+        if (row) o.emailChat = { id: row.id, status: row.status, verified: row.verified_order_id === v.orderId, caseKind: row.case_kind, caseBy: row.case_marked_by };
+      } catch (e) { console.error('[mail] customer email chat:', (e as Error).message); }
+    }
     if (allow.orders) {
       const [facts, items, addr, head] = await Promise.all([
         loadOrderFacts(v.orderId, panelId, 'verified'),

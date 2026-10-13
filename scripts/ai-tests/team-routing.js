@@ -4068,7 +4068,9 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     ok(db.list.unansweredSql.includes(WA), 'the badge beside Chat Support');
     ok(db.list.activeSql.includes(WA), 'Open / Closed case');
     ok(db.list.topicSql.includes(WA), 'the problem tabs');
-    ok(db.list.caseCountsSql.includes(WA), 'Refund / Ship again counts');
+    // Owner 2026-10-13: the Refund / Ship again sections take email customers in (marked from the Mail tab), never WhatsApp.
+    const CASE = "c.source <> 'whatsapp'";
+    ok(db.list.caseCountsSql.includes(CASE) && !db.list.caseCountsSql.includes(WA), 'Refund / Ship again counts: email in, WhatsApp out');
     ok(db.list.leadSql.includes(WA), 'the Manager\'s Open cases number');
     r = await list('anurag', '?q=9876543210');
     ok(db.list.sql.includes(WA), 'a search never finds a WhatsApp chat');
@@ -4077,7 +4079,8 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     r = await list('anurag', '?mine=1');
     ok(db.list.sql.includes(WA), 'My chats');
     r = await list('owner', '?case=refund');
-    ok(db.list.sql.includes(WA), 'the Refund section');
+    ok(db.list.sql.includes(CASE) && !db.list.sql.includes(WA), 'the Refund section: email customers in, WhatsApp out');
+    eq(wsql.CASE_SECTION_SQL, CASE);
     const pr = await mod.pending.GET(req('owner', undefined, { method: 'GET', url: 'http://x/api/chat/pending' }));
     status(pr, 200);
     ok(db.pending.sql.includes(WA), 'the Needs you badge leaves WhatsApp chats out');
@@ -4232,6 +4235,24 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     g = await thread('anurag', 'r74e');
     eq(g.body.mail_offer, null, 'only a website chat');
     global.__mailOffer = null;
+  });
+
+  // ── R75: Refund / Ship again for a customer who writes by email (owner 2026-10-13, from the Mail tab) ───
+  await t('R75 an email customer (verified by mail) is marked Refund from the Mail tab by the same PATCH, and a member\'s Send to Manager works on it too; the Refund section lists email customers, never WhatsApp', async () => {
+    known({ id: 'r75a', source: 'email', status: 'human_needed', visitor_id: 'email:asha@example.com', verified_via: 'mail' });
+    let r = await patch('owner', 'r75a', { caseKind: 'refund' });
+    status(r, 200);
+    eq(C('r75a').case_kind, 'refund');
+    known({ id: 'r75b', source: 'email', status: 'agent_handling', visitor_id: 'email:ravi@example.com', verified_via: 'mail_auto' });
+    r = await patch('anurag', 'r75b', { forward: 'reship', note: 'New parcel needed, the first one was lost' });
+    status(r, 200);
+    deq([C('r75b').case_kind, r.body.case_kind], ['reship', 'reship']);
+    newConv({ id: 'r75v', source: 'email', status: 'human_needed', visitor_id: 'email:who@example.com' });
+    eq((await patch('owner', 'r75v', { caseKind: 'refund' })).status, 400, 'an email sender who is not verified is never marked');
+    await list('owner', '?case=refund');
+    ok(db.list.sql.includes("c.source <> 'whatsapp'") && !db.list.sql.includes("c.source NOT IN ('whatsapp', 'email')"));
+    await list('owner');
+    ok(db.list.sql.includes("c.source NOT IN ('whatsapp', 'email')"), 'every other list still leaves email out');
   });
 
   Object.assign(console, realConsole);

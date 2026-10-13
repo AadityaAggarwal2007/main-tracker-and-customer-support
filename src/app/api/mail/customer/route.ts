@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { mailAccess, mailFail } from '@/lib/chat/mail-access';
 import { loadMailCustomer } from '@/lib/chat/mail-customer';
 import { looksLikeAddress, lowerEmail } from '@/lib/chat/mail-verify';
-import { can } from '@/lib/permissions';
+import { can, isTeamLead } from '@/lib/permissions';
 
 // GET /api/mail/customer?box=&email=: the "Customer" card next to the open mail (owner 2026-10-11): the sender's verified
 // order(s) with their facts, items, place, payment and chat, or, not verified, the orders of this panel placed with that
@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
   if ('error' in a) return a.error;
   try {
     const customer = await loadMailCustomer(a.box.panelId, email, { orders: can(a.user, 'orders.view'), chat: can(a.user, 'chat.view') });
+    // Refund / Ship again from the Mail tab (owner 2026-10-13): the same rights as in a chat.
+    customer.cases = !can(a.user, 'chat.view') || !can(a.user, 'chat.cases') ? null : isTeamLead(a.user) ? 'mark' : 'forward';
     return NextResponse.json({ customer }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) { return mailFail(e); }
 }

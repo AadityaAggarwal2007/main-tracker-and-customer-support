@@ -5,7 +5,7 @@ import { parseInboxSearch } from '@/lib/chat/inbox-search';
 import { HEALTH_PIN_MIN } from '@/lib/chat/health-rules';
 import { INBOX_TOPICS, sqlLabelList, topicByKey } from '@/lib/chat/inbox-topics';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
-import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
+import { CASE_SECTION_SQL, CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { displayNameSql, nameFromOrderSql, orderNameJoinSql } from '@/lib/chat/display-name';
 import { can, isTeamLead, panelScope } from '@/lib/permissions';
 import { lateAlerts } from '@/lib/chat/escalate-late';
@@ -204,6 +204,8 @@ export async function GET(request: NextRequest) {
     if (caseKind) {
       conditions.push(`c.case_kind = $${pi++}`);
       params.push(caseKind);
+      // The Refund / Ship again section lists the customers who write by email too (owner 2026-10-13, CASE_SECTION_SQL).
+      conditions[conditions.indexOf(CHAT_SUPPORT_SQL)] = CASE_SECTION_SQL;
     } else {
       conditions.push(OUTSIDE_SECTION);
     }
@@ -484,13 +486,15 @@ export async function GET(request: NextRequest) {
   // who marked how many per day (India time) over the last 14 days, for the owner's experts.
   const caseCounts: Record<string, { total: number; unread: number }> = { refund: { total: 0, unread: 0 }, reship: { total: 0, unread: 0 } };
   let caseSummary: { marked_by: string; day: string; n: number }[] = [];
+  // Email customers count in the sections too (owner 2026-10-13, CASE_SECTION_SQL); every other count keeps them out.
+  const caseScope = scopeConditions.map((x) => (x === CHAT_SUPPORT_SQL ? CASE_SECTION_SQL : x));
   try {
     const cc = await query<{ case_kind: string; total: number; unread: number }>(
       `SELECT c.case_kind, count(*)::int AS total,
               count(*) FILTER (WHERE (${WAITING_SINCE_SQL}) IS NOT NULL)::int AS unread
          FROM conversations c JOIN sites s ON s.id = c.site_id
          ${WAITING_LATERAL}
-        WHERE ${[...scopeConditions, 'c.case_kind IS NOT NULL'].join(' AND ')}
+        WHERE ${[...caseScope, 'c.case_kind IS NOT NULL'].join(' AND ')}
         GROUP BY c.case_kind`,
       scopeParams
     );
@@ -501,7 +505,7 @@ export async function GET(request: NextRequest) {
                 to_char(c.case_marked_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day,
                 count(*)::int AS n
            FROM conversations c JOIN sites s ON s.id = c.site_id
-          WHERE ${[...scopeConditions, `c.case_kind = $${scopeParams.length + 1}`, `c.case_marked_at > now() - interval '14 days'`].join(' AND ')}
+          WHERE ${[...caseScope, `c.case_kind = $${scopeParams.length + 1}`, `c.case_marked_at > now() - interval '14 days'`].join(' AND ')}
           GROUP BY 1, 2
           ORDER BY 2 DESC, 3 DESC`,
         [...scopeParams, caseKind]

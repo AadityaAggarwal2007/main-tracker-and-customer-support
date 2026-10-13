@@ -13,6 +13,10 @@ import { AI_NOT_AN_ANSWER_REGEX, NO_REPLY_NEEDED_REGEX } from './waiting';
 // chargeback-risk move, the team score. Opening such a chat by its id still works (the WhatsApp tab's reply box posts to
 // the normal reply route).
 export const CHAT_SUPPORT_SQL = `c.source NOT IN ('whatsapp', 'email')`;
+// The Refund / Ship again sections are the one exception (owner 2026-10-13: "gmail ma bhi refund and ship again", answer:
+// "Chat Support ke Refund list mein"): a customer who writes by email, marked Refund / Ship again from the Mail tab, is
+// listed and counted there with the website chats (a mail icon on the row). WhatsApp never.
+export const CASE_SECTION_SQL = `c.source <> 'whatsapp'`;
 
 // ── The "waiting for a reply" SQL ───────────────────────────────
 // Moved word for word out of the inbox list route (src/app/api/chat/conversations/route.ts), so the

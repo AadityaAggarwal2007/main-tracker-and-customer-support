@@ -1360,7 +1360,8 @@ t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that name
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
   // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct),
   // ... then 7.16 (WhatsApp chats are not in Chat Support, owner 11 Oct).
-  assert.deepStrictEqual(sec.rules.slice(-9).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16', '7.17', '7.18', '7.19']);
+  assert.deepStrictEqual(sec.rules.slice(-10).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16', '7.17', '7.18', '7.19', '7.20']);
+  assert.ok(rule('7.20').how === 'code' && /Mail tab/.test(rule('7.20').text) && /Refund \/ Ship again/.test(rule('7.20').text) && /every other Chat Support list still leaves email out/.test(rule('7.20').text));
   // 7.19 (owner 13 Oct): a chat reply can also go by Gmail; 2.12: the chat and the Gmail are one customer.
   assert.ok(rule('7.19').how === 'code' && /Also send by Gmail/.test(rule('7.19').text) && /never goes to an address the customer typed/i.test(rule('7.19').text));
   assert.ok(rule('2.12').how === 'code' && /never the mails/.test(rule('2.12').text) && /order's own email first|order\\'s own email first|own email first/.test(rule('2.12').text));
