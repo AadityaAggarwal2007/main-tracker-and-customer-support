@@ -11,16 +11,18 @@ const rupees = (n: number | null) => (n == null ? '' : `₹${Math.round(n).toLoc
 // placed / estimated dates, the items, payment + total, the city, Copy tracking link and Open chat; not verified = the
 // orders placed with this email as hints and the Verify button. Read only. On a desktop it is the right column; on a
 // narrow screen it sits above the conversation folded into one line (the Customer / Verify line) that opens on a tap.
-export default function CustomerCard({ customer, loading, onVerify, onAlert, token, onChanged }: {
+export default function CustomerCard({ customer, loading, onVerify, onAlert, token, onChanged, box }: {
   customer: Customer | null; loading: boolean; onVerify?: () => void; onAlert: (type: string, message: string) => void;
   // Refund / Ship again from the Mail tab (owner 2026-10-13): the same PATCH as a chat, then the card is read again.
   token?: string; onChanged?: () => void;
+  // The open mailbox (for /api/mail/case-chat).
+  box?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // The Super Admin / the Manager mark it (the email chat goes to Chat Support's Refund / Ship again list); a team member
   // sends it to the Manager with one line, as in a chat. Nothing is sent to the customer.
-  const markCase = async (chatId: string, kind: 'refund' | 'reship') => {
+  const markCase = async (o: CustomerOrder, kind: 'refund' | 'reship') => {
     if (!token || busy) return;
     const name = kind === 'refund' ? 'Refund' : 'Ship again';
     let body: Record<string, unknown>;
@@ -34,6 +36,13 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
     }
     setBusy(true);
     try {
+      let chatId = o.emailChat && o.emailChat.verified ? o.emailChat.id : null;
+      if (!chatId) {
+        const c = await fetch('/api/mail/case-chat', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ box, email: customer?.email, orderId: o.orderId }) });
+        const cj = await c.json().catch(() => ({}));
+        if (!c.ok || !cj.chatId) { onAlert('error', cj.error || 'Could not mark it.'); return; }
+        chatId = String(cj.chatId);
+      }
       const r = await fetch(`/api/chat/conversations/${encodeURIComponent(chatId)}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', j.error || 'Could not mark it.'); return; }
@@ -85,11 +94,14 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
           <a className="btn btn-ghost btn-sm" href={`/admin/chat?open=${encodeURIComponent(o.emailChat.id)}`}>Open in Chat Support</a>
         </div>
       )}
-      {o.emailChat && !o.emailChat.caseKind && customer?.cases && o.emailChat.verified && token && (
+      {/* Shown for every verified order (owner 2026-10-13, Anurag: the buttons hid when the customer's email chat was missing
+          or not verified for this order, e.g. a mail auto-verified later or one to the chargeback Gmail): the click asks
+          /api/mail/case-chat for that chat first (found or made, verified for the order), then marks it. */}
+      {!(o.emailChat && o.emailChat.caseKind) && customer?.cases && token && (
         <div className="mail-cust-case">
           {customer.cases === 'forward' && <span className="meta"><Send size={12} /> Send to Manager:</span>}
-          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o.emailChat!.id, 'refund')}><Undo2 size={13} /> Refund</button>
-          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o.emailChat!.id, 'reship')}><Truck size={13} /> Ship again</button>
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o, 'refund')}><Undo2 size={13} /> Refund</button>
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void markCase(o, 'reship')}><Truck size={13} /> Ship again</button>
         </div>
       )}
     </div>
