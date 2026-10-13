@@ -54,7 +54,9 @@ const changeCols = (r) => {
 const db = {
   query: async (raw, p = []) => {
     const q = norm(raw);
+    if (/^SELECT verified_order_id FROM conversations WHERE id = \$1/.test(q)) { const c = S.convs.find((x) => x.id === p[0]); return { rows: c ? [{ verified_order_id: c.verified_order_id }] : [] }; }
     if (!/order_corrections/.test(q)) throw new Error('fake db: ' + q.slice(0, 100));
+    if (/^UPDATE order_corrections SET conversation_id = \$2/.test(q)) { const r = S.rows.find((x) => x.id === p[0] && !x.conversation_id); if (r) r.conversation_id = p[1]; return { rows: [], rowCount: r ? 1 : 0 }; }
     if (S.missing) throw gone();
     if (S.noChangeTables && /order_address_changes|order_item_changes/.test(q)) throw Object.assign(new Error('relation "order_item_changes" does not exist'), { code: '42P01' });
     if (/^INSERT INTO order_corrections/.test(q)) {
@@ -100,6 +102,7 @@ const fakes = {
   '@/lib/db': db,
   '@/lib/auth': { getAuthFromRequest: () => S.user },
   './thread-read': { loadForUser: async (id, user) => { const c = S.convs.find((x) => x.id === id); if (!c) return null; if (user.businessIds && user.businessIds.length && !user.businessIds.includes(c.tracker_business_id)) return null; return { ...c }; } },
+  './mail-case-chat': { ensureMailCaseChat: async (box, email, orderId, opts) => { (S.ensured ??= []).push({ box, email, orderId, opts }); return S.ensureAnswer || { ok: true, chatId: 'c-new', created: true }; } },
   './mail-verify': { verifiedSenders: async (panelId, list) => { const out = {}; for (const e of list) if (S.verified[e] && panelId === 'P1') out[e] = S.verified[e].map((v) => ({ ...v })); return out; } },
   '@/lib/chat/mail-access': {
     mailAccess: async (req, boxId, need) => {
@@ -125,6 +128,8 @@ const read = require(path.join(SRC, 'lib/chat/corrections-read.ts'));
 const rules = require(path.join(SRC, 'lib/chat/corrections-rules.ts'));
 const route = require(path.join(SRC, 'app/api/corrections/route.ts'));
 const routeId = require(path.join(SRC, 'app/api/corrections/[id]/route.ts'));
+const routeChat = require(path.join(SRC, 'app/api/corrections/[id]/chat/route.ts'));
+const chatFor = async (who, id) => { as(who); const r = await routeChat.POST(new NextRequest(`http://x/api/corrections/${id}/chat`, { method: 'POST' }), { params: { id } }); return { status: r.status, body: await r.json() }; };
 
 const as = (who) => { S.user = who ? USERS[who] : null; };
 const post = async (who, body) => { as(who); const r = await route.POST(new NextRequest('http://x/api/corrections', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } })); return { status: r.status, body: await r.json() }; };
@@ -306,6 +311,35 @@ async function t(name, fn) {
     eq(r.body.counts.changed, 0);
     eq(await read.pendingCorrectionCount(null), 1);
   });
+
+  await t('a chat to edit the order from (owner 13 Oct, Rahul\'s Mail correction said "No chat to edit the order from"): a Mail row gets the customer\'s email chat verified for its order (status left alone) and keeps it; a row whose chat is verified answers it at once; the edit rights only', async () => {
+    S.rows.push({ id: '50', business_id: 'P1', source: 'mail', conversation_id: null, mail_box_id: 'box1', mail_uid: 9, customer_email: 'Ansh@Gmail.com', order_id: '#1091', kinds: ['address'], note: 'adress change', status: 'pending', created_at: new Date(), updated_at: new Date() });
+    S.rows.push({ id: '51', business_id: 'P1', source: 'chat', conversation_id: 'c-ver', order_id: '#1553', kinds: ['size'], note: 'x', status: 'pending', created_at: new Date(), updated_at: new Date() });
+    S.rows.push({ id: '52', business_id: 'P1', source: 'chat', conversation_id: 'c-visitor', customer_email: null, order_id: '#1553', kinds: ['size'], note: 'x', status: 'pending', created_at: new Date(), updated_at: new Date() });
+    S.rows.push({ id: '53', business_id: 'P2', source: 'mail', conversation_id: null, customer_email: 'k@gmail.com', order_id: '#77', kinds: ['address'], note: 'x', status: 'pending', created_at: new Date(), updated_at: new Date() });
+    const a = await chatFor('sunny', '50');
+    deq([a.status, a.body.chatId], [200, 'c-new']);
+    deq(S.ensured[0], { box: { panelId: 'P1' }, email: 'ansh@gmail.com', orderId: '#1091', opts: { reopen: false } });
+    eq(S.rows.find((r) => r.id === '50').conversation_id, 'c-new', 'the row keeps the chat (Open chat, the next edit)');
+    const b = await chatFor('sunny', '51');
+    deq([b.status, b.body.chatId, S.ensured.length], [200, 'c-ver', 1], 'a row whose chat is verified for its order needs nothing made');
+    const c = await chatFor('sunny', '52');
+    eq(c.status, 409, 'no email and an unverified chat: say so');
+    S.ensureAnswer = { ok: false, status: 409, error: 'Verify this sender for that order first.' };
+    S.rows.find((r) => r.id === '50').conversation_id = null;
+    const d = await chatFor('sunny', '50');
+    deq([d.status, d.body.error], [409, 'Verify this sender for that order first.']);
+    S.ensureAnswer = null;
+    eq((await chatFor('rahul', '50')).status, 403, 'a member without orders.update cannot edit the order');
+    eq((await chatFor('priya', '50')).status, 403);
+    const owner = await chatFor('owner', '53'); eq(owner.status, 200);
+    S.rows.find((r) => r.id === '50').status = 'done';
+    eq((await chatFor('sunny', '50')).status, 409, 'only a pending row');
+    eq((await chatFor(null, '50')).status, 401);
+    const panel = fs.readFileSync(path.join(SRC, 'app/admin/chat/_components/CorrectionsPanel.tsx'), 'utf8');
+    ok(!/No chat to edit the order from/.test(panel) && /\/api\/corrections\/\$\{row\.id\}\/chat/.test(panel), 'every pending row shows Edit address / Edit items; the click asks for the chat');
+  });
+
   await t('the light reads: the inbox row chip, the sidebar badge (in scope), the board\'s per-panel pending / overdue', async () => {
     S.now = Date.now() - 30 * HOUR; await post('rahul', { conversationId: 'c-ver', kinds: ['address'], note: 'a' });
     S.now = Date.now() - HOUR; await post('rahul', { conversationId: 'c-mail', kinds: ['size'], note: 'b' }); await post('owner', { conversationId: 'c-p2', kinds: ['size'], note: 'c' });

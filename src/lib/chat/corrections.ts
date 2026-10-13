@@ -3,6 +3,7 @@ import type { AuthUser } from '@/lib/auth';
 import { can, canAccessPanel, isTeamLead, panelScope } from '@/lib/permissions';
 import { loadForUser } from './thread-read';
 import { verifiedSenders } from './mail-verify';
+import { ensureMailCaseChat } from './mail-case-chat';
 import { maskOrder } from './team-verify-rules';
 import type { MailBoxInfo } from './mail-inbox';
 import {
@@ -200,6 +201,37 @@ export async function setCorrection(user: AuthUser, id: string, body: unknown): 
     if (!out) return refuse(409, CORRECTION_TEXT.wrongState);
     console.log(`[correction] id=${out.id} panel=${out.business_id} order=${maskOrder(out.order_id)} kinds=${out.kinds.join(',')} ${action} by ${actorKey(user)}`);
     return { ok: true, value: out };
+  } catch (e) {
+    if (missingCorrections(e)) return refuse(503, CORRECTION_TEXT.notInstalled);
+    throw e;
+  }
+}
+
+// ── A chat to edit the order from (owner 2026-10-13, Rahul's Mail correction: "No chat to edit the order from") ──
+// Edit address / Edit items work on a verified chat (the chat header's routes). A correction made in the Mail tab often
+// has none (the sender wrote to Gmail only, or the chat is verified for another order): the customer's EMAIL chat is
+// found or made here and verified for the correction's order (mail-case-chat.ts; the sender must be verified for that
+// order in Mail; its status is left alone, a new one is made Closed), and the row keeps it as its chat. The same rights
+// as the edit itself (chat.view + orders.update) inside the login's panels; only a pending row. Nothing is sent.
+export async function chatForCorrection(user: AuthUser, id: string): Promise<CorrectionResult<{ chatId: string }>> {
+  if (!can(user, 'chat.view') || !can(user, 'orders.update')) return refuse(403, 'You cannot change orders');
+  if (!/^\d{1,18}$/.test(String(id))) return refuse(404, CORRECTION_TEXT.notFound);
+  try {
+    const cur = await query<CorrectionRow>(
+      `SELECT ${CORRECTION_COLS} FROM order_corrections x WHERE x.id = $1 AND ($2::text[] IS NULL OR x.business_id = ANY($2::text[]))`, [id, panelScope(user)]);
+    const row = cur.rows[0];
+    if (!row) return refuse(404, CORRECTION_TEXT.notFound);
+    if (row.status !== 'pending') return refuse(409, CORRECTION_TEXT.wrongState);
+    if (row.conversation_id) {
+      const c = await query<{ verified_order_id: string | null }>(`SELECT verified_order_id FROM conversations WHERE id = $1`, [row.conversation_id]);
+      if (c.rows[0] && String(c.rows[0].verified_order_id || '').replace(/^#/, '') === String(row.order_id).replace(/^#/, '')) return { ok: true, value: { chatId: row.conversation_id } };
+    }
+    const email = (row.customer_email || '').trim().toLowerCase();
+    if (!email) return refuse(409, 'This correction has no customer email, and its chat is not verified for this order: open the chat and verify the customer.');
+    const r = await ensureMailCaseChat({ panelId: row.business_id }, email, row.order_id, { reopen: false });
+    if (!('chatId' in r)) return refuse(r.status, r.error);
+    if (!row.conversation_id) await query(`UPDATE order_corrections SET conversation_id = $2, updated_at = now() WHERE id = $1 AND conversation_id IS NULL`, [id, r.chatId]);
+    return { ok: true, value: { chatId: r.chatId } };
   } catch (e) {
     if (missingCorrections(e)) return refuse(503, CORRECTION_TEXT.notInstalled);
     throw e;
