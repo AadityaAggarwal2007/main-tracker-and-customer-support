@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     const uid = Number(body.uid);
     const ctx = Number.isInteger(uid) && uid > 0 ? await mailSuggestContext(a.box, uid).catch(() => null) : null;
     const conv = ctx?.conv || { id: `mail:${a.box.id}:polish`, site_id: '', tracker_business_id: a.box.panelId, source: 'email', status: 'agent_handling', verified_order_id: null, phone_match_order_id: null, case_kind: null };
-    const out = await polishDraft(conv, staffActor(a.user)?.key || a.user.username, text, ctx?.src || { rows: [], orderId: null });
+    const out = await polishDraft(conv, staffActor(a.user)?.key || a.user.username, text, ctx?.src || { rows: [], orderId: null }, { wrap: body.wrap !== false, lang: body.lang === 'en' || body.lang === 'hi' ? body.lang : 'auto' });
     return NextResponse.json({ text: out, changed: out !== text });
   } catch (e) { return mailFail(e); }
 }

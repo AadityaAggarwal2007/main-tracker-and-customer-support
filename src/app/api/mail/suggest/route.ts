@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
   try {
     const ctx = await mailSuggestContext(a.box, uid);
     if (!ctx) return NextResponse.json({ error: 'This mail is still being copied from Gmail. Try again in a minute.' }, { status: 409 });
-    const out = await suggestReplies(ctx.conv, staffActor(a.user)?.key || a.user.username, lang, body.refresh === true, ctx.src);
+    const out = await suggestReplies(ctx.conv, staffActor(a.user)?.key || a.user.username, lang, body.refresh === true, ctx.src, { wrap: body.wrap !== false });
     if ('error' in out) return NextResponse.json({ error: out.error }, { status: 502 });
     return NextResponse.json({ options: out.options, lang: out.lang, cached: out.cached, verified: !!ctx.src.orderId });
   } catch (e) { return mailFail(e); }

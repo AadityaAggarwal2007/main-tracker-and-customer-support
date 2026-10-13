@@ -38,7 +38,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const lang = (SUGGEST_LANGS as string[]).includes(sp.get('lang') || '') ? (sp.get('lang') as SuggestLang) : 'auto';
   const refresh = /^(1|true|yes)$/i.test(sp.get('refresh') || '');
   try {
-    const out = await suggestReplies(got.conv, got.actorKey, lang, refresh);
+    const out = await suggestReplies(got.conv, got.actorKey, lang, refresh, undefined, { wrap: !/^(0|false|no)$/i.test(sp.get('wrap') || '') });
     if ('error' in out) return NextResponse.json({ error: out.error }, { status: 503 });
     return NextResponse.json({ suggestion: out });
   } catch (err) {

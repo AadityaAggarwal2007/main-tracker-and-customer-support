@@ -33,8 +33,8 @@ export interface MailSuggestContext { conv: SuggestConv; src: SuggestSource; add
 
 // The conversation of the open mail as rows for the model; null = the mail is not in the mail store (yet).
 export async function mailSuggestContext(box: { id: string; panelId: string | null; siteId?: string | null }, uid: number, now = Date.now()): Promise<MailSuggestContext | null> {
-  const open = await queryOne<{ thread_id: string | null; from_addr: string }>(
-    `SELECT thread_id, from_addr FROM mail_store WHERE box_id = $1 AND folder = 'inbox' AND uid = $2 ORDER BY gone ASC, uidvalidity DESC LIMIT 1`,
+  const open = await queryOne<{ thread_id: string | null; from_addr: string; from_name?: string | null }>(
+    `SELECT thread_id, from_addr, from_name FROM mail_store WHERE box_id = $1 AND folder = 'inbox' AND uid = $2 ORDER BY gone ASC, uidvalidity DESC LIMIT 1`,
     [box.id, uid]);
   if (!open) return null;
   const address = (open.from_addr || '').toLowerCase();
@@ -57,7 +57,7 @@ export async function mailSuggestContext(box: { id: string; panelId: string | nu
   const orderId = ver[0]?.orderId || null;
   return {
     address,
-    src: { rows, orderId },
+    src: { rows, orderId, name: (open.from_name || '').trim() || null },
     conv: {
       id: `mail:${box.id}:${open.thread_id || address}`, site_id: siteId, tracker_business_id: box.panelId, source: 'email', status: 'agent_handling',
       verified_order_id: orderId, phone_match_order_id: null, case_kind: null,

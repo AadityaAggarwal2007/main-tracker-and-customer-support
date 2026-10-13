@@ -2961,3 +2961,37 @@ p.chat-mail-tick { cursor: default; }
 
 /* Refund / Ship again on a mail customer's card (owner 2026-10-13) */
 .mail-cust-case { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }
+
+/* ── Notes: saved replies (owner 2026-10-13; ReplyNotesDialog.tsx) ── */
+.modal.rn-modal { max-width: 58rem; width: 100%; max-height: 88vh; display: flex; flex-direction: column; }
+.rn-modal .modal-title { display: flex; align-items: center; gap: 0.375rem; }
+.rn-body { display: grid; grid-template-columns: 12.5rem 1fr; gap: 0.875rem; min-height: 0; flex: 1; overflow: hidden; }
+.rn-segs { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; border-right: 1px solid var(--border); padding-right: 0.5rem; }
+.rn-seg { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; text-align: left; font-size: 0.8125rem; padding: 0.4rem 0.6rem; border-radius: 8px; border: none; background: none; color: var(--fg); cursor: pointer; }
+.rn-seg span { font-size: 0.6875rem; color: var(--fg-muted); }
+.rn-seg:hover { background: var(--bg-subtle); }
+.rn-seg.active { background: var(--primary); color: #fff; font-weight: 600; }
+.rn-seg.active span { color: #fff; }
+.rn-main { display: flex; flex-direction: column; gap: 0.625rem; min-height: 0; overflow: hidden; }
+.rn-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.rn-search { flex: 1; min-width: 10rem; display: flex; align-items: center; gap: 0.375rem; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0.3rem 0.75rem; color: var(--fg-muted); }
+.rn-search input { flex: 1; border: none; outline: none; background: transparent; font-size: 0.8125rem; color: var(--fg); }
+.rn-wrap { display: flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.rn-list { display: flex; flex-direction: column; gap: 0.625rem; overflow-y: auto; padding-right: 0.25rem; padding-bottom: 0.25rem; }
+.rn-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.625rem 0.75rem; background: var(--card-bg); }
+.rn-card.rn-starter { border-style: dashed; }
+.rn-card header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.375rem; font-size: 0.8125rem; }
+.rn-card pre, .rn-preview pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 0.8125rem; line-height: 1.45; margin: 0; background: var(--bg-subtle); border-radius: 8px; padding: 0.5rem 0.625rem; max-height: 14rem; overflow-y: auto; }
+.rn-card footer { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.5rem; }
+.rn-form { display: flex; flex-direction: column; gap: 0.625rem; overflow-y: auto; }
+.rn-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; font-weight: 600; }
+.rn-holes { display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center; }
+.rn-preview { display: flex; flex-direction: column; gap: 4px; }
+.rn-error { font-size: 0.75rem; color: var(--danger); margin: 0; }
+.chat-suggest-option span:last-child { white-space: pre-wrap; }
+@media (max-width: 720px) {
+  .rn-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .rn-segs { flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 0 0 0.375rem; }
+  .rn-seg { white-space: nowrap; flex-shrink: 0; }
+}
+.chat-suggest-wrap { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; font-weight: 600; cursor: pointer; white-space: nowrap; }

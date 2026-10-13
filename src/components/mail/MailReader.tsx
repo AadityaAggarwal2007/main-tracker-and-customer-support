@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X, Sparkles, SpellCheck } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X, Sparkles, SpellCheck, NotebookPen } from 'lucide-react';
 import Suggestions, { type SuggestState } from '@/app/admin/chat/_components/Suggestions';
 import type { SuggestLang } from '@/lib/chat/suggest';
+import ReplyNotesDialog from '@/components/ReplyNotesDialog';
+import { getReplyWrap, setReplyWrap } from '@/components/replyWrap';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
@@ -61,16 +63,24 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   // /api/mail/polish). Only when pressed; a pick fills the reply box, the team member still presses Send.
   const [sugg, setSugg] = useState<SuggestState | null>(null);
   const [polishing, setPolishing] = useState(false);
+  // "Hello <name>, ... Regards, <Brand> Team" (owner 2026-10-13, replyWrap.ts) and the saved replies window ("Notes").
+  const [wrap, setWrap] = useState(true);
+  useEffect(() => { setWrap(getReplyWrap()); }, []);
+  const [notesOpen, setNotesOpen] = useState(false);
+  // The greeting's name: the verified order's customer, else the sender's name as the mail shows it (never an address).
+  const fromName = (mail.from || '').replace(/<[^>]*>/g, '').replace(/"/g, '').trim();
+  const greetName = customer?.verified?.[0]?.customerName || (fromName && !fromName.includes('@') ? fromName : null);
+  const firstOrder = customer?.verified?.[0] || null;
 
   // Another mail: a clean reply box and verify form.
   useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); setCorrOpen(false); setCorrError(''); setCorrRows([]); setSugg(null); setPolishing(false); }, [mail.uid]);
-  const suggest = async (lang: SuggestLang = sugg?.lang || 'auto', refresh = false) => {
+  const suggest = async (lang: SuggestLang = sugg?.lang || 'auto', refresh = false, withWrap = wrap) => {
     if (!box) return;
     const key = `${box.id}:${mail.uid}`;
     setReplyOpen(true);
     setSugg(prev => ({ convId: key, lang, loading: true, error: '', id: null, options: prev && prev.convId === key && prev.lang === lang && !refresh ? prev.options : [] }));
     try {
-      const r = await fetch('/api/mail/suggest', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, lang, refresh }) });
+      const r = await fetch('/api/mail/suggest', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, lang, refresh, wrap: withWrap }) });
       const d = await r.json().catch(() => ({}));
       setSugg(cur => (cur && cur.convId === key ? { ...cur, lang, loading: false, error: r.ok ? '' : (d.error || 'Chikki could not draft right now.'), options: r.ok ? (d.options || []) : cur.options } : cur));
     } catch { setSugg(cur => (cur && cur.convId === key ? { ...cur, loading: false, error: 'Chikki could not draft right now.' } : cur)); }
@@ -79,7 +89,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
     if (!box || !replyText.trim() || polishing) return;
     setPolishing(true);
     try {
-      const r = await fetch('/api/mail/polish', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, text: replyText }) });
+      const r = await fetch('/api/mail/polish', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, text: replyText, wrap, lang: sugg?.lang || 'auto' }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { onAlert('error', d.error || 'Sudharo could not fix it right now.'); return; }
       if (d.changed && typeof d.text === 'string') setReplyText(d.text); else onAlert('success', 'Looks fine already: nothing to fix.');
@@ -182,7 +192,8 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <span className="mail-msg-who"><b className="truncate">Reply to {mail.replyTo || mail.fromAddress}</b><span className="meta truncate">from {box?.email}, in the same Gmail conversation</span></span>
       </div>
       <Suggestions state={sugg} replyOpen onPick={(i) => { if (sugg?.options[i]) setReplyText(sugg.options[i]); }}
-        onRefresh={() => void suggest(sugg?.lang || 'auto', true)} onLang={(l) => void suggest(l)} onClose={() => setSugg(null)} />
+        onRefresh={() => void suggest(sugg?.lang || 'auto', true)} onLang={(l) => void suggest(l)} onClose={() => setSugg(null)}
+        wrap={wrap} onWrap={(v) => { setWrap(v); setReplyWrap(v); void suggest(sugg?.lang || 'auto', false, v); }} />
       <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
       <label className="mail-quote-opt">
         <input type="checkbox" checked={includeQuote} onChange={e => setIncludeQuote(e.target.checked)} /> Quote the original message below my reply (like Gmail)
@@ -213,7 +224,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <button type="button" className="btn btn-outline btn-sm" disabled={!!sugg?.loading} onClick={() => void suggest()} title="Chikki drafts 3 replies from this conversation; pick one, edit it, send it">
           {sugg?.loading ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} Suggestions
         </button>
-        <button type="button" className="btn btn-outline btn-sm" disabled={polishing || !replyText.trim()} onClick={() => void polish()} title="Sudharo: fix the spelling and grammar of what you typed (the meaning stays)">
+        <button type="button" className="btn btn-outline btn-sm" disabled={polishing || !replyText.trim()} onClick={() => void polish()} title="Sudharo: makes what you typed a correct, polite reply (every fact stays), with Hello / Regards">
           {polishing ? <Loader2 size={14} className="spin" /> : <SpellCheck size={14} />} Sudharo
         </button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); setAttach([]); setSugg(null); }}>Discard</button>
@@ -230,6 +241,11 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
 
   return (
     <div className="mail-reader">
+      {notesOpen && (
+        <ReplyNotesDialog panelId={box?.panelId ?? null} token={token} onClose={() => setNotesOpen(false)}
+          ctx={{ name: greetName, order: firstOrder?.orderId ?? null, tracking: firstOrder?.facts?.tracking_link ?? null }}
+          onUse={(text) => { setReplyOpen(true); setReplyText(text); }} />
+      )}
       <div className="mail-readbar">
         <button type="button" className="btn btn-ghost btn-sm mail-back" onClick={onBack} title="Back to the list"><ChevronLeft size={16} /> {backLabel || 'List'}</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onMarkUnread} title="Mark unread"><EyeOff size={15} /> Mark unread</button>
@@ -238,6 +254,12 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         {canReply && caseInfo && onCase && (caseInfo.state === 'active'
           ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="For a mail that needs no reply: the case moves to Closed cases and leaves To reply (a reply closes it by itself). A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
           : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases, until you reply again or close it again"><FolderOpen size={15} /> Reopen case</button>)}
+        {canReply && (
+          <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => setNotesOpen(true)}
+            title="Notes: the team's saved replies (Cancel, Refund, Ship again ...), filled in for this customer">
+            <NotebookPen size={15} /> Notes
+          </button>
+        )}
         {canReply && (
           <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => setCorrOpen(true)}
             title={versions.length > 0 ? 'The customer wants something changed on the order (address, size, colour ...): note it for the Manager' : 'Verify this sender first; the dialog shows the two ways'}>

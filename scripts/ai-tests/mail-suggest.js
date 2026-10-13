@@ -93,7 +93,7 @@ async function t(name, fn) {
   await t('wiring: Mail reply access on both routes, the same drafting and guards as Chat Support, nothing sent; the reply box has Suggestions + Sudharo', () => {
     const sug = fs.readFileSync(path.join(SRC, 'app/api/mail/suggest/route.ts'), 'utf8');
     const pol = fs.readFileSync(path.join(SRC, 'app/api/mail/polish/route.ts'), 'utf8');
-    ok(/mailAccess\(request, [^)]*'reply'\)/.test(sug) && /suggestReplies\(ctx\.conv,[^;]*ctx\.src\)/.test(sug));
+    ok(/mailAccess\(request, [^)]*'reply'\)/.test(sug) && /suggestReplies\(ctx\.conv,[^;]*ctx\.src, \{ wrap: body\.wrap !== false \}\)/.test(sug));
     ok(/mailAccess\(request, [^)]*'reply'\)/.test(pol) && /polishDraft\(/.test(pol) && /hasFormLink\(text\)/.test(pol));
     const run = fs.readFileSync(path.join(SRC, 'lib/chat/suggest-run.ts'), 'utf8');
     ok(/guardOptions\(parseOptions\(res\.content\)/.test(run), 'the same guards');

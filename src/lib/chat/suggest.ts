@@ -18,6 +18,7 @@ import { dropDisputeAdvice } from './dispute-advice';
 import { looksHinglish, teamBackWhen, weekdayLabel } from './escalation';
 import { dropAddressEcho, stripLinkJunk, withoutUnaskedCourier } from './reply-guards';
 import { dropTodayPromise } from './today-promise';
+import { unwrapReply } from './reply-notes-rules';
 
 export type SuggestLang = 'auto' | 'en' | 'hi';
 export const SUGGEST_LANGS: SuggestLang[] = ['auto', 'en', 'hi'];
@@ -78,7 +79,14 @@ export interface SuggestContext {
   // short, complete mail; missing or 'chat' = the chat box. storeName = the panel's name (never a fixed brand here).
   channel?: 'chat' | 'email';
   storeName?: string | null;
+  // The panel's saved replies, "Notes" (owner 2026-10-13, reply-notes-rules.ts notesForPrompt): the team's own words.
+  teamNotes?: string | null;
 }
+
+// How the team writes (owner 2026-10-13: "suggestion replies bilkul acha nai ata as per team ... hello aur vastora team
+// gpt sa banwaka dalna padta ha"): the greeting and the sign-off are added by the code (reply-notes-rules.ts wrapReply),
+// so the model writes the message only, in the manner of a good support person, without the stiff call-centre phrases.
+const TONE_LINE = 'Write the way a good, caring support person at an Indian online store writes: warm, respectful and confident, simple words, complete sentences ("ji" is fine in Hinglish). Never the stiff call-centre phrases ("We apologize for any inconvenience caused", "I understand your concern", "Rest assured", "Kindly be informed", "Please do the needful"); never over-apologise.';
 
 // Appended to Chikki's full system prompt (rules, saved answers, Brain, team examples): what to
 // draft and how. It overrides the chat-box persona lines above it, because here Chikki is not the
@@ -92,16 +100,17 @@ export function suggestInstruction(ctx: SuggestContext): string {
       : '';
   const store = (ctx.storeName || '').trim();
   const team = store ? `the ${store} support team` : 'our support team';
-  const signOff = store ? `${store} Support` : 'Support Team';
+  const signOff = store ? `${store} Team` : 'Support Team';
   const email = ctx.channel === 'email';
   const here = email ? 'by email' : 'here in this chat';
   return `
 
 DRAFTING FOR A TEAM MEMBER (this overrides the lines above about who you are and how you reply)
 You are not replying yourself. A member of ${team} has this ${email ? 'email conversation' : 'chat'} open and will send ONE of the replies you draft, as themselves, under the team's name. Draft exactly ${SUGGEST_COUNT} options for their next reply to the customer's latest ${email ? 'email' : 'message'}.
-- ${email
-    ? 'Each option is a complete, short email: an opening line ("Hi <first name>," when the name is in ORDER FACTS, else "Hi,"), 2 to 5 short sentences, and a closing line "Regards, ' + signOff + '". No subject line, no markdown, no bullet points, no emoji. Perfect spelling, grammar and punctuation: nobody will correct it.'
-    : 'Each option is a complete reply, 1 to 3 short sentences, the way a person texts: no greeting block, no sign-off, no markdown, no bullet points, at most one emoji. Perfect spelling, grammar and punctuation: nobody will correct it.'}
+- Write ONLY the message itself: no greeting line ("Hi ...", "Hello ...", "Dear ...") and no sign-off ("Regards ...", "Thanks, ... Team"): the screen adds "Hello <first name>," above it and "Regards, ${signOff}" below it. ${email
+    ? 'Each option is the body of a short email: 2 to 5 short sentences.'
+    : 'Each option is 1 to 3 short sentences.'} No subject line, no markdown, no bullet points, ${email ? 'no emoji' : 'at most one emoji'}. Perfect spelling, grammar and punctuation: nobody will correct it.
+- ${TONE_LINE}
 - ${LANG_LINE[ctx.lang]}
 - The three take different approaches, never three wordings of one sentence: option 1 short and direct (the fact and the next step); option 2 warmer, with an apology where the customer had trouble, and the next step; option 3 a different angle (a clarifying question, a reassurance, or the alternative the team can offer).
 - The sender IS the team, so the team is "we", never a third party: "we will get back to you", "I'll check and update you here", "hum dekh ke batate hain". Never "our team will reply", "the team will review", "a person will reply", "I am passing this to the team"; never mention Karry, Chikki, an AI, a bot or anything automated. (A reply already sent in this chat may say "our team will reply": your options do not repeat that; they are the team's own answer.)
@@ -110,7 +119,10 @@ You are not replying yourself. A member of ${team} has this ${email ? 'email con
 - ${email ? when.replace(/here in this chat/g, here).replace(/isi chat mein/g, 'email par') : when}${upsetClosedLine(ctx.upsetClosed ?? null, ctx.after)}
 ${caseLine ? `- ${caseLine}\n` : ''}- Answer what the customer actually asked. Never repeat a reply already sent in this ${email ? 'conversation' : 'chat'}.
 
-ORDER FACTS
+${ctx.teamNotes ? `OUR TEAM'S SAVED REPLIES (the team wrote these for this store. When one fits what the customer asked, base an option on it: keep its wording and manner, fill {order} / {tracking} / {name} from ORDER FACTS and drop a part whose fact you do not have. The rules above still win.)
+${ctx.teamNotes}
+
+` : ''}ORDER FACTS
 ${ctx.orderJson || 'No verified order facts are available: give no status or date. If the customer asks about an order, ask for the order ID and the full phone number on the order (that is how we check it is them).'}
 
 Output ONLY this JSON, nothing before or after it:
@@ -177,7 +189,8 @@ export function guardOptions(options: string[], ctx: GuardContext): string[] {
   const hinglish = looksHinglish(ctx.customerTexts.slice(-2).join('\n'));
   const out: string[] = [];
   for (const raw of options) {
-    let text = String(raw || '').trim();
+    // The greeting and the sign-off are the screen's (wrapReply): one the model wrote anyway is cut.
+    let text = unwrapReply(String(raw || '').trim());
     if (!text) continue;
     const form = dropFormMentions(text, hinglish);
     if (form.emptied) continue;
@@ -199,30 +212,45 @@ export function guardOptions(options: string[], ctx: GuardContext): string[] {
   return out.slice(0, SUGGEST_COUNT);
 }
 
-// "Sudharo": the team member's own draft, spelling and grammar fixed, nothing else.
-export const POLISH_INSTRUCTION = `You fix the spelling, grammar and punctuation of a short reply that an online store's support team member is about to send to a customer in live chat.
-Keep everything else exactly as it is: the meaning, the language (Hinglish stays Hinglish in Roman letters, Hindi stays Hindi, English stays English), the tone, every fact, number, date, amount, name, order ID and link, the line breaks and any emoji. Do not add a greeting, a sign-off, an apology, a promise or any sentence that is not there; do not remove or soften anything; do not answer the customer yourself. If the draft is already correct, return it unchanged.
-Output the corrected reply text only: no quotes, no explanation, no labels.`;
+// "Sudharo" (owner 2026-10-04; rewritten 2026-10-13: "sudharo bhi theek sa kaam nai karta, hello aur vastora team gpt sa
+// banwaka dalna padta ha"): the team member's rough draft becomes the reply they meant to send, polite and correct, with
+// every fact kept; the code adds "Hello <name>," and "Regards, <brand> Team" (wrapReply). Before, only the spelling was
+// fixed and any longer answer was thrown away, so a rough Hinglish line came back almost as typed.
+const POLISH_LANG: Record<SuggestLang, string> = {
+  auto: 'Keep the language of the draft: Hinglish stays Hinglish (Roman letters), Hindi stays Hindi, English stays English.',
+  en: 'Write it in plain, simple English (translate a Hinglish or Hindi draft).',
+  hi: 'Write it in Hinglish (Hindi in Roman letters, the way people text), whatever language the draft is in.',
+};
+export function polishInstruction(lang: SuggestLang = 'auto'): string {
+  return `You turn a support team member's rough draft into the reply they meant to send to a customer of an online store in India.
+Make it correct and clear: fix spelling, grammar and punctuation, complete half sentences, spell out short forms ("pls" -> "please", "ur" -> "your", "h" -> "hai", "kr" -> "kar"), and make it read like a good, caring support person: warm, respectful, confident, simple words. Never the stiff call-centre phrases ("We apologize for any inconvenience caused", "Rest assured", "Kindly be informed").
+${POLISH_LANG[lang]}
+Keep every fact exactly: the meaning, every number, date, day, amount, name, order ID and link; keep separate points on separate lines.
+Never add a fact, a date, a time, a promise, a reason or a step the draft does not have; never remove or soften what it says; never answer the customer yourself. Do not write a greeting line or a sign-off: the screen adds "Hello <name>," and "Regards, <store> Team".
+Output the reply text only: no quotes, no explanation, no labels.`;
+}
+export const POLISH_INSTRUCTION = polishInstruction('auto');
 
 export function polishUserMessage(draft: string, customerLatest: string | null): string {
   const ctx = customerLatest ? `The customer's latest message, for context only (do not answer it):\n${customerLatest.slice(0, 600)}\n\n` : '';
   return `${ctx}The team member's draft:\n${draft}`;
 }
 
-// The model's corrected text, or the draft itself when the answer is not a plain correction
-// (empty, wrapped in quotes and labels, far longer or shorter, or carrying a link that was not
-// there: the team member's words go out, not the model's).
+// The model's text (the message only, greeting and sign-off cut), or the draft itself (also cut) when the answer is not
+// a rewrite of it: empty, wrapped in quotes and labels, far longer (more than about 2.5 times) or much shorter, or with a
+// link that was not there.
 export function acceptPolish(draft: string, raw: string | null | undefined): string {
   // The team member's own link loses a ChatGPT / ad tag too (owner 2026-10-05); the model's answer is
   // cleaned the same way, so the "same links" check below compares clean with clean.
-  const d = stripLinkJunk(draft.trim()).text;
+  const d = unwrapReply(stripLinkJunk(draft.trim()).text);
   raw = stripLinkJunk(String(raw || '')).text;
   let out = String(raw || '').trim();
   out = out.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
   out = out.replace(/^(?:corrected(?: reply| text)?|reply|output)\s*:\s*/i, '').trim();
   if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) out = out.slice(1, -1).trim();
+  out = unwrapReply(out);
   if (!out) return d;
-  if (out.length > d.length * 1.6 + 40 || out.length < d.length * 0.5 - 10) return d;
+  if (out.length > d.length * 2.5 + 160 || out.length < d.length * 0.4 - 10) return d;
   const links = (s: string) => (s.match(/https?:\/\/\S+/g) || []).map((l) => l.replace(/[.,;:!?)]+$/, ''));
   const before = links(d), after = links(out);
   if (after.length !== before.length || after.some((l) => !before.includes(l))) return d;
