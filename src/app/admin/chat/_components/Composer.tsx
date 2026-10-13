@@ -1,12 +1,12 @@
 'use client';
 
-import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck, LayoutTemplate, Sparkles, Mail } from 'lucide-react';
+import { Loader2, AlertCircle, Send, Paperclip, X, FileText, RotateCw, SpellCheck, LayoutTemplate, Sparkles, Mail, NotebookPen } from 'lucide-react';
 import { CHAT_MAIL_WHY_NOT } from '@/lib/chat/chat-mail-rules';
 import { ATTACHMENT_ACCEPT, MAX_ATTACHMENTS_PER_MESSAGE, formatFileSize } from '@/lib/chat/attachment-rules';
 import type { Conversation, MailOffer, PendingFile } from '../_lib/types';
 import { draggingFiles } from '../_lib/inbox';
 
-export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver, openTemplate, onSuggest, suggestOpen, mailOffer, alsoMail, setAlsoMail }: {
+export default function Composer({ activeConv, addFiles, composerHint, composerNotice, composerRef, draft, dragDepthRef, dragOver, fileInputRef, othersChat, pendingFiles, polishDraft, polishing, readOnlyReply, removeFile, replyOpen, retryFile, sendReply, sending, setDraft, setDragOver, openTemplate, onSuggest, suggestOpen, onNotes, mailOffer, alsoMail, setAlsoMail }: {
   activeConv: Conversation | null;
   addFiles: (files: File[]) => void;
   composerHint: string;
@@ -26,6 +26,8 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
   // Suggested replies only when asked (owner 2026-10-13): the button opens / closes them; absent = not offered here.
   onSuggest?: () => void;
   suggestOpen?: boolean;
+  // Saved replies, "Notes" (owner 2026-10-13, ReplyNotesDialog): opens the panel's notes; absent = not offered here.
+  onNotes?: () => void;
   // "Gmail too" (owner 2026-10-13, chat-mail.ts): the tick for this one message, or why it is off; null = no line.
   mailOffer?: MailOffer;
   alsoMail?: boolean;
@@ -195,6 +197,20 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                           <span className="chat-polish-label">Template</span>
                         </button>
                       )}
+                      {onNotes && (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Notes: the team's saved replies (Cancel, Refund, Ship again ...), filled in for this customer"
+                          aria-label="Saved replies"
+                          disabled={sending}
+                          onClick={onNotes}
+                          style={{ padding: '0 0.625rem', flexShrink: 0, gap: '0.25rem' }}
+                        >
+                          <NotebookPen size={15} />
+                          <span className="chat-polish-label">Notes</span>
+                        </button>
+                      )}
                       {onSuggest && (
                         <button
                           type="button"
@@ -214,7 +230,7 @@ export default function Composer({ activeConv, addFiles, composerHint, composerN
                         <button
                           type="button"
                           className="btn btn-outline"
-                          title="Sudharo: fix the spelling and grammar of what you typed (the meaning stays)"
+                          title="Sudharo: makes what you typed a correct, polite reply (every fact stays), with Hello / Regards"
                           aria-label="Fix spelling and grammar"
                           disabled={!replyOpen || sending || !!polishing || !draft.trim()}
                           onClick={() => { void polishDraft(); }}

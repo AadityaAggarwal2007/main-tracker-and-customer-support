@@ -43,6 +43,8 @@ import NextStep from './_components/NextStep';
 import ThreadHeader from './_components/ThreadHeader';
 import Composer from './_components/Composer';
 import Suggestions, { type SuggestState } from './_components/Suggestions';
+import ReplyNotesDialog from '@/components/ReplyNotesDialog';
+import { getReplyWrap, setReplyWrap } from '@/components/replyWrap';
 import type { MailOffer } from './_lib/types';
 import type { SuggestLang } from '@/lib/chat/suggest';
 import MessageRow from './_components/MessageRow';
@@ -177,6 +179,11 @@ export default function ChatSupportPage() {
   // Suggested replies only when asked (owner 2026-10-13: "suggestion jab hum bulayein"): the chat they were asked in.
   const [suggOpenFor, setSuggOpenFor] = useState<string | null>(null);
   const [polishing, setPolishing] = useState(false);
+  // "Hello <name>, ... Regards, <Brand> Team" around drafts, Sudharo and notes (owner 2026-10-13; replyWrap.ts).
+  const [replyWrap, setReplyWrapState] = useState(true);
+  useEffect(() => { setReplyWrapState(getReplyWrap()); }, []);
+  // Saved replies, "Notes" (owner 2026-10-13): the window is open for this chat.
+  const [notesFor, setNotesFor] = useState<string | null>(null);
   const pickedRef = useRef<{ id: string; index: number } | null>(null);
   const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -822,11 +829,11 @@ export default function ChatSupportPage() {
   const suggestShown = !!activeConv && (activeConv.source === 'chat' || activeConv.source === 'email') && knownCustomer && activeConv.status !== 'resolved' && can(user, 'chat.reply');
   const lastCustomerId = [...messages].reverse().find(m => m.sender === 'visitor' && !m.deleted_at)?.id ?? null;
 
-  const fetchSuggestions = useCallback(async (id: string, lang: SuggestLang, refresh: boolean) => {
+  const fetchSuggestions = useCallback(async (id: string, lang: SuggestLang, refresh: boolean, wrap = true) => {
     if (!token) return;
     setSugg(s => ({ convId: id, lang, loading: true, error: '', id: s?.convId === id && !refresh ? s.id : null, options: s?.convId === id && !refresh ? s.options : [] }));
     try {
-      const res = await fetch(`/api/chat/conversations/${id}/suggest?lang=${lang}${refresh ? '&refresh=1' : ''}`, {
+      const res = await fetch(`/api/chat/conversations/${id}/suggest?lang=${lang}${refresh ? '&refresh=1' : ''}${wrap ? '' : '&wrap=0'}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -847,8 +854,8 @@ export default function ChatSupportPage() {
   useEffect(() => {
     pickedRef.current = null;
     if (!suggestShown || !activeId || !suggOpen) { setSugg(null); return; }
-    fetchSuggestions(activeId, suggLang, false);
-  }, [activeId, lastCustomerId, suggLang, suggestShown, suggOpen, fetchSuggestions]);
+    fetchSuggestions(activeId, suggLang, false, replyWrap);
+  }, [activeId, lastCustomerId, suggLang, suggestShown, suggOpen, fetchSuggestions, replyWrap]);
   useEffect(() => { setAlsoMail(false); }, [activeId]);
 
   const pickSuggestion = (index: number) => {
@@ -873,7 +880,7 @@ export default function ChatSupportPage() {
       const res = await fetch('/api/chat/polish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ conversationId: activeId, text }),
+        body: JSON.stringify({ conversationId: activeId, text, wrap: replyWrap, lang: suggLang }),
       });
       const data = await res.json();
       if (!res.ok) { showAlert('error', data.error || 'Could not fix that right now'); return; }
@@ -1541,11 +1548,13 @@ export default function ChatSupportPage() {
                 {/* Suggested replies (owner 2026-10-04), then the composer */}
                 {suggestShown && suggOpen && sugg?.convId === activeConv.id && (
                   <Suggestions state={sugg} replyOpen={replyOpen} onPick={pickSuggestion}
-                    onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true)} onLang={setSuggLang} onClose={() => setSuggOpenFor(null)} />
+                    onRefresh={() => fetchSuggestions(activeConv.id, suggLang, true, replyWrap)} onLang={setSuggLang} onClose={() => setSuggOpenFor(null)}
+                    wrap={replyWrap} onWrap={(v) => { setReplyWrap(v); setReplyWrapState(v); }} />
                 )}
                 {activeConv.status !== 'resolved' && canReply && (
                   <Composer activeConv={activeConv} addFiles={addFiles} composerHint={composerHint} composerNotice={composerNotice} composerRef={composerRef} draft={draft} dragDepthRef={dragDepthRef} dragOver={dragOver} fileInputRef={fileInputRef} othersChat={othersChat} pendingFiles={pendingFiles} polishDraft={activeConv.source === 'chat' || activeConv.source === 'email' ? polishDraft : undefined} polishing={polishing} readOnlyReply={readOnlyReply} removeFile={removeFile} replyOpen={replyOpen} retryFile={retryFile} sendReply={sendReply} sending={sending} setDraft={setDraft} setDragOver={setDragOver} openTemplate={activeConv.source === 'whatsapp' ? () => setTemplateEdit({ convId: activeConv.id, busy: false }) : undefined}
                     onSuggest={suggestShown ? () => setSuggOpenFor(suggOpen ? null : activeConv.id) : undefined} suggestOpen={suggOpen}
+                    onNotes={can(user, 'chat.reply') && activeConv.source !== 'whatsapp' ? () => setNotesFor(activeConv.id) : undefined}
                     mailOffer={activeConv.source === 'chat' && mailOffer?.id === activeConv.id ? mailOffer.offer : null} alsoMail={alsoMail} setAlsoMail={setAlsoMail} />
                 )}
               </>
@@ -1593,6 +1602,12 @@ export default function ChatSupportPage() {
         {verifyEdit && activeConv?.id === verifyEdit.convId && (
           <VerifyDialog email={activeConv.source === 'email'} busy={verifyEdit.busy} error={verifyEdit.error}
             onCancel={() => setVerifyEdit(null)} onSave={saveVerify} />
+        )}
+        {notesFor && activeConv?.id === notesFor && (
+          <ReplyNotesDialog panelId={activeConv.tracker_business_id} token={token} onClose={() => setNotesFor(null)}
+            ctx={{ name: activeConv.name_from_order ? activeConv.display_name : null, order: activeOrder?.order_id ?? null, tracking: activeOrder?.tracking_link ?? null }}
+            onUse={(text) => setDraft(text)}
+            useBlocked={insertDraft ? undefined : 'To use a note here, take over the chat first. Copy works anyway.'} />
         )}
         {correctionEdit && activeConv?.id === correctionEdit.convId && (
           <CorrectionDialog who="customer" verified={!!activeVerifiedOrder} orders={activeVerifiedOrder ? [activeVerifiedOrder] : []}

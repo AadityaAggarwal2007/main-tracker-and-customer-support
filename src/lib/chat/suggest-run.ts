@@ -5,20 +5,21 @@
 // called by GET /api/chat/conversations/[id]/suggest and POST /api/chat/polish, never by the
 // widget or the AI reply path. Nothing here is ever sent to the customer by itself.
 import { setupFor } from './common-setup';
-import { fillBrand } from './common-setup-rules';
+import { brandOf, fillBrand } from './common-setup-rules';
+import { notesForPrompt, parseStoredNote, wrapReply } from './reply-notes-rules';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { afterHours, closedWhy } from '@/lib/office-hours';
 import { CLOSED_NOTE_UPSET_MIN } from './closed-hours';
 import { loadHolidays } from './holidays';
-import { getClient, isRetryable, sideAttemptOrder, withoutThinking } from './ai-models';
+import { attemptOrder, getClient, isRetryable, withoutThinking } from './ai-models';
 import { buildSystemPrompt, type SavedAnswer } from './ai-prompt';
 import { brainSection, selectNotes, type BrainNote } from './brain';
 import { detectSituations, examplesSection, pickExamples, type Example } from './brain-examples';
 import { lookupVerifiedOrder } from './orders';
 import {
-  POLISH_INSTRUCTION, POLISH_MAX_CHARS, POLISH_TIMEOUT_MS, SUGGEST_HISTORY, SUGGEST_MAX_TOKENS, SUGGEST_TIMEOUT_MS,
-  acceptPolish, guardOptions, parseOptions, polishUserMessage, suggestInstruction, type SuggestLang,
+  POLISH_MAX_CHARS, POLISH_TIMEOUT_MS, SUGGEST_HISTORY, SUGGEST_MAX_TOKENS, SUGGEST_TIMEOUT_MS,
+  acceptPolish, guardOptions, parseOptions, polishInstruction, polishUserMessage, suggestInstruction, type SuggestLang,
 } from './suggest';
 
 export interface SuggestConv {
@@ -40,7 +41,13 @@ export interface Row { id: string; sender: string; content: string | null }
 // The Mail tab (owner 2026-10-13, "gmail pa grammer sudharna wala aur suggestion wala bhi dede"): a mail conversation is
 // not a chat, so mail-suggest.ts hands the conversation in (`rows`, the customer's mails as 'visitor') with the sender's
 // verified order (none = drafts without order facts) and a key for the cache (`conv.id` = mail:<box>:<thread>).
-export interface SuggestSource { rows: Row[]; orderId: string | null }
+// `name` = the sender's name as the mail shows it (the greeting, when no verified order gives one).
+export interface SuggestSource { rows: Row[]; orderId: string | null; name?: string | null }
+
+// How the drafts look (owner 2026-10-13): `wrap` (default on, the screen's "Hello / Regards" tick) puts "Hello <first
+// name>," above each draft and "Regards, <brand> Team" below it (reply-notes-rules.ts wrapReply). The cache keeps the
+// bare texts, so the tick never needs a new draft.
+export interface DraftLook { wrap?: boolean }
 
 // The chat as the drafts see it: the last SUGGEST_HISTORY visible messages, oldest first.
 async function loadHistory(conversationId: string): Promise<Row[]> {
@@ -61,10 +68,12 @@ async function loadHistory(conversationId: string): Promise<Row[]> {
 const lastCustomer = (rows: Row[]) => [...rows].reverse().find((r) => r.sender === 'visitor') || null;
 
 // One model answer, the chain in order, no thinking (a draft needs none), no retries on a model
-// that answered. Returns null when every model failed.
+// that answered. Returns null when every model failed. The main chain since 2026-10-13 (owner: "suggestion replies
+// bilkul acha nai ata"): the drafts and Sudharo are made only when a team member presses the button, so the better
+// model costs little; they were on the cheap side model (owner 4 Oct).
 async function ask(messages: ChatCompletionCreateParamsNonStreaming['messages'], maxTokens: number, temperature: number, timeout: number) {
   let lastErr: unknown = null;
-  for (const model of sideAttemptOrder()) {
+  for (const model of attemptOrder()) {
     try {
       const t0 = Date.now();
       const res = await getClient().chat.completions.create(
@@ -84,7 +93,35 @@ async function ask(messages: ChatCompletionCreateParamsNonStreaming['messages'],
   return null;
 }
 
-export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: SuggestLang, refresh: boolean, src?: SuggestSource): Promise<Suggestion | { error: string }> {
+// The customer's first name and the brand for "Hello <name>," / "Regards, <brand> Team": the verified order's name, else
+// the mail's sender name; the panel's name as customers know it (brandOf the chat site's name).
+async function nameAndBrand(conv: SuggestConv, src?: SuggestSource): Promise<{ name: string | null; brand: string }> {
+  const site = await queryOne<{ name: string | null }>(`SELECT name FROM sites WHERE id = $1`, [conv.site_id]).catch(() => null);
+  let name: string | null = null;
+  const orderId = src ? src.orderId : (conv.verified_order_id || conv.phone_match_order_id);
+  if (orderId && conv.tracker_business_id) {
+    const o = await queryOne<{ customer_name: string | null }>(
+      `SELECT customer_name FROM orders WHERE order_id = $1 AND business_id::text = $2::text ORDER BY created_at DESC LIMIT 1`,
+      [orderId, conv.tracker_business_id]).catch(() => null);
+    name = o?.customer_name || null;
+  }
+  return { name: name || src?.name || null, brand: brandOf(site?.name) };
+}
+
+// The panel's saved replies (reply-notes.ts, chat_settings `reply_note:<panel>:<id>`) as one block for the drafts.
+async function teamNotes(panelId: string | null): Promise<string> {
+  if (!panelId) return '';
+  try {
+    const r = await query<{ value: string }>(`SELECT value FROM chat_settings WHERE key LIKE $1 ORDER BY updated_at DESC LIMIT 60`,
+      [`reply\\_note:${panelId.replace(/[\\%_]/g, '\\$&')}:%`]);
+    return notesForPrompt(r.rows.map((x) => parseStoredNote(x.value)).filter((n): n is NonNullable<typeof n> => !!n));
+  } catch (err) { console.error('[suggest] notes read failed:', (err as Error)?.message); return ''; }
+}
+
+export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: SuggestLang, refresh: boolean, src?: SuggestSource, look: DraftLook = {}): Promise<Suggestion | { error: string }> {
+  const wrap = look.wrap !== false;
+  const nb = wrap ? await nameAndBrand(conv, src) : { name: null, brand: '' };
+  const dress = (options: string[]) => (wrap ? options.map((o) => wrapReply(o, nb)) : options);
   const orderId = src ? src.orderId : (conv.verified_order_id || conv.phone_match_order_id);
   if (!orderId && !src) return { error: 'Suggestions are for verified customers only' };
   const rows = src ? src.rows : await loadHistory(conv.id);
@@ -100,7 +137,7 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
         [conv.id, lang, afterId]
       );
       if (hit && Array.isArray(hit.options) && hit.options.length) {
-        return { id: hit.id, after_message_id: afterId, lang, options: hit.options as string[], created_at: new Date(hit.created_at).toISOString(), cached: true };
+        return { id: hit.id, after_message_id: afterId, lang, options: dress(hit.options as string[]), created_at: new Date(hit.created_at).toISOString(), cached: true };
       }
     } catch (err) {
       // Before chat-reply-suggestions.sql: draft without a cache.
@@ -172,7 +209,7 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
   const system = buildSystemPrompt(setup.prompt, site?.cod_available, 'chat', faqs, site?.cod_states?.trim() || null, asked, setup.brand)
     + brain + examples
     + suggestInstruction({ lang, after: afterHours(nowMs, holidays), caseKind: conv.case_kind === 'refund' || conv.case_kind === 'reship' ? conv.case_kind : null, orderJson, upsetClosed,
-      channel: conv.source === 'email' ? 'email' : 'chat', storeName: site?.name ?? null });
+      channel: conv.source === 'email' ? 'email' : 'chat', storeName: brandOf(site?.name) || null, teamNotes: await teamNotes(conv.tracker_business_id) });
   const history: ChatCompletionCreateParamsNonStreaming['messages'] = rows.map((r) => (
     r.sender === 'visitor'
       ? { role: 'user' as const, content: r.content || '' }
@@ -199,7 +236,7 @@ export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: 
     id = ins?.id || null;
   } catch (err) { console.error('[suggest] not recorded:', (err as Error)?.message); }
   console.log(`[suggest] ${options.length} options for conv ${conv.id} (${res.model}, ${res.ms} ms)`);
-  return { id, after_message_id: afterId, lang, options, created_at: new Date().toISOString(), cached: false };
+  return { id, after_message_id: afterId, lang, options: dress(options), created_at: new Date().toISOString(), cached: false };
 }
 
 export async function recordPick(conversationId: string, suggestionId: string, index: number): Promise<void> {
@@ -209,31 +246,35 @@ export async function recordPick(conversationId: string, suggestionId: string, i
   ).catch((err) => console.error('[suggest] pick not recorded:', (err as Error)?.message));
 }
 
-// After a reply was saved: which option it came from and whether it was edited first. Runs outside
+// After a reply was saved: which option it came from and whether it was edited first (the stored option is the bare
+// text; the sent one may carry the "Hello / Regards" lines around it, which is not an edit). Runs outside
 // the reply's transaction, so a missing table never touches the reply.
 export async function recordSent(conversationId: string, suggestionId: string, index: number, messageId: string, sentText: string): Promise<void> {
   await query(
     `UPDATE reply_suggestions
         SET sent_message_id = $4, sent_at = now(), picked_index = COALESCE(picked_index, $3),
-            sent_edited = (btrim(COALESCE(options->>$3::int, '')) <> btrim($5))
+            sent_edited = (strpos(btrim($5), btrim(COALESCE(options->>$3::int, ''))) = 0)
       WHERE id = $1::uuid AND conversation_id = $2`,
     [suggestionId, conversationId, index, messageId, sentText]
   ).catch((err) => console.error('[suggest] sent not recorded:', (err as Error)?.message));
 }
 
-// "Sudharo": the team member's draft with its spelling and grammar fixed. The draft itself comes
-// back whenever the model's answer is not a plain correction (acceptPolish). Recorded as a
+// "Sudharo": the team member's draft made into the reply they meant (suggest.ts polishInstruction), with "Hello <name>," /
+// "Regards, <brand> Team" around it unless `wrap` is false. The draft itself comes back (dressed the same way) whenever
+// the model's answer is not a rewrite of it (acceptPolish). Recorded as a
 // 'polish' row; never throws.
-export async function polishDraft(conv: SuggestConv, actorKey: string, draft: string, src?: SuggestSource): Promise<string> {
+export async function polishDraft(conv: SuggestConv, actorKey: string, draft: string, src?: SuggestSource, look: DraftLook & { lang?: SuggestLang } = {}): Promise<string> {
   const text = draft.trim().slice(0, POLISH_MAX_CHARS);
   if (!text) return text;
+  const wrap = look.wrap !== false;
   let latest: string | null = null;
   try { latest = lastCustomer(src ? src.rows : await loadHistory(conv.id))?.content || null; } catch { /* context only */ }
   const res = await ask(
-    [{ role: 'system', content: POLISH_INSTRUCTION }, { role: 'user', content: polishUserMessage(text, latest) }],
-    Math.min(1200, Math.ceil(text.length / 2) + 200), 0, POLISH_TIMEOUT_MS,
+    [{ role: 'system', content: polishInstruction(look.lang || 'auto') }, { role: 'user', content: polishUserMessage(text, latest) }],
+    Math.min(1500, text.length + 300), 0.2, POLISH_TIMEOUT_MS,
   );
-  const out = acceptPolish(text, res?.content);
+  const body = acceptPolish(text, res?.content);
+  const out = wrap ? wrapReply(body, await nameAndBrand(conv, src)) : body;
   try {
     await query(
       `INSERT INTO reply_suggestions (conversation_id, site_id, kind, lang, input_text, options, model, prompt_tokens, completion_tokens, ms, created_by)

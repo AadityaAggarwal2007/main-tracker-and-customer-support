@@ -21,13 +21,16 @@ const LANGS: { key: SuggestLang; label: string; title: string }[] = [
   { key: 'hi', label: 'Hinglish', title: 'Hinglish' },
 ];
 
-export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLang, onClose }: {
+export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLang, onClose, wrap, onWrap }: {
   state: SuggestState | null;
   replyOpen: boolean;
   onPick: (index: number) => void;
   onRefresh: () => void;
   onLang: (lang: SuggestLang) => void;
   onClose?: () => void;
+  // The "Hello / Regards" tick (owner 2026-10-13, replyWrap.ts); absent = not shown.
+  wrap?: boolean;
+  onWrap?: (on: boolean) => void;
 }) {
   if (!state) return null;
   return (
@@ -43,6 +46,11 @@ export default function Suggestions({ state, replyOpen, onPick, onRefresh, onLan
             </button>
           ))}
         </span>
+        {onWrap && (
+          <label className="chat-suggest-wrap" title={'Add "Hello <name>," and "Regards, <Brand> Team" around each reply (Sudharo and Notes too)'}>
+            <input type="checkbox" checked={!!wrap} disabled={state.loading} onChange={e => onWrap(e.target.checked)} /> Hello / Regards
+          </label>
+        )}
         <button type="button" className="btn-icon" title="Draft again" aria-label="Draft again" disabled={state.loading}
           onClick={onRefresh} style={{ width: 24, height: 24 }}>
           {state.loading ? <Loader2 size={13} style={{ animation: 'spin 0.6s linear infinite' }} /> : <RotateCw size={13} />}

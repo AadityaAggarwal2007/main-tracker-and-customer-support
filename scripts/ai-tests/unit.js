@@ -1244,6 +1244,7 @@ const sg = (() => {
   const lm = fs.readFileSync(path.resolve(__dirname, '../../src/lib/refund/link-mask.ts'), 'utf8');
   fs.writeFileSync(path.join(dir, 'refund-link-mask.js'), ts.transpileModule(lm, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
   load('dispute-advice');
+  load('reply-notes-rules');
   const src = fs.readFileSync(path.resolve(__dirname, '../../src/lib/chat/suggest.ts'), 'utf8').replace("from '@/lib/refund/link-mask'", "from './refund-link-mask'");
   fs.writeFileSync(path.join(dir, 'suggest.js'), ts.transpileModule(src, { compilerOptions: { module: 'commonjs', target: 'es2020' } }).outputText);
   return require(path.join(dir, 'suggest.js'));
@@ -1293,13 +1294,20 @@ t('suggest: the instruction speaks as the team, in the chosen language, with the
 t('suggest: email conversations get short complete mails with the store\'s own name (owner 9 Oct); the chat box keeps the texting style; no fixed brand', () => {
   const base = { lang: 'auto', after: 'tomorrow', caseKind: null, orderJson: '{"status":"Order Placed"}' };
   const mail = sg.suggestInstruction({ ...base, channel: 'email', storeName: 'kurtiya' });
-  assert.ok(/A member of the kurtiya support team/.test(mail) && /Regards, kurtiya Support/.test(mail) && /2 to 5 short sentences/.test(mail));
+  // Since 13 Oct (owner: "hello aur vastora team gpt sa banwaka dalna padta ha") the model writes the message only; the code adds
+  // "Hello <name>," and "Regards, <brand> Team" (reply-notes-rules.ts wrapReply), in mails and chats alike.
+  assert.ok(/A member of the kurtiya support team/.test(mail) && /Regards, kurtiya Team/.test(mail) && /2 to 5 short sentences/.test(mail) && /Write ONLY the message itself/.test(mail));
   assert.ok(/tomorrow morning, after 10 AM, by email/.test(mail) && !/here in this chat/.test(mail) && !/isi chat mein/.test(mail));
   const chat = sg.suggestInstruction({ ...base, channel: 'chat', storeName: 'VASTRIKA' });
-  assert.ok(/A member of the VASTRIKA support team/.test(chat) && /the way a person texts/.test(chat) && /here in this chat/.test(chat) && !/Regards,/.test(chat));
+  assert.ok(/A member of the VASTRIKA support team/.test(chat) && /1 to 3 short sentences/.test(chat) && /here in this chat/.test(chat) && /Regards, VASTRIKA Team" below it/.test(chat) && /Write ONLY the message itself/.test(chat));
+  assert.ok(/Never the stiff call-centre phrases/.test(chat), 'the tone line');
   const none = sg.suggestInstruction(base);
   assert.ok(/A member of our support team/.test(none), 'no panel name = "our support team", never a fixed brand');
   assert.ok(/Regards, Support Team/.test(sg.suggestInstruction({ ...base, channel: 'email' })));
+  const notes = sg.suggestInstruction({ ...base, teamNotes: '- [Cancel order] Cancel: Your order {order} is cancelled.' });
+  assert.ok(/OUR TEAM'S SAVED REPLIES/.test(notes) && /Your order \{order\} is cancelled/.test(notes) && notes.indexOf("OUR TEAM'S SAVED REPLIES") < notes.indexOf('\nORDER FACTS\n'));
+  assert.ok(!/OUR TEAM'S SAVED REPLIES/.test(none), 'no notes = no block');
+  assert.deepStrictEqual(sg.guardOptions(['Hi Priya, your order is on its way. Regards, VASTRIKA Support'], { customerTexts: ['kab aayega'], courierNames: [] }), ['Your order is on its way.'], 'a greeting / sign-off the model wrote anyway is cut (the screen adds its own)');
   for (const txt of [mail, chat, none]) assert.ok(!/Vastora support team/.test(txt), 'the instruction never hard-codes one panel');
 });
 t('suggest + Sudharo routes take email conversations too (owner 12 Oct: on VASTRIKA an email chat said "Suggestions are for chat conversations only"; 9 Oct had changed only the comment)', () => {
@@ -1318,7 +1326,7 @@ t('suggest: the sender is the team, so "our team will" becomes "we will" (seen l
   assert.deepStrictEqual(out, ['We will update you here tomorrow morning after 10 AM.']);
   assert.ok(/the team is "we"/.test(sg.suggestInstruction({ lang: 'auto', after: null, caseKind: null, orderJson: null })));
 });
-t('sudharo: the corrected text is taken only when it is a plain correction of the draft', () => {
+t('sudharo: the rewrite is taken only when it is a rewrite of the draft (owner 13 Oct: room to complete a rough line; greeting / sign-off cut, the code adds them)', () => {
   const d = 'aapka order dispatch ho gya h, link: https://shiptrack.store/track/abc';
   assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');
   assert.strictEqual(sg.acceptPolish(d, '"Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc"'), 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/abc');
@@ -1327,14 +1335,20 @@ t('sudharo: the corrected text is taken only when it is a plain correction of th
   assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai, link: https://shiptrack.store/track/xyz'), d, 'a changed link: the draft stays');
   assert.strictEqual(sg.acceptPolish(d, 'Aapka order dispatch ho gaya hai. ' + 'Bahut lamba jawab. '.repeat(20)), d, 'far longer: the draft stays');
   assert.strictEqual(sg.acceptPolish('thanks', 'Thanks.'), 'Thanks.');
-  assert.ok(sg.POLISH_INSTRUCTION.includes('Keep everything else exactly as it is') && sg.polishUserMessage('hi', 'kab aayega').includes('do not answer it'));
+  // A rough line may grow into a full sentence (before 13 Oct anything 1.6x longer was thrown away).
+  assert.strictEqual(sg.acceptPolish('ord cancel ho gya refund 5-7 din', 'Hello Ravi,\n\nAapka order cancel ho gaya hai ji. Refund 5-7 din mein aapke account mein aa jayega.\n\nRegards,\nVastora Team'),
+    'Aapka order cancel ho gaya hai ji. Refund 5-7 din mein aapke account mein aa jayega.');
+  assert.ok(/Keep every fact exactly/.test(sg.POLISH_INSTRUCTION) && /Do not write a greeting line or a sign-off/.test(sg.POLISH_INSTRUCTION) && sg.polishUserMessage('hi', 'kab aayega').includes('do not answer it'));
+  assert.ok(/plain, simple English/.test(sg.polishInstruction('en')) && /Hinglish \(Hindi in Roman letters/.test(sg.polishInstruction('hi')) && /Keep the language of the draft/.test(sg.polishInstruction('auto')));
 });
-t('side tasks use the cheap model first (owner 4 Oct): health, subject, judge, learner, suggestions; customer replies do not', () => {
+t('side tasks use the cheap model first (owner 4 Oct): health, subject, judge, learner; customer replies do not; suggestions + Sudharo on the main chain since 13 Oct (owner: "suggestion replies bilkul acha nai ata", drafted only on a button press)', () => {
   const read = (f) => fs.readFileSync(path.resolve(__dirname, '../../', f), 'utf8');
-  for (const f of ['src/lib/chat/health.ts', 'src/lib/chat/subject.ts', 'src/lib/' + ['team', 'score'].join('-') + '/judge.ts', 'src/lib/chat/suggest-run.ts']) {
+  for (const f of ['src/lib/chat/health.ts', 'src/lib/chat/subject.ts', 'src/lib/' + ['team', 'score'].join('-') + '/judge.ts']) {
     const s = read(f);
     assert.ok(/sideAttemptOrder\(\)/.test(s) && !/\battemptOrder\(\)/.test(s), f);
   }
+  const run = read('src/lib/chat/suggest-run.ts');
+  assert.ok(/\battemptOrder\(\)/.test(run) && !/sideAttemptOrder/.test(run), 'suggest-run.ts on the main chain');
   const learner = read('src/lib/chat/brain-suggest.ts');
   assert.ok(/sideModel\(\)/.test(learner) && !/getActiveModel\(\)/.test(learner), 'learner');
   const ai = read('src/lib/chat/ai.ts');
