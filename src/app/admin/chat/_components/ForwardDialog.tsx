@@ -7,11 +7,13 @@ import { cleanTransferNote } from '@/lib/chat/team-rules';
 // Forward to Manager (owner 2026-10-10: "support team refund ya reship wale cases manager ko forward karegi, fir
 // manager handle karega"). The chat gets the Refund / Ship again mark AND becomes the Manager's, with a one-line
 // note only the team sees (the server checks everything again). The customer is told nothing.
-export function ForwardDialog({ busy, error, onCancel, onSend }: {
-  busy: boolean; error: string;
+// The member's Refund / Ship again buttons (owner 2026-10-13: "ladko ko refund aur ship again ka option bhi dikhega")
+// open it with that one already picked; it can still be switched here.
+export function ForwardDialog({ busy, error, initialKind, onCancel, onSend }: {
+  busy: boolean; error: string; initialKind?: 'refund' | 'reship' | null;
   onCancel: () => void; onSend: (kind: 'refund' | 'reship', note: string) => void;
 }) {
-  const [kind, setKind] = useState<'refund' | 'reship' | null>(null);
+  const [kind, setKind] = useState<'refund' | 'reship' | null>(initialKind ?? null);
   const [note, setNote] = useState('');
   const clean = cleanTransferNote(note);
   const ok = !!kind && !!clean && !busy;

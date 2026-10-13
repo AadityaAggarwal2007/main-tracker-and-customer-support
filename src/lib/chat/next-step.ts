@@ -67,7 +67,7 @@ function bySubject(subject: string, i: NextStepInput): { wants: string; steps: s
         wants: 'Refund or cancellation',
         steps: [
           'Check the order stage in the header.',
-          'Send it to the Manager as Refund (Send to Manager): the Manager sends the refund form.',
+          'Press Refund (Send to Manager): the Manager sends the refund form.',
           'Do not promise an amount or a time in the chat.',
         ],
       };

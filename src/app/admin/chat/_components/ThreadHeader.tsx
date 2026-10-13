@@ -1,6 +1,6 @@
 'use client';
 
-import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone, Send } from 'lucide-react';
+import { Mail, MessageCircle, Phone, ChevronLeft, Undo2, Truck, ChevronDown, ArrowRightLeft, Lock, Hand, PackageCheck, ExternalLink, Smartphone } from 'lucide-react';
 import { can, canRefunds, isSuperAdmin } from '@/lib/permissions';
 import RefundFormControl, { type RefundThreadState } from '@/components/RefundFormControl';
 import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
@@ -51,7 +51,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
   setTeamLogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setTransferEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
   // Forward to Manager (owner 2026-10-10), and whether this login has the team member's short inbox.
-  setForwardEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string } | null>>;
+  setForwardEdit: React.Dispatch<React.SetStateAction<{ convId: string; busy: boolean; error: string; kind?: 'refund' | 'reship' } | null>>;
   simple: boolean;
   showAlert: (type: 'success' | 'error', message: string) => void;
   staff: StaffBlock | null;
@@ -170,12 +170,22 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
                 One group. Who may mark is the server's call (staff.can_mark_case: a senior or Super
                 Admin; a junior only while every senior is away). Off: the reason on hover. */}
             {/* A team member sends a refund / reship to the Manager (owner 2026-10-10): the mark AND the chat go
-                to the Manager. The Manager and the Super Admin mark it themselves with the buttons below. */}
-            {simple && canCases && !isVisitorChat(activeConv) && !activeConv.case_kind && activeConv.status !== 'resolved' && staff && (staff.can_act || staff.transfer_to.length > 0) && (
-              <button className="btn btn-outline btn-sm" onClick={() => setForwardEdit({ convId: activeConv.id, busy: false, error: '' })}
-                title="Refund or Ship again: the Manager decides and handles it. The customer is not told anything.">
-                <Send size={13} /> Send to Manager
-              </button>
+                to the Manager. Since 2026-10-13 (owner: "chat Sunny ke paas jaegi, refund ki hogi toh Refund mein, ship
+                again ki toh usmein; ladko ko Refund aur Ship again ka option bhi dikhega") a member sees the two buttons
+                by name; each opens the Send to Manager note with that one picked. The Manager and the Super Admin mark
+                it themselves with the buttons below. Without the Refund / Ship again tick they show off, with why. */}
+            {simple && canReply && !isVisitorChat(activeConv) && !activeConv.case_kind && activeConv.status !== 'resolved' && staff && (staff.can_act || staff.transfer_to.length > 0) && (
+              <div className="th-group">
+                {(['refund', 'reship'] as const).map(k => (
+                  <button key={k} className="btn btn-outline btn-sm" disabled={!canCases}
+                    title={canCases
+                      ? `${k === 'refund' ? 'Refund' : 'Ship again'}: the chat goes to the Manager with this mark and a one-line note. The customer is not told anything.`
+                      : 'Ask the Super Admin to tick "Refund / Ship again" for you in Team'}
+                    onClick={() => setForwardEdit({ convId: activeConv.id, busy: false, error: '', kind: k })}>
+                    {k === 'refund' ? <Undo2 size={13} /> : <Truck size={13} />} {k === 'refund' ? 'Refund' : 'Ship again'}
+                  </button>
+                ))}
+              </div>
             )}
             {!simple && canCases && !isVisitorChat(activeConv) && (
               <div className="th-group">
