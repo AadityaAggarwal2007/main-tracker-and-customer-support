@@ -528,4 +528,18 @@ module.exports = [
     ...verifiedCtx('Order Placed', '2026-10-24', { products: ['viral 12 piece jhumka with Box Hamper', 'Golden Lantern Pearl Tassel Jhumka Earrings'] }),
     history: [V('Maine jo jhumka order kiya hai usne kya light jalega')],
     expect: { notMatch: [/(light|led)[^.?!\n]{0,60}(nahi|nhi|not|no)\b|\b(no|not|nahi|nhi)\b[^.?!\n]{0,30}(light|led)\b|(nahi|nhi) jal|regular jhumka|traditional design/i, /(haan|yes)[^.?!\n]{0,40}light[^.?!\n]{0,20}jal/i], match: [/team|confirm/i] } },
+  // Owner 2026-10-13 ("chat aur Gmail ek hi admi, Chikki ko bass pata ho"): a verified customer who has also written to our
+  // support email gets ONE line in the prompt (a count and a date, never the mails' text); none otherwise, never a visitor.
+  { id: 'code-other-channel-line', title: 'A verified customer who also emailed us: Chikki is told it is the same person (count + date only)',
+    ...verifiedCtx('In Transit', '2026-10-24'), panel: 'biz-test', otherChannel: { n: 3, last: '2026-10-12T06:00:00.000Z' },
+    history: [V('maine mail bhi kiya tha, kab aayega')], mock: [{ content: 'Ok.' }],
+    expect: { systemHas: [/also written to our support email \(3 messages, the last on 12 Oct\)/, /same person as in this chat/] }, offlineOnly: true },
+  { id: 'code-other-channel-none', title: 'No mail from them: no line',
+    ...verifiedCtx('In Transit', '2026-10-24'), panel: 'biz-test', otherChannel: { n: 0, last: null },
+    history: [V('kab aayega')], mock: [{ content: 'Ok.' }],
+    expect: { systemNotHas: [/also written to our support email/] }, offlineOnly: true },
+  { id: 'code-other-channel-visitor', title: 'A visitor (not verified): never asked, never told',
+    otherChannel: { n: 5, last: '2026-10-12T06:00:00.000Z' },
+    history: [V('maine mail kiya tha')], mock: [{ content: 'Please share your order ID and phone number.' }],
+    expect: { systemNotHas: [/also written to our support email/] }, offlineOnly: true },
 ];
