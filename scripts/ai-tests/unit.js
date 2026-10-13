@@ -1360,7 +1360,10 @@ t('rulebook: 7.11 (owner 5 Oct) is a code rule at the end of section 7 that name
   const sec = rb.RULEBOOK.find((s) => s.rules.some((r) => r.id === '7.11'));
   // New rules go at the end of their section: 7.11, then 7.12 (the Manager and each member's own chats, owner 10 Oct),
   // ... then 7.16 (WhatsApp chats are not in Chat Support, owner 11 Oct).
-  assert.deepStrictEqual(sec.rules.slice(-8).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16', '7.17', '7.18']);
+  assert.deepStrictEqual(sec.rules.slice(-9).map((r) => r.id), ['7.11', '7.12', '7.13', '7.14', '7.15', '7.16', '7.17', '7.18', '7.19']);
+  // 7.19 (owner 13 Oct): a chat reply can also go by Gmail; 2.12: the chat and the Gmail are one customer.
+  assert.ok(rule('7.19').how === 'code' && /Also send by Gmail/.test(rule('7.19').text) && /never goes to an address the customer typed/i.test(rule('7.19').text));
+  assert.ok(rule('2.12').how === 'code' && /never the mails/.test(rule('2.12').text) && /order's own email first|order\\'s own email first|own email first/.test(rule('2.12').text));
   assert.ok(rule('7.18').how === 'code' && /NEVER in Chat Support/.test(rule('7.18').text) && /Mail tab/.test(rule('7.18').text) && /website chat box only/.test(rule('7.18').text));
   assert.ok(rule('7.16').how === 'code' && /no-reply identity/.test(rule('7.16').text) && /NEVER in Chat Support/.test(rule('7.16').text) && /WhatsApp > Chats/.test(rule('7.16').text) && /never moved to the Manager/.test(rule('7.16').text));
   assert.ok(/Open cases/.test(rule('7.15').text) && /half hour/.test(rule('7.15').text) && /Chikki/.test(rule('7.15').text));
@@ -1705,8 +1708,10 @@ t('team-verify: who may (canAct: the holder, a free chat, the Super Admin; never
   assert.ok(/can_verify: live && !!actor && canTeamVerify\(actor, h, conv\)/.test(src('lib/chat/thread-staff.ts')), 'the thread tells the inbox who may');
   assert.ok(/via === 'team'/.test(src('app/admin/chat/_components/chips.tsx')) && /verified_via === 'team'/.test(src('app/admin/chat/_components/ConversationRow.tsx')), 'the badge says by team');
   assert.ok(/verified_via = 'team'/.test(src('lib/chat/team-verify.ts')) && !/visitor_phone/.test(src('lib/chat/team-verify.ts')), 'the phone is never stored');
-  const rule = rb.RULEBOOK.find((s) => s.key === 'verify').rules.slice(-1)[0];
-  assert.ok(rule.id === '2.11' && rule.how === 'code' && /Remove/.test(rule.text) && /WhatsApp/.test(rule.text), 'rulebook 2.11 at the end of the verify section');
+  // 2.11 (the team's Verify), then 2.12 (owner 13 Oct: the chat and the Gmail are one customer) at the end of the section.
+  const [rule, next] = rb.RULEBOOK.find((s) => s.key === 'verify').rules.slice(-2);
+  assert.ok(rule.id === '2.11' && rule.how === 'code' && /Remove/.test(rule.text) && /WhatsApp/.test(rule.text), 'rulebook 2.11 right before 2.12');
+  assert.ok(next.id === '2.12', 'rulebook 2.12 at the end of the verify section');
 });
 
 // ── Corrections (owner 2026-10-11): the pure rules in corrections-rules.ts ──
