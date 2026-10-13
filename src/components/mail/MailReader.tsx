@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X, Sparkles, SpellCheck } from 'lucide-react';
+import Suggestions, { type SuggestState } from '@/app/admin/chat/_components/Suggestions';
+import type { SuggestLang } from '@/lib/chat/suggest';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
@@ -54,9 +56,36 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   const [corrBusy, setCorrBusy] = useState(false);
   const [corrError, setCorrError] = useState('');
   const [corrRows, setCorrRows] = useState<CorrectionRow[]>([]);
+  // Suggestions + "Sudharo" (owner 2026-10-13: "gmail pa grammer sudharna wala aur suggestion wala bhi dede, yeh log baar
+  // baar chat gpt sa kar rha ha"): the same drafting as Chat Support, on this mail's conversation (/api/mail/suggest,
+  // /api/mail/polish). Only when pressed; a pick fills the reply box, the team member still presses Send.
+  const [sugg, setSugg] = useState<SuggestState | null>(null);
+  const [polishing, setPolishing] = useState(false);
 
   // Another mail: a clean reply box and verify form.
-  useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); setCorrOpen(false); setCorrError(''); setCorrRows([]); }, [mail.uid]);
+  useEffect(() => { setReplyOpen(false); setReplyText(''); setAttach([]); setIncludeQuote(true); setVerifyOpen(false); setVOrder(''); setVPhone(''); setVError(''); setCorrOpen(false); setCorrError(''); setCorrRows([]); setSugg(null); setPolishing(false); }, [mail.uid]);
+  const suggest = async (lang: SuggestLang = sugg?.lang || 'auto', refresh = false) => {
+    if (!box) return;
+    const key = `${box.id}:${mail.uid}`;
+    setReplyOpen(true);
+    setSugg(prev => ({ convId: key, lang, loading: true, error: '', id: null, options: prev && prev.convId === key && prev.lang === lang && !refresh ? prev.options : [] }));
+    try {
+      const r = await fetch('/api/mail/suggest', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, lang, refresh }) });
+      const d = await r.json().catch(() => ({}));
+      setSugg(cur => (cur && cur.convId === key ? { ...cur, lang, loading: false, error: r.ok ? '' : (d.error || 'Chikki could not draft right now.'), options: r.ok ? (d.options || []) : cur.options } : cur));
+    } catch { setSugg(cur => (cur && cur.convId === key ? { ...cur, loading: false, error: 'Chikki could not draft right now.' } : cur)); }
+  };
+  const polish = async () => {
+    if (!box || !replyText.trim() || polishing) return;
+    setPolishing(true);
+    try {
+      const r = await fetch('/api/mail/polish', { method: 'POST', headers: auth, body: JSON.stringify({ box: box.id, uid: mail.uid, text: replyText }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', d.error || 'Sudharo could not fix it right now.'); return; }
+      if (d.changed && typeof d.text === 'string') setReplyText(d.text); else onAlert('success', 'Looks fine already: nothing to fix.');
+    } catch { onAlert('error', 'Sudharo could not fix it right now.'); }
+    finally { setPolishing(false); }
+  };
   useEffect(() => {
     if (!box || !token) return;
     let gone = false;
@@ -152,6 +181,8 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <span className="mail-avatar sm ours" aria-hidden="true">{initials(`${box?.siteName || ''} Support`)}</span>
         <span className="mail-msg-who"><b className="truncate">Reply to {mail.replyTo || mail.fromAddress}</b><span className="meta truncate">from {box?.email}, in the same Gmail conversation</span></span>
       </div>
+      <Suggestions state={sugg} replyOpen onPick={(i) => { if (sugg?.options[i]) setReplyText(sugg.options[i]); }}
+        onRefresh={() => void suggest(sugg?.lang || 'auto', true)} onLang={(l) => void suggest(l)} onClose={() => setSugg(null)} />
       <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
       <label className="mail-quote-opt">
         <input type="checkbox" checked={includeQuote} onChange={e => setIncludeQuote(e.target.checked)} /> Quote the original message below my reply (like Gmail)
@@ -179,12 +210,19 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
           <Paperclip size={14} /> Attach
           <input type="file" multiple accept={ATTACHMENT_ACCEPT} style={{ display: 'none' }} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
         </label>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); setAttach([]); }}>Discard</button>
+        <button type="button" className="btn btn-outline btn-sm" disabled={!!sugg?.loading} onClick={() => void suggest()} title="Chikki drafts 3 replies from this conversation; pick one, edit it, send it">
+          {sugg?.loading ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} Suggestions
+        </button>
+        <button type="button" className="btn btn-outline btn-sm" disabled={polishing || !replyText.trim()} onClick={() => void polish()} title="Sudharo: fix the spelling and grammar of what you typed (the meaning stays)">
+          {polishing ? <Loader2 size={14} className="spin" /> : <SpellCheck size={14} />} Sudharo
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setReplyOpen(false); setReplyText(''); setAttach([]); setSugg(null); }}>Discard</button>
       </div>
     </div>
   ) : (
     <div className="mail-replybar">
       <button type="button" className="btn btn-outline mail-replybtn" onClick={() => setReplyOpen(true)}><Reply size={15} /> Reply</button>
+      <button type="button" className="btn btn-outline mail-replybtn" onClick={() => void suggest()} title="Chikki drafts 3 replies from this conversation"><Sparkles size={15} /> Suggest a reply</button>
       {versions.length === 0 && <button type="button" className="btn btn-outline mail-replybtn" onClick={() => { setReplyOpen(true); setReplyText(ASK_VERIFY_EN); }}><ShieldQuestion size={15} /> Ask for order details (English)</button>}
       {versions.length === 0 && <button type="button" className="btn btn-outline mail-replybtn" onClick={() => { setReplyOpen(true); setReplyText(ASK_VERIFY_HINGLISH); }}><ShieldQuestion size={15} /> (Hinglish)</button>}
     </div>
