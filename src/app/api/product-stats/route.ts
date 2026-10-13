@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { canAccessPanel, isSuperAdmin, isTeamLead } from '@/lib/permissions';
-import { cleanGroups, cleanWatch } from '@/lib/product-stats';
+import { cleanGroups, cleanWatch, mergeGroups } from '@/lib/product-stats';
 import { loadProductStats, loadSetup, saveSetup } from '@/lib/product-stats-server';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
 // ── Shopify tab (owner 2026-10-13): orders by product and by the team's own collections ─────────────────────────
 // GET  ?businessId=<panel>&range=today|yesterday|7d|30d|custom[&from=YYYY-MM-DD&to=YYYY-MM-DD]
 // POST {businessId, groups?, watch?}   saves the panel's collections and / or watch list.
+// POST {businessId, copyFrom}          adds another panel's collections to this one (same names kept, nothing deleted).
 // The Super Admin and the Manager (owner's answer), inside the panels they may see. Nothing is sent anywhere.
 function who(request: NextRequest, businessId: string | null) {
   const user = getAuthFromRequest(request);
@@ -33,12 +34,23 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  let body: { businessId?: unknown; groups?: unknown; watch?: unknown } | null = null;
+  let body: { businessId?: unknown; groups?: unknown; watch?: unknown; copyFrom?: unknown } | null = null;
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Bad request' }, { status: 400 }); }
   const businessId = typeof body?.businessId === 'string' ? body.businessId : null;
   const got = who(request, businessId);
   if ('res' in got) return got.res;
   const setup = await loadSetup(businessId as string);
+  let copied: { added: string[]; skipped: string[] } | null = null;
+  if (body?.copyFrom !== undefined) {
+    const src = typeof body.copyFrom === 'string' ? body.copyFrom : '';
+    if (!/^[0-9a-f-]{36}$/i.test(src) || src === businessId) return NextResponse.json({ error: 'Pick another panel to copy from' }, { status: 400 });
+    if (!canAccessPanel(got.user, src)) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const theirs = await loadSetup(src);
+    if (!theirs.groups.length) return NextResponse.json({ error: 'That panel has no collections yet' }, { status: 400 });
+    const m = mergeGroups(setup.groups, theirs.groups);
+    setup.groups = m.groups;
+    copied = { added: m.added, skipped: m.skipped };
+  }
   if (body?.groups !== undefined) {
     const g = cleanGroups(body.groups);
     if ('error' in g) return NextResponse.json({ error: g.error }, { status: 400 });
@@ -51,7 +63,7 @@ export async function POST(request: NextRequest) {
   }
   try {
     await saveSetup(businessId as string, setup, got.user);
-    return NextResponse.json({ ok: true, setup });
+    return NextResponse.json({ ok: true, setup, ...(copied ? { copied } : {}) });
   } catch (e) {
     console.error('[product-stats] POST:', (e as Error).message);
     return NextResponse.json({ error: 'Could not save right now' }, { status: 500 });

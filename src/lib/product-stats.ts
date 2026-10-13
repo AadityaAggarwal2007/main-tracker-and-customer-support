@@ -6,10 +6,13 @@
 // Pure (no imports): the screen and the server both use it; the tests load it as is.
 
 // One order line from the database: which order (its row id), the product name as the order has it, the pieces, the
-// unit price and whether the order is Cash on Delivery. Only the panel's not-cancelled orders of the range come.
-export interface ItemRow { order: string; product_name: string; quantity: number; price: number; cod: boolean }
+// unit price, whether the order is Cash on Delivery and when it was placed (ms). Only the panel's not-cancelled
+// orders of the range come.
+export interface ItemRow { order: string; product_name: string; quantity: number; price: number; cod: boolean; at?: number }
 
-export interface Totals { orders: number; pieces: number; revenue: number; codOrders: number; codRevenue: number; prepaidOrders: number; prepaidRevenue: number }
+// first / last = when the oldest and the newest of these orders was placed (owner 2026-10-13: "collection ma date nai
+// dekh rhi ki kitna purana data ha"); null when there is none.
+export interface Totals { orders: number; pieces: number; revenue: number; codOrders: number; codRevenue: number; prepaidOrders: number; prepaidRevenue: number; first: number | null; last: number | null }
 export interface VariantLine extends Totals { name: string; variant: string }
 export interface ProductLine extends Totals { name: string; variants: VariantLine[] }
 
@@ -26,7 +29,7 @@ export const MAX_RANGE_DAYS = 92;
 
 const num = (v: unknown) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
 const money = (v: number) => Math.round(v * 100) / 100;
-const zero = (): Totals => ({ orders: 0, pieces: 0, revenue: 0, codOrders: 0, codRevenue: 0, prepaidOrders: 0, prepaidRevenue: 0 });
+const zero = (): Totals => ({ orders: 0, pieces: 0, revenue: 0, codOrders: 0, codRevenue: 0, prepaidOrders: 0, prepaidRevenue: 0, first: null, last: null });
 
 // Totals over some lines: an order is counted ONCE however many of the lines it holds (two colours of one product,
 // two products of one collection), pieces and money are summed.
@@ -37,6 +40,8 @@ export function totalsOf(rows: ItemRow[]): Totals {
     const q = num(r.quantity), amount = q * num(r.price);
     t.pieces += q; t.revenue += amount;
     all.add(r.order);
+    const at = Number(r.at);
+    if (r.at != null && Number.isFinite(at)) { if (t.first == null || at < t.first) t.first = at; if (t.last == null || at > t.last) t.last = at; }
     if (r.cod) { cod.add(r.order); t.codRevenue += amount; } else { pre.add(r.order); t.prepaidRevenue += amount; }
   }
   t.orders = all.size; t.codOrders = cod.size; t.prepaidOrders = pre.size;
@@ -125,6 +130,21 @@ export function cleanGroups(raw: unknown): { groups: ProductGroup[] } | { error:
   return { groups: out };
 }
 
+// "Copy from another panel" (owner 2026-10-13: "asa same kurtiya ma bhi karde"): the other panel's collections are
+// ADDED to this panel's; a name this panel already has is kept as it is (skipped), never replaced, and nothing is
+// deleted. New ids, so the two panels never share one.
+export function mergeGroups(mine: ProductGroup[], theirs: ProductGroup[], now = Date.now()): { groups: ProductGroup[]; added: string[]; skipped: string[] } {
+  const names = new Set(mine.map((g) => key(g.name)));
+  const groups = [...mine], added: string[] = [], skipped: string[] = [];
+  theirs.forEach((g, i) => {
+    if (names.has(key(g.name)) || groups.length >= MAX_GROUPS) { skipped.push(g.name); return; }
+    names.add(key(g.name));
+    groups.push({ id: `g${now.toString(36)}c${i}`, name: g.name, products: [...g.products], words: [...g.words] });
+    added.push(g.name);
+  });
+  return { groups, added, skipped };
+}
+
 export function cleanWatch(raw: unknown): { watch: string[] } | { error: string } {
   if (!Array.isArray(raw)) return { error: 'Send the list of products' };
   const watch = uniq(raw.map((p) => cleanText(p, 160)));
@@ -172,5 +192,22 @@ export function rangeOf(range: string | null | undefined, now: number, fromDate?
 export const RANGES: { key: RangeKey; label: string }[] = [
   { key: 'today', label: 'Today' }, { key: 'yesterday', label: 'Yesterday' }, { key: '7d', label: '7 days' }, { key: '30d', label: '30 days' }, { key: 'custom', label: 'Dates' },
 ];
+
+// "13 Oct" / "13 Oct, 8:40 AM" in India time, for the dates the screen shows.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export function dayText(ms: number): string {
+  const d = istDate(ms);
+  return `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]}`;
+}
+export function timeText(ms: number): string {
+  const m = Math.floor(((ms + IST_MS) % DAY_MS + DAY_MS) % DAY_MS / 60_000);
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+  return `${dayText(ms)}, ${h % 12 || 12}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+}
+// The days a range covers: "13 Oct" or "7 Oct – 13 Oct" (the end is exclusive).
+export function rangeDays(from: number, to: number): string {
+  const a = dayText(from), b = dayText(to - 1);
+  return a === b ? a : `${a} – ${b}`;
+}
 
 export const rupees = (v: number) => `₹${Math.round(v).toLocaleString('en-IN')}`;

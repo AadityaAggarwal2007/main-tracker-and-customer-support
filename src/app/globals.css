@@ -2885,6 +2885,8 @@ a {
 .ps-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
 .ps-top { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .ps-top .seg-btn { white-space: nowrap; }
+.ps-span { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.25rem; }
+.ps-copy { width: auto; padding: 0.25rem 0.5rem; font-size: 0.8125rem; }
 .ps-title { font-size: 1.125rem; font-weight: 700; margin: 0; flex: 1; min-width: 10rem; }
 .ps-dates { display: inline-flex; align-items: center; gap: 0.375rem; }
 .ps-dates .form-input { width: auto; padding: 0.25rem 0.5rem; }
