@@ -97,9 +97,22 @@ const approved = { name: 'shiptrack_alert', language: 'en_US', status: 'APPROVED
     eq(g.whatsappReady, true); eq(g.whatsappSetup.template.name, 'shiptrack_alert');
   });
 
+  await t('several numbers (owner 14 Oct: "1 hi number dal sakta h"): up to 5 with commas, each cleaned, the same once; the test goes to every one', async () => {
+    const P = require(path.join(SRC, 'lib/chargeback/parse.ts'));
+    assert.deepStrictEqual(P.whatsappNumbers('98765 43210, +91 98123-45678;9876543210\n919999988888'), { numbers: ['919876543210', '919812345678', '919999988888'], bad: [] });
+    assert.deepStrictEqual(P.whatsappNumbers('9876543210, 12'), { numbers: ['919876543210'], bad: ['12'] });
+    assert.deepStrictEqual(P.whatsappNumbers(''), { numbers: [], bad: [] });
+    eq(P.WHATSAPP_NUMBERS_MAX, 5);
+    S.templates = [approved]; await A.chargebackWhatsAppSetup(true); S.number = '919911512751, 9876543210';
+    const r = await route.PATCH(req('PATCH', '/api/panel-chargeback', { businessId: 'bizVastrika1', action: 'test' }));
+    eq(r.status, 200); assert.deepStrictEqual(S.sent.map((x) => x.to), ['919911512751', '919876543210']);
+    const store = fs.readFileSync(path.join(SRC, 'lib/chargeback/store.ts'), 'utf8');
+    ok(/whatsapp = numbers\.join\(', '\)/.test(store) && /At most \$\{WHATSAPP_NUMBERS_MAX\} numbers/.test(store));
+  });
+
   await t('wiring: the poller sends through alert-send; the card creates the template from the preset and offers a test', () => {
     const poll = fs.readFileSync(path.join(SRC, 'lib/chargeback/poll.ts'), 'utf8');
-    ok(/notify = await notifyChargeback\(to,/.test(poll) && /from '\.\/alert-send'/.test(poll));
+    ok(/for \(const n of to\) results\.push\(await notifyChargeback\(n,/.test(poll) && /from '\.\/alert-send'/.test(poll) && /whatsappNumbers\(s\?\.whatsapp_number/.test(poll));
     const card = fs.readFileSync(path.join(SRC, 'components/ChargebackSettingsCard.tsx'), 'utf8');
     ok(/SHIPTRACK_ALERT_PRESET/.test(card) && /\/api\/whatsapp\/templates/.test(card) && /Create the alert template/.test(card) && /action: 'test'/.test(card) && /Send a test/.test(card));
   });

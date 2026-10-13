@@ -5,7 +5,7 @@ import { checkMailbox, looksLikeEmail, normalizeAppPassword } from '@/lib/chat/m
 import { panelChargeback, savePanelSettings } from '@/lib/chargeback/store';
 import { GATEWAYS } from '@/lib/chargeback/parse';
 import { chargebackWhatsAppSetup, notifyChargeback } from '@/lib/chargeback/alert-send';
-import { whatsappNumber } from '@/lib/chargeback/parse';
+import { whatsappNumbers } from '@/lib/chargeback/parse';
 
 // ── Chargeback protection for one panel (owner 2026-10-08), Super Admin only ──────────────────
 // GET    ?businessId=[&fresh=1]   the chargeback Gmail, the WhatsApp number, the gateway checklist, whether WhatsApp is set up
@@ -92,12 +92,19 @@ export async function PATCH(request: NextRequest) {
     if (!ID.test(businessId)) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
     try {
       const d = await panelChargeback(businessId);
-      const to = whatsappNumber(d.whatsapp || '');
-      if (!to) return NextResponse.json({ error: 'Save the WhatsApp number first.' }, { status: 400 });
+      const to = whatsappNumbers(d.whatsapp || '').numbers;
+      if (!to.length) return NextResponse.json({ error: 'Save the WhatsApp number first.' }, { status: 400 });
       const b = await queryOne<{ name: string }>(`SELECT name FROM businesses WHERE id::text = $1::text`, [businessId]);
-      const r = await notifyChargeback(to, { panel: b?.name || 'Panel', gateway: 'TEST', order: 'TEST (no real chargeback)' });
-      if (r === 'sent') return NextResponse.json({ ok: true });
-      return NextResponse.json({ error: r === 'not_configured' ? 'WhatsApp alert is not ready yet (see the line under the number).' : `Not sent: ${r.replace(/^failed: /, '')}` }, { status: 409 });
+      const sent: string[] = [];
+      let fail = '';
+      for (const n of to) {
+        const r = await notifyChargeback(n, { panel: b?.name || 'Panel', gateway: 'TEST', order: 'TEST (no real chargeback)' });
+        if (r === 'sent') sent.push(n);
+        else if (!fail) fail = r === 'not_configured' ? 'WhatsApp alert is not ready yet (see the line under the number).' : `Not sent to ${n}: ${r.replace(/^failed: /, '')}`;
+      }
+      if (sent.length && !fail) return NextResponse.json({ ok: true, sent });
+      if (sent.length) return NextResponse.json({ ok: true, sent, error: fail });
+      return NextResponse.json({ error: fail }, { status: 409 });
     } catch (e) {
       console.error('[chargeback] test alert:', (e as Error).message);
       return NextResponse.json({ error: 'Could not send the test.' }, { status: 500 });

@@ -74,6 +74,22 @@ export function whatsappNumber(raw: unknown): string | null {
   return null;
 }
 
+// Several numbers for the chargeback alert (owner 2026-10-14: "1 hi number dal sakta h"): typed with commas, semicolons
+// or new lines between them (spaces stay inside a number, "98765 43210"), each cleaned like whatsappNumber, the same
+// number once, at most WHATSAPP_NUMBERS_MAX. `bad` = the pieces that are not a number (the screen names them).
+export const WHATSAPP_NUMBERS_MAX = 5;
+export function whatsappNumbers(raw: unknown): { numbers: string[]; bad: string[] } {
+  const parts = (typeof raw === 'string' ? raw : '').split(/[,;\n\/|]+/).map((p) => p.trim()).filter(Boolean);
+  const numbers: string[] = [];
+  const bad: string[] = [];
+  for (const p of parts) {
+    const n = whatsappNumber(p);
+    if (!n) bad.push(p);
+    else if (!numbers.includes(n)) numbers.push(n);
+  }
+  return { numbers, bad };
+}
+
 // ── Is this mail really a chargeback? (owner 2026-10-09) ─────────────────────────────────────
 // The chargeback Gmail also receives the gateway's other mail (payment received, settlement, OTP, offers; on
 // VASTRIKA only "PayU Chargeback Notification" was real among a page of ₹100 payment mails). A mail is a

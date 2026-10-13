@@ -1,5 +1,5 @@
 import { query, queryOne } from '@/lib/db';
-import { GATEWAY_KEYS, chargebackKind, orderCandidates, orderForms, whatsappNumber, type ChargebackKind } from './parse';
+import { GATEWAY_KEYS, WHATSAPP_NUMBERS_MAX, chargebackKind, orderCandidates, orderForms, whatsappNumbers, type ChargebackKind } from './parse';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 
 // ── Chargeback data (chargeback.sql) ──────────────────────────────────────────────────────────
@@ -191,9 +191,11 @@ export async function savePanelSettings(
     const raw = typeof change.whatsapp === 'string' ? change.whatsapp.trim() : '';
     if (raw === '') whatsapp = '';
     else {
-      const n = whatsappNumber(raw);
-      if (!n) return { ok: false, status: 400, error: 'That does not look like a WhatsApp number. Type it with the country code, e.g. 919876543210.' };
-      whatsapp = n;
+      // Up to 5 numbers, kept as "919876543210, 919812345678" in the same text column (owner 2026-10-14).
+      const { numbers, bad } = whatsappNumbers(raw);
+      if (bad.length) return { ok: false, status: 400, error: `"${bad[0].slice(0, 30)}" does not look like a WhatsApp number. Type each with the country code, e.g. 919876543210, and put a comma between numbers.` };
+      if (numbers.length > WHATSAPP_NUMBERS_MAX) return { ok: false, status: 400, error: `At most ${WHATSAPP_NUMBERS_MAX} numbers.` };
+      whatsapp = numbers.join(', ');
     }
   }
   if (change.gateway) {
