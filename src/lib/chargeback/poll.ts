@@ -72,10 +72,17 @@ async function signIn(group: Group): Promise<ImapFlow> {
   throw lastErr ?? new Error('Command failed');
 }
 
+// A mail whose alert could not be written (a database hiccup) is read again next minute instead of being skipped for
+// good (review 2026-10-14: last_uid used to move past it, so a real chargeback could vanish without a trace). After
+// FAIL_MAX tries it is given up, so one broken mail never stops the mailbox. The alert's unique key (mailbox, uid) keeps
+// a retry from alerting twice. Memory only, per process.
+const FAIL_MAX = 5;
+const failedTries = new Map<string, number>();
+
 async function pollOne(group: Group): Promise<number> {
   const box = group.primary;
   const last = Math.max(...group.rows.map(r => Number(r.last_uid) || 0), 0);
-  let maxUid = last, made = 0;
+  let maxUid = last, made = 0, retryFrom = 0;
   let client: ImapFlow | null = null;
   try {
     client = await signIn(group);
@@ -87,10 +94,20 @@ async function pollOne(group: Group): Promise<number> {
         for await (const msg of client.fetch(seqs, { uid: true, source: true })) {
           if (msg.uid <= last) continue;
           maxUid = Math.max(maxUid, msg.uid);
-          try { if (await record(group, msg.uid, msg.source)) made += 1; } catch (e) { console.error('[chargeback] alert failed:', (e as Error).message); }
+          const key = `${box.id}:${msg.uid}`;
+          try {
+            if (await record(group, msg.uid, msg.source)) made += 1;
+            failedTries.delete(key);
+          } catch (e) {
+            const n = (failedTries.get(key) || 0) + 1;
+            failedTries.set(key, n);
+            console.error(`[chargeback] alert failed (uid ${msg.uid}, try ${n} of ${FAIL_MAX}):`, (e as Error).message);
+            if (n < FAIL_MAX) { if (!retryFrom) retryFrom = msg.uid; } else failedTries.delete(key);
+          }
         }
       }
     } finally { lock.release(); }
+    if (retryFrom) maxUid = Math.min(maxUid, retryFrom - 1);   // that mail (and the ones after it) are read again next minute
     if (maxUid > last) await query(`UPDATE chargeback_mailboxes SET last_uid = $1 WHERE id = ANY($2::uuid[])`, [maxUid, group.rows.map(r => r.id)]);
     if (made > 0) noteMailboxCheck(`cb:${box.id}`, { ok: true, handled: made });
     await client.logout();

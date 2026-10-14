@@ -231,6 +231,14 @@ Done and live:
   (customer's mail looked unanswered in Gmail). Now "Re:" alone (`replySubject`, `reply-mail.ts`). Old replies stay where
   they are (Sent, "Re: Your enquiry").
 
+- **14 Oct, review sweep (3 reviewers)**: fixed `unwrapReply` cutting real "Thank you for ..." sentences (sign-off only on
+  its own line / after a sentence end, never "thanks for/to ..."); old cached drafts double-wrapped; Sudharo with the tick
+  OFF keeps the member's greeting / sign-off; `useBrandPanel` reads the session flag once; the inbox keeps an `?open=` chat;
+  a Manager cannot be a brand manager; deleted notes not counted; chargeback poller retries a mail whose alert failed (5
+  tries) instead of skipping it; `ensureMailCaseChat` never re-points a chat verified for another order + advisory lock;
+  a shared chargeback box uses the newest App Password; the test alert reports partial failures; a Meta template-list
+  hiccup uses the last approved template.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

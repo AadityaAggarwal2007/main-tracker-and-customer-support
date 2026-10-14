@@ -29,6 +29,7 @@ export default function BrandManagersCard({ token, panels, members, onAlert }: {
   // Who may manage a panel: an active member who replies to chats and may see that panel (the server checks again).
   const fits = (m: MemberLite, panelId: string) => m.is_active
     && can({ role: m.role as never, permissions: m.effective }, 'chat.reply')
+    && !can({ role: m.role as never, permissions: m.effective }, 'team.lead')   // a Manager is never auto-assigned
     && canAccessPanel({ role: m.role as never, permissions: m.effective, businessIds: m.business_ids }, panelId);
   const save = async (panelId: string, memberId: string) => {
     if (!token) return;

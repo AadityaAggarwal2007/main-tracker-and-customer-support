@@ -13,6 +13,9 @@ import { chargebackAlertText, sendChargebackWhatsApp, whatsappConfigured, type N
 export const ALERT_TEMPLATE = 'shiptrack_alert';
 type Tpl = { name: string; language: string; status: string } | null;
 let cache: { at: number; tpl: Tpl } | null = null;
+// The last APPROVED template seen (memory): a real chargeback still goes out when Meta's template list cannot be read for
+// a moment (review 2026-10-14: a hiccup used to file it as "WhatsApp not set up", with no WhatsApp at all).
+let lastApproved: Tpl = null;
 
 // The "shiptrack_alert" template as Meta has it (any status), cached a minute (5 once approved).
 export async function alertTemplate(fresh = false): Promise<Tpl | { error: string }> {
@@ -26,6 +29,7 @@ export async function alertTemplate(fresh = false): Promise<Tpl | { error: strin
     const t = all.find((x) => x.status === 'APPROVED') || all[0] || null;
     const tpl = t ? { name: t.name, language: t.language, status: t.status } : null;
     cache = { at: Date.now(), tpl };
+    if (tpl?.status === 'APPROVED') lastApproved = tpl;
     return tpl;
   } catch (e) { return { error: (e as Error).message || 'Could not read the templates' }; }
 }
@@ -50,8 +54,10 @@ export async function chargebackWhatsAppSetup(fresh = false): Promise<Chargeback
 export async function notifyChargeback(to: string, vars: { panel: string; gateway: string; order: string }): Promise<NotifyResult> {
   if (whatsappConfigured()) return sendChargebackWhatsApp(to, vars);
   if (!waConfigured()) return 'not_configured';
-  const t = await alertTemplate();
-  if (!t || 'error' in t || t.status !== 'APPROVED') return 'not_configured';
+  const got = await alertTemplate();
+  const t: Tpl = got && 'error' in got ? lastApproved : (got as Tpl);
+  if (!t && got && 'error' in got) return `failed: could not read the WhatsApp templates from Meta (${String(got.error).slice(0, 120)})`;
+  if (!t || t.status !== 'APPROVED') return 'not_configured';
   const r = await sendWhatsAppTemplate(to, t.name, t.language, [chargebackAlertText(vars)]);
   return 'error' in r ? `failed: ${String(r.error).slice(0, 160)}` : 'sent';
 }

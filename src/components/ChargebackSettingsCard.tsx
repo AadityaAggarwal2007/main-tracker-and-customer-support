@@ -66,8 +66,18 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
       await load(true);
     }
   };
+  // A partial failure says which numbers got it and why the others did not (review 2026-10-14).
   const sendTest = async () => {
-    if (await call('test', 'PATCH', { businessId, action: 'test' })) onAlert('success', `Test alert sent to ${d?.whatsapp}. Check the phone${(d?.whatsapp || '').includes(',') ? 's' : ''}.`);
+    setBusy('test');
+    try {
+      const r = await fetch('/api/panel-chargeback', { method: 'PATCH', headers: auth, body: JSON.stringify({ businessId, action: 'test' }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not send the test.'); return; }
+      const sent: string[] = Array.isArray(j.sent) ? j.sent : [];
+      if (j.error) onAlert('error', `Test sent to ${sent.join(', ') || 'none'}. ${j.error}`);
+      else onAlert('success', `Test alert sent to ${sent.join(', ')}. Check the phone${sent.length > 1 ? 's' : ''}.`);
+    } catch { onAlert('error', 'Could not send the test.'); }
+    finally { setBusy(''); }
   };
   const remove = async () => {
     if (!window.confirm(`Disconnect the CHARGEBACK Gmail of ${panelName}?\n\nOld alerts stay. New chargeback mails will no longer be seen. (The customer support Gmail is a different account and is not touched.)`)) return;

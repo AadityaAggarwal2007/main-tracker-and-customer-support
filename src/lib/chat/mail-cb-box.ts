@@ -21,7 +21,12 @@ const missing = (e: unknown) => ['42P01', '42703'].includes((e as { code?: strin
 
 // The rows the Mail tab reads, shaped like mail-inbox.ts's site_emails rows (site = the panel's first chat site, for
 // the reply's "<name> Support"; none = the panel's name). `shared_with` = the other panels on the same address.
-export const CB_BOXES_SQL = `SELECT '${CB_PREFIX}' || m.id::text AS id, m.email, m.app_password,
+// The App Password: the NEWEST one saved for that address (each connect checks it with Gmail first), so one panel's
+// old, dead password never stops that panel's box from syncing or replying (review 2026-10-14; the poller tries every
+// row's password, chargeback/poll.ts signIn).
+export const CB_BOXES_SQL = `SELECT '${CB_PREFIX}' || m.id::text AS id, m.email,
+        COALESCE((SELECT o.app_password FROM chargeback_mailboxes o WHERE lower(o.email) = lower(m.email)
+                   ORDER BY o.created_at DESC LIMIT 1), m.app_password) AS app_password,
         (SELECT s.id FROM sites s WHERE s.tracker_business_id::text = m.business_id ORDER BY s.created_at ASC LIMIT 1) AS site_id,
         COALESCE((SELECT s.name FROM sites s WHERE s.tracker_business_id::text = m.business_id ORDER BY s.created_at ASC LIMIT 1), b.name, m.email) AS site_name,
         m.business_id AS panel_id, b.name AS panel_name,

@@ -9,6 +9,7 @@ import type { AuthUser } from '@/lib/auth';
 import { can, canAccessPanel, isSuperAdmin, isTeamLead } from '@/lib/permissions';
 import { hasFormLink } from '@/lib/refund/link-mask';
 import { stripLinkJunk } from './reply-guards';
+import { brandOf } from './common-setup-rules';
 import { NOTES_PER_PANEL_MAX, cleanNote, isNoteSegment, type NoteSegment, type ReplyNote } from './reply-notes-rules';
 
 const PREFIX = 'reply_note:';
@@ -33,11 +34,14 @@ function parse(value: string): Stored | null {
 }
 
 // The panel's name as customers know it (its first chat site's name, else the panel's), for "Regards, <brand> Team".
+// A removed note (kept, marked) never counts toward the 300 (review 2026-10-14).
+const REMOVED_LIKE = '%"deleted":true%';
+
 export async function panelBrand(panelId: string): Promise<string> {
   const r = await queryOne<{ name: string | null }>(
     `SELECT COALESCE((SELECT s.name FROM sites s WHERE s.tracker_business_id::text = $1::text ORDER BY s.created_at ASC LIMIT 1),
                      (SELECT b.name FROM businesses b WHERE b.id::text = $1::text)) AS name`, [panelId]).catch(() => null);
-  return (r?.name || '').trim();
+  return brandOf(r?.name);
 }
 
 export async function listNotes(user: AuthUser, panelId: string): Promise<NotesResult<{ brand: string; notes: ReplyNote[] }>> {
@@ -66,7 +70,7 @@ export async function addNote(user: AuthUser, panelId: string, raw: unknown): Pr
   if (!panelId || !canAccessPanel(user, panelId)) return refuse(404, 'Panel not found');
   const c = checked(raw);
   if ('error' in c) return refuse(400, c.error);
-  const n = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM chat_settings WHERE key LIKE $1`, [esc(`${PREFIX}${panelId}:`) + '%']);
+  const n = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM chat_settings WHERE key LIKE $1 AND value NOT LIKE $2`, [esc(`${PREFIX}${panelId}:`) + '%', REMOVED_LIKE]);
   if ((n?.n || 0) >= NOTES_PER_PANEL_MAX) return refuse(409, `This panel already has ${NOTES_PER_PANEL_MAX} notes`);
   const id = randomUUID(), now = new Date().toISOString();
   const v: Stored = { ...c, by: actor(user), byName: actorName(user), at: now, updatedAt: now };

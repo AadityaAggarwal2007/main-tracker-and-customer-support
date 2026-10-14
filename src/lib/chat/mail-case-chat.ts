@@ -8,9 +8,13 @@
 //   - their email chat in this panel (the one verified for that order first), verified for it now when it was not
 //     (verified_via 'mail', a team check: not STRICT_PROOF, so no automatic Refund promise), opened again when Closed
 //     (a person is acting on it), else a new one (`source 'email'`, `visitor_id 'email:<address>'`, like the poller's);
-//   - a chat already marked for ANOTHER order is never re-pointed: a new chat is made instead.
+//   - a chat already verified for ANOTHER order is never re-pointed (review 2026-10-14: Edit for order #B used to move
+//     the customer's chat for #A to #B, and an address dialog left open for #A could then save onto #B): a new chat is
+//     made instead;
+//   - one request at a time per panel + address (an advisory lock inside a transaction): a double click never makes
+//     two chats.
 // Nothing is sent to the customer. The PATCH (setCase / forward) then checks the rights again.
-import { query } from '@/lib/db';
+import { query, withTransaction } from '@/lib/db';
 import { verifiedSenders } from './mail-verify';
 
 export type CaseChatResult = { ok: true; chatId: string; created: boolean } | { ok: false; status: number; error: string };
@@ -26,36 +30,41 @@ export async function ensureMailCaseChat(box: { panelId: string | null; siteId?:
   if (!ver) return { ok: false, status: 409, error: 'Verify this sender for that order first.' };
   const order = ver.orderId;
 
-  const r = await query<{ id: string; status: string; verified_order_id: string | null; case_kind: string | null }>(
-    `SELECT c.id, c.status, c.verified_order_id, c.case_kind
-       FROM conversations c JOIN sites s ON s.id = c.site_id
-      WHERE s.tracker_business_id::text = $1::text AND c.source = 'email' AND lower(c.visitor_id) = $2 AND c.merged_into IS NULL
-      ORDER BY (c.verified_order_id = $3) DESC NULLS LAST, c.last_message_at DESC NULLS LAST LIMIT 1`,
-    [box.panelId, `email:${email}`, order]);
-  const row = r.rows[0];
-  if (row && (sameOrder(row.verified_order_id, order) || !row.case_kind)) {
-    await query(
-      `UPDATE conversations
-          SET verified_order_id = $2,
-              verified_at = CASE WHEN verified_order_id = $2 THEN verified_at ELSE now() END,
-              verified_via = CASE WHEN verified_order_id = $2 THEN verified_via ELSE 'mail' END,
-              status = CASE WHEN status = 'resolved' AND $3 THEN 'agent_handling' ELSE status END,
-              updated_at = now()
-        WHERE id = $1`, [row.id, order, reopen]);
-    return { ok: true, chatId: row.id, created: false };
-  }
+  const panelId = box.panelId;
+  return withTransaction(async (client): Promise<CaseChatResult> => {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`mail-case:${panelId}:${email}`]);
+    const r = await client.query<{ id: string; status: string; verified_order_id: string | null; case_kind: string | null }>(
+      `SELECT c.id, c.status, c.verified_order_id, c.case_kind
+         FROM conversations c JOIN sites s ON s.id = c.site_id
+        WHERE s.tracker_business_id::text = $1::text AND c.source = 'email' AND lower(c.visitor_id) = $2 AND c.merged_into IS NULL
+          AND (c.verified_order_id IS NULL OR ltrim(c.verified_order_id, '#') = ltrim($3, '#'))
+        ORDER BY (c.verified_order_id = $3) DESC NULLS LAST, c.last_message_at DESC NULLS LAST LIMIT 1`,
+      [panelId, `email:${email}`, order]);
+    const row = r.rows[0];
+    if (row && (sameOrder(row.verified_order_id, order) || (!row.verified_order_id && !row.case_kind))) {
+      await client.query(
+        `UPDATE conversations
+            SET verified_order_id = $2,
+                verified_at = CASE WHEN verified_order_id = $2 THEN verified_at ELSE now() END,
+                verified_via = CASE WHEN verified_order_id = $2 THEN verified_via ELSE 'mail' END,
+                status = CASE WHEN status = 'resolved' AND $3 THEN 'agent_handling' ELSE status END,
+                updated_at = now()
+          WHERE id = $1`, [row.id, order, reopen]);
+      return { ok: true as const, chatId: row.id, created: false };
+    }
 
-  const site = await query<{ id: string }>(
-    `SELECT s.id FROM sites s WHERE s.tracker_business_id::text = $1::text
-      ORDER BY (s.id = $2) DESC, s.created_at ASC LIMIT 1`, [box.panelId, box.siteId || '']);
-  if (!site.rows[0]) return { ok: false, status: 409, error: 'This panel has no chat site, so the customer cannot be put in a list.' };
-  const made = await query<{ id: string }>(
-    `INSERT INTO conversations
-       (id, site_id, visitor_id, visitor_name, status, source, unread_count, last_message_at, created_at, updated_at,
-        verified_order_id, verified_at, verified_via)
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $5, 'email', 0, now(), now(), now(), $4, now(), 'mail')
-     RETURNING id`,
-    [site.rows[0].id, `email:${email}`, email, order, reopen ? 'agent_handling' : 'resolved']);
-  console.log(`[mail-case] email chat made for a verified sender, panel=${box.panelId}`);
-  return { ok: true, chatId: made.rows[0].id, created: true };
+    const site = await client.query<{ id: string }>(
+      `SELECT s.id FROM sites s WHERE s.tracker_business_id::text = $1::text
+        ORDER BY (s.id = $2) DESC, s.created_at ASC LIMIT 1`, [panelId, box.siteId || '']);
+    if (!site.rows[0]) return { ok: false as const, status: 409, error: 'This panel has no chat site, so the customer cannot be put in a list.' };
+    const made = await client.query<{ id: string }>(
+      `INSERT INTO conversations
+         (id, site_id, visitor_id, visitor_name, status, source, unread_count, last_message_at, created_at, updated_at,
+          verified_order_id, verified_at, verified_via)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $5, 'email', 0, now(), now(), now(), $4, now(), 'mail')
+       RETURNING id`,
+      [site.rows[0].id, `email:${email}`, email, order, reopen ? 'agent_handling' : 'resolved']);
+    console.log(`[mail-case] email chat made for a verified sender, panel=${box.panelId}`);
+    return { ok: true as const, chatId: made.rows[0].id, created: true };
+  });
 }

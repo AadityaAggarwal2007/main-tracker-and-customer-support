@@ -84,7 +84,9 @@ export function wrapReply(body: string, ctx: { name?: string | null; brand?: str
 // Vastora Support", "Thanks,\nTeam Vastora") cut, so a draft is never greeted or signed twice. A sentence that only
 // starts with "Thank you for ..." stays.
 const GREETING = /^\s*(?:hi|hello|hey|dear|namaste|hii+)\b[^\n,!.?]{0,30}(?:[,!]+[ \t]*\n*|\n+)\s*/iu;
-const SIGN_OFF = /\s*\b(?:(?:best|warm|kind)\s+)?(?:regards|thanks|thank you|sincerely)[ \t]*[,!.]?\s*(?:team[ \t]+[^\n.!?]{1,30}|[^\n.!?]{0,40}\b(?:team|support))[ \t.!]*$/iu;
+// A sign-off starts its own line and is not a sentence ("Thank you for your patience and support" is the message, kept;
+// review 2026-10-14): "Regards,\nVastora Team", "Thanks, Team Vastora", "Best regards - Support".
+const SIGN_OFF = /(?:^|\n|(?<=[.!?])[ \t]+)[ \t]*(?:(?:best|warm|kind|warmest|many)\s+)?(?:regards|thanks|thank you|sincerely)(?![ \t]+(?:for|to|so|again|very)\b)[ \t]*[,!.\-]?\s*(?:team[ \t]+[^\n.!?]{1,30}|[^\n.!?]{0,40}\b(?:team|support))[ \t.!]*$/iu;
 const LONE_REGARDS = /\s*\b(?:(?:best|warm|kind)\s+)?regards[ \t]*[,!.]?\s*$/i;
 export function unwrapReply(text: string): string {
   const start = String(text || '').trim();

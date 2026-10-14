@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest, teamEntries } from '@/lib/auth';
 import { queryOne } from '@/lib/db';
-import { can, canAccessPanel, isSuperAdmin } from '@/lib/permissions';
+import { can, canAccessPanel, isSuperAdmin, isTeamLead } from '@/lib/permissions';
 import { loadBrandManagers, setBrandManager } from '@/lib/chat/brand-managers';
 import { panelsOf } from '@/lib/chat/brand-managers-rules';
 
@@ -38,6 +38,9 @@ export async function POST(request: NextRequest) {
     const m = teamEntries().find((e) => e.id === memberId);
     if (!m || !m.active) return NextResponse.json({ error: 'That member is not active.' }, { status: 400 });
     if (!can(m, 'chat.reply')) return NextResponse.json({ error: `${m.name} cannot reply to chats: tick "Reply" for them in Team first.` }, { status: 400 });
+    // The Manager is never given chats by auto-assign (onDuty leaves team leads out) and keeps All panels, so picking them
+    // would change nothing (review 2026-10-14): refused with the reason.
+    if (isTeamLead(m)) return NextResponse.json({ error: `${m.name} is a Manager: chats are never handed to a Manager automatically. Pick a team member.` }, { status: 400 });
     if (!canAccessPanel(m, panelId)) return NextResponse.json({ error: `${m.name} may not see this panel: add it to their panels in Team first.` }, { status: 400 });
   }
   try {
