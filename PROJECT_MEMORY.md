@@ -268,6 +268,11 @@ Done and live:
   our last reply puts the customer back to To reply / Active with the reason ("Reply not delivered"), a warning on top
   when Gmail stopped our mails today. Gmail gives no exact reason for "suspicious"; told the owner: no resending the same
   text, short replies without links, and checked how many mails each Gmail sends a day (query given).
+- **14 Oct, Gmail sending pace**: the live count showed VASTRIKA's support Gmail at ~30 mails a day until 10 Oct and
+  136-173 a day from 11 Oct (the Mail tab outbox), the other support Gmail up to 100. Owner: a Workspace per brand is not
+  worth it (a brand runs 20-25 days, about 3,000 mails), "gap wala bana de, 1 minute mein 3-4": the outbox now sends at
+  most 4 mails a minute per Gmail, 15 s apart, across both processes. Advice given: reuse an older Gmail for a new
+  brand instead of a fresh one each time; short replies, no repeated text to a bounced customer.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

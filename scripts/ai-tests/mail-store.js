@@ -351,6 +351,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const sync = require(path.join(SRC, 'lib/chat/mail-sync.ts'));
     const store = require(path.join(SRC, 'lib/chat/mail-store.ts'));
     const outbox = require(path.join(SRC, 'lib/chat/mail-outbox.ts'));
+    outbox.setOutboxPace({ gapMs: 0, perMinute: 1000 });                       // the groups below send many replies at once; the pacing group sets its own
     const pool = require(path.join(SRC, 'lib/chat/imap-pool.ts'));
     const { NextRequest } = require('next/server');
     const R = (p) => require(path.join(SRC, 'app/api/mail', p, 'route.ts'));
@@ -758,6 +759,50 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       const other = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'other@gmail.com');
       eq(other, undefined);                                                       // the Sent row to somebody else made no row and counted for nobody
       await q(`UPDATE mail_store SET gone = true WHERE box_id = $1 AND uid IN (70, 71, 72, 601, 602, 603, 604)`, [BOX]);
+    });
+    await t('pacing (owner 14 Oct, "1 minute mein 3-4"): one Gmail sends at most one reply per gap and perMinute a minute, across both processes; another Gmail is never held up; the rest waits pending', async () => {
+      G.smtpFail = null; G.smtpHold = null;
+      eq(outbox.OUTBOX_PACE.gapMs, 15000); eq(outbox.OUTBOX_PACE.perMinute, 4);
+      outbox.setOutboxPace({ ...outbox.OUTBOX_PACE });
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE status IN ('pending', 'sending')`);
+      await q(`UPDATE mail_outbox SET claimed_at = claimed_at - interval '10 minutes' WHERE claimed_at IS NOT NULL`);
+      const add = async (text, box = BOX) => (await q(`INSERT INTO mail_outbox (box_id, to_addr, subject, text_body, html_body, message_id) VALUES ($1, 'cust@example.com', 'Re: x', $2, '<p>x</p>', $3) RETURNING id`, [box, text, `<${text}@pace>`])).rows[0].id;
+      const ago = (sec) => q(`UPDATE mail_outbox SET claimed_at = claimed_at - $1 * interval '1 second' WHERE claimed_at IS NOT NULL`, [sec]);
+      const sentText = (t) => G.sent.filter((m) => m.text === t).length;
+      const [a, b, c] = [await add('Pace A'), await add('Pace B'), await add('Pace C')];
+      eq(await outbox.runOutbox(), 1);                                          // one at once, the oldest
+      deq([sentText('Pace A'), sentText('Pace B'), sentText('Pace C')], [1, 0, 0]);
+      deq([(await outboxRow(b)).status, (await outboxRow(b)).tries], ['pending', 0]);   // waiting, not a failed try
+      eq(await outbox.runOutbox(), 0);                                          // the gap has not passed
+      await ago(16);
+      eq(await outbox.runOutbox(), 1); eq(sentText('Pace B'), 1); eq((await outboxRow(c)).status, 'pending');
+      // another Gmail is not held up by this one's gap
+      const other = await add('Pace other', 'other-box');
+      const o = await outbox.claimOutbox(String(other));
+      assert.ok(o, 'another mailbox claims at once');
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE id = $1`, [other]);
+      // the two processes: two waiting replies of one Gmail claimed at the same moment = only one goes
+      await ago(16);
+      const d = await add('Pace D');
+      const pair = await Promise.all([outbox.claimOutbox(String(c)), outbox.claimOutbox(String(d))]);
+      eq(pair.filter(Boolean).length, 1);
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE id IN ($1, $2)`, [c, d]);
+      // perMinute: with a short gap, the third claim inside one minute waits
+      outbox.setOutboxPace({ gapMs: 1000, perMinute: 2 });
+      await ago(120);
+      const [e1, e2, e3] = [await add('Pace E1'), await add('Pace E2'), await add('Pace E3')];
+      assert.ok(await outbox.claimOutbox(String(e1)));
+      await ago(2); assert.ok(await outbox.claimOutbox(String(e2)));
+      await ago(2); eq(await outbox.claimOutbox(String(e3)), null);              // 2 already in this minute
+      await ago(60); assert.ok(await outbox.claimOutbox(String(e3)));
+      // a retry of the same row never waits on itself
+      await q(`UPDATE mail_outbox SET status = 'pending' WHERE id = $1`, [e3]);
+      await q(`UPDATE mail_outbox SET claimed_at = now() - interval '5 minutes' WHERE id IN ($1, $2)`, [e1, e2]);   // only e3's own claim is recent
+      assert.ok(await outbox.claimOutbox(String(e3)), 'its own earlier claim does not count');
+      await q(`UPDATE mail_outbox SET status = 'sent' WHERE status IN ('pending', 'sending')`);
+      outbox.setOutboxPace({ gapMs: 0, perMinute: 1000 });
+      const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-outbox.ts'), 'utf8');
+      assert.match(src, /pg_advisory_xact_lock\(hashtext\('mail-outbox:' \|\| \$1\)\)/);
     });
     pool.closeAllImap();
     outbox.closeOutboxTransports();

@@ -12,7 +12,7 @@
 // sending. Imports no other mail module (email.ts and mail-sync.ts call this one). Until mail-outbox.sql is run
 // (42P01) outboxInstalled() is false and the route sends the old way, inside the request.
 import nodemailer from 'nodemailer';
-import { query, queryOne } from '@/lib/db';
+import { query, queryOne, withTransaction } from '@/lib/db';
 import { cbBoxRows, isCbBox } from './mail-cb-box';
 import { replyMailMessage } from './reply-mail';
 
@@ -23,6 +23,15 @@ export const OUTBOX_MAX_TRIES = 5;
 export const OUTBOX_RETRY_MS = 30_000;          // a failed send waits this long before the next try
 export const OUTBOX_STALE_MS = 3 * 60_000;      // a 'sending' row older than this = its process died: claimed again
 const SEND_CAP_MS = 90_000;                     // never wait longer than this on one send, whatever the socket does
+
+// Pacing (owner 2026-10-14: Google stopped VASTRIKA's support Gmail as "suspicious" after it went from ~30 to ~170 mails
+// a day in one go, many sent seconds apart; "ha gap wala bana de, 1 minute mein 3-4"): one Gmail sends at most
+// perMinute mails in any minute and never two within gapMs, whatever the two PM2 processes do (the claim checks it
+// under an advisory lock per mailbox). A reply that has to wait stays pending ("Sending…") and goes on the next run.
+export interface OutboxPace { gapMs: number; perMinute: number }
+export const OUTBOX_PACE: OutboxPace = { gapMs: 15_000, perMinute: 4 };
+let pace: OutboxPace = { ...OUTBOX_PACE };
+export function setOutboxPace(p: OutboxPace): void { pace = { ...p }; }   // tests only
 
 export interface OutboxFile { filename: string; contentType: string; content: string }   // content = base64
 export interface OutboxReply {
@@ -78,13 +87,25 @@ interface OutboxRow {
   in_reply_to: string | null; refs: string | null; files: OutboxFile[] | null; tries: number; reply_uid?: string | number | null;
 }
 
-// The claim: one process gets the row, the other sees nothing back.
+// The claim: one process gets the row, the other sees nothing back. Under a lock per mailbox, and only while the
+// mailbox's pace allows a send now (no other claim of it in the last gapMs, fewer than perMinute in the last minute;
+// a retry of the same row does not count against itself); null = taken elsewhere, or not yet.
 export async function claimOutbox(id: string): Promise<OutboxRow | null> {
-  return queryOne<OutboxRow>(
-    `UPDATE mail_outbox SET status = 'sending', claimed_at = now(), tries = tries + 1, updated_at = now()
-      WHERE id = $1 AND (status = 'pending' OR (status = 'sending' AND claimed_at < now() - $2 * interval '1 millisecond'))
-      RETURNING id::text AS id, box_id, to_addr, subject, text_body, html_body, message_id, in_reply_to, refs, files, tries, reply_uid`,
-    [id, OUTBOX_STALE_MS]);
+  return withTransaction(async (c) => {
+    const b = await c.query<{ box_id: string }>(`SELECT box_id FROM mail_outbox WHERE id = $1`, [id]);
+    if (!b.rows[0]) return null;
+    await c.query(`SELECT pg_advisory_xact_lock(hashtext('mail-outbox:' || $1))`, [b.rows[0].box_id]);
+    const r = await c.query<OutboxRow>(
+      `UPDATE mail_outbox SET status = 'sending', claimed_at = clock_timestamp(), tries = tries + 1, updated_at = now()
+        WHERE id = $1 AND (status = 'pending' OR (status = 'sending' AND claimed_at < clock_timestamp() - $2 * interval '1 millisecond'))
+          AND NOT EXISTS (SELECT 1 FROM mail_outbox o WHERE o.box_id = mail_outbox.box_id AND o.id <> mail_outbox.id
+                             AND o.claimed_at > clock_timestamp() - $3 * interval '1 millisecond')
+          AND (SELECT count(*) FROM mail_outbox o WHERE o.box_id = mail_outbox.box_id AND o.id <> mail_outbox.id
+                  AND o.claimed_at > clock_timestamp() - interval '1 minute') < $4
+        RETURNING id::text AS id, box_id, to_addr, subject, text_body, html_body, message_id, in_reply_to, refs, files, tries, reply_uid`,
+      [id, OUTBOX_STALE_MS, pace.gapMs, pace.perMinute]);
+    return r.rows[0] || null;
+  });
 }
 
 // The mailbox's own address, name and App Password (site_emails), read for one send and never returned. Not through
@@ -172,6 +193,14 @@ async function sendOne(id: string): Promise<'sent' | 'failed' | 'pending' | 'tak
   }
 }
 
+// The next run after the gap, once per process (a run that left replies waiting asks for it).
+let again: ReturnType<typeof setTimeout> | null = null;
+function runAgainSoon(): void {
+  if (again || pace.gapMs <= 0) return;
+  again = setTimeout(() => { again = null; void runOutbox(); }, pace.gapMs + 1_000);
+  (again as { unref?: () => void }).unref?.();
+}
+
 // Every waiting row, one at a time. One run at a time per process (a second call joins the running one). Never throws.
 const G = globalThis as unknown as { __mailOutboxRun?: Promise<number> | null };
 export async function runOutbox(): Promise<number> {
@@ -180,12 +209,23 @@ export async function runOutbox(): Promise<number> {
     let sent = 0;
     try {
       if (!(await outboxInstalled())) return 0;
-      const todo = await query<{ id: string }>(
-        `SELECT id::text AS id FROM mail_outbox
+      const todo = await query<{ id: string; box_id: string }>(
+        `SELECT id::text AS id, box_id FROM mail_outbox
           WHERE (status = 'pending' AND (tries = 0 OR claimed_at IS NULL OR claimed_at < now() - $1 * interval '1 millisecond'))
              OR (status = 'sending' AND claimed_at < now() - $2 * interval '1 millisecond')
-          ORDER BY id LIMIT 25`, [OUTBOX_RETRY_MS, OUTBOX_STALE_MS]);
-      for (const r of todo.rows) if ((await sendOne(r.id)) === 'sent') sent++;
+          ORDER BY id LIMIT 200`, [OUTBOX_RETRY_MS, OUTBOX_STALE_MS]);
+      // paced: one try per mailbox per run, oldest first, so one busy Gmail never holds up the others; what waits goes on
+      // the next run, which comes by itself just after the gap
+      const tried = new Set<string>();
+      let waiting = false;
+      for (const r of todo.rows) {
+        if (pace.gapMs > 0 && tried.has(r.box_id)) { waiting = true; continue; }
+        tried.add(r.box_id);
+        const res = await sendOne(r.id);
+        if (res === 'sent') sent++;
+        else if (res === 'taken') waiting = true;
+      }
+      if (waiting) runAgainSoon();
     } catch (e) { console.error('[mail-outbox] run:', (e as Error).message); }
     return sent;
   })();

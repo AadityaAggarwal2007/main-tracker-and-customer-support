@@ -69,7 +69,7 @@ export default function MailConversation({ token, boxId, mail, items, loading, f
     if (!m.local) return null;
     if (m.sendState === 'failed') return <span className="mail-send failed"><AlertCircle size={12} /> Not sent: {m.sendError || 'Gmail did not take it'}{m.outboxId && onRetrySend && <> · <button type="button" className="mail-send-retry" onClick={e => { e.stopPropagation(); onRetrySend(m.outboxId!); }}>Try again</button></>}</span>;
     if (m.sendState === 'sent') return <span className="mail-send sent"><Check size={12} /> Sent</span>;
-    return <span className="mail-send sending"><Loader2 size={12} className="spin" /> Sending…</span>;
+    return <span className="mail-send sending" title="In line: one Gmail sends at most 4 mails a minute, 15 seconds apart, so Google does not take it for spam"><Loader2 size={12} className="spin" /> Sending…</span>;
   };
 
   const card = (m: ThreadItem) => {
