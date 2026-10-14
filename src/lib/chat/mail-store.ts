@@ -125,7 +125,7 @@ export async function storeFlag(row: StoreRow, action: 'seen' | 'unseen' | 'answ
 // The conversation of one mail: its Gmail thread (X-GM-THRID: their mails AND our replies, in INBOX and Sent), plus
 // what that address sent us / we sent it when Gmail gave no thread id. Last 30 days, oldest first.
 export async function storeThread(boxId: string, address: string, uid: number | null, now = Date.now()): Promise<StoreThreadItem[]> {
-  const since = sinceDate(now);
+  const since = sinceDate(now, STORE_LIST_DAYS);
   let threadId: string | null = null;
   if (uid) {
     const t = await queryOne<{ thread_id: string | null }>(
@@ -183,7 +183,7 @@ export async function storeFromAddresses(boxId: string, emails: string[], now = 
   const r = await query<StoreRow>(
     `SELECT ${LIST_COLS} FROM mail_store
       WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2 AND from_addr = ANY($3)
-      ORDER BY sent_at DESC LIMIT 15`, [boxId, sinceDate(now), emails.map(e => e.toLowerCase())]);
+      ORDER BY sent_at DESC LIMIT 15`, [boxId, sinceDate(now, STORE_LIST_DAYS), emails.map(e => e.toLowerCase())]);
   return r.rows.map(rowToListItem);
 }
 

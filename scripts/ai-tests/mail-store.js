@@ -183,10 +183,13 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq(f.bounceInfo('', null), { to: null, why: 'other' });
     for (const k of ['full', 'blocked', 'not_found', 'other']) assert.ok(f.BOUNCE_WHY[k].length > 20);
     const reader = fs.readFileSync(path.join(SRC, 'components/mail/MailReader.tsx'), 'utf8');
-    assert.ok(/const bounce = isBounce\(mail\.fromAddress, mail\.subject\)/.test(reader));
+    assert.ok(/const bounce = versions\.length === 0 && isBounce\(mail\.fromAddress, mail\.subject\)/.test(reader), 'a verified sender is never a bounce');
     for (const g of ['!bounce && canReply && caseInfo', '!bounce && replyBox', '{!bounce && <CustomerCard']) assert.ok(reader.includes(g), g);
     assert.strictEqual((reader.match(/\{!bounce && canReply && \(/g) || []).length, 2, 'Notes and Correction hidden');
-    assert.ok(/Delivery failed/.test(fs.readFileSync(path.join(SRC, 'components/mail/MailRows.tsx'), 'utf8')));
+    const rows = fs.readFileSync(path.join(SRC, 'components/mail/MailRows.tsx'), 'utf8');
+    assert.ok(/Delivery failed/.test(rows) && /const bounce = !v && isBounce/.test(rows));
+    // review 14 Oct: text from Word / Excel (it carries a picture of itself) is pasted as text, never attached
+    assert.ok(/getData\('text\/plain'\)\) return;/.test(reader));
   });
 
   await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"; 12:45, live: he replied and the customer stayed active, "Chat Support jaisa, apne aap"): a new mail = active; our reply after it = closed; wrote again = active; Close / Reopen by hand; not-customer mail is never a case; a closed customer leaves To reply', () => {

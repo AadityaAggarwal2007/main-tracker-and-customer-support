@@ -138,7 +138,7 @@ async function sendRow(row: OutboxRow): Promise<void> {
   try {
     await Promise.race([
       t.sendMail(msg),
-      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('Gmail did not answer in time (SMTP)')), SEND_CAP_MS); }),
+      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(Object.assign(new Error('Gmail did not answer in time (SMTP)'), { capped: true })), SEND_CAP_MS); }),
     ]);
   } finally { if (timer) clearTimeout(timer); }
 }
@@ -161,8 +161,11 @@ async function sendOne(id: string): Promise<'sent' | 'failed' | 'pending' | 'tak
     return 'sent';
   } catch (e) {
     dropTransport(row.box_id);
-    const text = outboxErrorText(e);
-    const final = row.tries >= OUTBOX_MAX_TRIES;
+    // Our own 90 s cap fired while Gmail still had the mail: it may have gone out after all, so it is never sent again by
+    // itself (review 2026-10-14: a slow send could reach the customer twice). The team checks Sent, then Try again.
+    const capped = !!(e as { capped?: boolean })?.capped;
+    const text = capped ? 'Gmail did not confirm in time, so it may still have been sent. Check Gmail\'s Sent folder before pressing Try again.' : outboxErrorText(e);
+    const final = capped || row.tries >= OUTBOX_MAX_TRIES;
     await query(`UPDATE mail_outbox SET status = $2, error = $3, updated_at = now() WHERE id = $1`, [row.id, final ? 'failed' : 'pending', text]);
     console.error(`[mail-outbox] id=${row.id} box=${row.box_id} try ${row.tries}${final ? ' FAILED for good' : ''}: ${text}`);
     return final ? 'failed' : 'pending';

@@ -239,6 +239,12 @@ Done and live:
   a shared chargeback box uses the newest App Password; the test alert reports partial failures; a Meta template-list
   hiccup uses the last approved template.
 
+- **14 Oct, Mail review**: the conversation, Suggestions context, verified-address mails and the first copy read the
+  same 60 days as the list (`STORE_LIST_DAYS`); `endsWithSignOff` reads only the end (last line, or a name under a bare
+  "Regards,"); paste from Word / Excel stays text; a file dropped outside the reply card never leaves the page; a send our
+  90 s cap cut is failed with "may still have been sent" (never re-sent by itself); a verified sender is never a bounce.
+  Not changed: `storeList`'s reply lookup over 60 days (EXPLAIN on the VPS if the list gets slow).
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

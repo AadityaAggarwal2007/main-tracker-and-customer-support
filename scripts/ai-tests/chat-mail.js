@@ -80,7 +80,8 @@ async function t(name, fn) {
   await t('sign-off once (owner 14 Oct: "Best Regards, Team Vastrika" then a second "Regards, VASTRIKA Support")', () => {
     for (const x of ['Dear Customer,\nYour order is on the way.\n\nBest Regards,\nTeam Vastrika', 'Hi,\nok\nThanks', 'Hi\nDone.\nRegards, Vastora Support', 'Hello\nok\n- Team Kurtiya', 'Hi\nok\nThank you\nCustomer Care'])
       eq(R.endsWithSignOff(x), true, x);
-    for (const x of ['Thanks for waiting, your parcel left today.\nIt reaches in 3 days.\nThe link: https://x.in/t', 'Hi\nTeam members will call?', ''])
+    for (const x of ['Thanks for waiting, your parcel left today.\nIt reaches in 3 days.\nThe link: https://x.in/t', 'Hi\nTeam members will call?', '',
+      'Thank you!\nYour order ships soon.\nTrack it here: https://x.in/t', 'Your order is delayed.\nTeam is checking.', 'Sorry for this.\nPlease contact customer support.'])
       eq(R.endsWithSignOff(x), false, x);
     const b = R.chatMailBodies('Dear Customer,\nTracking: https://x.in/t\n\nBest Regards,\nTeam Vastrika', 'VASTRIKA');
     ok(!/VASTRIKA Support/.test(b.textBody) && !/VASTRIKA Support/.test(b.htmlBody), b.textBody);

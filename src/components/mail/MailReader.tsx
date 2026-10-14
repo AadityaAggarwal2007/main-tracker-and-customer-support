@@ -193,12 +193,20 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   const auto = versions[0] && (versions[0].byName === 'Email match' || versions[0].byName === 'Email + order number');
   const files = mail.attachments.filter(a => !a.inline);
 
+  useEffect(() => {
+    if (!replyOpen) return;
+    const stop = (ev: DragEvent) => { if (Array.from(ev.dataTransfer?.types || []).includes('Files')) ev.preventDefault(); };
+    window.addEventListener('dragover', stop);
+    window.addEventListener('drop', stop);
+    return () => { window.removeEventListener('dragover', stop); window.removeEventListener('drop', stop); setDragging(false); };
+  }, [replyOpen]);
+
   const replyBox = canReply && (replyOpen ? (
     <div className={`mail-reply mail-msg open${dragging ? ' mail-drop' : ''}`}
       // A photo can be dropped on the reply or pasted into it (Ctrl+V a screenshot), like the chat's reply box
       // (owner 2026-10-14: "mail ma image attach nai kar pa raha, woh option de jaisa shiptrack ma ha").
       onDragOver={e => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) { e.preventDefault(); setDragging(true); } }}
-      onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
+      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }}
       onDrop={e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles(e.dataTransfer.files); } setDragging(false); }}>
       <div className="mail-msg-head static">
         <span className="mail-avatar sm ours" aria-hidden="true">{initials(`${box?.siteName || ''} Support`)}</span>
@@ -210,7 +218,8 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply (paste or drop a photo here to attach it)" maxLength={8000} autoFocus
         onPaste={e => {
           const pasted = Array.from(e.clipboardData?.files || []);
-          if (!pasted.length) return;
+          // Text copied from Word / Excel also carries a picture of itself: the text wins (review 2026-10-14)
+          if (!pasted.length || e.clipboardData?.getData('text/plain')) return;
           e.preventDefault();
           // a pasted screenshot has no useful name: give it one with the time
           addFiles(pasted.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `photo-${Date.now()}${i ? `-${i}` : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }))));
@@ -261,7 +270,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
 
   // Gmail's "could not deliver" report about one of OUR mails (owner 2026-10-14): never a customer, so no Verify, case,
   // Notes, Correction, reply or customer card; it says to whom and why instead.
-  const bounce = isBounce(mail.fromAddress, mail.subject) ? bounceInfo(mail.text, box?.email) : null;
+  const bounce = versions.length === 0 && isBounce(mail.fromAddress, mail.subject) ? bounceInfo(mail.text, box?.email) : null;
 
   return (
     <div className="mail-reader">

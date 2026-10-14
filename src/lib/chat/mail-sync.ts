@@ -152,7 +152,7 @@ async function syncFolder(c: ImapFlow, box: SyncBox, folder: StoreFolder, path: 
     if (!mb) return out;
     const uidvalidity = String(mb.uidValidity ?? 0);
     const modseqNow = mb.highestModseq != null ? String(mb.highestModseq) : null;
-    const since = sinceDate(now);
+    const since = sinceDate(now, STORE_LIST_DAYS);
     const restart = !st || st.uidvalidity !== uidvalidity;
     if (restart && st) await query(`UPDATE mail_store SET gone = true, updated_at = now() WHERE box_id = $1 AND folder = $2 AND uidvalidity <> $3 AND NOT gone`, [box.id, folder, uidvalidity]);
     let lastUid = restart ? 0 : Number(st!.last_uid || 0);
