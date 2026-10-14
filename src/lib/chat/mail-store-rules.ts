@@ -4,6 +4,7 @@
 // mail-sync.ts copies Gmail into them.
 import { htmlToText } from '@/lib/chargeback/parse';
 import { addressLabel, frameHtml, hasRemoteImages, textToHtml, type MailListItem } from './mail-view';
+import { bounceInfo, isBounce } from './mail-filters';
 
 export type StoreFolder = 'inbox' | 'sent';
 export interface StoreAttachment { index: number; filename: string; contentType: string; size: number; inline: boolean }
@@ -40,6 +41,41 @@ export function rowToListItem(r: StoreRow & { snippet?: string | null; replied?:
     answered: !!r.answered,
     authPass: !!r.auth_pass,
   };
+}
+
+// ── Bounces (owner 2026-10-14, VASTRIKA: "Your message to ... appears suspicious and wasn't delivered") ──
+// Gmail files its "could not deliver" report INTO the customer's conversation, so it became the conversation's newest
+// INBOX mail: the row showed as the bounce (Not customers) and the customer, whose case our undelivered reply had
+// closed, left To reply. storeList now picks the newest NON-bounce mail as the row and hands the thread's newest bounce
+// (bounce_at / bounce_text); here a bounce NEWER than our last reply (repliedAt, else the replied / answered flag at the
+// mail's own time) puts the customer back: replied / answered off, repliedAt gone, bounce = when, why, to whom. A bounce
+// report Gmail kept in its own conversation counts for the customer whose address it names. Writing again (a newer
+// Sent mail) clears it by itself.
+export interface BounceSource { item: MailListItem; bounceAt?: string | Date | null; bounceText?: string | null }
+export function applyBounces(rows: BounceSource[]): MailListItem[] {
+  const ms = (v: string | Date | null | undefined) => (v ? new Date(v).getTime() || 0 : 0);
+  const loose = new Map<string, { at: number; text: string }>();
+  for (const r of rows) {
+    if (!isBounce(r.item.fromAddress, r.item.subject)) continue;
+    const text = r.bounceText || `${r.item.subject} ${r.item.snippet || ''}`;
+    const to = bounceInfo(text).to;
+    const at = ms(r.item.date);
+    if (to && at > (loose.get(to)?.at || 0)) loose.set(to, { at, text });
+  }
+  return rows.map(r => {
+    const it = r.item;
+    if (isBounce(it.fromAddress, it.subject)) return it;
+    let b = r.bounceAt ? { at: ms(r.bounceAt), text: r.bounceText || '' } : null;
+    const other = loose.get(it.fromAddress.toLowerCase());
+    if (other && other.at > (b?.at || 0)) b = other;
+    if (!b || b.at <= ms(it.date)) return it;
+    const ours = it.repliedAt ? ms(it.repliedAt) : (it.replied || it.answered ? ms(it.date) : 0);
+    if (!ours || b.at <= ours) return it;
+    const info = bounceInfo(b.text);
+    const { repliedAt: _r, ...rest } = it;
+    void _r;
+    return { ...rest, replied: false, answered: false, bounce: { at: new Date(b.at).toISOString(), why: info.why, to: info.to } };
+  });
 }
 
 // The opened mail, exactly the shape the screen already knows (mail-inbox.ts MailFull). null = the body is not copied yet.

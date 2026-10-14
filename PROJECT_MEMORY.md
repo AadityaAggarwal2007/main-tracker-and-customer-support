@@ -262,6 +262,12 @@ Done and live:
   jaenga"); courier real scans: later. Built: promises waiting 2+ days (Refund form not sent / refund request not
   decided or paid / Ship again not sent) on the Today board, a red bar for the Super Admin + Manager in Chat Support and
   one WhatsApp a working day at 10:30 to the alert numbers (`src/lib/refund/stuck*.ts`). Next: bounce -> back to To reply.
+- **14 Oct, bounces (VASTRIKA: Gmail's own "appears suspicious and wasn't delivered")**: Gmail puts its bounce report
+  inside the customer's conversation, so the Mail list showed the bounce as the row (Not customers) and the customer,
+  closed by our undelivered reply, vanished from To reply. Fixed: the row is the newest non-bounce mail, a bounce after
+  our last reply puts the customer back to To reply / Active with the reason ("Reply not delivered"), a warning on top
+  when Gmail stopped our mails today. Gmail gives no exact reason for "suspicious"; told the owner: no resending the same
+  text, short replies without links, and checked how many mails each Gmail sends a day (query given).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

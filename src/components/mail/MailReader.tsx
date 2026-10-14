@@ -9,7 +9,7 @@ import { getReplyWrap, setReplyWrap } from '@/components/replyWrap';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
-import { BOUNCE_WHY, BUCKET_LABEL, bounceInfo, initials, isBounce, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
+import { BOUNCE_WHY, BUCKET_LABEL, bounceInfo, initials, isBounce, type BounceWhy, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
 import { CorrectionDialog } from '@/components/CorrectionDialog';
@@ -24,7 +24,7 @@ const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${
 // box right under it (Reply, or ask for the order details when the sender is not verified). The frame is as tall as the
 // mail (no white box below a three-line mail), and the "Customer" card (CustomerCard) stands on the right on a desktop,
 // above the conversation on a phone.
-export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, onRetrySend, customer, customerLoading, canReply, onAlert, onBack, backLabel, position, bucket, caseInfo, onCase, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
+export default function MailReader({ token, box, mail, versions, thread, threadLoading, threadFailed, onRetryThread, onRetrySend, customer, customerLoading, canReply, onAlert, onBack, backLabel, position, bucket, bounced, caseInfo, onCase, onNextAfterSend, onPrev, onNext, onShowImages, onMarkUnread, onChanged, onSent }: {
   token: string; box: Box | null; mail: Full; versions: Ver[]; canReply: boolean;
   thread: ThreadItem[] | null; threadLoading: boolean; threadFailed?: boolean; onRetryThread?: () => void;
   onRetrySend?: (outboxId: string) => void;      // "Try again" on a reply the outbox could not send
@@ -33,6 +33,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   backLabel?: string; position?: string;   // "To reply" / "3 of 41"
   bucket?: MailBucket;                      // To reply / Replied / Not a customer (mail-filters.ts bucketOf)
+  bounced?: { at: string; why: string; to: string | null } | null;   // our last reply to this customer came back undelivered (owner 2026-10-14)
   caseInfo?: CustomerCase | null;           // the customer's case (owner 2026-10-11 afternoon; closed by a reply or by hand since 12:45); null = not a customer
   onCase?: (action: 'close' | 'reopen') => void;                                       // Close case / Reopen case (canReply only)
   onNextAfterSend?: boolean;                // after Send the screen opens the next mail to reply to
@@ -323,6 +324,13 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         )}
       </header>
 
+      {/* Our last reply to this customer bounced (owner 2026-10-14): the customer is back in To reply until we write again */}
+      {!bounce && bounced && (
+        <div className="mail-verify bad">
+          <AlertTriangle size={16} />
+          <span><b>Our last reply{bounced.to ? <> to {bounced.to}</> : null} was not delivered</b> ({agoText(Date.parse(bounced.at))}). {BOUNCE_WHY[(bounced.why in BOUNCE_WHY ? bounced.why : 'other') as BounceWhy]} The customer is back in To reply until you write again.</span>
+        </div>
+      )}
       {/* Verification: automatic first, then the team (owner 2026-10-08); a bounce gets its own red line instead */}
       {bounce ? (
         <div className="mail-verify bad">
