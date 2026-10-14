@@ -26,7 +26,11 @@ Written 2026-10-09 so a new session does not re-read the whole repo. Keep it SHO
   ssh step timed out. It NEVER runs SQL.
 - **SQL files are his to run** (he pastes the one-line command in his Terminal): only after he
   says yes; anything that changes or deletes rows needs his plain-words OK.
-- Everything applies to ALL panels; never panel-specific code, never "tested on vastora only".
+- **We are building ShipTrack, not a panel** (owner 2026-10-14: "jo bhi command dunga woh 3 pa kya jitna panel bhi
+  add honge un sabpa laga hamesha, we are building shiptrack not a specific panel"). EVERY request applies to every
+  panel today (vastora, VASTRIKA, kurtiya) AND every panel added later, even when he shows one panel's screenshot:
+  no panel name / id in code, defaults that a NEW panel gets by itself (no copy step he has to remember), a setting
+  stored per panel works for any panel id, tests use made-up panel ids, and the report says it holds for all panels.
 - Never ask for or handle the root password, a secret's value, a private key; never print
   `/etc/tracker/.env`. If he pastes a secret into chat, tell him to regenerate it.
 - Dev branch: `claude/gracious-meitner-3de4a7`. After each merge:
