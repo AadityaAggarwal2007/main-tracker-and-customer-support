@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X, Sparkles, SpellCheck, NotebookPen } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, ChevronLeft, ChevronRight, Download, FolderCheck, FolderOpen, Image as ImageIcon, Loader2, MessageCircle, Paperclip, Reply, Send, ShieldQuestion, EyeOff, Wrench, X, Sparkles, SpellCheck, NotebookPen } from 'lucide-react';
 import Suggestions, { type SuggestState } from '@/app/admin/chat/_components/Suggestions';
 import type { SuggestLang } from '@/lib/chat/suggest';
 import ReplyNotesDialog from '@/components/ReplyNotesDialog';
@@ -9,7 +9,7 @@ import { getReplyWrap, setReplyWrap } from '@/components/replyWrap';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
-import { BUCKET_LABEL, initials, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
+import { BOUNCE_WHY, BUCKET_LABEL, bounceInfo, initials, isBounce, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
 import { CorrectionDialog } from '@/components/CorrectionDialog';
@@ -259,6 +259,10 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
     </div>
   ));
 
+  // Gmail's "could not deliver" report about one of OUR mails (owner 2026-10-14): never a customer, so no Verify, case,
+  // Notes, Correction, reply or customer card; it says to whom and why instead.
+  const bounce = isBounce(mail.fromAddress, mail.subject) ? bounceInfo(mail.text, box?.email) : null;
+
   return (
     <div className="mail-reader">
       {notesOpen && (
@@ -271,16 +275,16 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         <button type="button" className="btn btn-ghost btn-sm" onClick={onMarkUnread} title="Mark unread"><EyeOff size={15} /> Mark unread</button>
         {/* Close case / Reopen case (owner 2026-10-11 afternoon): a customer's mail only; nothing goes to the customer.
             A reply closes the case by itself (owner 12:45); Close case is for a mail that needs no reply. */}
-        {canReply && caseInfo && onCase && (caseInfo.state === 'active'
+        {!bounce && canReply && caseInfo && onCase && (caseInfo.state === 'active'
           ? <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('close')} title="For a mail that needs no reply: the case moves to Closed cases and leaves To reply (a reply closes it by itself). A new mail from them makes it active again."><FolderCheck size={15} /> Close case</button>
           : <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => onCase('reopen')} title="Put this customer back among the active cases, until you reply again or close it again"><FolderOpen size={15} /> Reopen case</button>)}
-        {canReply && (
+        {!bounce && canReply && (
           <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => setNotesOpen(true)}
             title="Notes: the team's saved replies (Cancel, Refund, Ship again ...), filled in for this customer">
             <NotebookPen size={15} /> Notes
           </button>
         )}
-        {canReply && (
+        {!bounce && canReply && (
           <button type="button" className="btn btn-ghost btn-sm mail-casebtn" onClick={() => setCorrOpen(true)}
             title={versions.length > 0 ? 'The customer wants something changed on the order (address, size, colour ...): note it for the Manager' : 'Verify this sender first; the dialog shows the two ways'}>
             <Wrench size={15} /> Correction
@@ -310,8 +314,13 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         )}
       </header>
 
-      {/* Verification: automatic first, then the team (owner 2026-10-08) */}
-      {versions.length > 0 ? (
+      {/* Verification: automatic first, then the team (owner 2026-10-08); a bounce gets its own red line instead */}
+      {bounce ? (
+        <div className="mail-verify bad">
+          <AlertTriangle size={16} />
+          <span><b>Our mail was not delivered{bounce.to ? <> to {bounce.to}</> : null}.</b> {BOUNCE_WHY[bounce.why]} This is Gmail&apos;s report, not a customer: no reply needed.</span>
+        </div>
+      ) : versions.length > 0 ? (
         <div className="mail-verify ok">
           <BadgeCheck size={16} />
           <span><b>Verified</b> · order {versions.map(v => v.orderId).join(', ')} · {auto ? `automatic (${versions[0].byName.toLowerCase()})` : `by ${versions[0].byName || 'team'}`}</span>
@@ -366,9 +375,9 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
         )}
       />
 
-      {replyBox}
+      {!bounce && replyBox}
       </div>
-      <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} token={token} onChanged={onChanged} box={box?.id ?? null} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />
+      {!bounce && <CustomerCard customer={customer} loading={customerLoading} onAlert={onAlert} token={token} onChanged={onChanged} box={box?.id ?? null} onVerify={() => { setVerifyOpen(true); document.querySelector('.mail-verify-form')?.scrollIntoView({ block: 'nearest' }); }} />}
       </div>
       {corrOpen && (
         <CorrectionDialog who="sender" verified={versions.length > 0} orders={versions.map(v => v.orderId)} busy={corrBusy} error={corrError}

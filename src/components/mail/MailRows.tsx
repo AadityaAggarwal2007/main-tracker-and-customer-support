@@ -1,7 +1,7 @@
 'use client';
 
 import { BadgeCheck, Paperclip, Reply } from 'lucide-react';
-import { orderNumbersIn } from '@/lib/chat/mail-filters';
+import { isBounce, orderNumbersIn } from '@/lib/chat/mail-filters';
 import type { Item, Ver } from './types';
 
 const when = (iso: string) => {
@@ -23,6 +23,7 @@ export default function MailRows({ items, verified, openUid, onOpen, showVerify 
       {items.map(m => {
         const v = verified[m.fromAddress]?.[0];
         const nums = orderNumbersIn(m.subject);
+        const bounce = isBounce(m.fromAddress, m.subject);
         return (
           <button type="button" key={m.uid} className={`mail-row${m.unread ? ' unread' : ''}${openUid === m.uid ? ' active' : ''}`} onClick={() => onOpen(m.uid)}>
             <span className="mail-from truncate">
@@ -32,9 +33,10 @@ export default function MailRows({ items, verified, openUid, onOpen, showVerify 
                 : (m.threadCount && m.threadCount > 1 ? <span className="mail-n" title={`${m.threadCount} mails in this conversation`}>{m.threadCount}</span> : null)}
             </span>
             <span className="mail-tags">
-              {showVerify && (v ? <span className="mail-chip ok" title={`Verified for order ${v.orderId}${v.byName ? ` · ${v.byName}` : ''}`}><BadgeCheck size={11} /> {v.orderId}</span>
+              {bounce && <span className="mail-chip no" title="Gmail could not deliver one of our mails: open it to see to whom and why">Delivery failed</span>}
+              {showVerify && !bounce && (v ? <span className="mail-chip ok" title={`Verified for order ${v.orderId}${v.byName ? ` · ${v.byName}` : ''}`}><BadgeCheck size={11} /> {v.orderId}</span>
                 : <span className="mail-chip no" title="Nobody has verified this sender yet">Not verified</span>)}
-              {showVerify && !v && nums.map(n => <span key={n} className="mail-chip num" title="Order number written in the subject">{n}</span>)}
+              {showVerify && !bounce && !v && nums.map(n => <span key={n} className="mail-chip num" title="Order number written in the subject">{n}</span>)}
             </span>
             <span className="mail-line truncate">
               <span className="mail-subj">{m.subject}</span>

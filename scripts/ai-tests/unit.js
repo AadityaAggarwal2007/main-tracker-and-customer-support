@@ -1656,8 +1656,11 @@ t('email draft mode: ON by default, every AI reply is held except the fixed hand
   assert.strictEqual(ed.emailReplyHeld(false, false, true), true, 'draft mode: a routine answer is held');
   assert.strictEqual(ed.emailReplyHeld(false, false, false), false, 'switch off: sent, as before');
   assert.strictEqual(ed.emailReplyHeld(true, false, false), true, 'escalated is held either way, as before');
-  assert.strictEqual(ed.emailReplyHeld(true, true, true), false, 'the hand-over line (threat / fraud / refund) is always sent');
-  assert.strictEqual(ed.emailReplyHeld(false, true, true), false);
+  // owner 2026-10-14: in draft mode nothing goes out by itself, the hand-over line too; switch off = sent as before
+  assert.strictEqual(ed.emailReplyHeld(true, true, true), true, 'draft mode: the hand-over line is a draft too');
+  assert.strictEqual(ed.emailReplyHeld(false, true, true), true);
+  assert.strictEqual(ed.emailReplyHeld(true, true, false), false, 'switch off: the hand-over line is sent, as before');
+  assert.strictEqual(ed.emailReplyHeld(false, true, false), false);
   assert.strictEqual(ed.heldKind(true), 'escalated'); assert.strictEqual(ed.heldKind(false), 'draft');
   assert.strictEqual(ed.heldMovesToNeedsYou(false, false), false, 'an unverified sender is not moved to Needs you by a draft');
   assert.strictEqual(ed.heldMovesToNeedsYou(false, true), true); assert.strictEqual(ed.heldMovesToNeedsYou(true, false), true);

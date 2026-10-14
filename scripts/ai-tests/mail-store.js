@@ -168,6 +168,27 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     assert.ok(/Show more \(\{shown\.length - rowLimit\} left\)/.test(card) && /Gmail has not synced for/.test(card));
   });
 
+  await t('bounces (owner 14 Oct, "yeh error kyu ha"): Gmail\'s "could not deliver" mail is never a customer; the screen says to whom and why, no Verify / Notes / Correction / reply', () => {
+    const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+    eq(f.isBounce('mailer-daemon@googlemail.com', 'Delivery Status Notification (Failure)'), true);
+    eq(f.isBounce('postmaster@outlook.com', 'x'), true);
+    eq(f.isBounce('no-reply@bank.in', 'Undeliverable: Your order'), true);
+    eq(f.isBounce('priya@gmail.com', 'Delivery failed? where is my order'), false, 'a customer is never a bounce');
+    eq(f.isCustomerMail({ fromAddress: 'mailer-daemon@googlemail.com', from: 'Mail Delivery Subsystem' }, {}), false);
+    const full = f.bounceInfo("Delivery incomplete\nThere was a temporary problem delivering your message to cust.one@gmail.com. The recipient's inbox is out of storage space.", 'shop@gmail.com');
+    deq(full, { to: 'cust.one@gmail.com', why: 'full' });
+    deq(f.bounceInfo('Message blocked\nYour message to cust.two@gmail.com has been blocked. See technical details below.', 'shop@gmail.com'), { to: 'cust.two@gmail.com', why: 'blocked' });
+    deq(f.bounceInfo("Address not found\nYour message wasn't delivered to typo@gmial.com because the address couldn't be found", 'shop@gmail.com'), { to: 'typo@gmial.com', why: 'not_found' });
+    deq(f.bounceInfo('Something went wrong. From: shop@gmail.com To: c3@yahoo.com', 'shop@gmail.com'), { to: 'c3@yahoo.com', why: 'other' }, 'our own address is never named');
+    deq(f.bounceInfo('', null), { to: null, why: 'other' });
+    for (const k of ['full', 'blocked', 'not_found', 'other']) assert.ok(f.BOUNCE_WHY[k].length > 20);
+    const reader = fs.readFileSync(path.join(SRC, 'components/mail/MailReader.tsx'), 'utf8');
+    assert.ok(/const bounce = isBounce\(mail\.fromAddress, mail\.subject\)/.test(reader));
+    for (const g of ['!bounce && canReply && caseInfo', '!bounce && replyBox', '{!bounce && <CustomerCard']) assert.ok(reader.includes(g), g);
+    assert.strictEqual((reader.match(/\{!bounce && canReply && \(/g) || []).length, 2, 'Notes and Correction hidden');
+    assert.ok(/Delivery failed/.test(fs.readFileSync(path.join(SRC, 'components/mail/MailRows.tsx'), 'utf8')));
+  });
+
   await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"; 12:45, live: he replied and the customer stayed active, "Chat Support jaisa, apne aap"): a new mail = active; our reply after it = closed; wrote again = active; Close / Reopen by hand; not-customer mail is never a case; a closed customer leaves To reply', () => {
     const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
     const it = (uid, a, date, o = {}) => ({ uid, from: 'X', fromAddress: a, subject: 's', date, unread: false, hasAttachment: false, answered: false, ...o });
