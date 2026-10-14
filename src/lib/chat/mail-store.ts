@@ -45,6 +45,11 @@ export function forgetStoreReady(): void { ready.clear(); }
 // so it counts at once; a mail with no thread id still matches by the address).
 // Gmail's own "could not deliver" reports (mail-filters.ts isBounce, the address part): never a conversation's row.
 const BOUNCE_FROM_SQL = '^(mailer-daemon|postmaster)@';
+// A bounce's words: its text part, else its HTML without tags (14 Oct: the live count of "suspicious" bounces by body_text
+// came back 0; a report with its words only in HTML must still give its reason), else the subject.
+const bounceTextSql = (a: string) => `left(btrim(regexp_replace(COALESCE(NULLIF(btrim(${a}.body_text), ''),
+  regexp_replace(regexp_replace(regexp_replace(COALESCE(${a}.body_html, ''), '<(style|head|script)[^>]*?>.*?</(style|head|script)>', ' ', 'gi'), '<[^>]+>', ' ', 'g'), '&[a-z#0-9]+;', ' ', 'gi'),
+  ${a}.subject), '\\s+', ' ', 'g')), 1200)`;
 const REPLY_AFTER = `s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone AND s.sent_at > i.sent_at
                      AND (s.thread_id = i.thread_id OR lower(i.from_addr) = ANY(s.to_addrs))`;
 export async function storeList(boxId: string, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
@@ -54,6 +59,7 @@ export async function storeList(boxId: string, now = Date.now()): Promise<{ mail
   const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean; contact: boolean; bounce_at: string | Date | null; bounce_text: string | null }>(
     `WITH inbox AS (
        SELECT ${LIST_COLS}, thread_id, body_text, (from_addr ~* '${BOUNCE_FROM_SQL}') AS is_bounce,
+              CASE WHEN from_addr ~* '${BOUNCE_FROM_SQL}' THEN ${bounceTextSql('mail_store')} END AS self_bounce_text,
               row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY (from_addr ~* '${BOUNCE_FROM_SQL}') ASC, sent_at DESC) AS rn,
               bool_or(NOT seen) OVER (PARTITION BY COALESCE(thread_id, 'u' || id)) AS any_unread
          FROM mail_store
@@ -65,13 +71,13 @@ export async function storeList(boxId: string, now = Date.now()): Promise<{ mail
             btrim(left(regexp_replace(COALESCE(i.body_text, ''), '\\s+', ' ', 'g'), 180)) AS snippet,
             (i.answered OR ra.replied_at IS NOT NULL) AS replied,
             ra.replied_at,
-            bo.bounce_at, CASE WHEN i.is_bounce THEN left(COALESCE(i.body_text, ''), 1200) ELSE bo.bounce_text END AS bounce_text,
+            bo.bounce_at, CASE WHEN i.is_bounce THEN i.self_bounce_text ELSE bo.bounce_text END AS bounce_text,
             EXISTS (SELECT 1 FROM sent_to st WHERE st.addr = lower(i.from_addr)) AS contact,
             CASE WHEN i.thread_id IS NULL THEN 1
                  ELSE (SELECT count(*)::int FROM mail_store t WHERE t.box_id = $1 AND t.thread_id = i.thread_id AND NOT t.gone AND NOT t.local) END AS thread_count
        FROM inbox i
        LEFT JOIN LATERAL (SELECT max(s.sent_at) AS replied_at FROM mail_store s WHERE ${REPLY_AFTER}) ra ON true
-       LEFT JOIN LATERAL (SELECT b.sent_at AS bounce_at, left(COALESCE(b.body_text, b.subject), 1200) AS bounce_text
+       LEFT JOIN LATERAL (SELECT b.sent_at AS bounce_at, ${bounceTextSql('b')} AS bounce_text
                             FROM mail_store b
                            WHERE i.thread_id IS NOT NULL AND NOT i.is_bounce AND b.box_id = $1 AND b.folder = 'inbox' AND NOT b.gone
                              AND b.thread_id = i.thread_id AND b.from_addr ~* '${BOUNCE_FROM_SQL}' AND b.sent_at > i.sent_at
