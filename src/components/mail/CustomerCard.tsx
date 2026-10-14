@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { BadgeCheck, ChevronDown, ChevronUp, Copy, Loader2, MapPin, MessageCircle, Package, Send, ShieldQuestion, Truck, Undo2, Wallet } from 'lucide-react';
 import type { Customer, CustomerOrder } from './types';
 import { AddressDialog, ItemsDialog } from '@/app/admin/chat/_components/OrderLine';
+import { ncTitle } from '@/app/admin/chat/_components/chips';
 import type { StaffAddress, StaffOrderItems } from '@/app/admin/chat/_lib/types';
 import type { OrderAddress } from '@/lib/chat/order-address';
 
@@ -107,6 +108,7 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
     <div key={o.orderId} className="mail-cust-order">
       <div className="mail-cust-row">
         <b>Order {o.orderId}</b>
+        {o.numberChanged && <span className="chip chip-warn" title={ncTitle(o.numberChanged)}>NC</span>}
         {o.facts && <span className={`chip ${o.facts.mode !== 'normal' ? 'chip-muted' : o.facts.delivered ? 'chip-ok' : o.facts.late ? 'chip-warn' : 'chip-muted'}`}>{o.facts.status}</span>}
       </div>
       {o.facts && (

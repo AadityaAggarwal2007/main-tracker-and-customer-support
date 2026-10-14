@@ -362,7 +362,7 @@ export default function ChatSupportPage() {
       if (activeIdRef.current !== id) return;
       if (data.light) {
         if (syncRef.current?.id === id && typeof data.as_of === 'string') syncRef.current = { ...syncRef.current, asOf: data.as_of };
-        setActiveConv(c => (c && c.id === id ? { ...data.conversation, chargeback_open: !!c.chargeback_open } : c));
+        setActiveConv(c => (c && c.id === id ? { ...data.conversation, chargeback_open: !!c.chargeback_open, number_changed: c.number_changed ?? null } : c));
         setThreadTeam(t => (t && t.id === id ? { ...t, staff: data.staff ?? null, hotLock: data.hot_lock ?? null } : t));
         setMessages(list => mergeMessages(list, (data.messages || []) as ChatMessage[]));
         return;

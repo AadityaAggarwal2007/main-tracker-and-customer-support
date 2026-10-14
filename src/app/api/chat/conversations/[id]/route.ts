@@ -23,6 +23,7 @@ import {
 } from '@/lib/chat/team-routing';
 import { loadCustomerThread, loadForUser, loadTeamLog, loadThreadMessages, loadWriters, type ConversationRow } from '@/lib/chat/thread-read';
 import { staffBlock } from '@/lib/chat/thread-staff';
+import { ncKey, numberChanges } from '@/lib/chat/number-changed';
 import { parseAfter, parseBefore } from '@/lib/chat/thread-sync';
 import { transfer } from '@/lib/chat/thread-transfer';
 
@@ -144,6 +145,10 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const chargebackOpen = (await openChargebackKeys([{ business_id: cbBiz, order_id: conversation.verified_order_id }])).has(chargebackKey(cbBiz, conversation.verified_order_id));
   // Corrections (owner 2026-10-11): this chat's rows, pending first; a missing table = none (corrections-read.ts).
   const corrections = await listForConversation(params.id);
+  // "NC" (owner 2026-10-14): the team changed the verified order's phone (number-changed.ts).
+  const numberChanged = conversation.verified_order_id
+    ? ((await numberChanges([{ panel: cbBiz, order: conversation.verified_order_id }])).get(ncKey(cbBiz, conversation.verified_order_id)) || null)
+    : null;
   // "Gmail too" under the reply box (owner 2026-10-13, chat-mail.ts): where a website chat's reply would also be mailed
   // (the address masked), or why it cannot; null for any other chat or a login that does not reply.
   const mailOffer = conversation.source === 'chat' && can(user, 'chat.reply') ? await chatMailOffer(params.id) : null;
@@ -151,7 +156,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   return NextResponse.json({
     as_of: asOf,
     older_count: messages.older,
-    conversation,
+    conversation: { ...conversation, number_changed: numberChanged },
     messages: messages.rows.map((m) => unlink(withAuthor(m as { sender: string; metadata: unknown; content: string }))),
     earlier,
     earlier_total: thread.earlierTotal,

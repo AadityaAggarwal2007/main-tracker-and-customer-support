@@ -248,6 +248,7 @@ Done and live:
 - **14 Oct, phone edit**: the Edit address dialog (chat header, Corrections, Mail customer card) also changes the
   customer's phone (`orders.customer_mobile`, logged in `order_address_changes`). **`order-phone-edit.sql` waits for the
   owner's yes**: without it a CSV re-upload of an edited order puts the old number back.
+  Owner then: the customer verifies with the NEW number and the screens show **NC** next to the tick (`number-changed.ts`).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

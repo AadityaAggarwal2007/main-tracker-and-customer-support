@@ -11,6 +11,17 @@ import { msSince, CASE_LABELS, timeAgo, waitingText, SUBJECT_MONEY, SUBJECT_CHAN
 // the inbox is one of these (owner, 2026-10-03: "rows me bahut chips", "rang ek jaise nahi").
 export type ChipTone = 'muted' | 'primary' | 'ok' | 'warn' | 'danger' | 'info';
 
+// "NC" (owner 2026-10-14): the team changed this order's phone number, so the customer was verified with the new
+// number (or will be). Shown next to the verified tick / badge.
+export function ncTitle(nc: { at: string; by: string | null }): string {
+  const d = nc.at ? new Date(nc.at) : null;
+  const when = d && !Number.isNaN(d.getTime()) ? d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  return `Number changed${nc.by ? ` by ${nc.by}` : ''}${when ? ` on ${when}` : ''}. The customer verifies with the new number on the order.`;
+}
+export function NcChip({ nc }: { nc: { at: string; by: string | null } }) {
+  return <Chip tone="warn" title={ncTitle(nc)}>NC</Chip>;
+}
+
 export function Chip({ tone = 'muted', title, className, children }: { tone?: ChipTone; title?: string; className?: string; children: React.ReactNode }) {
   return <span className={`chip chip-${tone}${className ? ` ${className}` : ''}`} title={title}>{children}</span>;
 }
