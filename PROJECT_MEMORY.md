@@ -258,6 +258,11 @@ Done and live:
   Action" = bots, harmless. DB check same day: corrections installed, Sunny = manager, all 3 panels on the common
   setup, NO brand managers set yet, draft-only ON on every panel.
 
+- **14 Oct, chargeback causes (owner's answers)**: NO proactive late-order message to customers ("sara customer fall
+  jaenga"); courier real scans: later. Built: promises waiting 2+ days (Refund form not sent / refund request not
+  decided or paid / Ship again not sent) on the Today board, a red bar for the Super Admin + Manager in Chat Support and
+  one WhatsApp a working day at 10:30 to the alert numbers (`src/lib/refund/stuck*.ts`). Next: bounce -> back to To reply.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

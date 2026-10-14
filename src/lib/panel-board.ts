@@ -27,6 +27,9 @@ export interface PanelStats {
   // Corrections (owner 2026-10-11, order-corrections.sql): pending rows, and those waiting over 24 hours. Missing = 0.
   correctionsPending?: number;
   correctionsOverdue?: number;
+  // Promises waiting 2+ days (owner 2026-10-14, refund/stuck-rules.ts): filled in by the screen from
+  // GET /api/refunds/counts?stuck=1 for a login that may see refunds; missing / null = not shown.
+  promisesStuck?: { refundNoForm: number; refundWaiting: number; reshipNotSent: number } | null;
   // Setup
   aiOn: boolean | null;    // null = the panel has no chat site yet
   hasPrompt: boolean;
@@ -54,6 +57,11 @@ export function panelNeeds(s: PanelStats): Need[] {
   if (s.supportGmailStatus === 'error') out.push({ tone: 'danger', text: `Support Gmail cannot be read: ${s.supportGmailError || 'sign-in failed'}`, go: 'settings' });
   if (s.chargebackGmailStatus === 'error') out.push({ tone: 'danger', text: `Chargeback Gmail cannot be read: ${s.chargebackGmailError || 'sign-in failed'}`, go: 'settings' });
   if (s.overdue > 0) out.push({ tone: 'danger', text: `${n(s.overdue, 'customer', 'customers')} waiting over 2 hours`, go: 'chats' });
+  // A promise nobody kept for 2+ days is where a chargeback starts (owner 2026-10-14).
+  const ps = s.promisesStuck;
+  if (ps && ps.reshipNotSent > 0) out.push({ tone: 'danger', text: `${n(ps.reshipNotSent, 'Ship again parcel', 'Ship again parcels')} promised 2+ days ago, not sent yet`, go: 'chats' });
+  if (ps && ps.refundNoForm > 0) out.push({ tone: 'danger', text: `${n(ps.refundNoForm, 'Refund chat', 'Refund chats')} 2+ days old with no refund form sent`, go: 'chats' });
+  if (ps && ps.refundWaiting > 0) out.push({ tone: 'danger', text: `${n(ps.refundWaiting, 'refund request', 'refund requests')} waiting 2+ days to be decided / paid`, go: 'refunds' });
   if (s.needsYou > 0) out.push({ tone: s.overdue > 0 ? 'warn' : 'danger', text: `${n(s.needsYou, 'chat needs', 'chats need')} you${s.emailWaiting > 0 ? ` (${n(s.emailWaiting, 'held email', 'held emails')})` : ''}`, go: 'chats' });
   if (s.waiting > s.overdue) out.push({ tone: 'warn', text: `${n(s.waiting - s.overdue, 'customer', 'customers')} waiting under 2 hours`, go: 'chats' });
   if ((s.refundRequestsNew ?? 0) > 0) out.push({ tone: 'warn', text: `${n(s.refundRequestsNew!, 'refund request', 'refund requests')} to decide`, go: 'refunds' });
@@ -74,7 +82,7 @@ export function panelNeeds(s: PanelStats): Need[] {
 // A number for the order of the cards: the panel with the most urgent work first; ties keep the given order.
 export function urgency(s: PanelStats): number {
   return (s.chargebacksOpen ?? 0) * 1000 + (s.supportGmailStatus === 'error' || s.chargebackGmailStatus === 'error' ? 500 : 0)
-    + s.overdue * 100 + s.needsYou * 20 + (s.refundRequestsNew ?? 0) * 10 + s.waiting * 5
+    + s.overdue * 100 + (s.promisesStuck ? (s.promisesStuck.refundNoForm + s.promisesStuck.refundWaiting + s.promisesStuck.reshipNotSent) * 50 : 0) + s.needsYou * 20 + (s.refundRequestsNew ?? 0) * 10 + s.waiting * 5
     + s.refundCases * 3 + s.reshipToShip * 3 + (s.correctionsOverdue ?? 0) * 10 + (s.correctionsPending ?? 0) * 3 + Math.min(s.lateOrders, 20) + (s.aiOn === false ? 2 : 0) + (s.hasPrompt ? 0 : 1);
 }
 
@@ -88,6 +96,7 @@ export interface BoardSummary {
   refundCases: number; reshipToShip: number; lateOrders: number; chatsToday: number; teamRepliesToday: number; chikkiToday: number;
   ordersToday: number; gmailErrors: number; setupGaps: number;
   corrections: number; correctionsOverdue: number;
+  promisesStuck: number | null;   // null = this login does not see refunds
 }
 export function summarize(panels: PanelStats[]): BoardSummary {
   const sum = (f: (p: PanelStats) => number) => panels.reduce((a, p) => a + f(p), 0);
@@ -100,6 +109,7 @@ export function summarize(panels: PanelStats[]): BoardSummary {
     gmailErrors: sum(p => (p.supportGmailStatus === 'error' ? 1 : 0) + (p.chargebackGmailStatus === 'error' ? 1 : 0)),
     setupGaps: sum(p => (p.aiOn === false ? 1 : 0) + (p.hasPrompt ? 0 : 1) + (p.supportGmail ? 0 : 1) + (p.chargebackGmail ? 0 : 1)),
     corrections: sum(p => p.correctionsPending ?? 0), correctionsOverdue: sum(p => p.correctionsOverdue ?? 0),
+    promisesStuck: panels.some(p => p.promisesStuck) ? sum(p => (p.promisesStuck ? p.promisesStuck.refundNoForm + p.promisesStuck.refundWaiting + p.promisesStuck.reshipNotSent : 0)) : null,
   };
 }
 
@@ -118,6 +128,8 @@ export function morningRoutine(t: BoardSummary, aiDown = false, waProblems: numb
   if (riskCritical !== null) steps.push({ text: 'No Critical chargeback risk left (Chargebacks > Stop them)', count: riskCritical, done: riskCritical === 0, go: 'chargebacks' });
   steps.push({ text: 'Both Gmails of every panel are being read', count: t.gmailErrors, done: t.gmailErrors === 0, go: 'settings' });
   steps.push({ text: 'No customer waiting over 2 hours', count: t.overdue, done: t.overdue === 0, go: 'chats' });
+  // Owner 2026-10-14: a Refund / Ship again promise kept within 2 days (refund/stuck-rules.ts).
+  if (t.promisesStuck != null) steps.push({ text: 'No Refund / Ship again promise waiting 2+ days', count: t.promisesStuck, done: t.promisesStuck === 0, go: 'chats' });
   steps.push({ text: 'Needs you is empty', count: t.needsYou, done: t.needsYou === 0, go: 'chats' });
   if (t.refundRequests !== null) steps.push({ text: 'Refund requests decided', count: t.refundRequests, done: t.refundRequests === 0, go: 'refunds' });
   steps.push({ text: 'Ship again parcels sent', count: t.reshipToShip, done: t.reshipToShip === 0, go: 'chats' });
