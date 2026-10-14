@@ -27,10 +27,16 @@ export default function BrandManagersCard({ token, panels, members, onAlert }: {
   useEffect(() => { void load(); }, [load]);
 
   // Who may manage a panel: an active member who replies to chats and may see that panel (the server checks again).
-  const fits = (m: MemberLite, panelId: string) => m.is_active
-    && can({ role: m.role as never, permissions: m.effective }, 'chat.reply')
-    && !can({ role: m.role as never, permissions: m.effective }, 'team.lead')   // a Manager is never auto-assigned
-    && canAccessPanel({ role: m.role as never, permissions: m.effective, businessIds: m.business_ids }, panelId);
+  // Why a member cannot be picked (owner 2026-10-14: "nai araha abhi bhi"): the dropdown lists them greyed out with the
+  // reason instead of leaving them out silently.
+  const whyNot = (m: MemberLite, panelId: string): string | null => {
+    if (!m.is_active) return 'switched off';
+    if (can({ role: m.role as never, permissions: m.effective }, 'team.lead')) return 'has the Team lead tick: untick it in Edit';
+    if (!can({ role: m.role as never, permissions: m.effective }, 'chat.reply')) return 'no Reply tick: tick it in Edit';
+    if (!canAccessPanel({ role: m.role as never, permissions: m.effective, businessIds: m.business_ids }, panelId)) return 'this panel is not in their panels';
+    return null;
+  };
+  const fits = (m: MemberLite, panelId: string) => whyNot(m, panelId) === null;
   const save = async (panelId: string, memberId: string) => {
     if (!token) return;
     setBusy(panelId);
@@ -63,6 +69,9 @@ export default function BrandManagersCard({ token, panels, members, onAlert }: {
               <option value="">No brand manager</option>
               {members.filter(m => fits(m, p.id) || map[p.id]?.id === m.id).map(m => (
                 <option key={m.id} value={m.id}>{m.display_name}{m.is_active ? '' : ' (switched off)'}</option>
+              ))}
+              {members.filter(m => m.is_active && !fits(m, p.id) && map[p.id]?.id !== m.id).map(m => (
+                <option key={`no-${m.id}`} value="" disabled>{m.display_name}: {whyNot(m, p.id)}</option>
               ))}
             </select>
           </label>
