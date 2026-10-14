@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { aiCreditAlert } from '@/lib/chat/ai-credit';
 import { runRiskEscalation } from '@/lib/chargeback/risk-escalate';
+import { runStuckAlert } from '@/lib/refund/stuck';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
 import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
@@ -40,6 +41,8 @@ export async function GET(request: NextRequest) {
   // Chargeback Shield step 2 (owner 2026-10-10): a Critical chargeback-risk chat goes to the Manager, the team gets the
   // red bar, the owner and the Manager a WhatsApp (risk-escalate.ts; at most every 5 minutes; never throws).
   void runRiskEscalation().catch(() => {});
+  // Promises waiting 2+ days (owner 2026-10-14, refund/stuck.ts): one WhatsApp a working day to the alert numbers.
+  void runStuckAlert().catch(() => {});
 
   const client = await getPool().connect();
   try {

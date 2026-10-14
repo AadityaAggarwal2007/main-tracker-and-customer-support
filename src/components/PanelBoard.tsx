@@ -43,14 +43,17 @@ export default function PanelBoard({ token, activePanelId, goTo }: {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { setError(j.error || 'Could not read the panel board.'); return; }
       let stats: PanelStats[] = j.panels || [];
-      // The Super Admin's refund requests to decide, per panel, from the refund area's own route (a member gets 403: skipped).
-      if (j.superAdmin) {
-        try {
-          const rr = await fetch('/api/refunds/counts?byPanel=1', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-          const by: Record<string, number> = rr.ok ? ((await rr.json())?.by_panel || {}) : {};
-          stats = stats.map(p => ({ ...p, refundRequestsNew: Number(by[p.id] || 0) }));
-        } catch { /* the line is left out */ }
-      }
+      // The refund requests to decide and the promises waiting 2+ days (owner 2026-10-14), per panel, from the refund
+      // area's own route: the Super Admin and the Manager (refunds.manage); anyone else gets 403 and the lines are left out.
+      try {
+        const rr = await fetch('/api/refunds/counts?byPanel=1&stuck=1', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+        if (rr.ok) {
+          const rj = await rr.json().catch(() => ({}));
+          const by: Record<string, number> = rj?.by_panel || {};
+          const stuck: Record<string, { refundNoForm: number; refundWaiting: number; reshipNotSent: number }> = rj?.stuck || {};
+          stats = stats.map(p => ({ ...p, refundRequestsNew: Number(by[p.id] || 0), promisesStuck: stuck[p.id] || { refundNoForm: 0, refundWaiting: 0, reshipNotSent: 0 } }));
+        }
+      } catch { /* the lines are left out */ }
       setPanels(sortPanels(stats).map(p => ({ ...p, needs: panelNeeds(p) }))); setDay(j.day || null); setAt(Date.now()); setError(null);
     } catch { setError('Could not read the panel board.'); }
     finally { setLoading(false); }

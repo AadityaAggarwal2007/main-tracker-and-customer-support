@@ -11,11 +11,25 @@ export interface TeamAlert { id: string; conversation_id: string; at: string; fr
 const KEY = 'team_alerts_dismissed';
 const readDismissed = (): string[] => { try { const v = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(v) ? v.map(String) : []; } catch { return []; } };
 
-export function TeamAlerts({ alerts, onOpen }: { alerts: TeamAlert[]; onOpen: (conversationId: string) => void }) {
+// Promises waiting 2+ days (owner 2026-10-14: "Refund aur Ship again ka vaada atak jaata hai"): one bar for the Super
+// Admin and the Manager, from GET /api/refunds/counts?stuck=1 (refund/stuck.ts); a click opens the Today board. Closed
+// for the day with the same list (its id carries the India day and the numbers, so a new stuck promise shows it again).
+export interface StuckSummary { id: string; reshipNotSent: number; refundNoForm: number; refundWaiting: number }
+const plural = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+function stuckWords(s: StuckSummary): string {
+  const parts: string[] = [];
+  if (s.reshipNotSent) parts.push(`${plural(s.reshipNotSent, 'Ship again parcel', 'Ship again parcels')} not sent`);
+  if (s.refundNoForm) parts.push(`${plural(s.refundNoForm, 'refund form', 'refund forms')} not sent`);
+  if (s.refundWaiting) parts.push(`${plural(s.refundWaiting, 'refund request', 'refund requests')} not decided / paid`);
+  return parts.join(' · ');
+}
+
+export function TeamAlerts({ alerts, onOpen, stuck, onStuck }: { alerts: TeamAlert[]; onOpen: (conversationId: string) => void; stuck?: StuckSummary | null; onStuck?: () => void }) {
   const [dismissed, setDismissed] = useState<string[]>([]);
   useEffect(() => { setDismissed(readDismissed()); }, []);
   const shown = alerts.filter((a) => !dismissed.includes(a.id));
-  if (!shown.length) return null;
+  const stuckShown = stuck && stuckWords(stuck) && !dismissed.includes(stuck.id) ? stuck : null;
+  if (!shown.length && !stuckShown) return null;
   const close = (id: string) => {
     const next = [...dismissed, id].slice(-100);
     setDismissed(next);
@@ -23,6 +37,15 @@ export function TeamAlerts({ alerts, onOpen }: { alerts: TeamAlert[]; onOpen: (c
   };
   return (
     <div className="team-alerts" role="alert" aria-live="polite">
+      {stuckShown && (
+        <div className="team-alert">
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <button type="button" className="team-alert-text" onClick={() => onStuck?.()} title="Open the Today board">
+            <b>Promises waiting 2+ days:</b> {stuckWords(stuckShown)}. Keep them today, or the customer may raise a chargeback.
+          </button>
+          <button type="button" className="btn-icon" aria-label="Close for today" onClick={() => close(stuckShown.id)}><X size={14} /></button>
+        </div>
+      )}
       {shown.slice(0, 3).map((a) => (
         <div key={a.id} className="team-alert">
           <AlertTriangle size={15} style={{ flexShrink: 0 }} />

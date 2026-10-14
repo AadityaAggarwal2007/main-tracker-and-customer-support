@@ -8,7 +8,7 @@ import {
   MessageCircle, Inbox,
   Menu,
 } from 'lucide-react';
-import { can, isSuperAdmin, isTeamLead } from '@/lib/permissions';
+import { can, canRefunds, isSuperAdmin, isTeamLead } from '@/lib/permissions';
 import { activeHeaders } from '@/lib/presence-client';
 import MyProfile from '@/components/MyProfile';
 import OwnerLoginDialog from '@/components/OwnerLogin';
@@ -25,7 +25,7 @@ import { FULL_EVERY_MS, afterFor, keepOlder, mergeMessages } from '@/lib/chat/th
 import { minutesText, POLL_MS, INBOX_TABS, chatStatusLabel, CASE_LABELS, isVisitorChat, timeAgo, draggingFiles } from './_lib/inbox';
 import { TransferDialog } from './_components/TransferDialog';
 import { ForwardDialog } from './_components/ForwardDialog';
-import { TeamAlerts, type TeamAlert } from './_components/TeamAlerts';
+import { TeamAlerts, type StuckSummary, type TeamAlert } from './_components/TeamAlerts';
 import { TemplateDialog } from './_components/TemplateDialog';
 import { ThreadDivider } from './_components/chips';
 import { AddressDialog, ItemsDialog } from './_components/OrderLine';
@@ -160,6 +160,27 @@ export default function ChatSupportPage() {
   const [forwardEdit, setForwardEdit] = useState<{ convId: string; busy: boolean; error: string; kind?: 'refund' | 'reship' } | null>(null);
   // The red bar (owner 2026-10-10): chats moved to the Manager after 30 minutes without a reply, from the list's answer.
   const [teamAlerts, setTeamAlerts] = useState<TeamAlert[]>([]);
+  // Promises waiting 2+ days (owner 2026-10-14, refund/stuck.ts): the Super Admin and the Manager only, every 5 minutes.
+  const [stuck, setStuck] = useState<StuckSummary | null>(null);
+  const seesStuck = !!user && canRefunds(user);
+  useEffect(() => {
+    if (!token || !seesStuck) { setStuck(null); return; }
+    let gone = false;
+    const read = async () => {
+      try {
+        const r = await fetch('/api/refunds/counts?stuck=1', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+        if (!r.ok) return;
+        const by: Record<string, { refundNoForm: number; refundWaiting: number; reshipNotSent: number }> = (await r.json().catch(() => ({})))?.stuck || {};
+        const t = { reshipNotSent: 0, refundNoForm: 0, refundWaiting: 0 };
+        for (const v of Object.values(by)) { t.reshipNotSent += Number(v.reshipNotSent) || 0; t.refundNoForm += Number(v.refundNoForm) || 0; t.refundWaiting += Number(v.refundWaiting) || 0; }
+        const day = new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
+        if (!gone) setStuck(t.reshipNotSent + t.refundNoForm + t.refundWaiting > 0 ? { id: `stuck:${day}:${t.reshipNotSent}-${t.refundNoForm}-${t.refundWaiting}`, ...t } : null);
+      } catch { /* no bar */ }
+    };
+    void read();
+    const iv = setInterval(() => { void read(); }, 5 * 60_000);
+    return () => { gone = true; clearInterval(iv); };
+  }, [token, seesStuck]);
   // A WhatsApp template to send in this chat (owner 2026-10-10): the only message after 24 h of silence.
   const [templateEdit, setTemplateEdit] = useState<{ convId: string; busy: boolean } | null>(null);
   // "Give all N to the team" (Super Admin, My chats): 'ask' = the inline confirm is showing.
@@ -1628,7 +1649,7 @@ export default function ChatSupportPage() {
           <ItemsDialog initial={activeItems.items} orderId={activeItems.order_id} busy={itemsEdit.busy} error={itemsEdit.error}
             onCancel={() => setItemsEdit(null)} onSave={saveItems} />
         )}
-        <TeamAlerts alerts={teamAlerts} onOpen={openConversation} />
+        <TeamAlerts alerts={teamAlerts} onOpen={openConversation} stuck={stuck} onStuck={() => { window.location.href = '/admin?tab=today'; }} />
       </main>
     </div>
   );
