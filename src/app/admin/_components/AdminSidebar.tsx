@@ -1,7 +1,7 @@
 'use client';
 
 import type { useRouter } from 'next/navigation';
-import { ROLE_INFO, can, type Role } from '@/lib/permissions';
+import { ROLE_INFO, can, isTeamLead, type Role } from '@/lib/permissions';
 import { MessageCircle, ShieldCheck, UserRound, LogOut, type LucideIcon } from 'lucide-react';
 import PanelSwitcher from '@/components/PanelSwitcher';
 import type { AuthUser, Business, TabType } from '../_lib/types';
@@ -34,6 +34,7 @@ export default function AdminSidebar({ activeBusiness, activePanelId, activeTab,
             panels={businesses.filter(b => !user?.businessIds || user.businessIds.includes(b.id))}
             activeId={activePanelId}
             onSelect={switchPanel}
+            allowAll={isTeamLead(user)}
           />
         </div>
 

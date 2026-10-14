@@ -17,6 +17,8 @@ import { loadHolidays } from './holidays';
 import { CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from './waiting-sql';
 import { logChatEvent, setSystemActor } from './team-routing';
 import { onDuty, pickAssignee, type Candidate } from './auto-assign-rules';
+import { brandFirst } from './brand-managers-rules';
+import { loadBrandManagers } from './brand-managers';
 
 const MAX_PER_RUN = 40;
 const g = globalThis as unknown as { __autoAssignBusy?: boolean; __autoAssignLast?: Map<string, number> };
@@ -67,10 +69,13 @@ export async function runAutoAssign(now = Date.now()): Promise<AssignRun> {
     );
     for (const r of l.rows) loads.set(r.assigned_to, r.n);
 
+    // Brand managers (owner 2026-10-14): a panel's chats go to its brand manager first while they are on duty.
+    const managers = await loadBrandManagers().catch(() => ({}));
     for (const c of due.rows) {
       const duty = dutyMembers(c.panel, now, holidays);
       out.onDuty = Math.max(out.onDuty, duty.length);
-      const pick = pickAssignee(duty.map((e): Candidate => ({ key: e.id, name: e.name, load: loads.get(e.id) ?? 0, lastAssignedMs: lastGiven().get(e.id) ?? 0 })));
+      const cands = duty.map((e): Candidate => ({ key: e.id, name: e.name, load: loads.get(e.id) ?? 0, lastAssignedMs: lastGiven().get(e.id) ?? 0 }));
+      const pick = pickAssignee(brandFirst(cands, c.panel, managers));
       if (!pick) continue;
       const got = await withTransaction(async (client) => {
         await setSystemActor(client, 'Auto-assign', 'auto_assign');
