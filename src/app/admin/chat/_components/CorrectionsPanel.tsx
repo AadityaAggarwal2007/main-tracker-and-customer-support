@@ -113,7 +113,7 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
       const res = await fetch(`/api/chat/conversations/${edit.chatId}/address`, { method: 'PATCH', headers: auth, body: JSON.stringify(a) });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save the address' }); return; }
-      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Address updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
+      setEdit(null); onAlert('success', j.unchanged ? 'Nothing changed' : `Address / phone updated in ShipTrack · order ${edit.row.order_id}. It is in Changed now: check it and mark it done.`);
       void load(true);
     } catch { setEdit({ ...edit, busy: false, error: 'Could not save the address' }); }
   };
@@ -189,7 +189,7 @@ export default function CorrectionsPanel({ token, user, businesses, onOpenChat, 
                     verified chat gets one on the click (openEdit). */}
                 {canEditOrder && r.status === 'pending' && (
                   <>
-                    <button type="button" className="btn btn-outline btn-sm" disabled={!!edit?.busy} onClick={() => openEdit(r, 'address')} title="Change the delivery address in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address</button>
+                    <button type="button" className="btn btn-outline btn-sm" disabled={!!edit?.busy} onClick={() => openEdit(r, 'address')} title="Change the delivery address or the phone in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address / phone</button>
                     <button type="button" className="btn btn-outline btn-sm" disabled={!!edit?.busy} onClick={() => openEdit(r, 'items')} title="Change the order's items in ShipTrack (not Shopify, not the courier)"><Package size={13} /> Edit items</button>
                   </>
                 )}

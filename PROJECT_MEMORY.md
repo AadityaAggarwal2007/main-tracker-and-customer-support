@@ -245,6 +245,10 @@ Done and live:
   90 s cap cut is failed with "may still have been sent" (never re-sent by itself); a verified sender is never a bounce.
   Not changed: `storeList`'s reply lookup over 60 days (EXPLAIN on the VPS if the list gets slow).
 
+- **14 Oct, phone edit**: the Edit address dialog (chat header, Corrections, Mail customer card) also changes the
+  customer's phone (`orders.customer_mobile`, logged in `order_address_changes`). **`order-phone-edit.sql` waits for the
+  owner's yes**: without it a CSV re-upload of an edited order puts the old number back.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

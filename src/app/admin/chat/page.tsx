@@ -1278,7 +1278,7 @@ export default function ChatSupportPage() {
       if (!res.ok) { setAddrEdit({ convId, busy: false, error: data.error || 'Could not save the address' }); return; }
       if (data.address) setOrderInfo(prev => prev && prev.id === convId ? { ...prev, address: data.address } : prev);
       setAddrEdit(null);
-      showAlert('success', data.unchanged ? 'Nothing changed' : 'Address updated in ShipTrack');
+      showAlert('success', data.unchanged ? 'Nothing changed' : 'Address / phone updated in ShipTrack');
     } catch {
       setAddrEdit({ convId, busy: false, error: 'Could not save the address' });
     }

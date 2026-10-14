@@ -87,7 +87,7 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
       if (!r.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save it.' }); return; }
       const order = edit.order.orderId;
       setEdit(null);
-      onAlert('success', j.unchanged ? 'Nothing changed.' : `${what === 'address' ? 'Address' : 'Items'} updated in ShipTrack · order ${order}. Shopify and the courier are not changed; tell the customer in your reply.`);
+      onAlert('success', j.unchanged ? 'Nothing changed.' : `${what === 'address' ? 'Address / phone' : 'Items'} updated in ShipTrack · order ${order}. Shopify and the courier are not changed; tell the customer in your reply.`);
       onChanged?.();
     } catch { setEdit({ ...edit, busy: false, error: 'Could not save it.' }); }
   };
@@ -125,7 +125,7 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
       <div className="mail-cust-actions">
         {o.facts?.tracking_link && <button type="button" className="btn btn-outline btn-sm" onClick={() => copy(o.facts!.tracking_link!)}><Copy size={13} /> Copy tracking link</button>}
         {o.chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(o.chatId)}`}><MessageCircle size={13} /> Open chat</a>}
-        {customer?.canEdit && token && <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void openEdit(o, 'address')} title="Change the delivery address in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address</button>}
+        {customer?.canEdit && token && <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void openEdit(o, 'address')} title="Change the delivery address or the phone in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address / phone</button>}
         {customer?.canEdit && token && <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void openEdit(o, 'items')} title="Change the products / colour / size in ShipTrack (not Shopify, not the courier)"><Package size={13} /> Edit items</button>}
       </div>
       {/* Refund / Ship again for a customer who writes by email (owner 2026-10-13): on their email chat, listed in Chat Support */}

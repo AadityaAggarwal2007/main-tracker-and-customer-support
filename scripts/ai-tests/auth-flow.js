@@ -112,12 +112,14 @@ async function handle(sql, params = []) {
   if (/^DELETE FROM team_users/.test(q)) { const before = db.team.length; db.team = db.team.filter((u) => u.id !== params[0]); return { rows: [], rowCount: before - db.team.length }; }
   // Chat address
   if (/^SELECT c.verified_order_id, s.tracker_business_id FROM conversations c/.test(q)) return rows(db.conversations.filter((c) => c.id === params[0]).map((c) => ({ verified_order_id: c.verified_order_id, tracker_business_id: c.panel })));
-  if (/^SELECT id, order_id, business_id, address_line1, address_line2, city, state, pincode FROM orders WHERE order_id = \$1 AND business_id::text = \$2::text FOR UPDATE/.test(q)) {
+  if (/^SELECT id, order_id, business_id, address_line1, address_line2, city, state, pincode, customer_mobile FROM orders WHERE order_id = \$1 AND business_id::text = \$2::text FOR UPDATE/.test(q)) {
     return rows(db.orders.filter((o) => o.order_id === params[0] && o.business_id === params[1]).map((o) => ({ ...o })));
   }
   if (/^UPDATE orders SET address_line1 = \$1/.test(q)) {
     const o = db.orders.find((x) => x.id === params[6]);
+    assert.ok(/customer_mobile = COALESCE\(\$8, customer_mobile\)/.test(q), 'the phone is written only when given');
     Object.assign(o, { address_line1: params[0], address_line2: params[1], city: params[2], state: params[3], pincode: params[4], address_edited_by: params[5], address_edited_at: new Date().toISOString() });
+    if (params[7] != null) o.customer_mobile = params[7];
     return rows([{ address_edited_at: o.address_edited_at }]);
   }
   if (/^INSERT INTO order_address_changes/.test(q)) { db.addressChanges.push(params); return rows([]); }
@@ -445,8 +447,8 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
   });
 
   // ── Chat address ─────────────────────────────────────────────
-  db.orders.push({ id: 'o1', order_id: '#1001', business_id: 'P1', address_line1: '12 MG Road', address_line2: '', city: 'Pune', state: 'Maharashtra', pincode: '411001' });
-  db.orders.push({ id: 'o2', order_id: '#1002', business_id: 'P1', address_line1: 'Old Lane', address_line2: 'Near Park', city: 'Surat', state: 'Gujrat', pincode: '395001' });
+  db.orders.push({ id: 'o1', order_id: '#1001', business_id: 'P1', address_line1: '12 MG Road', address_line2: '', city: 'Pune', state: 'Maharashtra', pincode: '411001', customer_mobile: '+91 98765 43210' });
+  db.orders.push({ id: 'o2', order_id: '#1002', business_id: 'P1', address_line1: 'Old Lane', address_line2: 'Near Park', city: 'Surat', state: 'Gujrat', pincode: '395001', customer_mobile: '9123456780' });
   db.conversations.push({ id: 'c1', verified_order_id: '#1001', panel: 'P1' }, { id: 'c2', verified_order_id: null, panel: 'P1' }, { id: 'c3', verified_order_id: '#1002', panel: 'P1' });
   const good = { line1: ' 45  New  Street ', line2: 'Opp. School', city: 'Mumbai', state: 'maharashtra', pincode: '400 001' };
   const patch = (tk, conv, body) => address.PATCH(reqOf(tk, body), { params: { id: conv } });
@@ -480,6 +482,27 @@ const t = async (name, fn) => { try { await fn(); n++; } catch (e) { console.err
     assert.strictEqual(JSON.parse(newA).city, 'Mumbai');
     const same = await patch(tok3, 'c1', good);
     assert.ok(same.status === 200 && same.body.unchanged === true && db.addressChanges.length === 1);
+  });
+
+  await t('address: the phone too (owner 14 Oct, "number edit karne wala option"): a 10-digit mobile, kept in the old shape, logged old and new; empty = unchanged', async () => {
+    const o = db.orders[0];
+    const base = { line1: o.address_line1, line2: o.address_line2, city: o.city, state: o.state, pincode: o.pincode };
+    assert.strictEqual((await patch(tok3, 'c1', { ...base, phone: '12345' })).status, 400);
+    assert.strictEqual((await patch(tok3, 'c1', { ...base, phone: '5123456789' })).status, 400, 'an Indian mobile starts with 6-9');
+    const before = db.addressChanges.length;
+    const same = await patch(tok3, 'c1', { ...base, phone: '098765 43210' });
+    assert.ok(same.body.unchanged, 'the same number written another way is no change');
+    const r = await patch(tok3, 'c1', { ...base, phone: '+91 99887 76655' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(o.customer_mobile, '+919988776655', 'the old "+91" shape is kept');
+    assert.strictEqual(r.body.address.phone, '9988776655');
+    const [, , , , oldA, newA] = db.addressChanges[before];
+    assert.deepStrictEqual([JSON.parse(oldA).phone, JSON.parse(newA).phone], ['9876543210', '9988776655']);
+    const r2 = await patch(tok3, 'c1', { ...base, line1: '46 New Street', phone: '' });
+    assert.strictEqual(r2.status, 200); assert.strictEqual(o.customer_mobile, '+919988776655', 'an empty phone leaves it alone');
+    const oa = require(path.join(dir, 'order-address.js'));
+    assert.deepStrictEqual([oa.mobileDigits('09876543210'), oa.mobileDigits('919876543210'), oa.mobileDigits('98765'), oa.storedMobile('9988776655', '919876543210'), oa.storedMobile('9988776655', '9876543210')],
+      ['9876543210', '9876543210', null, '919988776655', '9988776655']);
   });
 
   await t('address: an odd old state stays allowed unchanged', async () => {
