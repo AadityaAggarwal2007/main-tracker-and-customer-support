@@ -2995,3 +2995,6 @@ p.chat-mail-tick { cursor: default; }
   .rn-seg { white-space: nowrap; flex-shrink: 0; }
 }
 .chat-suggest-wrap { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+/* Mail reply: a photo dropped on the reply, and the previews of what goes (owner 2026-10-14) */
+.mail-reply.mail-drop { outline: 2px dashed var(--primary); outline-offset: 2px; }
+.mail-file-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; vertical-align: middle; }

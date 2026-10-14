@@ -226,6 +226,16 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     return sortItems(items.filter(x => x.uid === openUid || (matchesView(x, view, verified, now, cases) && searchMatch(x, q, verified))), sort);
   }, [items, view, q, sort, verified, cases, openUid]);
   const counts = useMemo(() => viewCounts(items, verified, Date.now(), cases), [items, verified, cases]);
+  // The list can now hold up to 2,000 conversations (owner 2026-10-14): draw 300 at a time, "Show more" for the rest.
+  const [rowLimit, setRowLimit] = useState(300);
+  useEffect(() => { setRowLimit(300); }, [view, q, boxId, sort]);
+  const drawn = useMemo(() => {
+    const head = shown.slice(0, rowLimit);
+    const open = openUid && !head.some(x => x.uid === openUid) ? shown.find(x => x.uid === openUid) : null;
+    return open ? [...head, open] : head;
+  }, [shown, rowLimit, openUid]);
+  // Gmail not synced for a while = new mails may be missing here (owner 2026-10-14: "sari mail nai pakad rha"): say so.
+  const syncedAgoMin = entry?.store?.syncedAt ? (Date.now() - Date.parse(entry.store.syncedAt)) / 60_000 : null;
 
   // Fetch ahead (owner 2026-10-08: "sloww hai"): the first few mails of what is on screen are read in the
   // background WITHOUT marking them read in Gmail (peek=1), one at a time, so opening them is instant. Opening
@@ -451,13 +461,21 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           </div>
           {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
           {down && <div className="mail-warn">{down}</div>}
+          {syncedAgoMin != null && syncedAgoMin > 10 && (
+            <div className="mail-warn">Gmail has not synced for {Math.round(syncedAgoMin)} minutes, so the newest mails may be missing here.{entry?.store?.error ? ` Gmail said: ${entry.store.error}` : ' It usually catches up by itself; if this stays, tell the Super Admin.'}</div>
+          )}
           <div className="mail-rows">
             {!entry && refreshing && <div className="mail-empty"><Loader2 size={16} className="spin" /> Reading the mails…</div>}
             {entry && shown.length === 0 && (
-              <div className="mail-empty">{items.length === 0 ? 'No mail in the last 30 days.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : view === 'active' && !q ? 'No active case: every customer\'s case is closed.' : view === 'closed' && !q ? 'No closed case yet. A reply closes a customer\'s case by itself; "Close case" closes one that needs no reply.' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
+              <div className="mail-empty">{items.length === 0 ? 'No mail in this period.' : view === 'todo' && !q ? 'Nothing left to reply to. 🎉' : view === 'active' && !q ? 'No active case: every customer\'s case is closed.' : view === 'closed' && !q ? 'No closed case yet. A reply closes a customer\'s case by itself; "Close case" closes one that needs no reply.' : 'Nothing matches this.'}{items.length > 0 && q && <button type="button" className="btn btn-outline btn-sm" onClick={() => setQ('')}>Clear search</button>}</div>
             )}
-            <MailRows items={shown} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} showVerify={view !== 'other'} />
-            {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the newest 200 conversations of the last 30 days.</div>}
+            <MailRows items={drawn} verified={verified} openUid={openUid} onOpen={uid => void openMail(uid)} showVerify={view !== 'other'} />
+            {shown.length > rowLimit && (
+              <div style={{ padding: '0.5rem 0.75rem' }}>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setRowLimit(n => n + 300)}>Show more ({shown.length - rowLimit} left)</button>
+              </div>
+            )}
+            {entry?.truncated && <div className="meta" style={{ padding: '0.5rem 0.75rem' }}>Showing the first 2,000 conversations (every unanswered one first). Use search to find an older one.</div>}
           </div>
           <div className="meta mail-foot">
             {entry?.store ? `${entry.store.mails} mails saved in ShipTrack${entry.store.bodies < entry.store.mails ? ` (${entry.store.bodies} ready to open at once, the rest within minutes)` : ''}${entry.store.syncedAt ? ` · synced with Gmail ${agoText(Date.parse(entry.store.syncedAt))}` : ''}${entry.store.error ? ` · Gmail: ${entry.store.error}` : ''}` : `${items.length} mails${entry ? ` · updated ${agoText(entry.at)}` : ''}${entry?.partial ? ' · loading attachments and sender checks…' : ''}`}

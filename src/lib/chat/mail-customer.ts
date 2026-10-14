@@ -32,6 +32,8 @@ export interface MailCustomer {
   // Who may put a verified sender in Refund / Ship again from here: 'mark' (the Super Admin and the Manager, with
   // chat.cases), 'forward' (a team member with chat.cases: Send to Manager), null. The PATCH decides again.
   cases?: 'mark' | 'forward' | null;
+  // Edit address / Edit items from the Mail tab (owner 2026-10-14): chat.view + orders.update, as in a chat.
+  canEdit?: boolean;
 }
 
 export const isCod = (method: string | null | undefined): boolean => /^cod$|cash on delivery/i.test(String(method || '').trim());

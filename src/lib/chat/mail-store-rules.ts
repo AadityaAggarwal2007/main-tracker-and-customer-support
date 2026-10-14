@@ -23,12 +23,13 @@ export const INLINE_TOTAL_MAX = 1536 * 1024;            // nor once the inlined 
 
 const iso = (d: string | Date) => (d instanceof Date ? d : new Date(d)).toISOString();
 
-export function rowToListItem(r: StoreRow & { snippet?: string | null; replied?: boolean | null; replied_at?: string | Date | null; thread_count?: number | null; any_unread?: boolean | null }): MailListItem {
+export function rowToListItem(r: StoreRow & { snippet?: string | null; replied?: boolean | null; replied_at?: string | Date | null; thread_count?: number | null; any_unread?: boolean | null; contact?: boolean | null }): MailListItem {
   return {
     ...(r.snippet != null ? { snippet: String(r.snippet) } : {}),
     ...(r.replied != null ? { replied: !!r.replied } : {}),
     ...(r.replied_at != null ? { repliedAt: iso(r.replied_at) } : {}),      // when we last wrote after it (the Cases rule, owner 2026-10-11)
     ...(r.thread_count != null ? { threadCount: Number(r.thread_count) } : {}),
+    ...(r.contact ? { contact: true } : {}),
     uid: Number(r.uid),
     from: (r.from_name || r.from_addr || '').trim() || '(unknown sender)',
     fromAddress: (r.from_addr || '').toLowerCase(),

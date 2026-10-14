@@ -24,7 +24,7 @@ import { simpleParser } from 'mailparser';
 import { query } from '@/lib/db';
 import { withPooledImap, type PoolBox } from './imap-pool';
 import { mailErrorText } from './mailbox-status';
-import { firstAuthResults, gmailAuthPassed, sinceDate } from './mail-view';
+import { STORE_LIST_DAYS, firstAuthResults, gmailAuthPassed, sinceDate } from './mail-view';
 import { autoVerifySenders } from './mail-auto-verify';
 import { cbBoxRows } from './mail-cb-box';
 import {
@@ -235,7 +235,8 @@ async function syncGone(c: ImapFlow, box: SyncBox, folder: StoreFolder, path: st
   try {
     const mb = c.mailbox as unknown as { uidValidity?: bigint | number } | false;
     if (!mb || String(mb.uidValidity ?? 0) !== st.uidvalidity) return 0;   // the folder changed: the next syncFolder re-copies it
-    const since = sinceDate(now);
+    // the same window the list shows (STORE_LIST_DAYS, owner 2026-10-14), so a mail archived in Gmail leaves the list too
+    const since = sinceDate(now, STORE_LIST_DAYS);
     const present = ((await c.search({ since }, { uid: true })) || []) as number[];
     const r = await query(`UPDATE mail_store SET gone = true, updated_at = now()
                             WHERE box_id = $1 AND folder = $2 AND uidvalidity = $3 AND NOT gone AND NOT local AND sent_at >= $4 AND NOT (uid = ANY($5::bigint[]))`,

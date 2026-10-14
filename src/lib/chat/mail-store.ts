@@ -5,7 +5,7 @@
 // answered) is written here at once and queued in mail_actions for the sync to write to Gmail. Until mail-store.sql
 // is run, or before a mailbox's first copy is done, storeReady() is false and the routes keep the old live path.
 import { query, queryOne } from '@/lib/db';
-import { MAIL_DAYS, MAX_MAILS, sinceDate, sortMails, type MailListItem } from './mail-view';
+import { STORE_LIST_DAYS, STORE_MAX_CONVS, sinceDate, sortMails, type MailListItem } from './mail-view';
 import { STORE_HTML_MAX, rowToListItem, rowToMailFull, threadFromRows, type StoreFolder, type StoreRow, type StoreThreadItem } from './mail-store-rules';
 import { outboxStates } from './mail-outbox';
 
@@ -46,25 +46,33 @@ export function forgetStoreReady(): void { ready.clear(); }
 const REPLY_AFTER = `s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone AND s.sent_at > i.sent_at
                      AND (s.thread_id = i.thread_id OR lower(i.from_addr) = ANY(s.to_addrs))`;
 export async function storeList(boxId: string, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
-  const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean }>(
+  // Up to STORE_MAX_CONVS conversations of STORE_LIST_DAYS (owner 2026-10-14: the old 200 / 30 days left waiting customers
+  // off a busy Gmail's list); the unanswered ones first, so the cut, if any, only ever drops answered mail. replied_at is
+  // read once per row (LATERAL) instead of twice.
+  const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean; contact: boolean }>(
     `WITH inbox AS (
        SELECT ${LIST_COLS}, thread_id, body_text,
               row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY sent_at DESC) AS rn,
               bool_or(NOT seen) OVER (PARTITION BY COALESCE(thread_id, 'u' || id)) AS any_unread
          FROM mail_store
-        WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2)
+        WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2),
+     sent_to AS (
+       SELECT DISTINCT unnest(to_addrs) AS addr FROM mail_store WHERE box_id = $1 AND folder = 'sent' AND NOT gone)
      SELECT i.id, i.box_id, i.folder, i.uidvalidity, i.uid, i.from_name, i.from_addr, i.subject, i.sent_at, i.seen, i.answered, i.has_attach, i.auth_pass,
             i.any_unread,
             btrim(left(regexp_replace(COALESCE(i.body_text, ''), '\\s+', ' ', 'g'), 180)) AS snippet,
-            (i.answered OR EXISTS (SELECT 1 FROM mail_store s WHERE ${REPLY_AFTER})) AS replied,
-            (SELECT max(s.sent_at) FROM mail_store s WHERE ${REPLY_AFTER}) AS replied_at,
+            (i.answered OR ra.replied_at IS NOT NULL) AS replied,
+            ra.replied_at,
+            EXISTS (SELECT 1 FROM sent_to st WHERE st.addr = lower(i.from_addr)) AS contact,
             CASE WHEN i.thread_id IS NULL THEN 1
                  ELSE (SELECT count(*)::int FROM mail_store t WHERE t.box_id = $1 AND t.thread_id = i.thread_id AND NOT t.gone AND NOT t.local) END AS thread_count
-       FROM inbox i WHERE i.rn = 1
-      ORDER BY i.sent_at DESC LIMIT ${MAX_MAILS + 1}`, [boxId, sinceDate(now)]);
-  const truncated = r.rows.length > MAX_MAILS;
-  const mails = sortMails(r.rows.slice(0, MAX_MAILS).map(rowToListItem));
-  return { mails, unread: mails.filter(m => m.unread).length, truncated, days: MAIL_DAYS };
+       FROM inbox i
+       LEFT JOIN LATERAL (SELECT max(s.sent_at) AS replied_at FROM mail_store s WHERE ${REPLY_AFTER}) ra ON true
+      WHERE i.rn = 1
+      ORDER BY (i.answered OR ra.replied_at IS NOT NULL) ASC, i.sent_at DESC LIMIT ${STORE_MAX_CONVS + 1}`, [boxId, sinceDate(now, STORE_LIST_DAYS)]);
+  const truncated = r.rows.length > STORE_MAX_CONVS;
+  const mails = sortMails(r.rows.slice(0, STORE_MAX_CONVS).map(rowToListItem));
+  return { mails, unread: mails.filter(m => m.unread).length, truncated, days: STORE_LIST_DAYS };
 }
 
 // Opening a conversation reads all of it: every unread INBOX mail of the same Gmail thread is marked read too.
@@ -157,14 +165,15 @@ export async function storeOriginal(boxId: string, uid: number) {
 
 // A reply sent from ShipTrack shows in the conversation at once (local row, uid below zero), until the sync brings
 // Gmail's own copy of it from Sent (same Message-ID) and the local one stops showing.
-export async function storeLocalSent(boxId: string, x: { messageId: string; threadId: string | null; fromName: string; fromAddr: string; to: string; subject: string; text: string }): Promise<void> {
+// `files` (owner 2026-10-14): the reply carried attachments, so the conversation shows the clip on it at once.
+export async function storeLocalSent(boxId: string, x: { messageId: string; threadId: string | null; fromName: string; fromAddr: string; to: string; subject: string; text: string; files?: number }): Promise<void> {
   try {
     await query(
       `INSERT INTO mail_store (box_id, folder, uidvalidity, uid, thread_id, message_id, from_name, from_addr, to_list, to_addrs, subject, sent_at,
-                               seen, body_state, body_text, local)
-       VALUES ($1, 'sent', 0, -(extract(epoch FROM clock_timestamp()) * 1000)::bigint, $2, $3, $4, $5, $6, ARRAY[$6]::text[], $7, now(), true, 'done', $8, true)
+                               seen, body_state, body_text, local, has_attach)
+       VALUES ($1, 'sent', 0, -(extract(epoch FROM clock_timestamp()) * 1000)::bigint, $2, $3, $4, $5, $6, ARRAY[$6]::text[], $7, now(), true, 'done', $8, true, $9)
        ON CONFLICT DO NOTHING`,
-      [boxId, x.threadId, x.messageId, x.fromName, x.fromAddr.toLowerCase(), x.to.toLowerCase(), x.subject, x.text.slice(0, 40_000)]);
+      [boxId, x.threadId, x.messageId, x.fromName, x.fromAddr.toLowerCase(), x.to.toLowerCase(), x.subject, x.text.slice(0, 40_000), (x.files || 0) > 0]);
   } catch (e) { console.error('[mail-store] local sent:', (e as Error).message); }
 }
 

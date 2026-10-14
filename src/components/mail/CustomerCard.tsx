@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import { BadgeCheck, ChevronDown, ChevronUp, Copy, Loader2, MapPin, MessageCircle, Package, Send, ShieldQuestion, Truck, Undo2, Wallet } from 'lucide-react';
 import type { Customer, CustomerOrder } from './types';
+import { AddressDialog, ItemsDialog } from '@/app/admin/chat/_components/OrderLine';
+import type { StaffAddress, StaffOrderItems } from '@/app/admin/chat/_lib/types';
+import type { OrderAddress } from '@/lib/chat/order-address';
 
 const day = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—');
 const rupees = (n: number | null) => (n == null ? '' : `₹${Math.round(n).toLocaleString('en-IN')}`);
@@ -51,6 +54,43 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
     } catch { onAlert('error', 'Could not mark it.'); }
     finally { setBusy(false); }
   };
+  // Edit address / Edit items (owner 2026-10-14: "email ma edit ka option de for address change and product details change,
+  // jaisa chat support ma ha"): the customer's email chat for that order (found or made, verified for it, status left
+  // alone: /api/mail/case-chat purpose 'edit'), then the SAME dialogs and PATCH routes as the chat header. ShipTrack only:
+  // never Shopify, never the courier; the customer is told nothing.
+  const [edit, setEdit] = useState<{ order: CustomerOrder; chatId: string; address: StaffAddress | null; items: StaffOrderItems | null; busy: boolean; error: string } | null>(null);
+  const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const openEdit = async (o: CustomerOrder, kind: 'address' | 'items') => {
+    if (!token || busy) return;
+    setBusy(true);
+    try {
+      const c = await fetch('/api/mail/case-chat', { method: 'POST', headers: auth, body: JSON.stringify({ box, email: customer?.email, orderId: o.orderId, purpose: 'edit' }) });
+      const cj = await c.json().catch(() => ({}));
+      if (!c.ok || !cj.chatId) { onAlert('error', cj.error || 'Could not open the order for editing.'); return; }
+      const chatId = String(cj.chatId);
+      const r = await fetch(`/api/chat/conversations/${encodeURIComponent(chatId)}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not open the order.'); return; }
+      const address = kind === 'address' && j.address_editable ? (j.order_address as StaffAddress) : null;
+      const items = kind === 'items' && j.items_editable ? (j.order_items as StaffOrderItems) : null;
+      if (!address && !items) { onAlert('error', kind === 'address' ? 'This order\'s address cannot be changed (no address on it, or no right to change orders).' : 'This order\'s items cannot be changed (no right to change orders).'); return; }
+      setEdit({ order: o, chatId, address, items, busy: false, error: '' });
+    } catch { onAlert('error', 'Could not open the order for editing.'); }
+    finally { setBusy(false); }
+  };
+  const saveEdit = async (what: 'address' | 'items', payload: unknown) => {
+    if (!edit) return;
+    setEdit({ ...edit, busy: true, error: '' });
+    try {
+      const r = await fetch(`/api/chat/conversations/${encodeURIComponent(edit.chatId)}/${what}`, { method: 'PATCH', headers: auth, body: JSON.stringify(payload) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setEdit({ ...edit, busy: false, error: j.error || 'Could not save it.' }); return; }
+      const order = edit.order.orderId;
+      setEdit(null);
+      onAlert('success', j.unchanged ? 'Nothing changed.' : `${what === 'address' ? 'Address' : 'Items'} updated in ShipTrack · order ${order}. Shopify and the courier are not changed; tell the customer in your reply.`);
+      onChanged?.();
+    } catch { setEdit({ ...edit, busy: false, error: 'Could not save it.' }); }
+  };
   const copy = async (link: string) => {
     try { await navigator.clipboard.writeText(link); onAlert('success', 'Tracking link copied.'); }
     catch { onAlert('error', 'Could not copy. Select the link and copy it.'); }
@@ -85,6 +125,8 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
       <div className="mail-cust-actions">
         {o.facts?.tracking_link && <button type="button" className="btn btn-outline btn-sm" onClick={() => copy(o.facts!.tracking_link!)}><Copy size={13} /> Copy tracking link</button>}
         {o.chatId && <a className="btn btn-outline btn-sm" href={`/admin/chat?open=${encodeURIComponent(o.chatId)}`}><MessageCircle size={13} /> Open chat</a>}
+        {customer?.canEdit && token && <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void openEdit(o, 'address')} title="Change the delivery address in ShipTrack (not Shopify, not the courier)"><MapPin size={13} /> Edit address</button>}
+        {customer?.canEdit && token && <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => void openEdit(o, 'items')} title="Change the products / colour / size in ShipTrack (not Shopify, not the courier)"><Package size={13} /> Edit items</button>}
       </div>
       {/* Refund / Ship again for a customer who writes by email (owner 2026-10-13): on their email chat, listed in Chat Support */}
       {o.emailChat && o.emailChat.caseKind && (
@@ -141,6 +183,14 @@ export default function CustomerCard({ customer, loading, onVerify, onAlert, tok
           </>
         )}
       </div>
+      {edit?.address && (
+        <AddressDialog initial={edit.address} orderId={edit.address.order_id} busy={edit.busy} error={edit.error}
+          onCancel={() => setEdit(null)} onSave={(a: OrderAddress) => void saveEdit('address', a)} />
+      )}
+      {edit?.items && (
+        <ItemsDialog initial={edit.items.items} orderId={edit.items.order_id} busy={edit.busy} error={edit.error}
+          onCancel={() => setEdit(null)} onSave={(items) => void saveEdit('items', { items })} />
+      )}
     </aside>
   );
 }
