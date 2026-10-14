@@ -6,7 +6,7 @@
 // is run, or before a mailbox's first copy is done, storeReady() is false and the routes keep the old live path.
 import { query, queryOne } from '@/lib/db';
 import { STORE_LIST_DAYS, STORE_MAX_CONVS, sinceDate, sortMails, type MailListItem } from './mail-view';
-import { STORE_HTML_MAX, rowToListItem, rowToMailFull, threadFromRows, type StoreFolder, type StoreRow, type StoreThreadItem } from './mail-store-rules';
+import { STORE_HTML_MAX, applyBounces, rowToListItem, rowToMailFull, threadFromRows, type StoreFolder, type StoreRow, type StoreThreadItem } from './mail-store-rules';
 import { outboxStates } from './mail-outbox';
 
 interface ErrCode { code?: string }
@@ -43,16 +43,18 @@ export function forgetStoreReady(): void { ready.clear(); }
 // hamne kar rakha hai to fir active mein kyon"): the newest non-gone Sent row after the mail that is in the same thread
 // OR addressed to the mail's sender (to_addrs, lower-case: the sync fills it from Gmail, a reply from here as ARRAY[to],
 // so it counts at once; a mail with no thread id still matches by the address).
+// Gmail's own "could not deliver" reports (mail-filters.ts isBounce, the address part): never a conversation's row.
+const BOUNCE_FROM_SQL = '^(mailer-daemon|postmaster)@';
 const REPLY_AFTER = `s.box_id = $1 AND s.folder = 'sent' AND NOT s.gone AND s.sent_at > i.sent_at
                      AND (s.thread_id = i.thread_id OR lower(i.from_addr) = ANY(s.to_addrs))`;
 export async function storeList(boxId: string, now = Date.now()): Promise<{ mails: MailListItem[]; unread: number; truncated: boolean; days: number }> {
   // Up to STORE_MAX_CONVS conversations of STORE_LIST_DAYS (owner 2026-10-14: the old 200 / 30 days left waiting customers
   // off a busy Gmail's list); the unanswered ones first, so the cut, if any, only ever drops answered mail. replied_at is
   // read once per row (LATERAL) instead of twice.
-  const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean; contact: boolean }>(
+  const r = await query<StoreRow & { snippet: string | null; replied: boolean; replied_at: string | Date | null; thread_count: number; any_unread: boolean; contact: boolean; bounce_at: string | Date | null; bounce_text: string | null }>(
     `WITH inbox AS (
-       SELECT ${LIST_COLS}, thread_id, body_text,
-              row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY sent_at DESC) AS rn,
+       SELECT ${LIST_COLS}, thread_id, body_text, (from_addr ~* '${BOUNCE_FROM_SQL}') AS is_bounce,
+              row_number() OVER (PARTITION BY COALESCE(thread_id, 'u' || id) ORDER BY (from_addr ~* '${BOUNCE_FROM_SQL}') ASC, sent_at DESC) AS rn,
               bool_or(NOT seen) OVER (PARTITION BY COALESCE(thread_id, 'u' || id)) AS any_unread
          FROM mail_store
         WHERE box_id = $1 AND folder = 'inbox' AND NOT gone AND NOT local AND sent_at >= $2),
@@ -63,15 +65,22 @@ export async function storeList(boxId: string, now = Date.now()): Promise<{ mail
             btrim(left(regexp_replace(COALESCE(i.body_text, ''), '\\s+', ' ', 'g'), 180)) AS snippet,
             (i.answered OR ra.replied_at IS NOT NULL) AS replied,
             ra.replied_at,
+            bo.bounce_at, CASE WHEN i.is_bounce THEN left(COALESCE(i.body_text, ''), 1200) ELSE bo.bounce_text END AS bounce_text,
             EXISTS (SELECT 1 FROM sent_to st WHERE st.addr = lower(i.from_addr)) AS contact,
             CASE WHEN i.thread_id IS NULL THEN 1
                  ELSE (SELECT count(*)::int FROM mail_store t WHERE t.box_id = $1 AND t.thread_id = i.thread_id AND NOT t.gone AND NOT t.local) END AS thread_count
        FROM inbox i
        LEFT JOIN LATERAL (SELECT max(s.sent_at) AS replied_at FROM mail_store s WHERE ${REPLY_AFTER}) ra ON true
+       LEFT JOIN LATERAL (SELECT b.sent_at AS bounce_at, left(COALESCE(b.body_text, b.subject), 1200) AS bounce_text
+                            FROM mail_store b
+                           WHERE i.thread_id IS NOT NULL AND NOT i.is_bounce AND b.box_id = $1 AND b.folder = 'inbox' AND NOT b.gone
+                             AND b.thread_id = i.thread_id AND b.from_addr ~* '${BOUNCE_FROM_SQL}' AND b.sent_at > i.sent_at
+                           ORDER BY b.sent_at DESC LIMIT 1) bo ON true
       WHERE i.rn = 1
       ORDER BY (i.answered OR ra.replied_at IS NOT NULL) ASC, i.sent_at DESC LIMIT ${STORE_MAX_CONVS + 1}`, [boxId, sinceDate(now, STORE_LIST_DAYS)]);
   const truncated = r.rows.length > STORE_MAX_CONVS;
-  const mails = sortMails(r.rows.slice(0, STORE_MAX_CONVS).map(rowToListItem));
+  // a bounce of our reply puts the customer back to To reply (applyBounces, owner 2026-10-14)
+  const mails = sortMails(applyBounces(r.rows.slice(0, STORE_MAX_CONVS).map(x => ({ item: rowToListItem(x), bounceAt: x.bounce_at, bounceText: x.bounce_text }))));
   return { mails, unread: mails.filter(m => m.unread).length, truncated, days: STORE_LIST_DAYS };
 }
 

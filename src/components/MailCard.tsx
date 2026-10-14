@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, BadgeCheck, ChevronLeft, FolderCheck, FolderOpen, Inbox, Loader2, Mail as MailIcon, Mails, Paperclip, RefreshCw, Reply, ShieldQuestion, Calendar, CalendarDays, MessageSquareReply, Search } from 'lucide-react';
 
 import { agoText } from '@/app/admin/_lib/format';
-import { VIEW_LABELS, bucketOf, caseAddress, caseRows, caseState, customerCase, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
+import { VIEW_LABELS, bucketOf, caseAddress, caseRows, caseState, customerCase, gmailBlocksToday, matchesView, neighbour, searchMatch, sortItems, viewCounts, type MailSort, type MailView } from '@/lib/chat/mail-filters';
 import { mailCache, mailKey, threadKey } from './mail/cache';
 import MailRows from './mail/MailRows';
 import MailReader from './mail/MailReader';
@@ -235,6 +235,8 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
     return open ? [...head, open] : head;
   }, [shown, rowLimit, openUid]);
   // Gmail not synced for a while = new mails may be missing here (owner 2026-10-14: "sari mail nai pakad rha"): say so.
+  // Gmail stopping our own mails today (owner 2026-10-14: "appears suspicious and wasn't delivered"): one warning on top.
+  const blockedToday = useMemo(() => gmailBlocksToday(items, Date.now()), [items]);
   const syncedAgoMin = entry?.store?.syncedAt ? (Date.now() - Date.parse(entry.store.syncedAt)) / 60_000 : null;
 
   // Fetch ahead (owner 2026-10-08: "sloww hai"): the first few mails of what is on screen are read in the
@@ -461,6 +463,9 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
           </div>
           {(box?.status && !box.status.ok) && <div className="mail-warn">{box.status.error}</div>}
           {down && <div className="mail-warn">{down}</div>}
+          {blockedToday > 0 && (
+            <div className="mail-warn">Gmail stopped {blockedToday === 1 ? 'one of our mails' : `${blockedToday} of our mails`} today before it left (it called it suspicious, or this Gmail hit its daily limit), so that customer never got our reply; they are back in To reply. Do not send the same text again and again: one short reply without links. If it keeps happening, tell the Super Admin.</div>
+          )}
           {syncedAgoMin != null && syncedAgoMin > 10 && (
             <div className="mail-warn">Gmail has not synced for {Math.round(syncedAgoMin)} minutes, so the newest mails may be missing here.{entry?.store?.error ? ` Gmail said: ${entry.store.error}` : ' It usually catches up by itself; if this stays, tell the Super Admin.'}</div>
           )}
@@ -509,6 +514,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
               backLabel={VIEW_LABELS[view]}
               position={pos >= 0 ? `${pos + 1} of ${shown.length}` : undefined}
               bucket={(() => { const it = items.find(x => x.uid === mail.uid); return it ? bucketOf(it, verified, cases) : undefined; })()}
+              bounced={items.find(x => x.uid === mail.uid)?.bounce ?? null}
               caseInfo={openCase}
               onCase={action => void setCase(action)}
               onNextAfterSend={view === 'todo' || view === 'active'}
@@ -525,7 +531,7 @@ export default function MailCard({ token, onAlert, activePanelId, initialBox, in
                 // one answered (owner 2026-10-11 13:02: a customer's second mail in another Gmail thread stayed To reply
                 // after the team answered the first; storeList counts a reply to the customer, whatever the thread).
                 const at = new Date().toISOString();
-                patchItems(list => list.map(x => x.uid === uid || (addr && caseAddress(x.fromAddress) === addr) ? { ...x, answered: true, replied: true, repliedAt: at } : x));
+                patchItems(list => list.map(x => x.uid === uid || (addr && caseAddress(x.fromAddress) === addr) ? { ...x, answered: true, replied: true, repliedAt: at, bounce: undefined } : x));
                 setMail(m => (m ? { ...m, answered: true } : m));
                 if (boxId) void loadThread(boxId, mail.fromAddress, true, uid);
                 if (view === 'todo') goNext(uid);

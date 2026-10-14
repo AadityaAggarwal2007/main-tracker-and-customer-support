@@ -6,7 +6,10 @@ export type MailView = 'todo' | 'done' | 'other' | 'active' | 'closed' | 'all' |
 export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
 // repliedAt: when we last wrote to this customer after this mail, in any conversation (ISO; the mail store only, mail-store.ts storeList).
-export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string; contact?: boolean }
+export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string; contact?: boolean; bounce?: MailBounce }
+// Our reply to this customer came back from Gmail undelivered, after our last reply (mail-store-rules.ts applyBounces,
+// owner 2026-10-14): the mail counts as NOT replied (To reply, Active case) until we write again; why = BounceWhy.
+export interface MailBounce { at: string; why: string; to: string | null }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
 // ── Cases per customer (owner 2026-10-11 afternoon: "active case aur close case ... jo customer dobara dobara email kar
@@ -184,8 +187,12 @@ export function isBounce(fromAddress: string | null | undefined, subject?: strin
   if (BOUNCE_FROM.test(a)) return true;
   return ROBOT.test(a) && BOUNCE_SUBJECT.test(String(subject || '').trim());
 }
-export type BounceWhy = 'full' | 'blocked' | 'not_found' | 'other';
+export type BounceWhy = 'suspicious' | 'limit' | 'full' | 'blocked' | 'not_found' | 'other';
 export const BOUNCE_WHY: Record<BounceWhy, string> = {
+  // owner 2026-10-14 (VASTRIKA: "Your message to ... appears suspicious and wasn't delivered"): Gmail ITSELF stopped our
+  // mail before it left; nothing reached the customer and their address is fine.
+  suspicious: 'Gmail itself stopped our mail before it left (it never reached the customer): Google thought it looked suspicious. Their address is fine; it is about how much and what this Gmail sends. Do not send the same text again and again (each try makes Google stricter): send one short, plain reply without links, and tell the Super Admin if it keeps happening.',
+  limit: 'This Gmail has reached Google\'s daily sending limit, so nothing more goes out from it for up to 24 hours. Reply again tomorrow and tell the Super Admin.',
   full: 'Their mailbox is full, so Gmail could not hand our mail over. Nothing is wrong on our side: they have to free space first. Try again in a day or two, or answer them where they write next.',
   blocked: 'Their mail server refused our mail, usually because it looked like spam (many links, a long tracking link, or many mails sent from this Gmail in a short time). Send a short mail without links, or ask them to check Spam.',
   not_found: 'This address does not exist. Check the email on the order for a typo.',
@@ -204,8 +211,26 @@ export function bounceInfo(text: string | null | undefined, ownEmail?: string | 
       to = a; break;
     }
   }
-  const why: BounceWhy = /out of storage|storage space|mailbox (is )?full|inbox is full|over quota|quota exceeded|insufficient storage/i.test(t) ? 'full'
+  const why: BounceWhy = /appears suspicious|looks suspicious|wasn'?t delivered because it (looks|appears) suspicious|unusual sending activity/i.test(t) ? 'suspicious'
+    : /reached a limit for sending|sending limit exceeded|daily (user )?sending (quota|limit)/i.test(t) ? 'limit'
+    : /out of storage|storage space|mailbox (is )?full|inbox is full|over quota|quota exceeded|insufficient storage/i.test(t) ? 'full'
     : /address not found|couldn'?t be found|could not be found|does ?n[o']t exist|no such user|user unknown|unknown user|account .{0,30}disabled/i.test(t) ? 'not_found'
     : /blocked|spam|rejected|refused|policy/i.test(t) ? 'blocked' : 'other';
   return { to, why };
+}
+
+// Gmail stopping OUR mails (suspicious / sending limit) today, India day (owner 2026-10-14): the Mail tab warns once at
+// the top, so the team stops resending the same text into Google's filter. Counts a customer's row whose reply bounced
+// and a bounce report that stands on its own.
+export function gmailBlocksToday(items: FilterItem[], now: number): number {
+  const day = (ms: number) => Math.floor((ms + 330 * 60_000) / 86_400_000);
+  const today = day(now);
+  let n = 0;
+  for (const it of items) {
+    if (it.bounce) { if ((it.bounce.why === 'suspicious' || it.bounce.why === 'limit') && day(Date.parse(it.bounce.at) || 0) === today) n++; continue; }
+    if (!isBounce(it.fromAddress, it.subject) || day(time(it)) !== today) continue;
+    const w = bounceInfo(`${it.subject} ${it.snippet || ''}`).why;
+    if (w === 'suspicious' || w === 'limit') n++;
+  }
+  return n;
 }
