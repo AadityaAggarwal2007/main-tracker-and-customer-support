@@ -38,6 +38,7 @@ const db = {
     if (/FROM panel_chargeback WHERE business_id = ANY/.test(sql)) { const rows = S.gwRows.filter((g) => p[0].includes(g.business_id)); return { rows, rowCount: rows.length }; }
     if (/UPDATE chargeback_alerts SET business_id = \$2/.test(sql)) { S.moved = { id: p[0], business_id: p[1], order_id: p[2] }; return { rows: [], rowCount: 1 }; }
     if (/UPDATE conversations c SET status = 'human_needed'/.test(sql)) { S.convUpdates.push(p); return { rows: [], rowCount: 1 }; }
+    if (/UPDATE chargeback_mailboxes SET app_password = \$1 WHERE id = ANY\(\$2::uuid\[\]\)/.test(sql)) { S.healed = { pass: p[0], ids: p[1] }; for (const b of S.boxes) if (p[1].includes(b.id)) b.app_password = p[0]; return { rows: [], rowCount: p[1].length }; }
     if (/UPDATE chargeback_mailboxes SET last_uid/.test(sql)) { S.lastUid = p[0]; S.lastUidIds = p[1]; return { rows: [], rowCount: 1 }; }
     if (/UPDATE chargeback_alerts SET notify_status/.test(sql)) { S.alerts.find((a) => a.id === p[0]).notify_status = p[1]; return { rows: [], rowCount: 1 }; }
     if (/DELETE FROM chargeback_mailboxes/.test(sql)) return { rows: [], rowCount: S.boxes.length ? 1 : 0 };
@@ -280,6 +281,9 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     S.boxes[1].app_password = 'GOODPASSGOODPASS'; S.deadPass = S.boxes[0].app_password;
     const r = await poll.pollChargebackMailboxes();
     assert.strictEqual(r.alerts, 4, 'read with the second password'); assert.strictEqual(S.connects, 2, 'the dead one, then the good one');
+    // review 14 Oct: the row with the dead password gets the one Gmail accepted (the Mail tab's box signs in too); once only
+    assert.deepStrictEqual(S.healed, { pass: 'GOODPASSGOODPASS', ids: ['mb1'] });
+    assert.strictEqual(S.boxes[0].app_password, 'GOODPASSGOODPASS');
     assert.strictEqual(mstat.getMailboxStatus('cb:mb1').ok, true, 'the status is OK, under the first row');
     assert.ok(S.hosts.every((h) => typeof h === 'string' && h.length > 0), 'a host is always given');
     setupShared(); S.boxes[1].app_password = 'GOODPASSGOODPASS'; S.deadPass = null; S.netFail = true; S.connects = 0;

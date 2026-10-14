@@ -21,8 +21,9 @@ export function getPool(): Pool {
       max: 20,
       // Kill idle connections after 30s to free resources
       idleTimeoutMillis: 30_000,
-      // Fail fast if can't connect in 3s
-      connectionTimeoutMillis: 3_000,
+      // Wait up to 10 s for a free connection (was 3 s; review 2026-10-14: the live log showed bursts of "Connection
+      // terminated due to connection timeout" in the inbox counts and the crons while the pool was busy).
+      connectionTimeoutMillis: 10_000,
       // SSL not needed for localhost
       ssl: false,
     });

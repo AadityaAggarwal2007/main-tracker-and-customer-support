@@ -839,6 +839,7 @@ async function handle(q, p, tx) {
     return rows(ids.map((id) => { const c = conv(id); return { ...pick(c, ['id', 'site_id', 'status', 'unread_count', 'visitor_id', 'visitor_name', 'verified_order_id', 'verified_via', 'customer_key', 'source', 'merged_into', 'assigned_to']), ai_enabled: siteOf(c.site_id).ai_enabled }; }));
   }
   if (q === 'UPDATE messages SET conversation_id = $1 WHERE conversation_id = $2') { for (const x of db.messages) if (x.conversation_id === p[1]) setRow(tx, x, { conversation_id: p[0] }); return rows([]); }
+  if (q === 'UPDATE message_revisions SET conversation_id = $1 WHERE conversation_id = $2' && db.revisionsDenied) throw Object.assign(new Error('permission denied for table message_revisions'), { code: '42501' });
   if (q === 'UPDATE chat_attachments SET conversation_id = $1 WHERE conversation_id = $2' || q === 'UPDATE message_revisions SET conversation_id = $1 WHERE conversation_id = $2') return rows([]);
   if (/^UPDATE conversations SET status = CASE WHEN \$3 = 'human_needed' THEN 'human_needed' .* assigned_to = COALESCE\(assigned_to, \$8\), assigned_at = CASE WHEN assigned_to IS NULL AND \$8::text IS NOT NULL THEN now\(\) ELSE assigned_at END, updated_at = now\(\) WHERE id = \$1 AND id <> \$2$/.test(q)) {
     need(tx, q);
@@ -1867,6 +1868,11 @@ const status = (r, want, label = '') => eq(r.status, want, `${label} expected ${
     known({ id: 'm-t3', customer_key: 'K19' }); known({ id: 'm-f3', customer_key: 'K19' });
     eq(await mod.merge.mergeChats('m-t3', 'm-f3'), true);
     deq([C('m-t3').assigned_to, evs('m-t3', 'merge').length], [null, 0]);
+    // review 2026-10-14 (live log "merge into customer chat failed: permission denied for table message_revisions"):
+    // tracker_user may not UPDATE message_revisions; the merge still goes through
+    db.revisionsDenied = true;
+    known({ id: 'm-t4', customer_key: 'K20', status: 'resolved' }); known({ id: 'm-f4', customer_key: 'K20', status: 'agent_handling' });
+    try { eq(await mod.merge.mergeChats('m-t4', 'm-f4'), true); eq(C('m-f4').merged_into, 'm-t4'); } finally { db.revisionsDenied = false; }
   });
 
   // ── R18-R19: what the thread shows ────────────────────────────

@@ -59,7 +59,19 @@ export async function mergeChats(targetId: string, fromId: string): Promise<bool
       await client.query(`UPDATE chat_attachments SET conversation_id = $1 WHERE conversation_id = $2`, [targetId, fromId]);
     }
     if (withRevisions) {
-      await client.query(`UPDATE message_revisions SET conversation_id = $1 WHERE conversation_id = $2`, [targetId, fromId]);
+      // chat-message-edits.sql grants tracker_user SELECT + INSERT only on message_revisions, so this UPDATE was refused
+      // and took the WHOLE merge down with it: the live log showed "merge into customer chat failed: permission denied
+      // for table message_revisions" (review 2026-10-14), so a customer's duplicate chats were never joined. Every
+      // reader finds a revision through its message (message_id), so its own conversation_id is only a copy: tried
+      // inside a savepoint, and a refusal (42501) is skipped.
+      await client.query('SAVEPOINT merge_revisions');
+      try {
+        await client.query(`UPDATE message_revisions SET conversation_id = $1 WHERE conversation_id = $2`, [targetId, fromId]);
+        await client.query('RELEASE SAVEPOINT merge_revisions');
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT merge_revisions');
+        if ((e as { code?: string })?.code !== '42501') throw e;
+      }
     }
 
     const reopen = target.ai_enabled ? 'ai_handling' : 'human_needed';
