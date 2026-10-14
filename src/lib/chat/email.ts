@@ -605,7 +605,7 @@ export async function sendAgentEmailReply(
   }
 
   const visitorEmail = conv.visitor_id.replace('email:', '');
-  const subject = conv.subject || 'Your enquiry';
+  const subject = conv.subject || '';   // none = "Re:" alone in replyMailMessage, so Gmail keeps one conversation (owner 2026-10-14)
 
   // Files the agent attached in the inbox go out as real email attachments.
   let attachments: { filename: string; content: Buffer; contentType: string }[] | undefined;

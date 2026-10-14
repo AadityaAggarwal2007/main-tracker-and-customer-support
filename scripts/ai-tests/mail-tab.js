@@ -240,7 +240,7 @@ const t = async (name, fn) => { pool.closeAllImap(); inbox.forgetSentPaths(); mc
     const l = view.sortMails([{ unread: false, date: '2026-10-08' }, { unread: true, date: '2026-10-01' }, { unread: true, date: '2026-10-07' }]);
     assert.deepStrictEqual(l.map((x) => x.date), ['2026-10-07', '2026-10-01', '2026-10-08']);
     assert.strictEqual(view.parseUid('12'), 12); assert.strictEqual(view.parseUid('1;DROP'), null); assert.strictEqual(view.parseUid('0'), null); assert.strictEqual(view.parseUid(-3), null);
-    assert.strictEqual(view.replySubject('Hello'), 'Re: Hello'); assert.strictEqual(view.replySubject('RE: Hello'), 'RE: Hello'); assert.strictEqual(view.replySubject(''), 'Re: Your enquiry');
+    assert.strictEqual(view.replySubject('Hello'), 'Re: Hello'); assert.strictEqual(view.replySubject('RE: Hello'), 'RE: Hello'); assert.strictEqual(view.replySubject(''), 'Re:', 'no subject = "Re:" alone, so Gmail keeps the reply in the same conversation (owner 14 Oct)'); assert.strictEqual(view.replySubject('(no subject)'), 'Re:');
     const f = view.frameHtml('<p onclick="x()">a</p><script>bad()</script><base href="https://e.example"><form action="x"><input></form>');
     assert.ok(!/<script|onclick|<base|<form/i.test(f.slice(f.indexOf('<body>'))), 'script, handlers, base and forms are cut from the mail');
     assert.ok(f.includes('<base target="_blank">'), 'our own base keeps links in a new tab');

@@ -227,6 +227,10 @@ Done and live:
   before. Bounce mails in the Mail tab say "not delivered to X, why" (no Verify / Notes / reply); Chat Support's "Also
   send by Gmail" adds "Regards, <brand> Support" only when the text has no sign-off.
 
+- **14 Oct, no-subject mails**: our reply went out as "Re: Your enquiry", so Gmail kept it in a separate conversation
+  (customer's mail looked unanswered in Gmail). Now "Re:" alone (`replySubject`, `reply-mail.ts`). Old replies stay where
+  they are (Sent, "Re: Your enquiry").
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
