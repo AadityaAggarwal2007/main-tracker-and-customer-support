@@ -48,6 +48,7 @@ const db = {
     if (/FROM orders WHERE business_id::text = \$1::text AND order_id = ANY/.test(sql)) { const o = S.orders.find((x) => x.panel === p[0] && p[1].includes(x.order_id)); return o ? { order_id: o.order_id } : null; }
     if (/SELECT a\.business_id, a\.subject, a\.snippet/.test(sql)) return S.alertRow || null;
     if (/INSERT INTO chargeback_alerts/.test(sql)) {
+      if (S.failInsertUid != null && Number(p[2]) === S.failInsertUid) throw new Error('pool timeout');
       if (S.alerts.some((a) => a.mailbox === p[1] && a.uid === p[2])) return null;
       const a = { id: 'al' + (S.alerts.length + 1), business_id: p[0], mailbox: p[1], uid: p[2], from_address: p[4], subject: p[6], snippet: p[7], gateway: p[8], order_id: p[9], routed_by: /routed_by/.test(sql) ? p[10] : undefined, notify_status: 'pending' };
       S.alerts.push(a); return { id: a.id };
@@ -152,6 +153,21 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.deepStrictEqual(S.alerts.map((a) => [a.uid, a.gateway, a.order_id]), [[6, 'Razorpay', '#1553'], [7, 'PayU', null]], 'kurtiya\'s #7000 does not match in vastora');
     assert.strictEqual(S.lastUid, 8);
     assert.strictEqual(S.logouts + S.closes >= 1, true);
+  });
+  await t('poll: an alert that could not be written (database hiccup) is read again next minute, never skipped for good (review 14 Oct); after 5 tries it is given up', async () => {
+    S.failInsertUid = 6;
+    await poll.pollChargebackMailboxes();
+    assert.deepStrictEqual(S.alerts.map((a) => a.uid), [7], 'the mail after it is still alerted');
+    assert.strictEqual(S.lastUid, null, 'last_uid does not move past the failed mail');
+    S.failInsertUid = null;
+    await poll.pollChargebackMailboxes();
+    assert.deepStrictEqual(S.alerts.map((a) => a.uid).sort(), [6, 7], 'the failed one is alerted on the next run, the other not twice');
+    assert.strictEqual(S.lastUid, 8);
+    reset(); S.failInsertUid = 6;
+    for (let i = 0; i < 4; i++) { await poll.pollChargebackMailboxes(); assert.notStrictEqual(S.lastUid, 8); }
+    await poll.pollChargebackMailboxes();
+    assert.strictEqual(S.lastUid, 8, 'the fifth failure gives it up, the mailbox moves on');
+    S.failInsertUid = null;
   });
   await t('poll: the matched customer\'s chat goes from AI to Needs you (that panel + order only); an unmatched alert moves no chat', async () => {
     await poll.pollChargebackMailboxes();

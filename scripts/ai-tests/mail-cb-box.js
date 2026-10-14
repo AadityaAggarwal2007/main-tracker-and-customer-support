@@ -54,8 +54,11 @@ const db = {
       return { rows: S.orders.filter(([pn, o]) => p[0].includes(pn) && p[1].includes(o)).map(([pn, o]) => ({ order_id: o, panel: pn })) };
     }
     if (/FROM mail_verifications v/.test(q)) return { rows: (S.mv || []).filter((v) => v.panel === p[0] && p[1].includes(v.email)).map((v) => ({ email: v.email, order_id: v.order, verified_by_name: 'auto', verified_at: new Date(), chat_id: null })) };
+    if (/pg_advisory_xact_lock/.test(q)) { (S.locks ??= []).push(p[0]); return { rows: [] }; }
     if (/SELECT c.id, c.status, c.verified_order_id, c.case_kind FROM conversations c/.test(q)) {
-      const rows = (S.chats || []).filter((c) => c.panel === p[0] && c.visitor === p[1] && c.source === 'email');
+      ok(/c\.verified_order_id IS NULL OR ltrim\(c\.verified_order_id, '#'\) = ltrim\(\$3, '#'\)/.test(q), 'only an unverified chat or one of this order');
+      const bare = (x) => String(x || '').replace(/^#/, '');
+      const rows = (S.chats || []).filter((c) => c.panel === p[0] && c.visitor === p[1] && c.source === 'email' && (!c.verified_order_id || bare(c.verified_order_id) === bare(p[2])));
       rows.sort((a, b) => (b.verified_order_id === p[2]) - (a.verified_order_id === p[2]));
       return { rows: rows.slice(0, 1) };
     }
@@ -73,6 +76,7 @@ const db = {
     throw new Error('fake db: ' + q.slice(0, 90));
   },
   queryOne: async () => null,
+  withTransaction: async (fn) => { const r = await fn({ query: (...a) => db.query(...a) }); return r; },
 };
 const fakes = {
   '@/lib/db': db,
@@ -190,6 +194,14 @@ async function t(name, fn) {
     deq([d.ok, d.status], [false, 409]);
     const e = await CC.ensureMailCaseChat({ panelId: 'P1' }, 'mohit@gmail.com', '#1948');
     eq(e.ok, false, 'verified in another panel only');
+    // review 14 Oct: a chat verified for order A (no Refund mark) is never moved to order B; B gets its own chat; one lock per address
+    S.mv.push({ panel: 'P2', email: 'mohit@gmail.com', order: '#1950' });
+    const f = await CC.ensureMailCaseChat(box, 'mohit@gmail.com', '#1950', { reopen: false });
+    eq(f.created, true, 'a new chat for the second order');
+    eq(S.chats.find((x) => x.id === 'e1').verified_order_id, '#1948', 'the first order\'s chat stays on it');
+    const g = await CC.ensureMailCaseChat(box, 'mohit@gmail.com', '#1948');
+    deq([g.chatId, g.created], ['e1', false]);
+    ok(S.locks.every((k) => /^mail-case:P2:/.test(k)) && S.locks.length >= 5, 'every call takes the per-address lock');
     const card = fs.readFileSync(path.join(SRC, 'components/mail/CustomerCard.tsx'), 'utf8');
     ok(/\/api\/mail\/case-chat/.test(card) && !/o\.emailChat && !o\.emailChat\.caseKind && customer\?\.cases && o\.emailChat\.verified/.test(card), 'the buttons no longer need an existing verified email chat');
     const route = fs.readFileSync(path.join(SRC, 'app/api/mail/case-chat/route.ts'), 'utf8');

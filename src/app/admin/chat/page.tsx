@@ -176,7 +176,7 @@ export default function ChatSupportPage() {
   // 2026-10-14; brandHome.ts). The Super Admin and the Manager keep All panels.
   const myPanelIds = businesses.filter(b => !user?.businessIds || user.businessIds.includes(b.id)).map(b => b.id);
   useBrandPanel({ token, separate: !!user && !isTeamLead(user), allowed: myPanelIds, current: activePanelId, ready: businesses.length > 0,
-    apply: (id) => { setActivePanelId(id); localStorage.setItem('active_panel_id', id); setActiveId(null); } });
+    apply: (id) => { setActivePanelId(id); localStorage.setItem('active_panel_id', id); } });   // an open chat (?open= link) stays open
   // Suggested replies + "Sudharo" (owner 2026-10-04; suggest-run.ts): the 3 drafts for the open
   // chat, the language they are asked in, and which draft the reply box was filled from (sent
   // with the reply so the server records whether it was edited).

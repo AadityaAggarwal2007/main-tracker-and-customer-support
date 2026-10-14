@@ -6,7 +6,7 @@
 // widget or the AI reply path. Nothing here is ever sent to the customer by itself.
 import { setupFor } from './common-setup';
 import { brandOf, fillBrand } from './common-setup-rules';
-import { notesForPrompt, parseStoredNote, wrapReply } from './reply-notes-rules';
+import { notesForPrompt, parseStoredNote, unwrapReply, wrapReply } from './reply-notes-rules';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { query, queryOne } from '@/lib/db';
 import { afterHours, closedWhy } from '@/lib/office-hours';
@@ -112,8 +112,8 @@ async function nameAndBrand(conv: SuggestConv, src?: SuggestSource): Promise<{ n
 async function teamNotes(panelId: string | null): Promise<string> {
   if (!panelId) return '';
   try {
-    const r = await query<{ value: string }>(`SELECT value FROM chat_settings WHERE key LIKE $1 ORDER BY updated_at DESC LIMIT 60`,
-      [`reply\\_note:${panelId.replace(/[\\%_]/g, '\\$&')}:%`]);
+    const r = await query<{ value: string }>(`SELECT value FROM chat_settings WHERE key LIKE $1 AND value NOT LIKE $2 ORDER BY updated_at DESC LIMIT 60`,
+      [`reply\\_note:${panelId.replace(/[\\%_]/g, '\\$&')}:%`, '%"deleted":true%']);
     return notesForPrompt(r.rows.map((x) => parseStoredNote(x.value)).filter((n): n is NonNullable<typeof n> => !!n));
   } catch (err) { console.error('[suggest] notes read failed:', (err as Error)?.message); return ''; }
 }
@@ -121,7 +121,7 @@ async function teamNotes(panelId: string | null): Promise<string> {
 export async function suggestReplies(conv: SuggestConv, actorKey: string, lang: SuggestLang, refresh: boolean, src?: SuggestSource, look: DraftLook = {}): Promise<Suggestion | { error: string }> {
   const wrap = look.wrap !== false;
   const nb = wrap ? await nameAndBrand(conv, src) : { name: null, brand: '' };
-  const dress = (options: string[]) => (wrap ? options.map((o) => wrapReply(o, nb)) : options);
+  const dress = (options: string[]) => (wrap ? options.map((o) => wrapReply(unwrapReply(o), nb)) : options);
   const orderId = src ? src.orderId : (conv.verified_order_id || conv.phone_match_order_id);
   if (!orderId && !src) return { error: 'Suggestions are for verified customers only' };
   const rows = src ? src.rows : await loadHistory(conv.id);
@@ -270,10 +270,10 @@ export async function polishDraft(conv: SuggestConv, actorKey: string, draft: st
   let latest: string | null = null;
   try { latest = lastCustomer(src ? src.rows : await loadHistory(conv.id))?.content || null; } catch { /* context only */ }
   const res = await ask(
-    [{ role: 'system', content: polishInstruction(look.lang || 'auto') }, { role: 'user', content: polishUserMessage(text, latest) }],
+    [{ role: 'system', content: polishInstruction(look.lang || 'auto', wrap) }, { role: 'user', content: polishUserMessage(text, latest) }],
     Math.min(1500, text.length + 300), 0.2, POLISH_TIMEOUT_MS,
   );
-  const body = acceptPolish(text, res?.content);
+  const body = acceptPolish(text, res?.content, wrap);
   const out = wrap ? wrapReply(body, await nameAndBrand(conv, src)) : body;
   try {
     await query(

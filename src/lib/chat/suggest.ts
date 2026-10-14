@@ -221,12 +221,12 @@ const POLISH_LANG: Record<SuggestLang, string> = {
   en: 'Write it in plain, simple English (translate a Hinglish or Hindi draft).',
   hi: 'Write it in Hinglish (Hindi in Roman letters, the way people text), whatever language the draft is in.',
 };
-export function polishInstruction(lang: SuggestLang = 'auto'): string {
+export function polishInstruction(lang: SuggestLang = 'auto', wrap = true): string {
   return `You turn a support team member's rough draft into the reply they meant to send to a customer of an online store in India.
 Make it correct and clear: fix spelling, grammar and punctuation, complete half sentences, spell out short forms ("pls" -> "please", "ur" -> "your", "h" -> "hai", "kr" -> "kar"), and make it read like a good, caring support person: warm, respectful, confident, simple words. Never the stiff call-centre phrases ("We apologize for any inconvenience caused", "Rest assured", "Kindly be informed").
 ${POLISH_LANG[lang]}
 Keep every fact exactly: the meaning, every number, date, day, amount, name, order ID and link; keep separate points on separate lines.
-Never add a fact, a date, a time, a promise, a reason or a step the draft does not have; never remove or soften what it says; never answer the customer yourself. Do not write a greeting line or a sign-off: the screen adds "Hello <name>," and "Regards, <store> Team".
+Never add a fact, a date, a time, a promise, a reason or a step the draft does not have; never remove or soften what it says; never answer the customer yourself. ${wrap ? 'Do not write a greeting line or a sign-off: the screen adds "Hello <name>," and "Regards, <store> Team".' : 'Keep the greeting and the sign-off the draft has (corrected); do not add any it does not have.'}
 Output the reply text only: no quotes, no explanation, no labels.`;
 }
 export const POLISH_INSTRUCTION = polishInstruction('auto');
@@ -239,16 +239,18 @@ export function polishUserMessage(draft: string, customerLatest: string | null):
 // The model's text (the message only, greeting and sign-off cut), or the draft itself (also cut) when the answer is not
 // a rewrite of it: empty, wrapped in quotes and labels, far longer (more than about 2.5 times) or much shorter, or with a
 // link that was not there.
-export function acceptPolish(draft: string, raw: string | null | undefined): string {
+// wrap false (the "Hello / Regards" tick off): the team member's own greeting and sign-off stay (review 2026-10-14).
+export function acceptPolish(draft: string, raw: string | null | undefined, wrap = true): string {
+  const cut = (s: string) => (wrap ? unwrapReply(s) : s.trim());
   // The team member's own link loses a ChatGPT / ad tag too (owner 2026-10-05); the model's answer is
   // cleaned the same way, so the "same links" check below compares clean with clean.
-  const d = unwrapReply(stripLinkJunk(draft.trim()).text);
+  const d = cut(stripLinkJunk(draft.trim()).text);
   raw = stripLinkJunk(String(raw || '')).text;
   let out = String(raw || '').trim();
   out = out.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim();
   out = out.replace(/^(?:corrected(?: reply| text)?|reply|output)\s*:\s*/i, '').trim();
   if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) out = out.slice(1, -1).trim();
-  out = unwrapReply(out);
+  out = cut(out);
   if (!out) return d;
   if (out.length > d.length * 2.5 + 160 || out.length < d.length * 0.4 - 10) return d;
   const links = (s: string) => (s.match(/https?:\/\/\S+/g) || []).map((l) => l.replace(/[.,;:!?)]+$/, ''));

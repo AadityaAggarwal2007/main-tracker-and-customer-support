@@ -14,9 +14,15 @@ export function useBrandPanel(opts: {
 }) {
   const { token, separate, allowed, current, ready, apply } = opts;
   const home = useRef<string[] | null>(null);
+  // Is this the session's first page? Read and marked ONCE, before any fetch: a panel the member picks while the first
+  // fetch is still running is never overridden by a later run (review 2026-10-14).
+  const firstVisit = useRef<boolean | null>(null);
   const key = allowed.join(',');
   useEffect(() => {
     if (!token || !ready || !separate || !allowed.length) return;
+    if (firstVisit.current === null) {
+      try { firstVisit.current = !sessionStorage.getItem(DONE_KEY); sessionStorage.setItem(DONE_KEY, '1'); } catch { firstVisit.current = false; }
+    }
     let gone = false;
     (async () => {
       if (home.current === null) {
@@ -27,8 +33,8 @@ export function useBrandPanel(opts: {
         } catch { home.current = []; }
       }
       if (gone) return;
-      let first = false;
-      try { first = !sessionStorage.getItem(DONE_KEY); sessionStorage.setItem(DONE_KEY, '1'); } catch { /* no storage: not the first */ }
+      const first = !!firstVisit.current;
+      firstVisit.current = false;   // only the first run may move to the home brand
       const want = brandPanelFor(current, allowed, home.current || [], separate, first);
       if (want && want !== current) apply(want);
     })();
