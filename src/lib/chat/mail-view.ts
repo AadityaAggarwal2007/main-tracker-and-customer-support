@@ -5,6 +5,12 @@
 
 export const MAIL_DAYS = 30;
 export const MAX_MAILS = 200;
+// The mail store's list (owner 2026-10-14: "shiptrack sari mail nai pakad rha ... gmail pa pending dikh rhi, shiptrack ma
+// koi pending nai"): it showed only the newest 200 conversations of 30 days, so on a busy Gmail (vastora: 2,500 mails a
+// month) older ones fell off the list and the To reply box looked empty. Now up to STORE_MAX_CONVS conversations of
+// STORE_LIST_DAYS, the ones nobody answered first, so a waiting customer is never the one cut off.
+export const STORE_LIST_DAYS = 60;
+export const STORE_MAX_CONVS = 2000;
 export const MAX_REPLY_CHARS = 8000;
 
 export interface MailListItem {
@@ -26,6 +32,9 @@ export interface MailListItem {
   // case by itself, so the Cases rule needs the TIME, not only whether); absent when never, or on the old live path.
   repliedAt?: string;
   threadCount?: number;
+  // We have written to this address before (a Sent mail to it in the store): a customer even with a work / college
+  // address, not only Gmail / Yahoo / ... (owner 2026-10-14; mail-filters.ts isCustomerMail).
+  contact?: boolean;
 }
 
 // The start of the window: IMAP SINCE works on whole days, so the day is what counts.

@@ -47,6 +47,14 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   const [sending, setSending] = useState(false);
   const [includeQuote, setIncludeQuote] = useState(true);
   const [attach, setAttach] = useState<File[]>([]);
+  const [dragging, setDragging] = useState(false);
+  // Small previews of the photos about to go (object URLs, freed when the list changes).
+  const [previews, setPreviews] = useState<(string | null)[]>([]);
+  useEffect(() => {
+    const urls = attach.map(f => (f.type.startsWith('image/') ? URL.createObjectURL(f) : null));
+    setPreviews(urls);
+    return () => { urls.forEach(u => { if (u) URL.revokeObjectURL(u); }); };
+  }, [attach]);
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [vOrder, setVOrder] = useState('');
   const [vPhone, setVPhone] = useState('');
@@ -130,7 +138,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
 
   // Files for the reply: the chat's own rules (JPG / PNG / WEBP / GIF / PDF, 10 MB each) and at most 5, 10 MB in all;
   // the server judges every file again from its bytes.
-  const addFiles = (list: FileList | null) => {
+  const addFiles = (list: FileList | File[] | null) => {
     if (!list) return;
     const next = [...attach];
     for (const f of Array.from(list)) {
@@ -186,7 +194,12 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   const files = mail.attachments.filter(a => !a.inline);
 
   const replyBox = canReply && (replyOpen ? (
-    <div className="mail-reply mail-msg open">
+    <div className={`mail-reply mail-msg open${dragging ? ' mail-drop' : ''}`}
+      // A photo can be dropped on the reply or pasted into it (Ctrl+V a screenshot), like the chat's reply box
+      // (owner 2026-10-14: "mail ma image attach nai kar pa raha, woh option de jaisa shiptrack ma ha").
+      onDragOver={e => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) { e.preventDefault(); setDragging(true); } }}
+      onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
+      onDrop={e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles(e.dataTransfer.files); } setDragging(false); }}>
       <div className="mail-msg-head static">
         <span className="mail-avatar sm ours" aria-hidden="true">{initials(`${box?.siteName || ''} Support`)}</span>
         <span className="mail-msg-who"><b className="truncate">Reply to {mail.replyTo || mail.fromAddress}</b><span className="meta truncate">from {box?.email}, in the same Gmail conversation</span></span>
@@ -194,7 +207,14 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       <Suggestions state={sugg} replyOpen onPick={(i) => { if (sugg?.options[i]) setReplyText(sugg.options[i]); }}
         onRefresh={() => void suggest(sugg?.lang || 'auto', true)} onLang={(l) => void suggest(l)} onClose={() => setSugg(null)}
         wrap={wrap} onWrap={(v) => { setWrap(v); setReplyWrap(v); void suggest(sugg?.lang || 'auto', false, v); }} />
-      <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply" maxLength={8000} autoFocus />
+      <textarea className="form-input" rows={10} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write your reply (paste or drop a photo here to attach it)" maxLength={8000} autoFocus
+        onPaste={e => {
+          const pasted = Array.from(e.clipboardData?.files || []);
+          if (!pasted.length) return;
+          e.preventDefault();
+          // a pasted screenshot has no useful name: give it one with the time
+          addFiles(pasted.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `photo-${Date.now()}${i ? `-${i}` : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }))));
+        }} />
       <label className="mail-quote-opt">
         <input type="checkbox" checked={includeQuote} onChange={e => setIncludeQuote(e.target.checked)} /> Quote the original message below my reply (like Gmail)
       </label>
@@ -207,7 +227,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       {attach.length > 0 && (
         <div className="mail-files">
           {attach.map((f, i) => (
-            <span key={`${f.name}-${i}`} className="chip chip-muted"><Paperclip size={11} /> {f.name} <span className="meta">{formatFileSize(f.size)}</span>
+            <span key={`${f.name}-${i}`} className="chip chip-muted">{previews[i] ? <img src={previews[i]} alt="" className="mail-file-thumb" /> : <Paperclip size={11} />} {f.name} <span className="meta">{formatFileSize(f.size)}</span>
               <button type="button" className="mail-file-x" onClick={() => setAttach(attach.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><X size={11} /></button>
             </span>
           ))}
@@ -218,7 +238,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
           {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send{onNextAfterSend ? ' and open next' : ''}
         </button>
         <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }} title="JPG, PNG, WEBP, GIF or PDF; up to 5 files, 10 MB in all">
-          <Paperclip size={14} /> Attach
+          <ImageIcon size={14} /> Attach photo / PDF
           <input type="file" multiple accept={ATTACHMENT_ACCEPT} style={{ display: 'none' }} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
         </label>
         <button type="button" className="btn btn-outline btn-sm" disabled={!!sugg?.loading} onClick={() => void suggest()} title="Chikki drafts 3 replies from this conversation; pick one, edit it, send it">

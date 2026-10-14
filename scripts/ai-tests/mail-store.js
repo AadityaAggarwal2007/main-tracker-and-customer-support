@@ -149,6 +149,25 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     deq([c.todo, c.done, c.other, c.all], [1, 1, 1, 3]);
     eq(f.searchMatch(it('a@gmail.com', { snippet: 'my parcel is late' }), 'parcel', {}), true);
   });
+  await t('sari mail (owner 14 Oct, "shiptrack sari mail nai pakad rha ... gmail pa pending dikh rhi, shiptrack ma koi pending nai"): up to 2,000 conversations of 60 days, unanswered first; an address we wrote to before is a customer', () => {
+    const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
+    const v = require(path.join(SRC, 'lib/chat/mail-view.ts'));
+    assert.strictEqual(v.STORE_MAX_CONVS, 2000); assert.strictEqual(v.STORE_LIST_DAYS, 60);
+    const base = { uid: 1, from: 'Priya', subject: 'order', date: '2026-10-14T05:00:00Z', unread: false, hasAttachment: false, answered: false };
+    assert.strictEqual(f.bucketOf({ ...base, fromAddress: 'priya@tcs.com' }, {}), 'other', 'a work address we never wrote to');
+    assert.strictEqual(f.bucketOf({ ...base, fromAddress: 'priya@tcs.com', contact: true }, {}), 'todo', 'a work address we wrote to before = a customer');
+    assert.strictEqual(f.bucketOf({ ...base, fromAddress: 'noreply@tcs.com', contact: true }, {}), 'other', 'a robot stays out');
+    const rules = require(path.join(SRC, 'lib/chat/mail-store-rules.ts'));
+    assert.strictEqual(rules.rowToListItem({ uid: 1, from_addr: 'a@b.com', sent_at: new Date(), contact: true }).contact, true);
+    const store = fs.readFileSync(path.join(SRC, 'lib/chat/mail-store.ts'), 'utf8');
+    assert.ok(/ORDER BY \(i\.answered OR ra\.replied_at IS NOT NULL\) ASC, i\.sent_at DESC LIMIT \$\{STORE_MAX_CONVS \+ 1\}/.test(store), 'unanswered first, then newest');
+    assert.ok(/sinceDate\(now, STORE_LIST_DAYS\)/.test(store));
+    const sync = fs.readFileSync(path.join(SRC, 'lib/chat/mail-sync.ts'), 'utf8');
+    assert.ok(/const since = sinceDate\(now, STORE_LIST_DAYS\);\n    const present/.test(sync), 'the gone check covers the same 60 days');
+    const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
+    assert.ok(/Show more \(\{shown\.length - rowLimit\} left\)/.test(card) && /Gmail has not synced for/.test(card));
+  });
+
   await t('cases per customer (owner 11 Oct afternoon, "active case aur close case"; 12:45, live: he replied and the customer stayed active, "Chat Support jaisa, apne aap"): a new mail = active; our reply after it = closed; wrote again = active; Close / Reopen by hand; not-customer mail is never a case; a closed customer leaves To reply', () => {
     const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));
     const it = (uid, a, date, o = {}) => ({ uid, from: 'X', fromAddress: a, subject: 's', date, unread: false, hasAttachment: false, answered: false, ...o });

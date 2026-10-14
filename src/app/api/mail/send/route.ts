@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
           await sendBuiltReply(a.box, built, replyFiles);
         }
         await storeFlag(orig.row, 'answered').catch((e) => console.error('[mail] answered flag:', (e as Error).message));
-        await storeLocalSent(a.box.id, { messageId: built.messageId, threadId: orig.row.thread_id, fromName: built.fromName, fromAddr: a.box.email, to: built.to, subject: built.subject, text });
+        await storeLocalSent(a.box.id, { messageId: built.messageId, threadId: orig.row.thread_id, fromName: built.fromName, fromAddr: a.box.email, to: built.to, subject: built.subject, text, files: replyFiles.length });
         if (queued) void runOutbox();
         note(queued ? `queued in the outbox${orig.hasBody ? '' : ' (no body copied: without the quote)'}` : 'sent directly (no outbox table)');
         return NextResponse.json({ ok: true, to: built.to, files: replyFiles.length, queued });

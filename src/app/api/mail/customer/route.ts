@@ -18,6 +18,8 @@ export async function GET(request: NextRequest) {
     const customer = await loadMailCustomer(a.box.panelId, email, { orders: can(a.user, 'orders.view'), chat: can(a.user, 'chat.view') });
     // Refund / Ship again from the Mail tab (owner 2026-10-13): the same rights as in a chat.
     customer.cases = !can(a.user, 'chat.view') || !can(a.user, 'chat.cases') ? null : isTeamLead(a.user) ? 'mark' : 'forward';
+    // Edit address / Edit items (owner 2026-10-14: "email ma edit ka option ... jaisa chat support ma ha"): the chat's rights.
+    customer.canEdit = can(a.user, 'chat.view') && can(a.user, 'orders.update');
     return NextResponse.json({ customer }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) { return mailFail(e); }
 }

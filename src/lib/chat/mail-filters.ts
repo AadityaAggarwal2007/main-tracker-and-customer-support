@@ -6,7 +6,7 @@ export type MailView = 'todo' | 'done' | 'other' | 'active' | 'closed' | 'all' |
 export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
 // repliedAt: when we last wrote to this customer after this mail, in any conversation (ISO; the mail store only, mail-store.ts storeList).
-export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string }
+export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string; contact?: boolean }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
 // ── Cases per customer (owner 2026-10-11 afternoon: "active case aur close case ... jo customer dobara dobara email kar
@@ -97,7 +97,10 @@ const ROBOT = /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bo
 export function isCustomerMail(it: FilterItem, v: VerifiedMap): boolean {
   if (isVerified(it, v)) return true;
   const a = (it.fromAddress || '').toLowerCase();
-  return PERSONAL.test(a) && !ROBOT.test(a);
+  if (ROBOT.test(a)) return false;
+  // A personal mailbox, or an address we have written to before (a customer with a work / college address, owner
+  // 2026-10-14: such mails sat under "Not customers" and never in To reply).
+  return PERSONAL.test(a) || !!it.contact;
 }
 export type MailBucket = 'todo' | 'done' | 'other';
 // cases (owner 2026-10-11 afternoon): a mail under a closed case is "Replied" even without a reply (closing clears it from
