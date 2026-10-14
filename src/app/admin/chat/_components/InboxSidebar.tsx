@@ -137,6 +137,7 @@ export default function InboxSidebar({ simple, leadCount, activeCounts, activePa
               setActiveId(null);
               setSidebarOpen(false);
             }}
+            allowAll={!simple}
           />
         </div>
 

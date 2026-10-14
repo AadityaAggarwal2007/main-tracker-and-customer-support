@@ -1,5 +1,6 @@
 'use client';
 
+import { useBrandPanel } from '@/components/brandHome';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ChikkiCard from '@/components/ChikkiCard';
 import PanelCopyCard from '@/components/PanelCopyCard';
@@ -466,6 +467,10 @@ export default function AdminDashboard() {
     setPage(1);
     setSelectedOrders(new Set());
   };
+  // A team member always looks at ONE brand, never "All panels" mixed, and opens on the brand they manage (owner
+  // 2026-10-14; brandHome.ts). The Super Admin and the Manager keep All panels.
+  const myPanelIds = businesses.filter(b => !user?.businessIds || user.businessIds.includes(b.id)).map(b => b.id);
+  useBrandPanel({ token, separate: !!user && !isTeamLead(user), allowed: myPanelIds, current: activePanelId, ready: businesses.length > 0, apply: switchPanel });
 
   const handleSearchChange = (val: string) => {
     setSearchInput(val);

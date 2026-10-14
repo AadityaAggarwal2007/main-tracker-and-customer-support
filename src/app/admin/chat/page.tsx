@@ -1,5 +1,6 @@
 'use client';
 
+import { useBrandPanel } from '@/components/brandHome';
 import { Fragment, useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -171,6 +172,11 @@ export default function ChatSupportPage() {
   const [newerChat, setNewerChat] = useState<NewerChat | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  // A team member looks at ONE brand at a time, never "All panels" mixed, and opens on the brand they manage (owner
+  // 2026-10-14; brandHome.ts). The Super Admin and the Manager keep All panels.
+  const myPanelIds = businesses.filter(b => !user?.businessIds || user.businessIds.includes(b.id)).map(b => b.id);
+  useBrandPanel({ token, separate: !!user && !isTeamLead(user), allowed: myPanelIds, current: activePanelId, ready: businesses.length > 0,
+    apply: (id) => { setActivePanelId(id); localStorage.setItem('active_panel_id', id); setActiveId(null); } });
   // Suggested replies + "Sudharo" (owner 2026-10-04; suggest-run.ts): the 3 drafts for the open
   // chat, the language they are asked in, and which draft the reply box was filled from (sent
   // with the reply so the server records whether it was edited).
