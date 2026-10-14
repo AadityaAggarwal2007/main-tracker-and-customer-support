@@ -710,7 +710,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       let row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'cust@example.com');
       eq(row.replied, true);
       const at = new Date(Math.max(Date.parse(row.repliedAt), Date.now()) + 300);   // just after our reply; the resend below comes after it
-      inbox.msgs.push({ uid: 61, thread: 'T3', seen: false, date: at, from: { name: 'Mail Delivery Subsystem', address: 'mailer-daemon@googlemail.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Delivery Status Notification (Failure)', mid: '<b61@x>', source: plain('<b61@x>', 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>', 'vastora@store.example', 'Delivery Status Notification (Failure)', "Message not delivered\nYour message to cust@example.com appears suspicious and wasn't delivered.") });
+      inbox.msgs.push({ uid: 61, thread: 'T3', seen: false, date: at, from: { name: 'Mail Delivery Subsystem', address: 'mailer-daemon@googlemail.com' }, to: [{ address: 'vastora@store.example' }], subject: 'Delivery Status Notification (Failure)', mid: '<b61@x>', source: plain('<b61@x>', 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>', 'vastora@store.example', 'Delivery Status Notification (Failure)', "<html><head><style>.x{color:red}</style></head><body><b>Message not delivered</b><p>Your message to <a href='mailto:cust@example.com'>cust@example.com</a> appears suspicious and wasn&#39;t delivered.</p></body></html>").replace('text/plain', 'text/html') });   // live 14 Oct: Gmail's report carries its words in HTML only
       await sync.syncMailbox(box);
       store.forgetStoreReady();
       const l = await store.storeList(BOX);
