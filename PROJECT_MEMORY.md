@@ -246,17 +246,16 @@ Done and live:
   Not changed: `storeList`'s reply lookup over 60 days (EXPLAIN on the VPS if the list gets slow).
 
 - **14 Oct, phone edit**: the Edit address dialog (chat header, Corrections, Mail customer card) also changes the
-  customer's phone (`orders.customer_mobile`, logged in `order_address_changes`). **`order-phone-edit.sql` waits for the
-  owner's yes**: without it a CSV re-upload of an edited order puts the old number back.
+  customer's phone (`orders.customer_mobile`, logged in `order_address_changes`). **`order-phone-edit.sql` RUN by the owner
+  14 Oct** (CREATE FUNCTION / DROP TRIGGER / CREATE TRIGGER): a CSV re-upload keeps the team's phone.
   Owner then: the customer verifies with the NEW number and the screens show **NC** next to the tick (`number-changed.ts`).
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
    then Copy now. Same for kurtiya.
-2. VASTRIKA > Gmail accounts: the chargeback Gmail showed "cannot be read"; the real reason is now
-   displayed (likely a dead App Password → Disconnect + reconnect). Waiting for the screenshot.
-3. kurtiya: connect the SAME chargeback Gmail; tick gateways (VASTRIKA = PayU, kurtiya = PayGlocal).
+2. (Done 14 Oct) the shared chargeback Gmail reads fine on VASTRIKA ("Working"), kurtiya uses the same one; gateways
+   ticked VASTRIKA = PayU only, kurtiya = PayGlocal only.
 4. VASTRIKA: connect its customer-support Gmail (it has none; the audit showed 1 / 0 / 1).
 5. WhatsApp test with Jatin (number +91 87964 14056): the owner adds WHATSAPP_CLOUD_TOKEN,
    WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN (and WHATSAPP_APP_SECRET) to `/etc/tracker/.env`,
