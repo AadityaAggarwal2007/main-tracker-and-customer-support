@@ -10,6 +10,7 @@ import { query } from '@/lib/db';
 import { loadOrderFacts, type OrderFacts } from './order-facts';
 import { loadOrderItems } from './order-items-db';
 import { loadOrderAddress } from './order-address-db';
+import { ncKey, numberChanges } from './number-changed';
 import { verifiedSenders, lowerEmail } from './mail-verify';
 
 export interface MailCustomerOrder {
@@ -22,6 +23,8 @@ export interface MailCustomerOrder {
   // again"): Refund / Ship again is marked on it (the same PATCH as a chat) and it then sits in Chat Support's Refund /
   // Ship again list. Only with chat.view.
   emailChat: { id: string; status: string; verified: boolean; caseKind: 'refund' | 'reship' | null; caseBy: string | null } | null;
+  // "NC" (owner 2026-10-14, number-changed.ts): the team changed this order's phone.
+  numberChanged?: { at: string; by: string | null } | null;
 }
 export interface MailCustomerHint { orderId: string; placedOn: string | null; status: string | null }
 export interface MailCustomer {
@@ -77,6 +80,9 @@ export async function loadMailCustomer(panelId: string | null, emailRaw: string,
         o.total = Number.isFinite(t) ? t : null;
       }
     }
+    try {
+      o.numberChanged = (await numberChanges([{ panel: panelId, order: v.orderId }])).get(ncKey(panelId, v.orderId)) || null;
+    } catch { o.numberChanged = null; }
     out.verified.push(o);
   }
   if (!out.verified.length && allow.orders) {

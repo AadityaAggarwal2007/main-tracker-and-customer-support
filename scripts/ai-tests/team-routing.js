@@ -61,6 +61,8 @@ stub('chargeback-store', 'module.exports = { openChargebackKeys: async () => new
 // "Gmail too" (owner 2026-10-13, chat-mail.ts): the reply route and the thread only call it; nothing is mailed here.
 stub('chat-mail', 'module.exports = { chatMailOffer: async (id) => (global.__mailOffer ? global.__mailOffer(id) : null), sendChatAsMail: async (...a) => { (global.__chatMail = global.__chatMail || []).push(a); return { ok: true, queued: true, to: "te***@x.com" }; }, noteChatMail: async (...a) => { (global.__chatMailNotes = global.__chatMailNotes || []).push(a); } };');
 stub('corrections-read', 'module.exports = { listForConversation: async () => [], pendingCorrectionConvIds: async () => new Set(), pendingCorrectionCount: async () => 0 };');
+// "NC" (owner 2026-10-14, number-changed.ts): its own suite (number-changed.js); here no order's number was changed.
+stub('number-changed', 'module.exports = { ncKey: (p, o) => `${p ?? ""}|${o ?? ""}`, numberChanges: async () => new Map() };');
 stub('subject', 'module.exports = { updateConversationSubject: async () => {} };');
 stub('health', 'module.exports = { updateConversationHealth: async () => {} };');
 stub('brain-usage', 'module.exports = { recordBrainUsage: async () => {} };');

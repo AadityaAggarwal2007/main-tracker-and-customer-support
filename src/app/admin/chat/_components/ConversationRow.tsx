@@ -6,7 +6,7 @@ import { waitingLevel } from '@/lib/chat/waiting';
 import type { Conversation, TeamMember } from '../_lib/types';
 import { STATUS_LABELS, CATEGORY_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo, matchedText, msSince } from '../_lib/inbox';
 import { highlightText } from '../_lib/text';
-import { Chip, WaitingChip, CameBackChip, CaseChip, HealthBadge, PromiseChip, ReshipChip, statusTone, type ChipTone } from './chips';
+import { Chip, ncTitle, WaitingChip, CameBackChip, CaseChip, HealthBadge, PromiseChip, ReshipChip, statusTone, type ChipTone } from './chips';
 
 export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaiting, searchActive, searchTerm, showPanelName, team }: {
   simple: boolean;
@@ -84,6 +84,7 @@ export default function ConversationRow({ simple, c, meKey, rowUnread, rowWaitin
         {c.verified_order_id
           ? <span title={`Verified${c.verified_via === 'legacy' ? ' (old check)' : c.verified_via === 'mail_auto' ? ' (email match)' : c.verified_via === 'mail' ? ' (by the team from a mail)' : c.verified_via === 'team' ? ' by team (order ID + full phone typed in the inbox)' : ''}${c.verified_order_id ? ` · order ${c.verified_order_id}` : ''}`} className={c.verified_via === 'legacy' ? 't-warn' : 't-ok'} style={{ display: 'inline-flex', flexShrink: 0 }}><BadgeCheck size={13} /></span>
           : c.phone_match_order_id ? <span title={`Phone match · order ${c.phone_match_order_id} (not proof)`} className="t-primary" style={{ display: 'inline-flex', flexShrink: 0 }}><Phone size={11} /></span> : null}
+        {c.verified_order_id && c.number_changed && <span className="row-nc" title={ncTitle(c.number_changed)}>NC</span>}
         {unread > 0 && (
           <span className={`dot${rowWaiting(c) ? ' dot-danger' : ''}`}
             title={rowWaiting(c) ? `${unread} new message${unread === 1 ? '' : 's'}; the customer is waiting for an answer` : `${unread} new message${unread === 1 ? '' : 's'}, already answered`} />

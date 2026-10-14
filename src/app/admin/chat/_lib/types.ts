@@ -100,6 +100,9 @@ export interface Conversation {
   chargeback_open?: boolean;
   // A pending correction on this chat (owner 2026-10-11, order-corrections.sql): a small "Correction" chip on the row.
   correction_pending?: boolean;
+  // "NC" (owner 2026-10-14, number-changed.ts): the team changed the verified order's phone; the customer verifies
+  // with the new number. When and by whom.
+  number_changed?: { at: string; by: string | null } | null;
   health_accuse?: boolean;
   // How long the customer has waited for an answer (src/lib/chat/waiting.ts):
   // since when, and whether that is WAITING_OVERDUE_HOURS or more.

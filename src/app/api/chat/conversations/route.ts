@@ -16,6 +16,7 @@ import { OWNER_KEY } from '@/lib/chat/team-rules';
 import { REFUND_LINK_SQL } from '@/lib/refund/link-mask';
 import { chargebackKey, openChargebackKeys } from '@/lib/chargeback/store';
 import { pendingCorrectionConvIds, pendingCorrectionCount } from '@/lib/chat/corrections-read';
+import { ncKey, numberChanges } from '@/lib/chat/number-changed';
 
 export const dynamic = 'force-dynamic';
 
@@ -466,7 +467,11 @@ export async function GET(request: NextRequest) {
   // The small "Correction" chip (owner 2026-10-11): rows whose chat has a pending correction. The same way: one light
   // query after the list; no table or a failed read means no chip.
   const corrIds = await pendingCorrectionConvIds((result.rows as Record<string, unknown>[]).map(r => r.id as string));
+  // "NC" (owner 2026-10-14, number-changed.ts): the team changed the verified order's phone. Same way: one light query.
+  const panelOf = (r: Record<string, unknown>) => (r.tracker_business_id == null ? null : String(r.tracker_business_id));
+  const ncMap = await numberChanges((result.rows as Record<string, unknown>[]).map(r => ({ panel: panelOf(r), order: (r.verified_order_id as string | null) ?? null })));
   for (const r of result.rows as Record<string, unknown>[]) {
+    r.number_changed = (r.verified_order_id && ncMap.get(ncKey(panelOf(r), r.verified_order_id as string))) || null;
     r.chargeback_open = cbKeys.has(chargebackKey(r.tracker_business_id == null ? null : String(r.tracker_business_id), r.verified_order_id as string | null));
     r.correction_pending = corrIds.has(String(r.id));
     delete r.total_rows;

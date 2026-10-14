@@ -7,7 +7,7 @@ import { displaySubjectLabel } from '@/lib/chat/inbox-topics';
 import { AUTO_MARK_NAME } from '@/lib/chat/tracking-claim';
 import type { AuthUser, Conversation, HotLock, OrderFacts, StaffAddress, StaffOrderItems, StaffBlock, TeamLogEntry } from '../_lib/types';
 import { minutesText, logTime, teamLogLine, supportLabel, STATUS_LABELS, convName, nameFromOrder, nameNote, closedInfo, isVisitorChat, timeAgo } from '../_lib/inbox';
-import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, PromiseChip, ReshipChip, VerifiedBadge, statusTone, subjectTone } from './chips';
+import { Chip, PhoneMatchBadge, VisitorChip, WaitingChip, CameBackChip, CaseChip, HealthChip, PromiseChip, ReshipChip, VerifiedBadge, NcChip, statusTone, subjectTone } from './chips';
 import { OrderLine, AddressLine, ItemsLine } from './OrderLine';
 import { MoreMenu } from './MoreMenu';
 import CustomerEmails from './CustomerEmails';
@@ -105,6 +105,7 @@ export default function ThreadHeader({ activeAddress, activeItems, itemsEditable
         <div className="th-chips">
           {activeVerifiedOrder ? <VerifiedBadge orderId={activeVerifiedOrder} via={activeVerifiedVia} />
             : activePhoneMatch ? <PhoneMatchBadge orderId={activePhoneMatch} /> : <VisitorChip />}
+          {activeVerifiedOrder && activeConv?.number_changed && <NcChip nc={activeConv.number_changed} />}
           {/* A team verification (owner 2026-10-11) has a Remove for a wrong click: only the team's own check can be undone here. */}
           {activeVerifiedOrder && activeVerifiedVia === 'team' && staff?.can_verify && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={removeVerify}

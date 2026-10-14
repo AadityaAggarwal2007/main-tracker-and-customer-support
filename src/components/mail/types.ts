@@ -30,5 +30,6 @@ export interface CustomerOrder {
   place: { city: string; state: string; pincode: string } | null;
   // The sender's email chat (owner 2026-10-13): Refund / Ship again is marked on it (mail-customer.ts).
   emailChat?: { id: string; status: string; verified: boolean; caseKind: 'refund' | 'reship' | null; caseBy: string | null } | null;
+  numberChanged?: { at: string; by: string | null } | null;   // "NC": the team changed this order's phone (owner 2026-10-14)
 }
 export interface Customer { email: string; ordersAllowed: boolean; verified: CustomerOrder[]; hints: { orderId: string; placedOn: string | null; status: string | null }[]; cases?: 'mark' | 'forward' | null; canEdit?: boolean }
