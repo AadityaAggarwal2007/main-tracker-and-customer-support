@@ -53,6 +53,7 @@ export function AddressLine({ address, editable, onEdit }: { address: StaffAddre
     <div style={{ color: 'var(--fg)', lineHeight: 1.6 }}>
       <MapPin size={12} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '0.375rem', color: 'var(--fg-muted)' }} />
       {text || <span style={{ color: 'var(--fg-muted)' }}>No address on this order</span>}
+      {address.phone && <span style={{ color: 'var(--fg-muted)' }}> · Ph {address.phone}</span>}
       {address.edited_at && (
         <>
           {' '}
@@ -62,7 +63,7 @@ export function AddressLine({ address, editable, onEdit }: { address: StaffAddre
         </>
       )}
       {editable && (
-        <button type="button" onClick={onEdit} title="Change the delivery address" className="btn btn-outline btn-sm"
+        <button type="button" onClick={onEdit} title="Change the delivery address or the phone" className="btn btn-outline btn-sm"
           style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', marginLeft: '0.375rem' }}>
           <Pencil size={11} /> Edit
         </button>
@@ -78,14 +79,17 @@ export function AddressDialog({ initial, orderId, busy, error, onCancel, onSave 
   const [a, setA] = useState<OrderAddress>(initial);
   // An old order whose state is spelled another way keeps it as a choice.
   const states = !initial.state || INDIAN_STATES.includes(initial.state) ? INDIAN_STATES : [initial.state, ...INDIAN_STATES];
-  const ok = a.line1.trim().length >= 3 && a.city.trim().length >= 2 && !!a.state && /^[1-9][0-9]{5}$/.test(a.pincode);
+  const phone = a.phone || '';
+  // The phone (owner 2026-10-14): empty = unchanged; else a 10-digit mobile.
+  const phoneOk = phone === '' || /^[6-9][0-9]{9}$/.test(phone);
+  const ok = a.line1.trim().length >= 3 && a.city.trim().length >= 2 && !!a.state && /^[1-9][0-9]{5}$/.test(a.pincode) && phoneOk;
   const label = { display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.625rem' } as const;
   return (
     <div className="modal-overlay" onClick={() => { if (!busy) onCancel(); }}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="addr-title" onClick={e => e.stopPropagation()} style={{ maxWidth: '32rem' }}>
         <div className="modal-header">
           <div>
-            <div className="modal-title" id="addr-title">Change delivery address</div>
+            <div className="modal-title" id="addr-title">Change address / phone</div>
             <p className="modal-subtitle">Order {orderId}</p>
           </div>
           <button type="button" className="btn-icon" onClick={onCancel} aria-label="Close" disabled={busy}><X size={16} /></button>
@@ -115,9 +119,14 @@ export function AddressDialog({ initial, orderId, busy, error, onCancel, onSave 
               {states.map(st => <option key={st} value={st}>{st}</option>)}
             </select>
           </label>
+          <label style={label}>Phone number <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>(customer&apos;s mobile, 10 digits)</span>
+            <input className="form-input" style={{ marginTop: 4 }} value={phone} inputMode="numeric" maxLength={14} placeholder="10-digit mobile"
+              onChange={e => { let d = e.target.value.replace(/\D/g, ''); if (d.length > 10 && d.startsWith('91')) d = d.slice(2); else if (d.length > 10 && d.startsWith('0')) d = d.slice(1); setA({ ...a, phone: d.slice(0, 10) }); }} />
+            {!phoneOk && <span style={{ display: 'block', fontWeight: 400, color: 'var(--danger)', marginTop: 2 }}>A 10-digit mobile number starting with 6, 7, 8 or 9</span>}
+          </label>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', fontSize: '0.75rem', color: 'var(--fg-muted)', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.625rem', marginBottom: '0.875rem' }}>
             <Info size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span>Changes the address in ShipTrack only (order details and tracking page), not in Shopify or with the courier. Later Shopify or CSV updates will not change it back.</span>
+            <span>Changes the address and phone in ShipTrack only (order details and tracking page), not in Shopify or with the courier. Later Shopify or CSV updates will not change them back. A new phone is the one the customer verifies with from now on, and WhatsApp order updates go to it.</span>
           </div>
           {error && (
             <p role="alert" style={{ fontSize: '0.75rem', color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -127,7 +136,7 @@ export function AddressDialog({ initial, orderId, busy, error, onCancel, onSave 
           <div className="modal-actions">
             <button type="button" className="btn btn-outline" onClick={onCancel} disabled={busy}>Cancel</button>
             <button type="submit" className="btn btn-primary" disabled={!ok || busy}>
-              {busy ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</> : <><Check size={14} /> Save address</>}
+              {busy ? <><Loader2 size={14} style={{ animation: 'spin 0.6s linear infinite' }} /> Saving…</> : <><Check size={14} /> Save</>}
             </button>
           </div>
         </form>

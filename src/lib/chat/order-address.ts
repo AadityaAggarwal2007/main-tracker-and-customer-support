@@ -15,6 +15,28 @@ export interface OrderAddress {
   city: string;
   state: string;
   pincode: string;
+  // The customer's mobile, its last 10 digits (owner 2026-10-14: "number edit karne wala option bhi chaia email aur chat
+  // support ma"). Missing = not read / not changed.
+  phone?: string;
+}
+
+// A mobile number as the team types it (+91 98765 43210, 098765..., 9876543210) -> its 10 digits, or null.
+export function mobileDigits(x: unknown): string | null {
+  let d = String(x ?? '').replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  else if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  return /^[6-9][0-9]{9}$/.test(d) ? d : null;
+}
+// The last 10 digits of a stored number (stored in many shapes), '' when none.
+export const last10 = (x: unknown) => String(x ?? '').replace(/\D/g, '').slice(-10);
+// The new number written in the old one's shape ("+91..." stays "+91...", "91..." stays "91..."), so every reader that
+// already copes with the order's own format keeps working.
+export function storedMobile(digits: string, oldStored: string | null | undefined): string {
+  const old = String(oldStored ?? '').trim();
+  if (old.startsWith('+91')) return `+91${digits}`;
+  const od = old.replace(/\D/g, '');
+  if (od.length === 12 && od.startsWith('91')) return `91${digits}`;
+  return digits;
 }
 
 // The states and union territories, written as the orders already have them (Shopify's names).
@@ -46,11 +68,20 @@ export function cleanAddress(raw: unknown, currentState?: string | null): { addr
     ?? (currentState && stateIn === oneLine(currentState) ? stateIn : null);
   if (!state) return { error: 'Pick the state' };
   if (!/^[1-9][0-9]{5}$/.test(pincode)) return { error: 'Pincode: 6 digits' };
-  return { address: { line1, line2, city, state, pincode } };
+  // The phone is optional in the body: missing or empty = unchanged; else a valid 10-digit Indian mobile.
+  let phone: string | undefined;
+  if (r.phone != null && String(r.phone).trim() !== '') {
+    const d = mobileDigits(r.phone);
+    if (!d) return { error: 'Phone: a 10-digit mobile number' };
+    phone = d;
+  }
+  return { address: { line1, line2, city, state, pincode, ...(phone ? { phone } : {}) } };
 }
 
+// b.phone missing = the phone is not being changed.
 export function sameAddress(a: OrderAddress, b: OrderAddress): boolean {
-  return a.line1 === b.line1 && a.line2 === b.line2 && a.city === b.city && a.state === b.state && a.pincode === b.pincode;
+  return a.line1 === b.line1 && a.line2 === b.line2 && a.city === b.city && a.state === b.state && a.pincode === b.pincode
+    && (b.phone == null || last10(a.phone) === last10(b.phone));
 }
 
 // One line for the inbox: "12 MG Road, Near Park, Pune, Maharashtra 411001".

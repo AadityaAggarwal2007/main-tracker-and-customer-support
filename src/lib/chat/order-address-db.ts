@@ -1,6 +1,6 @@
 // The chat's order address for staff (see order-address.ts). Server only.
 import { query } from '@/lib/db';
-import type { OrderAddress } from './order-address';
+import { last10, type OrderAddress } from './order-address';
 
 export interface StaffOrderAddress extends OrderAddress {
   order_id: string;
@@ -11,11 +11,12 @@ export interface StaffOrderAddress extends OrderAddress {
 
 interface AddressRow {
   order_id: string; address_line1: string | null; address_line2: string | null; city: string | null;
-  state: string | null; pincode: string | null; address_edited_at?: string | Date | null; address_edited_by?: string | null;
+  state: string | null; pincode: string | null; customer_mobile?: string | null; address_edited_at?: string | Date | null; address_edited_by?: string | null;
 }
 
-export const toAddress = (r: Pick<AddressRow, 'address_line1' | 'address_line2' | 'city' | 'state' | 'pincode'>): OrderAddress => ({
+export const toAddress = (r: Pick<AddressRow, 'address_line1' | 'address_line2' | 'city' | 'state' | 'pincode' | 'customer_mobile'>): OrderAddress => ({
   line1: r.address_line1 || '', line2: r.address_line2 || '', city: r.city || '', state: r.state || '', pincode: r.pincode || '',
+  phone: last10(r.customer_mobile),
 });
 
 // The order inside the chat's own panel; null when there is no panel, no such order, or more than one.
@@ -25,7 +26,7 @@ export async function loadOrderAddress(
   trackerBusinessId: string | null | undefined,
 ): Promise<StaffOrderAddress | null> {
   if (!orderId || !trackerBusinessId) return null;
-  const sql = (edited: boolean) => `SELECT order_id, address_line1, address_line2, city, state, pincode${edited ? ', address_edited_at, address_edited_by' : ''}
+  const sql = (edited: boolean) => `SELECT order_id, address_line1, address_line2, city, state, pincode, customer_mobile${edited ? ', address_edited_at, address_edited_by' : ''}
        FROM orders
       WHERE order_id = $1 AND business_id::text = $2::text
       LIMIT 2`;

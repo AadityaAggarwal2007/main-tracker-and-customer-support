@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { queryOne, withTransaction } from '@/lib/db';
 import { can, canAccessPanel } from '@/lib/permissions';
-import { cleanAddress, sameAddress } from '@/lib/chat/order-address';
+import { cleanAddress, last10, sameAddress, storedMobile } from '@/lib/chat/order-address';
 import { toAddress } from '@/lib/chat/order-address-db';
 
 export const dynamic = 'force-dynamic';
@@ -41,9 +41,9 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const out = await withTransaction(async (db) => {
       const cur = await db.query<{
         id: string; order_id: string; business_id: string; address_line1: string | null; address_line2: string | null;
-        city: string | null; state: string | null; pincode: string | null;
+        city: string | null; state: string | null; pincode: string | null; customer_mobile: string | null;
       }>(
-        `SELECT id, order_id, business_id, address_line1, address_line2, city, state, pincode
+        `SELECT id, order_id, business_id, address_line1, address_line2, city, state, pincode, customer_mobile
            FROM orders
           WHERE order_id = $1 AND business_id::text = $2::text
           FOR UPDATE`,
@@ -54,17 +54,22 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       const before = toAddress(o);
       const cleaned = cleanAddress(raw, o.state);
       if ('error' in cleaned) return { status: 400, body: { error: cleaned.error } };
-      const after = cleaned.address;
-      if (sameAddress(before, after)) return { status: 200, body: { unchanged: true } };
+      if (sameAddress(before, cleaned.address)) return { status: 200, body: { unchanged: true } };
+      // The phone (owner 2026-10-14): written only when it really changed, in the old number's shape. From then on the
+      // customer verifies with the new number and order updates (WhatsApp) go to it; the history keeps the old one.
+      const phoneChanged = !!cleaned.address.phone && cleaned.address.phone !== last10(o.customer_mobile);
+      const after = { ...cleaned.address, phone: cleaned.address.phone || before.phone };
 
       const upd = await db.query<{ address_edited_at: string }>(
         `UPDATE orders
             SET address_line1 = $1, address_line2 = $2, city = $3, state = $4, pincode = $5,
+                customer_mobile = COALESCE($8, customer_mobile),
                 address_edited_at = clock_timestamp(), address_edited_by = $6, updated_at = now()
           WHERE id = $7
         RETURNING address_edited_at`,
-        [after.line1, after.line2, after.city, after.state, after.pincode, who, o.id]
+        [after.line1, after.line2, after.city, after.state, after.pincode, who, o.id, phoneChanged ? storedMobile(after.phone!, o.customer_mobile) : null]
       );
+      if (phoneChanged) console.log(`[chat/address] phone changed on an order of panel ${o.business_id} by ${user.username}`);
       await db.query(
         `INSERT INTO order_address_changes (order_uuid, order_id, business_id, conversation_id, old_address, new_address, changed_by, changed_by_name)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
