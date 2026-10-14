@@ -250,6 +250,14 @@ Done and live:
   14 Oct** (CREATE FUNCTION / DROP TRIGGER / CREATE TRIGGER): a CSV re-upload keeps the team's phone.
   Owner then: the customer verifies with the NEW number and the screens show **NC** next to the tick (`number-changed.ts`).
 
+- **14 Oct, live log check (owner pasted `pm2 logs`)**: (1) merging a customer's duplicate chats ALWAYS failed
+  ("permission denied for table message_revisions": tracker_user has SELECT + INSERT only), now a savepoint skips that
+  copy column (`merge-chats.ts`); (2) the shared chargeback Gmail's Mail-tab box failed "Invalid credentials" every
+  minute: the poller now gives every row of the group the App Password Gmail accepted (`poll.ts` signIn); (3) bursts
+  of "Connection terminated due to connection timeout": pool wait 3 s -> 10 s (`db.ts`); (4) "Failed to find Server
+  Action" = bots, harmless. DB check same day: corrections installed, Sunny = manager, all 3 panels on the common
+  setup, NO brand managers set yet, draft-only ON on every panel.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,

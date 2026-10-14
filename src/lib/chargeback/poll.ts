@@ -60,6 +60,18 @@ async function signIn(group: Group): Promise<ImapFlow> {
     try {
       await client.connect();
       if (row.id !== group.primary.id) console.warn(`[chargeback] ${row.email}: the App Password on ${group.primary.panel_name || 'the first panel'} is refused; signed in with ${row.panel_name || 'another panel'}'s`);
+      // One password for the whole group (review 2026-10-14, live log: the Mail tab's copy of the shared chargeback
+      // Gmail failed "Invalid credentials" every minute while this poller signed in fine with another panel's
+      // password): the rows that carry a different password get the one Gmail just accepted, so the Mail tab, its
+      // sync and its replies sign in too. Written once (then they agree); a failed write changes nothing here.
+      const others = group.rows.filter((r) => r.app_password !== row.app_password);
+      if (others.length) {
+        try {
+          await query(`UPDATE chargeback_mailboxes SET app_password = $1 WHERE id = ANY($2::uuid[])`, [row.app_password, others.map((r) => r.id)]);
+          for (const r of others) r.app_password = row.app_password;
+          console.warn(`[chargeback] ${row.email}: ${others.length} other panel row(s) now use the App Password Gmail accepts`);
+        } catch (err) { console.error('[chargeback] password not shared:', (err as Error).message); }
+      }
       return client;
     } catch (e) {
       try { client.close(); } catch { /* never opened */ }
