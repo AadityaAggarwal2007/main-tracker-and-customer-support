@@ -24,15 +24,18 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 // Does the text already end with a sign-off ("Best Regards, Team Vastrika", "Thanks,\nSupport Team", "Team XYZ")?
 // Only the last three lines are read, so a "thanks" inside the message never counts.
-const SIGNOFF_LINES = [
-  /^(?:(?:best|warm|kind|warmest|many)\s+)?(?:regards|sincerely|cheers|yours\s+(?:truly|sincerely))\b/i,
-  /^(?:many\s+)?(?:thanks|thank\s*you)(?:\s*(?:&|and)\s*regards)?\s*[,!.]*$/i,
-  /^(?:-+\s*)?team\s+[\w&.'-]+(?:\s+[\w&.'-]+)?\s*[.!]?$/i,
-  /^[\w&.' -]{0,25}\b(?:support\s+team|customer\s+(?:care|support))\s*[.!]?$/i,
-];
+// Only the END of the text counts (review 2026-10-14: a "Thank you!" opening line or "Please contact customer support."
+// used to count, and the mail went out with no sign-off at all): the last line is "Regards," / "Thanks" alone, or
+// "Regards, Vastora Support" / "Thanks - Team Kurtiya", or "- Team Kurtiya", or a short name under a bare "Regards,".
+const BARE_SIGNOFF = /^(?:(?:best|warm|kind|warmest|many)\s+)?(?:regards|thanks|thank\s*you|sincerely|cheers|yours\s+(?:truly|sincerely))[\s,!.]*$/i;
+const SIGNOFF_WITH_NAME = /^(?:(?:best|warm|kind|warmest|many)\s+)?(?:regards|thanks|thank\s*you|sincerely|cheers)\s*[,\-–—]\s*[\w&.' -]{2,40}$/i;
+const DASH_TEAM = /^[-–—]\s*team\s+[\w&.'-]+(?:\s+[\w&.'-]+)?$/i;
+const SHORT_NAME = /^[\w&.' -]{2,40}$/;
 export function endsWithSignOff(text: string): boolean {
   const lines = String(text || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
-  return lines.slice(-3).some(l => l.length <= 60 && SIGNOFF_LINES.some(re => re.test(l)));
+  const last = lines[lines.length - 1] || '', prev = lines[lines.length - 2] || '';
+  if (BARE_SIGNOFF.test(last) || SIGNOFF_WITH_NAME.test(last) || DASH_TEAM.test(last)) return true;
+  return BARE_SIGNOFF.test(prev) && SHORT_NAME.test(last) && last.split(/\s+/).length <= 4 && !/[.?!]$/.test(last);
 }
 
 // The team's text as written, then the sign-off with the brand ("Regards, VASTRIKA Support"), unless the text already

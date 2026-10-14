@@ -23,7 +23,7 @@ export default function MailRows({ items, verified, openUid, onOpen, showVerify 
       {items.map(m => {
         const v = verified[m.fromAddress]?.[0];
         const nums = orderNumbersIn(m.subject);
-        const bounce = isBounce(m.fromAddress, m.subject);
+        const bounce = !v && isBounce(m.fromAddress, m.subject);   // a verified sender is a customer, never a bounce
         return (
           <button type="button" key={m.uid} className={`mail-row${m.unread ? ' unread' : ''}${openUid === m.uid ? ' active' : ''}`} onClick={() => onOpen(m.uid)}>
             <span className="mail-from truncate">

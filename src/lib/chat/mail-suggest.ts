@@ -6,7 +6,7 @@
 // sender's verified order (Mail verification) gives the order facts; an unverified sender gets drafts with no order
 // facts at all (they can only ask for the order ID + phone). Nothing is sent: the text goes into the reply box.
 import { query, queryOne } from '@/lib/db';
-import { sinceDate } from './mail-view';
+import { STORE_LIST_DAYS, sinceDate } from './mail-view';
 import { verifiedSenders } from './mail-verify';
 import type { Row, SuggestConv, SuggestSource } from './suggest-run';
 
@@ -44,7 +44,7 @@ export async function mailSuggestContext(box: { id: string; panelId: string | nu
         AND ( ($3::text IS NOT NULL AND thread_id = $3)
            OR (folder = 'inbox' AND from_addr = $4)
            OR (folder = 'sent' AND $4 = ANY(to_addrs)) )
-      ORDER BY sent_at DESC LIMIT $5`, [box.id, sinceDate(now), open.thread_id, address, MAX_MAILS]);
+      ORDER BY sent_at DESC LIMIT $5`, [box.id, sinceDate(now, STORE_LIST_DAYS), open.thread_id, address, MAX_MAILS]);
   const rows: Row[] = r.rows.slice().reverse()
     .map((m) => ({ id: `${m.folder}:${m.uid}`, sender: m.folder === 'inbox' ? 'visitor' : 'agent', content: ownWords(m.body_text) || (m.folder === 'inbox' ? m.subject : '') }))
     .filter((m) => (m.content || '').trim());
