@@ -33,6 +33,9 @@ one panel, look for the cause that makes it show there (a bigger mailbox, a miss
 saved only for one) and fix it for all. A panel's own TEXT (its AI prompt, saved answers, default courier, tracking domain,
 chat greeting) lives in the database per panel and is set in Panel Settings; the code around it is the same for every panel.
 Before saying a task is done, say which panels it was checked on (the mailbox / data of each, not only Vastora's).
+**Restated 2026-10-14 (owner: "jo bhi command dunga woh 3 pa kya jitna panel bhi add honge un sabpa laga hamesha, we are
+building shiptrack not a specific panel"):** every request is for ShipTrack as a product, so it must also work, with no
+extra step, on a panel created tomorrow; a screenshot of one panel never narrows the change to that panel.
 
 ## What this is
 
