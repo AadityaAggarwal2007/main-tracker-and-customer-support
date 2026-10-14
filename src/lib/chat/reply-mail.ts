@@ -13,8 +13,12 @@ export interface ReplyMailInput {
 }
 
 export function replyMailMessage(x: ReplyMailInput) {
-  const replySubject = x.fresh && !x.replyToMessageId && x.subject ? x.subject
-    : x.subject && !x.subject.startsWith('Re:') ? `Re: ${x.subject}` : (x.subject || 'Re: Your enquiry');
+  // A reply to a mail with no subject keeps none ("Re:" alone): any other subject makes Gmail open a separate
+  // conversation (owner 2026-10-14). "(no subject)" is the screens' label for an empty one, never a real subject.
+  const subject = /^\(no subject\)$/i.test((x.subject || '').trim()) ? '' : (x.subject || '').trim();
+  const replySubject = x.fresh && !x.replyToMessageId && subject ? subject
+    : subject && !/^re:/i.test(subject) ? `Re: ${subject}`
+    : subject || (x.replyToMessageId ? 'Re:' : 'Re: Your enquiry');
   const headers: Record<string, string> = {};
   if (x.replyToMessageId) {
     headers['In-Reply-To'] = x.replyToMessageId;

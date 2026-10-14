@@ -92,6 +92,11 @@ async function t(name, fn) {
     eq(RM.replyMailMessage({ ...base, subject: 'Update on your order #1', fresh: true }).subject, 'Update on your order #1');
     eq(RM.replyMailMessage({ ...base, subject: 'Order late' }).subject, 'Re: Order late');
     eq(RM.replyMailMessage({ ...base, subject: 'Order late', fresh: true, replyToMessageId: '<a@b>' }).subject, 'Re: Order late');
+    // owner 14 Oct: a reply to a mail with no subject stays in the same Gmail conversation ("Re:" alone, never "Re: Your enquiry")
+    eq(RM.replyMailMessage({ ...base, subject: '', replyToMessageId: '<a@b>' }).subject, 'Re:');
+    eq(RM.replyMailMessage({ ...base, subject: '(no subject)', replyToMessageId: '<a@b>' }).subject, 'Re:');
+    eq(RM.replyMailMessage({ ...base, subject: 'RE: x', replyToMessageId: '<a@b>' }).subject, 'RE: x');
+    eq(RM.replyMailMessage({ ...base, subject: '' }).subject, 'Re: Your enquiry');
   });
 
   await t('target: a verified website chat -> the email ON its order (this panel only), the panel\'s support Gmail; else the address verified in Mail; never a visitor / email chat / a panel without Gmail', async () => {

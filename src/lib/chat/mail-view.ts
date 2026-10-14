@@ -86,9 +86,15 @@ export function hasRemoteImages(html: string): boolean {
   return /<img\b[^>]*\ssrc\s*=\s*["']?https?:/i.test(html || '') || /url\(\s*["']?https?:/i.test(html || '');
 }
 
+// Gmail files a reply into the customer's conversation only when its subject is the original's (a "Re:" in front is
+// ignored). A mail with NO subject used to get "Re: Your enquiry", so Gmail opened a separate conversation for our
+// reply and the customer's own mail looked unanswered in Gmail (owner 2026-10-14, VASTRIKA: "reply ho rkha h ... real
+// mail pe iska reply show nhi ho rha"). Now it gets "Re:" alone, as Gmail itself does; "(no subject)" is only the
+// screen's label for an empty one.
+export const NO_SUBJECT = /^\(no subject\)$/i;
 export function replySubject(subject: string | null | undefined): string {
   const s = (subject || '').trim();
-  if (!s) return 'Re: Your enquiry';
+  if (!s || NO_SUBJECT.test(s)) return 'Re:';
   return /^re:/i.test(s) ? s : `Re: ${s}`;
 }
 
