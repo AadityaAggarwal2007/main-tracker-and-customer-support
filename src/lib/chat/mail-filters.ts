@@ -172,3 +172,40 @@ export function initials(name: string): string {
   const s = (parts[0]?.[0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '');
   return (s || '?').toUpperCase();
 }
+
+// ── Bounces: "Mail Delivery Subsystem" (owner 2026-10-14, a "recipient's inbox is out of storage space" and a "Message
+// blocked" mail showed "Not verified · Verify", Notes and Correction as if a customer had written) ──
+// Gmail's own report that one of OUR mails did not reach the customer. Never a customer: no verify, no case, no
+// reply; the screen says to whom it failed and why, in plain words.
+const BOUNCE_FROM = /^(mailer-daemon|postmaster)@/i;
+const BOUNCE_SUBJECT = /^(delivery status notification|undeliverable|undelivered mail|mail delivery (failed|subsystem)|returned mail|delivery (failure|incomplete|has failed)|message (blocked|not delivered))/i;
+export function isBounce(fromAddress: string | null | undefined, subject?: string | null): boolean {
+  const a = String(fromAddress || '').trim().toLowerCase();
+  if (BOUNCE_FROM.test(a)) return true;
+  return ROBOT.test(a) && BOUNCE_SUBJECT.test(String(subject || '').trim());
+}
+export type BounceWhy = 'full' | 'blocked' | 'not_found' | 'other';
+export const BOUNCE_WHY: Record<BounceWhy, string> = {
+  full: 'Their mailbox is full, so Gmail could not hand our mail over. Nothing is wrong on our side: they have to free space first. Try again in a day or two, or answer them where they write next.',
+  blocked: 'Their mail server refused our mail, usually because it looked like spam (many links, a long tracking link, or many mails sent from this Gmail in a short time). Send a short mail without links, or ask them to check Spam.',
+  not_found: 'This address does not exist. Check the email on the order for a typo.',
+  other: 'Gmail could not deliver our mail. Its reason is in the mail below.',
+};
+const EMAIL_IN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+export function bounceInfo(text: string | null | undefined, ownEmail?: string | null): { to: string | null; why: BounceWhy } {
+  const t = String(text || '');
+  const own = String(ownEmail || '').trim().toLowerCase();
+  const named = t.match(/(?:message to|delivered to|deliver(?:ed)? it to|delivery to|wasn't delivered to|was not delivered to|couldn't be delivered to|could not be delivered to|failed recipients?:?|recipient address:?)\s*<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
+  let to: string | null = named ? named[1].toLowerCase() : null;
+  if (!to) {
+    for (const m of t.match(EMAIL_IN) || []) {
+      const a = m.toLowerCase();
+      if (a === own || BOUNCE_FROM.test(a) || /@(googlemail\.com|google\.com)$/.test(a)) continue;
+      to = a; break;
+    }
+  }
+  const why: BounceWhy = /out of storage|storage space|mailbox (is )?full|inbox is full|over quota|quota exceeded|insufficient storage/i.test(t) ? 'full'
+    : /address not found|couldn'?t be found|could not be found|does ?n[o']t exist|no such user|user unknown|unknown user|account .{0,30}disabled/i.test(t) ? 'not_found'
+    : /blocked|spam|rejected|refused|policy/i.test(t) ? 'blocked' : 'other';
+  return { to, why };
+}

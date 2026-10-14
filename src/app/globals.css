@@ -2551,6 +2551,7 @@ a {
 .mail-verify > span { flex: 1 1 14rem; min-width: 0; }
 .mail-verify.ok { background: hsl(142, 60%, 94%); color: hsl(142, 64%, 24%); }
 .mail-verify.warn { background: hsl(38, 100%, 94%); color: hsl(30, 80%, 28%); }
+.mail-verify.bad { background: hsl(0, 85%, 95%); color: hsl(0, 65%, 32%); }
 .mail-verify-form { display: grid; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.625rem; border: 1px solid var(--border); border-radius: 0.5rem; }
 .mail-frame { width: 100%; flex: 1 1 340px; min-height: 280px; border: 1px solid var(--border); border-radius: 0.5rem; background: #fff; }
 .mail-reply { margin-top: 0.75rem; display: grid; gap: 0.5rem; position: sticky; bottom: 0; background: var(--card-bg, #fff); padding-top: 0.5rem; }

@@ -77,6 +77,16 @@ async function t(name, fn) {
     eq(R.looksLikeEmail('a@b.co'), true); eq(R.looksLikeEmail('a@b'), false); eq(R.looksLikeEmail('a b@c.d'), false);
   });
 
+  await t('sign-off once (owner 14 Oct: "Best Regards, Team Vastrika" then a second "Regards, VASTRIKA Support")', () => {
+    for (const x of ['Dear Customer,\nYour order is on the way.\n\nBest Regards,\nTeam Vastrika', 'Hi,\nok\nThanks', 'Hi\nDone.\nRegards, Vastora Support', 'Hello\nok\n- Team Kurtiya', 'Hi\nok\nThank you\nCustomer Care'])
+      eq(R.endsWithSignOff(x), true, x);
+    for (const x of ['Thanks for waiting, your parcel left today.\nIt reaches in 3 days.\nThe link: https://x.in/t', 'Hi\nTeam members will call?', ''])
+      eq(R.endsWithSignOff(x), false, x);
+    const b = R.chatMailBodies('Dear Customer,\nTracking: https://x.in/t\n\nBest Regards,\nTeam Vastrika', 'VASTRIKA');
+    ok(!/VASTRIKA Support/.test(b.textBody) && !/VASTRIKA Support/.test(b.htmlBody), b.textBody);
+    ok(/Team Vastrika$/.test(b.textBody));
+  });
+
   await t('reply-mail: a new mail keeps its subject (no "Re:"); a reply still gets "Re:"; fresh with an In-Reply-To is still a reply', () => {
     const base = { fromEmail: 's@x.in', toEmail: 'c@y.in', htmlBody: 'h', textBody: 't' };
     eq(RM.replyMailMessage({ ...base, subject: 'Update on your order #1', fresh: true }).subject, 'Update on your order #1');

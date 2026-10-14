@@ -156,16 +156,32 @@ const toNeedsYou = () => SQL(/UPDATE conversations SET status = 'human_needed'/)
     assert.ok(toNeedsYou(), 'an escalation always lands in Needs you, even for an unverified sender (the old behaviour)');
   });
 
-  await t('a verified customer who calls the store a fraud: the fixed "a person has it" reply STILL goes out on its own in draft mode, and the chat goes to Needs you', async () => {
+  // owner 2026-10-14 ("email ka lia humna ai nai lagaya ha toh yeh kasa chal rha ha?"): in draft mode NOTHING is emailed by
+  // itself, the fixed hand-over line included; it stays in the draft and the chat goes to Needs you
+  await t('draft mode ON, a verified customer who calls the store a fraud: the hand-over reply is a DRAFT (not emailed), chat to Needs you', async () => {
     reset({ mail: { from: 'cust@example.com', subject: 'Fraud company', text: 'You are a fraud, this is a scam website. My order #1001, phone 9876543210.' } });
+    await pollEmailAccount(account);
+    assert.strictEqual(S.sent.length, 0, 'nothing is emailed');
+    assert.ok(toNeedsYou());
+    assert.ok(S.aiMsgMeta.some((m) => m.withheld === 'draft'), 'stored as a draft for the team');
+  });
+
+  await t('draft mode ON, a verified customer who asks for a refund / cancel: a draft, nothing emailed, chat to Needs you', async () => {
+    for (const text of ['I want a refund for order #1001, my phone 9876543210.', 'I want cancel my order #1001 for a issue, phone 9876543210.']) {
+      reset({ mail: { from: 'cust@example.com', subject: 'Order', text } });
+      await pollEmailAccount(account);
+      assert.strictEqual(S.sent.length, 0, text);
+      assert.ok(toNeedsYou(), text);
+    }
+  });
+
+  await t('switch OFF: the fraud and refund hand-over replies still go out on their own (as before), chat to Needs you', async () => {
+    reset({ draftRow: '0', mail: { from: 'cust@example.com', subject: 'Fraud company', text: 'You are a fraud, this is a scam website. My order #1001, phone 9876543210.' } });
     await pollEmailAccount(account);
     assert.strictEqual(S.sent.length, 1, 'the hand-over reply is sent');
     assert.ok(toNeedsYou());
     assert.ok(!S.aiMsgMeta.some((m) => m.withheld === 'draft'), 'it is not stored as a draft');
-  });
-
-  await t('a verified customer who asks for a refund: the refund hand-over reply goes out, chat to Needs you', async () => {
-    reset({ mail: { from: 'cust@example.com', subject: 'Refund please', text: 'I want a refund for order #1001, my phone 9876543210.' } });
+    reset({ draftRow: '0', mail: { from: 'cust@example.com', subject: 'Refund please', text: 'I want a refund for order #1001, my phone 9876543210.' } });
     await pollEmailAccount(account);
     assert.strictEqual(S.sent.length, 1, 'the refund hand-over reply is sent');
     assert.ok(toNeedsYou());

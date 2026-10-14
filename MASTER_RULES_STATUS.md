@@ -520,3 +520,6 @@ panel with no prompt) uses it; nothing deleted. Found and fixed with it: the own
 "Vastora". Owner change recorded: each panel's Chikki says "Karry from the <panel> team" and signs "Karry, <panel>
 Support" (vastora unchanged). Rules 40 / 41: PASS (no AI words, no model; the right store name). Rule 2 (rules change
 only with the owner): PASS, he asked for one setup on every panel; the live AI test runs before a panel is switched.
+
+## Owner change 2026-10-14: email in draft mode sends nothing by itself (sections 16, 17)
+- Owner, after a verified customer's cancel mail on VASTRIKA got Chikki's fixed hand-over reply within the minute: "email ka lia humna ai nai lagaya ha toh yeh kasa chal rha ha?" In EMAIL with "Chikki writes a draft, the team sends" ON (the default), the fixed fraud / refund / cancel / payment hand-over line is no longer emailed by itself: it stays in the draft, the chat goes to Needs you, the team replies (`email-draft.ts emailReplyHeld`). The chat box is unchanged; with the email switch OFF the line still goes out as rules 16 / 17 describe. The rules file itself is untouched.

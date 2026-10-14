@@ -22,14 +22,29 @@ export function chatMailSubject(orderId: string): string {
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-// The team's text as written, then the sign-off with the brand ("Regards, VASTRIKA Support"). Links stay clickable in
-// the HTML part.
+// Does the text already end with a sign-off ("Best Regards, Team Vastrika", "Thanks,\nSupport Team", "Team XYZ")?
+// Only the last three lines are read, so a "thanks" inside the message never counts.
+const SIGNOFF_LINES = [
+  /^(?:(?:best|warm|kind|warmest|many)\s+)?(?:regards|sincerely|cheers|yours\s+(?:truly|sincerely))\b/i,
+  /^(?:many\s+)?(?:thanks|thank\s*you)(?:\s*(?:&|and)\s*regards)?\s*[,!.]*$/i,
+  /^(?:-+\s*)?team\s+[\w&.'-]+(?:\s+[\w&.'-]+)?\s*[.!]?$/i,
+  /^[\w&.' -]{0,25}\b(?:support\s+team|customer\s+(?:care|support))\s*[.!]?$/i,
+];
+export function endsWithSignOff(text: string): boolean {
+  const lines = String(text || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  return lines.slice(-3).some(l => l.length <= 60 && SIGNOFF_LINES.some(re => re.test(l)));
+}
+
+// The team's text as written, then the sign-off with the brand ("Regards, VASTRIKA Support"), unless the text already
+// ends with one (owner 2026-10-14: "Best Regards, Team Vastrika" was followed by a second "Regards, VASTRIKA Support").
+// Links stay clickable in the HTML part.
 export function chatMailBodies(text: string, brand: string): { textBody: string; htmlBody: string } {
   const t = String(text || '').replace(/\r/g, '').trim();
   const who = `${String(brand || '').trim() || 'Our'} Support`;
-  const textBody = `${t}\n\nRegards,\n${who}`;
+  const signed = endsWithSignOff(t);
+  const textBody = signed ? t : `${t}\n\nRegards,\n${who}`;
   const linked = esc(t).replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}">${u}</a>`).replace(/\n/g, '<br>');
-  const htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${linked}<br><br>Regards,<br>${esc(who)}</div>`;
+  const htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${linked}${signed ? '' : `<br><br>Regards,<br>${esc(who)}`}</div>`;
   return { textBody, htmlBody };
 }
 

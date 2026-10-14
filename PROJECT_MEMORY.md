@@ -221,6 +221,12 @@ Done and live:
   `CorrectionsPanel.tsx`. **`order-corrections.sql` waits for his yes** (until then: 503 "not installed", nothing breaks).
   Tests: `corrections.js` 9 groups. Rulebook 7.17.
 
+- **14 Oct, email never answers by itself in draft mode**: a verified customer's cancel / refund / fraud / payment mail used to
+  get Chikki's fixed hand-over reply (branded blue box) even with drafts ON (master rules 16 / 17). Owner: "email ka lia
+  humna ai nai lagaya". Now draft mode sends NOTHING by itself (`email-draft.ts emailReplyHeld`); the switch OFF behaves as
+  before. Bounce mails in the Mail tab say "not delivered to X, why" (no Verify / Notes / reply); Chat Support's "Also
+  send by Gmail" adds "Regards, <brand> Support" only when the text has no sign-off.
+
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
