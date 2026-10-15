@@ -286,6 +286,9 @@ Done and live:
   A PayGlocal mail showed on vastora (Easebuzz) because it came into vastora's OWN chargeback Gmail:
   some PayGlocal account has that Gmail as its dispute email. Now flagged "PayGlocal not on this panel" with Move to
   kurtiya (the panel that ticks PayGlocal). OWNER TO CHECK: which brand that PayGlocal merchant / MID is.
+  Same afternoon ("mza ni aya"): such a mail now MOVES by itself to the one panel ticking its gateway (chip "Came into
+  vastora's Gmail"), PayU's daily "TOTAL CASES [n] [date]" lists are one "Daily list" card, old "Panel unsure" clears
+  when only that panel ticks the gateway. If PayGlocal is really vastora's too, tick it on vastora and Move it back.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

@@ -3,6 +3,9 @@
 // A gateway sends the same dispute again and again (the first notice, then "reminder", "2 days left", ...). Every mail is
 // still kept as its own row; the list and the counts join the mails of ONE case into one card. Pure (no imports but
 // parse.ts): the case is read from the words each time, so a better rule here regroups the old rows too.
+//   0. a gateway's daily list ("URGENT- FIRST LEVEL PAYU CHARGEBACK NOTIFICATION - TOTAL CASES [ 4 ] [13-Oct-2026 9:25
+//      PM]", owner 2026-10-15: four of them were four cards): every such list of the panel + gateway is ONE card, its
+//      count and date taken out of the subject (it names many cases, so its first id never stands for the case);
 //   1. the gateway's own case / dispute / payment id in the subject or the text (PayGlocal "cb_...", PayU "PayU ID 311...",
 //      Easebuzz "E26092216UJOYK", Razorpay "disp_..." / "pay_...", any "Case ID: ...");
 //   2. else the order the mail was tied to;
@@ -43,10 +46,19 @@ export function baseSubject(subject: string): string {
   return s.replace(/\s*[-–|(]\s*(reminder|follow[\s-]?up)\s*\d*\)?\s*$/, '').replace(/\s+/g, ' ').trim();
 }
 
+// A gateway's daily / summary list of open cases (it names several, with a count and a date in the subject).
+const DIGEST = /total\s+(?:no\.?\s+of\s+)?cases?\s*[\[(:#\-]?\s*\d+|\bdaily\s+(?:chargeback\s+)?(?:report|summary|digest)\b|\bchargeback\s+summary\b/i;
+export const isDigest = (subject: string): boolean => DIGEST.test(subject || '');
+export function digestSubject(subject: string): string {
+  return baseSubject(subject).replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\d+/g, '#')
+    .replace(/(#[\s:./-]*)+/g, '# ').replace(/\s+/g, ' ').replace(/[\s#:,.\-–]+$/, '').trim();
+}
+
 export interface CaseMail { id: string; business_id: string; gateway: string; order_id: string | null; subject: string; snippet: string }
 
 export function caseKey(a: CaseMail): string {
   const head = `${a.business_id}|${gatewayKeyOf(a.gateway)}`;
+  if (isDigest(a.subject)) return `${head}|digest:${digestSubject(a.subject)}`;
   const ref = caseRef(a.subject, a.snippet);
   if (ref) return `${head}|id:${ref}`;
   if (a.order_id) return `${head}|order:${a.order_id.replace(/[^0-9]/g, '')}`;

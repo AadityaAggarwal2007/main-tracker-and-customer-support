@@ -7,6 +7,7 @@ import { matchByContact } from './risk';
 import { chargebackKind, gatewayKeyOf, gatewayOf, htmlToText, orderCandidates, orderForms, shortText, whatsappNumbers } from './parse';
 import { routeToPanel, type RoutedBy } from './routing';
 import { notifyChargeback } from './alert-send';
+import { sortByGateway } from './store';
 
 // ── Reading each panel's chargeback Gmail (owner 2026-10-08) ──────────────────────────────────
 // Called by the existing every-minute chat-email-poll cron (src/lib/chat/email.ts pollAllMailboxes), so the VPS
@@ -41,6 +42,8 @@ export async function pollChargebackMailboxes(): Promise<{ boxes: number; alerts
   }
   let alerts = 0;
   for (const g of Array.from(groups.values())) alerts += await pollOne(g);
+  // The open alerts that came to a panel not using their gateway (ticks changed, or older than this rule).
+  await sortByGateway().catch(() => undefined);
   return { boxes: groups.size, alerts };
 }
 
@@ -170,7 +173,7 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
       gatewayKeyOf(gateway), Array.from(new Set(found.map(f => f.business_id))));
     if (routed) { target = group.rows.find(r => r.business_id === routed.businessId) ?? group.primary; routedBy = routed.by; }
   }
-  const orderId = found.find(f => f.business_id === target.business_id)?.order_id ?? null;
+  let orderId = found.find(f => f.business_id === target.business_id)?.order_id ?? null;
 
   const base = [target.business_id, box.id, uid, (p.date || new Date()).toISOString(), fromAddress, fromName.slice(0, 120), subject.slice(0, 300), shortText(text), gateway, orderId];
   const ins = group.rows.length > 1
@@ -183,6 +186,14 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (mailbox_id, uid) DO NOTHING RETURNING id`, base);
   if (!ins) return false;                                          // already recorded
+
+  // A gateway this panel does not use but exactly one other panel does (owner 2026-10-15): that panel's alert, its chat
+  // and its WhatsApp numbers (store.ts sortByGateway; the order is looked up again there).
+  let panelId = target.business_id, panelName = target.panel_name;
+  try {
+    const moved = (await sortByGateway(ins.id))[0];
+    if (moved) { panelId = moved.businessId; panelName = moved.panelName; orderId = moved.orderId; }
+  } catch (e) { console.error('[chargeback] sort new alert:', (e as Error).message); }
 
   // The gateway's other mail (payment received, settlement, OTP; owner 2026-10-09) is kept under "Other mail" and
   // nothing more happens: no chat tag, no WhatsApp. The list reads the same words again (parse.ts chargebackKind).
@@ -199,7 +210,7 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
            FROM sites s
           WHERE s.id = c.site_id AND s.tracker_business_id::text = $1::text AND c.verified_order_id = $2
             AND c.merged_into IS NULL AND c.status = 'ai_handling' AND c.case_kind IS NULL`,
-        [target.business_id, orderId]);
+        [panelId, orderId]);
     } catch (e) { console.error('[chargeback] chat tag:', (e as Error).message); }
   }
 
@@ -207,10 +218,10 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
   // the alert). The alert keeps 'sent' when at least one went, else the first answer ('not_configured' / 'failed: ...').
   let notify = 'no_number';
   try {
-    const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [target.business_id]);
+    const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [panelId]);
     const to = whatsappNumbers(s?.whatsapp_number || '').numbers;
     const results: string[] = [];
-    for (const n of to) results.push(await notifyChargeback(n, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' }, ins.id));
+    for (const n of to) results.push(await notifyChargeback(n, { panel: panelName || 'Panel', gateway, order: orderId || 'not found' }, ins.id));
     if (results.length) {
       const sent = results.filter((r) => r === 'sent').length;
       notify = sent === results.length ? 'sent' : sent > 0 ? `sent ${sent} of ${results.length}; ${results.find((r) => r !== 'sent')}` : results[0];
