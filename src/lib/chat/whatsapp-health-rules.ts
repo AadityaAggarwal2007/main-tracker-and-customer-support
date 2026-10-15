@@ -4,6 +4,7 @@
 // customers react (blocks, reports); a low rating can cut the number's daily limit (how many different customers
 // we may START a conversation with in 24 hours, the "messaging limit tier") or stop the number. The server
 // (whatsapp-health.ts) fills the numbers; this file only says what they mean.
+import { stopBoardLine } from './whatsapp-auto-rules';
 
 export interface WaHealth {
   quality: string;            // GREEN / YELLOW / RED / UNKNOWN (Meta's quality_rating)
@@ -26,6 +27,9 @@ export interface WaHealth {
   // Another app on the number (owner 2026-10-15): Meta's reports today for messages ShipTrack never sent
   // (whatsapp-foreign-rules.ts foreignSeen); 0 / missing = none seen.
   foreignToday?: number;
+  // The safety stop (owner 2026-10-15 night): a Meta-side failure stopped every order message until Resume
+  // (whatsapp-pause.ts stopWhatsApp): Meta's words, when it began (ISO), the order it failed on. null = not stopped.
+  safetyStop?: { reason: string; at: string; order: string | null } | null;
 }
 export const FOREIGN_BOARD_TEXT = (n: number) => `Another app sent ${n} message${n === 1 ? '' : 's'} from this number today (Meta's reports for messages ShipTrack never sent): the two share Meta's limit. Open WhatsApp > Automation > Number status for where to look`;
 
@@ -60,6 +64,8 @@ export function tierLimit(tier: string): number | null {
 export function waHealthLines(h: WaHealth): WaLine[] {
   const out: WaLine[] = [];
   const status = (h.status || '').toUpperCase(), quality = (h.quality || '').toUpperCase();
+  // the safety stop first: nothing goes until the Super Admin presses Resume (owner 2026-10-15 night)
+  if (h.safetyStop) out.push({ tone: 'danger', text: stopBoardLine(h.safetyStop.reason, Date.parse(h.safetyStop.at) || Date.now(), h.safetyStop.order) });
   if (status && status !== 'CONNECTED' && status !== 'UNKNOWN') {
     out.push({ tone: 'danger', text: `Meta says the number is ${status}: messages may not go out. Open WhatsApp Manager and read Meta's notice` });
   }

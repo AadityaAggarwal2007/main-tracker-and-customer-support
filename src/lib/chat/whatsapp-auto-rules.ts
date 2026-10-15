@@ -217,7 +217,9 @@ export function firstAfterQuietOf(prev: PauseState | null, sentAt: number | null
   if (!prev || sentAt == null || !Number.isFinite(sentAt)) return false;
   return sentAt >= prev.until && sentAt - prev.until <= AFTER_PAUSE_MS;
 }
-export interface PauseState { until: number; reason: string; at: number; strikes: number; manual?: boolean; by?: string; resumedBy?: string; firstAfterQuiet?: boolean }
+// stopped / code / order / kind (owner 2026-10-15 night, the safety stop): a Meta-side failure stopped every order message
+// until Resume; `by` is then STOP_BY, `at` when it began, `until` 30 days on (STOP_MS).
+export interface PauseState { until: number; reason: string; at: number; strikes: number; manual?: boolean; by?: string; resumedBy?: string; firstAfterQuiet?: boolean; stopped?: boolean; code?: number | null; order?: string | null; kind?: string | null }
 export function parsePauseState(value: string | null | undefined): PauseState | null {
   try {
     const j = JSON.parse(String(value || ''));
@@ -225,7 +227,8 @@ export function parsePauseState(value: string | null | undefined): PauseState | 
     if (!Number.isFinite(until)) return null;
     return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)),
       ...(j?.manual ? { manual: true, by: String(j?.by || '').slice(0, 60) } : {}), ...(j?.resumedBy ? { resumedBy: String(j.resumedBy).slice(0, 60) } : {}),
-      ...(j?.firstAfterQuiet === true ? { firstAfterQuiet: true } : {}) };
+      ...(j?.firstAfterQuiet === true ? { firstAfterQuiet: true } : {}),
+      ...(j?.stopped === true ? { stopped: true, by: String(j?.by || STOP_BY).slice(0, 60), code: Number.isFinite(Number(j?.code)) && j?.code !== null && j?.code !== '' ? Number(j.code) : null, order: j?.order ? String(j.order).slice(0, 40) : null, kind: j?.kind ? String(j.kind).slice(0, 20) : null } : {}) };
   } catch { return null; }
 }
 // The next pause after a 130429 at `now`: null = the pause still runs (the same burst), keep it as it is.
@@ -242,7 +245,7 @@ export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS,
 // resume ho jaega"): paused (by Meta or by hand) until when, or sending slowly until when, or normal; Meta's last refusal,
 // which refusal of the last 2 hours it was, and how long the NEXT pause would be if Meta refuses again.
 export interface PauseView {
-  state: 'paused' | 'slow' | 'normal';
+  state: 'stopped' | 'paused' | 'slow' | 'normal';   // stopped = the safety stop (owner 2026-10-15 night): until Resume
   until: string | null;          // paused: when it sends again
   manual: boolean; by: string | null;
   reason: string | null;         // Meta's words (or "Paused by ...")
@@ -254,18 +257,21 @@ export interface PauseView {
   resumedBy: string | null;
   firstAfterQuiet: boolean;      // Meta's last refusal hit the first message after a quiet stretch: not our speed
   perMinute: number;             // the chosen speed (wa_send_rate), what "normal" means
+  // the safety stop: Meta's code and words, the order (or the test / alert) it failed on, when it began (ISO)
+  stopped: boolean; stopCode: number | null; stopOrder: string | null; stopKind: string | null; stopAt: string | null;
 }
 // `base` = the chosen gap (gapFor(perMinute)); the view says "slow" only when the gap is wider than the chosen one.
 export function pauseView(st: PauseState | null, now: number, base = SEND_EVERY_MS): PauseView {
   const inWindow = !!st && now - st.at < STRIKE_WINDOW_MS && !(st.manual && st.at <= now - STRIKE_WINDOW_MS);
   const strikes = st && inWindow ? st.strikes : 0;
   const paused = !!st && st.until > now;
+  const stopped = paused && !!st!.stopped;
   const every = sendEveryFor(st && inWindow ? st : null, now, base);
   const iso = (ms: number) => new Date(ms).toISOString();
   return {
-    state: paused ? 'paused' : every > base ? 'slow' : 'normal',
+    state: stopped ? 'stopped' : paused ? 'paused' : every > base ? 'slow' : 'normal',
     until: paused ? iso(st!.until) : null,
-    manual: !!(paused && st!.manual), by: paused && st!.manual ? st!.by || null : null,
+    manual: !!(paused && st!.manual && !stopped), by: paused && st!.manual && !stopped ? st!.by || null : null,
     reason: st ? st.reason || null : null,
     lastRefusalAt: st && strikes > 0 ? iso(st.at) : null,
     strikes,
@@ -275,6 +281,7 @@ export function pauseView(st: PauseState | null, now: number, base = SEND_EVERY_
     resumedBy: st && !paused ? st.resumedBy || null : null,
     firstAfterQuiet: !!(st && st.firstAfterQuiet && (paused || strikes > 0)),
     perMinute: Math.max(1, Math.round(60_000 / base)),
+    stopped, stopCode: stopped ? st!.code ?? null : null, stopOrder: stopped ? st!.order ?? null : null, stopKind: stopped ? st!.kind ?? null : null, stopAt: stopped ? iso(st!.at) : null,
   };
 }
 export const MANUAL_PAUSE_MIN = [15, 30, 60, 120];
@@ -287,6 +294,64 @@ export function sendEveryFor(state: PauseState | null, now: number, base = SEND_
 export function isRateLimited(code: number | null | undefined, error?: string | null): boolean {
   return code === RATE_LIMIT_CODE || /^\s*130429\b/.test(String(error || ''));
 }
+
+// ── The safety stop (owner 2026-10-15 night, after 3 order messages were LOST with 132001 "template name does not exist"
+// while Meta propagated a deleted template, and 130429 kept coming: "1 msg bhi dubara drop ya fail ho toh pause ho jae,
+// meta ki limit na kharab ho") ──
+// Which side a failure is on decides everything:
+//   - CUSTOMER side (this one number: not on WhatsApp, blocked us, the per-user marketing limit, an experiment group, an
+//     invalid recipient): that ONE message fails, the rest go on, nothing stops.
+//   - META side (everything else: 130429 rate limit, 132001 template missing, the token, a hiccup, our own timeout, an
+//     unknown code): the message is NOT lost (its row goes back in line, pending) and EVERY order message STOPS until the
+//     Super Admin presses Resume in WhatsApp > Automation (whatsapp-pause.ts stopWhatsApp: `wa_pause` with stopped: true,
+//     until 30 days on). New orders are still queued; ShipTrack's alerts and the test send still go. The owner gets ONE
+//     WhatsApp alert per stop (whatsapp-alert-queue.ts alertStopped).
+// `failureSide` reads Meta's code when the send answered one, else the number a delivery report's words start with
+// ("131026 · Message undeliverable · ..."), else the words themselves (our own "Not a WhatsApp number").
+export type FailureSide = 'customer' | 'meta';
+export const CUSTOMER_SIDE_CODES: readonly number[] = [
+  131026,   // message undeliverable: not a WhatsApp user, or they blocked the number
+  131030,   // the recipient is not in the allowed list (a test number)
+  131021,   // sender and recipient are the same number
+  130472,   // the user's number is part of a Meta experiment: no marketing message to them
+  131049,   // the per-user marketing limit: Meta holds back marketing to this one user
+];
+// Meta's / our words for a recipient that cannot be messaged (no code, or the generic 100 "invalid parameter" naming the number)
+export const CUSTOMER_SIDE_WORDS = /not a whatsapp number|cannot receive whatsapp|undeliverable|not in (the )?allowed list|invalid (recipient|phone|whatsapp)|(recipient|phone)( number)?[^.]{0,40}\b(is |are )?(invalid|not valid)|parameter ['"]?to['"]? (is )?invalid|not a valid (whatsapp )?(number|recipient)|part of an experiment/i;
+export const STOP_MS = 30 * 24 * 3600 * 1000;   // a stop never ends by itself: 30 days, or Resume
+export const STOP_BY = 'Meta failure';
+export const STOP_ALERT_KEY = 'wa_stop_alert';  // chat_settings: the `at` of the stop the owner was last told about (one alert per stop)
+// The code a failure carries: Meta's code when given, else the number the report's words start with.
+export function codeIn(code: number | null | undefined, error?: string | null): number | null {
+  if (typeof code === 'number' && Number.isFinite(code)) return code;
+  const m = String(error || '').match(/^\s*(\d{1,7})\b/);
+  return m ? Number(m[1]) : null;
+}
+export function failureSide(code: number | null | undefined, error?: string | null): FailureSide {
+  const c = codeIn(code, error);
+  if (c != null && CUSTOMER_SIDE_CODES.includes(c)) return 'customer';
+  if ((c == null || c === 100 || c === 131009) && CUSTOMER_SIDE_WORDS.test(String(error || ''))) return 'customer';
+  return 'meta';
+}
+const istClock = (ms: number) => new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+const codeWords = (code: number | null | undefined, words: string | null | undefined) => {
+  const w = String(words || '').replace(/[\r\n\t]+/g, ' ').trim();
+  const c = code != null && !new RegExp(`^\\s*${code}\\b`).test(w) ? `${code} ` : '';
+  return `${c}${w}`.trim() || 'no words from Meta';
+};
+// The PM2 line, once per stop.
+export const stopLogLine = (code: number | null | undefined, words: string | null | undefined, order: string | null | undefined): string =>
+  `[whatsapp] order messages STOPPED after a Meta failure (${codeWords(code, words)}, order ${order || '—'}): press Resume in WhatsApp > Automation`;
+// The one WhatsApp to the owner: one line, no breaks, at most 600 characters (a template value).
+export function stopAlertText(code: number | null | undefined, order: string | null | undefined, atMs: number, kind?: string | null): string {
+  const what = kind === 'test' ? 'on the test message' : kind === 'alert' ? 'on a ShipTrack alert' : `on order ${order || '—'}`;
+  return `WhatsApp order messages STOPPED: Meta refused (${code ?? 'no code'}) ${what} at ${istClock(atMs)}. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.`.replace(/\s+/g, ' ').slice(0, 600);
+}
+// The Today board's red line (whatsapp-health-rules.ts) and the Number status box's first line.
+export const stopBoardLine = (reason: string | null | undefined, atMs: number, order?: string | null): string =>
+  `WhatsApp order messages are STOPPED after a Meta failure since ${istClock(atMs)} (${(reason || 'no words from Meta').slice(0, 160)}${order ? `, order ${order}` : ''}): nothing is lost, the messages wait. Open WhatsApp > Automation, check Meta's words, then press Resume`;
+export const STOP_RESUME_CONFIRM = (perMinute: number, waiting: number) =>
+  `Start sending order messages again, ${perMinute} a minute? ${waiting ? `The ${waiting} that waited go out in line. ` : ''}Make sure the cause (Meta's words in the Number status box) is fixed first: if Meta refuses even one again, everything stops again.`;
 
 export const AUTO_PREFIX = 'wa_auto:';
 export const autoKey = (panelId: string) => AUTO_PREFIX + panelId;
@@ -342,8 +407,9 @@ export function trackingParams(o: OrderFacts, b: BrandWords): string[] {
   return [firstName(o.customerName), cleanParam(o.orderId, 40), cleanParam(b.name, 40) || 'our store', cleanParam(o.trackingLink, 200), cleanParam(b.email, 100) || 'our support team'];
 }
 
-// Meta codes worth another try (a hiccup on their side or a rate limit), against ones that never change
-// (not a WhatsApp number, blocked, template missing): those fail for good and the screen shows the words.
+// Meta codes worth another try (a hiccup on their side or a rate limit), against ones that never change. Since the
+// safety stop (2026-10-15 night) the worker no longer retries by itself: failureSide decides (a Meta-side failure =
+// the row waits and the automation stops until Resume); kept for the tests and any later use.
 export function retryable(code: number | null | undefined): boolean {
   if (code == null) return true;                       // no answer / network
   return [1, 2, 4, 17, 80007, 130429, 131016, 131056, 133004, 133016].includes(code) || (code >= 500 && code < 600);

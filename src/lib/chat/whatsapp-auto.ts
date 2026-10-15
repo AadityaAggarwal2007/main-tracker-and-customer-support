@@ -14,19 +14,20 @@ import { loadBrands } from './whatsapp-brands';
 import { loadHolidays } from './holidays';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MAX_ATTEMPTS, MODE_LOG_EVERY_MS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
+  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MODE_LOG_EVERY_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, gapFor, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, pickTemplate, placedParams, retryable,
+  autoKey, autoValue, dueNow, eligibleFrom, failureSide, findLinkTemplate, gapFor, isLinkTemplateName, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, pickTemplate, placedParams,
   templatesReadNote, trackingCanGo, trackingDueMs, trackingParams, waitingLinkLine,
   type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts, type SendRate,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
-import { loadSendRate, pauseState, pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { loadSendRate, pauseState, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { safetyStop } from './whatsapp-safety-stop';
 import { alertsWaiting } from './whatsapp-alert-queue';
 import { quietBefore } from './whatsapp-auto-status';
 import { knownNumbers24h, limitNow, loadWaHealth, usedNumbers } from './whatsapp-health';
 import { limitFreeAt, limitReached, waHealthLines, type WaLine } from './whatsapp-health-rules';
-import { loadForeignToday, noteTestSent } from './whatsapp-foreign';
+import { loadForeignToday, loadTestReports, noteTestSent, type TestRecord } from './whatsapp-foreign';
 import { foreignLine, type ForeignLine, type ForeignToday } from './whatsapp-foreign-rules';
 
 export type Kind = 'placed' | 'tracking';
@@ -126,8 +127,9 @@ interface DueRow {
 }
 
 // limited = messages to NEW customers that waited for the daily limit this run (they stay pending, not failed / skipped);
-// waitingLink = 'placed' rows that waited for their order's tracking link in the one-message mode (owner 2026-10-15 evening)
-export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number; waitingLink?: number }
+// waitingLink = 'placed' rows that waited for their order's tracking link in the one-message mode (owner 2026-10-15 evening);
+// stopped = this run met a Meta-side failure and stopped every order message until Resume (owner 2026-10-15 night)
+export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number; waitingLink?: number; stopped?: boolean }
 
 const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
@@ -151,7 +153,7 @@ async function dailyGuard(nowMs: number): Promise<DailyGuard> {
 const newCustomer = (guard: DailyGuard, digits: string) => guard.limit != null && guard.known != null && !guard.known.has(digits);
 
 export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
-  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0, limited: 0, waitingLink: 0 };
+  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0, limited: 0, waitingLink: 0, stopped: false };
   if (g.__waAutoBusy) return { ...out, idle: 'busy' };
   g.__waAutoBusy = true;
   try {
@@ -177,8 +179,9 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     const logMode = () => { if (modeLogged) return; modeLogged = true; lastModeLogged = mode.reason; lastModeLoggedAt = nowMs; console.log(`[wa-auto] ${mode.reason}${readNote ? ` ${readNote}` : ''}`); };
     if (mode.reason !== lastModeLogged || nowMs - lastModeLoggedAt >= MODE_LOG_EVERY_MS) logMode();
     let budget = BATCH;
-    // Meta's rate limit (130429): nothing is sent while the number is paused; new orders are still queued. When the pause
-    // is over, the messages that failed with it (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
+    // Meta's rate limit (130429) or the safety stop (owner 2026-10-15 night: any Meta-side failure, until Resume): nothing
+    // is sent while the number is paused / stopped; new orders are still queued. When it is over, the messages that
+    // failed with a 130429 before (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
     let paused = !!(await whatsAppPause(nowMs));
     // ShipTrack's alerts go first (owner 2026-10-15, "chargeback sabse pehle"): while one waits, no order message goes.
     const alertsFirst = (await alertsWaiting(nowMs)) > 0;
@@ -313,26 +316,28 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
                           WHERE business_id = $1 AND order_id = $2 AND kind = 'tracking' AND status = 'pending'`,
               [panelId, r.order_id, SKIP.inFirst]).catch(() => undefined);
           }
-        } else if (isRateLimited(res.code, res.error)) {
-          // Meta's rate limit: this one waits for the pause, and nothing more goes from the number this run. Refused right
-          // after 10 quiet minutes (no order message before it) = Meta's side, not our speed: the pause says so.
-          await query(`UPDATE wa_auto_sends SET status = $5, attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
-            [r.id, res.error, res.code, new Date(nowMs + PAUSE_MS), r.attempts + 1 >= RATE_MAX_ATTEMPTS ? 'failed' : 'pending']);
-          await pauseWhatsApp(`${res.code ?? ''} ${res.error}`.trim(), nowMs, undefined, nowMs, await quietBefore(nowMs));
-          paused = true; out.paused = true; out.retried++;
-        } else if (res.error === TIMED_OUT) {
-          // Meta may have taken it before the answer was lost: never sent again by itself
-          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
-            [r.id, 'WhatsApp did not answer in time: it may still have been delivered. Check with the customer before Send again.']);
-          out.failed++;
-        } else if (retryable(res.code) && r.attempts + 1 < MAX_ATTEMPTS) {
-          await query(`UPDATE wa_auto_sends SET attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
-            [r.id, res.error, res.code, new Date(nowMs + RETRY_MS)]);
-          out.retried++;
-        } else {
+        } else if (failureSide(res.code, res.error) === 'customer') {
+          // this ONE number (not on WhatsApp, blocked us, the per-user limit): that message fails, the rest go on
           await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = $3, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
             [r.id, res.error, res.code]);
           out.failed++;
+        } else if (res.error === TIMED_OUT) {
+          // Meta may have taken it before the answer was lost: never sent again by itself (a second copy to the customer
+          // is worse than one Send again); the number still stops (owner 2026-10-15 night: a lost answer is Meta's side)
+          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
+            [r.id, 'WhatsApp did not answer in time: it may still have been delivered. Check with the customer before Send again.']);
+          out.failed++;
+          await safetyStop({ code: null, words: res.error, order: r.order_id, kind: r.kind }, nowMs, nowMs, await quietBefore(nowMs));
+          paused = true; out.paused = true; out.stopped = true;
+        } else {
+          // META's side (owner 2026-10-15 night, "1 msg bhi fail ho toh pause ho jae": 130429 rate limit, 132001 template
+          // missing while Meta propagates a deletion, the token, a hiccup, an unknown code): the message is NOT lost (it
+          // waits in line again, due now; failed only after RATE_MAX_ATTEMPTS tries) and every order message STOPS until
+          // the Super Admin presses Resume. Refused right after 10 quiet minutes = Meta's side, not our speed: the stop says so.
+          await query(`UPDATE wa_auto_sends SET status = $5, attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
+            [r.id, res.error, res.code, new Date(nowMs), r.attempts + 1 >= RATE_MAX_ATTEMPTS ? 'failed' : 'pending']);
+          await safetyStop({ code: res.code, words: res.error, order: r.order_id, kind: r.kind }, nowMs, nowMs, await quietBefore(nowMs));
+          paused = true; out.paused = true; out.stopped = true; out.retried++;
         }
       }
     }
@@ -366,7 +371,7 @@ export interface AutoOverview {
   // link = the one-message template's state; linkName = the template that state is about when its name is not exactly
   // order_placed_link (a remade order_placed_link_2 ...), so the tab shows the real name
   templates: { placed: string; tracking: string; link: string; linkName: string | null; error: string | null };
-  paused: { until: string; reason: string } | null;
+  paused: { until: string; reason: string; stopped?: boolean } | null;   // stopped = the safety stop (owner 2026-10-15 night), until Resume
   sendEveryMs?: number;
   // ShipTrack's own alerts waiting in the queue (alerts first: order messages wait while any does).
   alertsWaiting?: number;
@@ -382,6 +387,9 @@ export interface AutoOverview {
   // Another app on the number (owner 2026-10-15): Meta's delivery reports today for messages ShipTrack never sent
   // (whatsapp-foreign-rules.ts), and the line the Number status box shows (null = nothing to say).
   foreign?: ForeignToday & { line: ForeignLine | null };
+  // The last test messages with Meta's delivery report for each (owner 2026-10-15 night: a test said "sent" and never
+  // arrived; whatsapp-foreign.ts noteTestStatus), newest first.
+  tests?: TestRecord[];
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -472,19 +480,20 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   const linkName = link.template ? link.template.name.trim().toLowerCase() : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
   const sendRate = await loadSendRate(nowMs).catch(() => ({ perMinute: 2, by: null, at: null } as SendRate));
   const pauseInfo = pauseView(await pauseState().catch(() => null), nowMs, gapFor(sendRate.perMinute));
-  // Meta refusing OUR messages now: a 130429 in the last 2 hours, or a pause Meta set that still runs
-  const refusing = pauseInfo.strikes > 0 || (pauseInfo.state === 'paused' && !pauseInfo.manual);
+  // Meta refusing OUR messages now: a 130429 in the last 2 hours, a pause Meta set that still runs, or the safety stop
+  const refusing = pauseInfo.strikes > 0 || (pauseInfo.state === 'paused' && !pauseInfo.manual) || pauseInfo.state === 'stopped';
   const foreignToday = await loadForeignToday(nowMs);
   return {
     installed, configured: waConfigured(),
     templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: link.state, linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
-    paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
+    paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason, ...(p.stopped ? { stopped: true } : {}) } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
     pauseInfo, sendRate,
     linkMode: await currentLinkMode(list, error, nowMs),
     numberHealth: waConfigured() ? await numberHealth(nowMs) : null,
     foreign: { ...foreignToday, line: foreignLine(foreignToday, refusing) },
+    tests: await loadTestReports(),
     ordersDue: installed ? await query<{ n: number }>(`SELECT count(*)::int AS n FROM wa_auto_sends WHERE status = 'pending' AND due_at <= now()`)
       .then((r) => Number(r.rows[0]?.n || 0)).catch(() => 0) : 0,
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
@@ -515,6 +524,7 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   const { list, error } = await templateStates(Date.now(), true);
   if (!list) return { error: error || 'Could not read the templates' };
   const brand = (await loadBrands().catch(() => [])).find((b) => b.id === panelId);
+  const panelName = await queryOne<{ name: string }>(`SELECT name FROM businesses WHERE id::text = $1`, [panelId]).then((r) => r?.name || null).catch(() => null);
   const o = await queryOne<{ order_id: string; tracking_token: string | null; tracking_domain: string | null }>(
     `SELECT o.order_id, o.tracking_token::text AS tracking_token, b.tracking_domain
        FROM orders o LEFT JOIN businesses b ON b.id = o.business_id
@@ -538,7 +548,8 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
     const tpl = pick.template;
     const params = (pick.params === 'tracking' ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);
     const r = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params);
-    if (!('error' in r)) await noteTestSent(r.id, digits);   // its delivery reports are ours, not another app's (whatsapp-foreign.ts)
+    // its delivery reports are ours, not another app's, and the record shows what Meta reported for it (whatsapp-foreign.ts)
+    if (!('error' in r)) await noteTestSent(r.id, digits, { template: tpl.name, language: tpl.language, panel: panelId, panelName, order: o?.order_id || null });
     results.push({ kind, ok: !('error' in r), text: renderTemplate(tpl, params), error: 'error' in r ? r.error : null });
   }
   return { results, order: o?.order_id || null, mode: mode.reason };

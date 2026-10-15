@@ -327,6 +327,13 @@ Done and live:
   waits for it (never order_placed; one `[wa-auto] N order messages wait for the order's tracking link` line a run), the
   48-hour tracking rows of older orders go with the link template too (office hours), the old two never go while the mode
   runs; the Automation tab greys them as "not needed"; the "type 250" red line is gone. The 130429 pause stays as it is.
+  Night ("1 msg bhi dubara drop ya fail ho toh pause ho jae, meta ki limit na kharab ho"; 3 order messages were LOST with
+  132001 during Meta's template propagation, a test said "sent" and never arrived): the SAFETY STOP. Any Meta-side failure
+  (130429, 132001, the token, a timeout, an unknown code: `failureSide`) of an order message, an alert or the test message
+  puts the number into a stop until the Super Admin presses Resume (no timed pause, no self-retry any more); the refused
+  row goes back in line (never lost), a customer-side failure (not on WhatsApp, 131026 etc.) fails that one message only;
+  one WhatsApp to the alert numbers per stop; the Number status box / Today board say it in red; the test message's Meta
+  report is now stored, logged (`[whatsapp] test message to ••••1234: ...`) and shown under the test boxes.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

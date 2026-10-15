@@ -18,7 +18,7 @@ import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import type { WaInbound, WaStatus } from './whatsapp';
 import { noteAutoStatus } from './whatsapp-auto-status';
-import { noteForeignStatus } from './whatsapp-foreign';
+import { noteForeignStatus, noteTestStatus } from './whatsapp-foreign';
 
 // The panel WhatsApp chats belong to: WHATSAPP_PANEL_ID, else the default panel. One number, one panel,
 // until the owner wants a number per panel.
@@ -141,13 +141,19 @@ export async function storeWaStatus(s: WaStatus): Promise<boolean> {
       WHERE metadata->>'wa_id' = $1`,
     [s.id, s.status, s.error]
   );
-  // the automation's own messages (WhatsApp > Automation) have no chat message: their row takes the report
+  // the automation's own messages (WhatsApp > Automation) have no chat message: their row takes the report (a Meta-side
+  // failure puts the row back in line and stops the order messages until Resume, owner 2026-10-15 night)
   const auto = await noteAutoStatus(s.id, s.status, s.error);
   // ShipTrack's own alerts (chargeback, AI credit, risk, stuck promises): a rate-limited one waits and goes again
-  // (whatsapp-alert-queue.ts); any 130429 report pauses the number (owner 2026-10-15)
+  // (whatsapp-alert-queue.ts); a Meta-side failure stops the order messages too
   const alert = auto ? false : await noteAlertStatus(s.id, s.status, s.error).catch(() => false);
-  if (s.status === 'failed' && !auto && !alert && isRateLimited(null, s.error)) await pauseWhatsApp(String(s.error)).catch(() => undefined);
-  const ours = (r.rowCount ?? 0) > 0 || auto || alert;
+  // the test message (WhatsApp > Automation "Send ... as a test"): its record and the log follow the report (owner
+  // 2026-10-15 night: a test said "sent" and never arrived); a failed one on Meta's side stops the order messages too
+  const test = auto || alert ? false : await noteTestStatus(s).catch(() => false);
+  // a 130429 for a team chat message or for a message nobody of ours sent (another app on the number): the timed pause
+  // as before (owner 2026-10-15); it never shortens a stop
+  if (s.status === 'failed' && !auto && !alert && !test && isRateLimited(null, s.error)) await pauseWhatsApp(String(s.error)).catch(() => undefined);
+  const ours = (r.rowCount ?? 0) > 0 || auto || alert || test;
   // A report that matched nothing of ours is a message ANOTHER app sent from the number (owner 2026-10-15: "we need
   // evidence"): counted after a short re-check, never awaited here (whatsapp-foreign.ts)
   if (!ours) void noteForeignStatus(s);

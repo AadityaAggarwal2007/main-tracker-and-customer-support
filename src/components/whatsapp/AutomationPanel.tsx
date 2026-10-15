@@ -162,7 +162,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={() => void load(true)}><RefreshCw size={13} /> Refresh</button>
         </div>
         <p style={{ fontSize: '0.8125rem', margin: 0, color: 'var(--fg-muted)' }}>
-          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, <strong>{o.sendRate?.perMinute ?? 2} a minute</strong> (one every {Math.round(60 / (o.sendRate?.perMinute ?? 2))} seconds; 1 a minute for two hours after Meta refuses one): pick the speed in the Number status box below. Once the daily limit (WhatsApp &gt; Setup) is reached in the last 24 hours, new customers wait for their turn and customers already messaged in those 24 hours still get theirs, so Meta does not refuse the number for sending too many new conversations. ShipTrack&apos;s alerts (chargeback first) go before any order message.
+          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, <strong>{o.sendRate?.perMinute ?? 2} a minute</strong> (one every {Math.round(60 / (o.sendRate?.perMinute ?? 2))} seconds; 1 a minute for two hours after Meta refuses one): pick the speed in the Number status box below. Once the daily limit (WhatsApp &gt; Setup) is reached in the last 24 hours, new customers wait for their turn and customers already messaged in those 24 hours still get theirs, so Meta does not refuse the number for sending too many new conversations. ShipTrack&apos;s alerts (chargeback first) go before any order message. <strong>If Meta refuses even one message on its side</strong> (rate limit, a missing template, the token, no answer), that message goes back in line and <strong>every order message stops until you press Resume</strong> in the Number status box, with one WhatsApp to your alert number; a number that is not on WhatsApp fails that one message only.
         </p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8125rem', alignItems: 'center' }}>
           {/* the old two are not needed while the one-message mode runs (owner 2026-10-15 evening: he deleted them on Meta): grey, not a red MISSING */}
@@ -335,6 +335,17 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
               {t.text && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: 'var(--fg-muted)' }}>{t.text}</div>}
             </div>
           ))}
+          {/* what Meta reported for the last tests of this brand (owner 15 Oct night: a test said "sent" and never arrived) */}
+          {(o.tests || []).filter((t) => t.panel === p.id).length > 0 && (
+            <div style={{ fontSize: '0.78rem', display: 'grid', gap: 2 }}>
+              {(o.tests || []).filter((t) => t.panel === p.id).map((t) => (
+                <div key={t.at + t.to} style={{ color: t.status === 'failed' ? 'var(--danger, #b91c1c)' : 'inherit' }}>
+                  Test {when(t.at)} to {t.to}{t.template ? ` (${t.template})` : ''}: {t.status === 'failed' ? `failed: ${t.words || (t.code ? `[${t.code}]` : 'no words from Meta')}` : t.status === 'read' ? 'read ✓✓' : t.status === 'delivered' ? 'delivered ✓✓' : 'sent ✓ (Meta took it; no delivery report yet)'}
+                  {t.reportAt && t.status !== 'sent' ? <span className="meta"> · reported {when(t.reportAt)}</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', fontSize: '0.8125rem', borderCollapse: 'collapse' }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}><th style={{ padding: '4px 6px' }}>Message ({dayWord(o.range.day)})</th>{COLS.map((c) => <th key={c.key} style={{ padding: '4px 6px' }}>{c.label}</th>)}</tr></thead>
