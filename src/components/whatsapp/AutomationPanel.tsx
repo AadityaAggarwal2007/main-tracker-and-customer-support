@@ -27,7 +27,8 @@ const hourText = (h: number) => `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`;
 const STATUS_WORD: Record<string, string> = { pending: 'Waiting', sent: 'Sent ✓', delivered: 'Delivered ✓✓', read: 'Read ✓✓', failed: 'Failed', skipped: 'Skipped' };
 const PAGE = 25;
 const store = { get: (k: string) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private window */ } } };
-const tplTone = (s: string) => (s === 'APPROVED' ? 'chip-ok' : s === 'PENDING' ? 'chip-warn' : 'chip-danger');
+// "APPROVED (last seen 8:41 pm)" = the remembered one-message template while a read misses it (2026-10-15 night): green too
+const tplTone = (s: string) => (s.startsWith('APPROVED') ? 'chip-ok' : s === 'PENDING' ? 'chip-warn' : 'chip-danger');
 
 export default function AutomationPanel({ token, onAlert }: { token: string; onAlert: Alert }) {
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
