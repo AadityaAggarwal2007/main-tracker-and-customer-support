@@ -906,6 +906,105 @@ async function t(name, fn) {
     wh.resetWaPhoneCache();
   });
 
+  // ── owner 15 Oct, live: the PM2 log said "order_placed_link is not made yet" while the Templates tab showed it APPROVED ──
+  const LINK2 = { ...LINK, id: 't4', name: 'order_placed_link_2', language: 'en' };                         // remade: Meta kept the old name
+  const LINK4 = { ...LINK, id: 't5', name: 'order_placed_link_v2', components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} with {{3}} is placed. Track: {{4}} .' }] };
+  await t('findLinkTemplate (owner 15 Oct, "not made yet" while the tab said APPROVED): the exact name wins over a prefix; an APPROVED order_placed_link_* with 5 values is used; one with 4 values never; nothing = MISSING; the state follows the exact one, else the best prefix match', () => {
+    const T = (name, status, vars = 5, language = 'en_US') => ({ name, status, vars, language });
+    eq(rules.LINK_VARS, 5);
+    deq([rules.isLinkTemplateName('order_placed_link'), rules.isLinkTemplateName(' Order_Placed_Link_2 '), rules.isLinkTemplateName('order_placed'), rules.isLinkTemplateName(null)], [true, true, false, false]);
+    // the exact name wins, whatever Meta lists first
+    let f = rules.findLinkTemplate([T('order_placed_link_2', 'APPROVED'), T('order_placed_link', 'APPROVED')]);
+    deq([f.template.name, f.state, f.note], ['order_placed_link', 'APPROVED', null]);
+    // a stray capital / space never hides the exact one
+    eq(rules.findLinkTemplate([T(' Order_Placed_Link ', 'APPROVED')]).template.name, ' Order_Placed_Link ');
+    // no exact one: the first APPROVED prefix match with 5 values, deterministic (Meta's order)
+    f = rules.findLinkTemplate([T('order_placed', 'APPROVED', 4), T('order_placed_link_v2', 'APPROVED', 4), T('order_placed_link_2', 'APPROVED'), T('order_placed_link_3', 'APPROVED')]);
+    deq([f.template.name, f.template.language, f.state], ['order_placed_link_2', 'en_US', 'APPROVED']);
+    // a prefix match with 4 values is never picked (Meta would refuse the send): the state says why
+    f = rules.findLinkTemplate([T('order_placed', 'APPROVED', 4), T('order_placed_link_v2', 'APPROVED', 4)]);
+    deq([f.template, f.state], [null, 'APPROVED']); assert.match(f.note, /order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5/);
+    assert.match(rules.linkModeOf(null, null, f.state, null, f.note).reason, /^two messages: order_placed_link_v2 is approved on Meta but has 4 values/);
+    // the exact one PENDING: its status, as before; a pending prefix match: its status with its name
+    f = rules.findLinkTemplate([T('order_placed_link', 'PENDING'), T('order_placed_link_2', 'APPROVED')]);
+    deq([f.template.name, f.state], ['order_placed_link_2', 'APPROVED']);                               // an approved remake beats the pending exact one
+    f = rules.findLinkTemplate([T('order_placed_link', 'PENDING')]); deq([f.template, f.state, f.note], [null, 'PENDING', null]);
+    assert.match(rules.linkModeOf(null, null, f.state, null, f.note).reason, /order_placed_link is pending on Meta, not approved/);
+    f = rules.findLinkTemplate([T('order_placed_link_2', 'REJECTED')]); deq([f.template, f.state], [null, 'REJECTED']); assert.match(f.note, /order_placed_link_2 is rejected on Meta/);
+    // the exact one REJECTED and a 5-value remake PENDING: the exact one's status is what the screen says
+    eq(rules.findLinkTemplate([T('order_placed_link', 'REJECTED'), T('order_placed_link_2', 'PENDING')]).state, 'REJECTED');
+    // nothing: MISSING; no list: UNKNOWN
+    deq(rules.findLinkTemplate([T('order_placed', 'APPROVED', 4), T('order_tracking', 'APPROVED')]), { template: null, state: 'MISSING', note: null });
+    deq(rules.findLinkTemplate(null), { template: null, state: 'UNKNOWN', note: null });
+    // what the worker read, for the log: count, masked account, the order_* names with their status, at most 8
+    eq(rules.templatesReadNote([T('order_placed', 'APPROVED', 4), T('order_tracking', 'APPROVED'), T('Order_Placed_Link_v2 ', 'PENDING'), T('shiptrack_alert', 'APPROVED', 1)], '…8651'),
+      '(read 4 templates from account …8651: order_placed APPROVED, order_tracking APPROVED, order_placed_link_v2 PENDING)');
+    eq(rules.templatesReadNote([T('shiptrack_alert', 'APPROVED', 1)], null), '(read 1 template: none named order_…)');
+    const many = Array.from({ length: 10 }, (_, i) => T(`order_x${i}`, 'APPROVED'));
+    assert.match(rules.templatesReadNote(many, '…8651'), /order_x7 APPROVED, \+2 more\)$/);
+    eq(rules.templatesReadNote(null, '…8651'), '');
+    eq(rules.MODE_LOG_EVERY_MS, 10 * 60000);
+  });
+  await t('a remade order_placed_link_2 (owner 15 Oct): the worker sends it under its real name and language, the tracking row is skipped now and when its turn comes (placed_template = the real name); the overview and the test send carry the name', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn();
+    S.metaTemplates.push(LINK4, LINK2);                                             // the 4-value one first: never picked
+    S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' })];
+    const cap = captureLog();
+    try { await run(IST(13, 12)); } finally { cap.restore(); }
+    const f = sends(); eq(f.length, 2);
+    deq(f.map(tplOf), ['order_placed_link_2', 'order_placed_link_2']);
+    deq(f.map((x) => x.body.template.language.code), ['en', 'en']);
+    deq(valuesOf(f[0]), ['Aaditya', '#1553', 'Vastora', 'https://shiptrack.store/track/tok-1553', 'help@vastora.test']);
+    assert.match(cap.lines.find((l) => /^\[wa-auto\] one message/.test(l)), /^\[wa-auto\] one message: order_placed_link_2 \(en\) is approved and the switch is ON$/);
+    assert.ok(!cap.lines.some((l) => /read \d+ templates/.test(l)), 'no "what was read" note while the mode is one message');
+    for (const id of ['#1553', '#1554']) {
+      const placed = S.rows.find((r) => r.order_id === id && r.kind === 'placed'); deq([placed.status, placed.template], ['sent', 'order_placed_link_2']);
+      const tr = S.rows.find((r) => r.order_id === id && r.kind === 'tracking'); deq([tr.status, tr.error], ['skipped', rules.SKIP.inFirst]);
+    }
+    // a tracking row of such an order that is somehow still pending is skipped when its turn comes (the prefix check)
+    const tr = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking'); tr.status = 'pending'; tr.error = null; tr.due_at = new Date(IST(15, 12));
+    S.fetches = []; await run(IST(15, 12));
+    deq(sends().map(tplOf), []); deq([tr.status, tr.error], ['skipped', rules.SKIP.inFirst]);
+    // the overview: the state and the real name; the switch line names it
+    const ov = await auto.automationOverview(null, IST(13, 12));
+    deq([ov.templates.link, ov.templates.linkName, ov.linkMode.active, ov.linkMode.template.name, ov.linkMode.template.language], ['APPROVED', 'order_placed_link_2', true, 'order_placed_link_2', 'en']);
+    // the exact name present and approved: linkName stays null (nothing to add on the screen)
+    S.metaTemplates.push(LINK); auto.resetTemplateCache();
+    const ov2 = await auto.automationOverview(null, IST(13, 13));
+    deq([ov2.templates.link, ov2.templates.linkName, ov2.linkMode.template.name], ['APPROVED', null, 'order_placed_link']);
+    S.metaTemplates.pop(); auto.resetTemplateCache();
+    // the test send: one message, the remade template
+    S.fetches = [];
+    const ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => [x.kind, x.ok]), [['placed', true]]); eq(tplOf(sends()[0]), 'order_placed_link_2'); assert.match(ts.mode, /^one message: order_placed_link_2 \(en\)/);
+  });
+  await t('the mode line says what the worker read (owner 15 Oct): "not made yet" carries the account\'s last 4 digits, the count and the order_* names with their status; a 4-value remake is named with why; the line is logged again after 10 minutes even when nothing changed, not before; never the token', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn(); S.orders = [order()];
+    let cap = captureLog();
+    try { await run(IST(13, 12)); await run(IST(13, 12, 1)); await run(IST(13, 21)); } finally { cap.restore(); }
+    let modeLines = cap.lines.filter((l) => /^\[wa-auto\] two messages/.test(l));
+    eq(modeLines.length, 2, 'once at first, once more after 10 minutes (the run a minute later said nothing new)');
+    eq(modeLines[0], '[wa-auto] two messages: order_placed_link is not made yet (read 2 templates from account …8651: order_placed APPROVED, order_tracking APPROVED)');
+    eq(modeLines[1], modeLines[0]);
+    assert.ok(!cap.lines.some((l) => /tok-secret/.test(l)), 'the token never reaches the log');
+    deq(sends().map(tplOf), ['order_placed']);                                      // the old message still goes
+    // a remade template with 4 values: the line names it and says why it is not used
+    S.metaTemplates.push(LINK4); auto.resetTemplateCache(); S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233' })); S.fetches = [];
+    cap = captureLog();
+    try { await run(IST(13, 12, 2)); } finally { cap.restore(); }
+    modeLines = cap.lines.filter((l) => /^\[wa-auto\] two messages/.test(l)); eq(modeLines.length, 1, 'the reason changed: logged at once');
+    eq(modeLines[0], '[wa-auto] two messages: order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5: make it again from its preset button (read 3 templates from account …8651: order_placed APPROVED, order_tracking APPROVED, order_placed_link_v2 APPROVED)');
+    deq(sends().map(tplOf), ['order_placed']);
+    const ov = await auto.automationOverview(null, IST(13, 12, 2));
+    deq([ov.templates.link, ov.templates.linkName, ov.linkMode.active], ['APPROVED', 'order_placed_link_v2', false]); assert.match(ov.linkMode.reason, /has 4 values/);
+    // the switch OFF: no "what was read" note (the switch is the reason, not the template)
+    S.settings.wa_link_mode = JSON.stringify({ on: false, by: 'owner', at: 'x' }); auto.forgetLinkModeCache();
+    cap = captureLog();
+    try { await run(IST(13, 12, 3)); } finally { cap.restore(); }
+    const off = cap.lines.find((l) => /^\[wa-auto\] two messages/.test(l)); assert.match(off, /switch .* is OFF \(by owner\)$/); assert.ok(!/read \d+ templates/.test(off));
+    delete S.settings.wa_link_mode; auto.forgetLinkModeCache(); auto.resetModeLog();
+  });
+
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
   process.exit(fail ? 1 : 0);
 })();

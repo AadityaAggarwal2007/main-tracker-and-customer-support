@@ -164,13 +164,14 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8125rem', alignItems: 'center' }}>
           <span>Template <code>order_placed</code>: <span className={`chip ${tplTone(o.templates.placed)}`}>{o.templates.placed}</span></span>
           <span>Template <code>order_tracking</code>: <span className={`chip ${tplTone(o.templates.tracking)}`}>{o.templates.tracking}</span></span>
-          {o.templates.link && <span>One message <code>order_placed_link</code>: <span className={`chip ${tplTone(o.templates.link)}`}>{o.templates.link}</span></span>}
+          {/* the real name when it is not exactly order_placed_link (a remade order_placed_link_2 ..., owner 2026-10-15) */}
+          {o.templates.link && <span>One message <code>{o.templates.linkName || 'order_placed_link'}</code>: <span className={`chip ${tplTone(o.templates.link)}`}>{o.templates.link}</span>{o.templates.linkName && <span className="meta" style={{ fontSize: '0.72rem' }}> (found by its name starting with order_placed_link, 5 values)</span>}</span>}
           {o.templates.error && <span style={{ color: 'var(--danger, #b91c1c)' }}>Could not read templates: {o.templates.error}</span>}
         </div>
         {/* one message per order (owner 2026-10-15, "switch ya jo bhi banana h bana"): the switch, and which mode runs now and why */}
         {o.linkMode && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8125rem', padding: '0.5rem 0.75rem', borderRadius: 8, border: '1px solid var(--border)' }}>
-            <strong>One message per order (order_placed_link):</strong>
+            <strong>One message per order ({o.linkMode.template?.name || o.templates.linkName || 'order_placed_link'}):</strong>
             <span className={`chip ${o.linkMode.on ? 'chip-ok' : 'chip-warn'}`}>{o.linkMode.on ? 'ON' : 'OFF'}</span>
             <button type="button" className="btn btn-sm btn-outline" disabled={busy === 'link'} onClick={() => void linkMode(!o.linkMode!.on)}>
               {busy === 'link' ? <Loader2 size={13} style={spin} /> : <Power size={13} />} {o.linkMode.on ? 'Turn OFF' : 'Turn ON'}

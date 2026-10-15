@@ -14,9 +14,10 @@ import { loadBrands } from './whatsapp-brands';
 import { loadHolidays } from './holidays';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MAX_ATTEMPTS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
+  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MAX_ATTEMPTS, MODE_LOG_EVERY_MS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, placedParams, retryable, trackingDueMs, trackingParams,
+  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, placedParams, retryable,
+  templatesReadNote, trackingDueMs, trackingParams,
   type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
@@ -59,19 +60,25 @@ export async function saveAuto(panelId: string, enabled: boolean, nowMs = Date.n
 }
 
 // The two templates' state on Meta (APPROVED / PENDING / REJECTED / MISSING), read live once a minute at most.
-let tplCache: { at: number; list: TemplateInfo[] | null; error: string | null } = { at: 0, list: null, error: null };
-export async function templateStates(nowMs = Date.now(), force = false): Promise<{ list: TemplateInfo[] | null; error: string | null }> {
+// `account` = the account the list came from, masked to its last 4 digits (for the log line; never the whole id).
+export interface TemplatesRead { list: TemplateInfo[] | null; error: string | null; account: string | null }
+let tplCache: TemplatesRead & { at: number } = { at: 0, list: null, error: null, account: null };
+const maskAccount = (id: string) => `…${id.slice(-4)}`;
+export async function templateStates(nowMs = Date.now(), force = false): Promise<TemplatesRead> {
   if (!force && nowMs - tplCache.at < 60_000) return tplCache;
   const account = await templatesAccount().catch(() => '');
-  if (!account) { tplCache = { at: nowMs, list: null, error: 'No Messaging account id saved (Setup tab)' }; return tplCache; }
+  if (!account) { tplCache = { at: nowMs, list: null, error: 'No Messaging account id saved (Setup tab)', account: null }; return tplCache; }
   const r = await listTemplates(account);
-  tplCache = 'error' in r ? { at: nowMs, list: null, error: r.error } : { at: nowMs, list: r.value, error: null };
+  tplCache = 'error' in r ? { at: nowMs, list: null, error: r.error, account: maskAccount(account) } : { at: nowMs, list: r.value, error: null, account: maskAccount(account) };
   return tplCache;
 }
-export const resetTemplateCache = () => { tplCache = { at: 0, list: null, error: null }; };
+export const resetTemplateCache = () => { tplCache = { at: 0, list: null, error: null, account: null }; };
 // the APPROVED template of that name (Meta keeps names in small letters; a stray space or capital never hides one)
 const approved = (list: TemplateInfo[] | null, name: string) => list?.find((t) => t.name.trim().toLowerCase() === name && t.status === 'APPROVED') || null;
 const stateOf = (list: TemplateInfo[] | null, name: string) => (list ? (list.find((t) => t.name.trim().toLowerCase() === name)?.status || 'MISSING') : 'UNKNOWN');
+// the one-message template is found by name OR by its prefix + 5 values (whatsapp-auto-rules.ts findLinkTemplate, owner
+// 2026-10-15: a remade template is often order_placed_link_2 and the exact name never matched)
+const linkTemplateOf = (list: TemplateInfo[] | null) => findLinkTemplate(list);
 
 // The switch "One message per order" (owner 2026-10-15; whatsapp-auto-rules.ts LINK_MODE_KEY): read with a 10-second
 // cache per process like the pause; a failed read = no row = ON (the template decides, as before).
@@ -100,10 +107,14 @@ export const forgetLinkModeCache = () => { linkModeCache = null; };
 // Which mode runs now and why, from the templates read and the switch (the ONE decision the worker, the overview and the
 // test send share). Logged by the worker once per run that sends, and whenever the answer changes.
 async function currentLinkMode(list: TemplateInfo[] | null, listError: string | null, nowMs: number): Promise<LinkMode> {
-  const link = approved(list, LINK_TEMPLATE);
-  return linkModeOf(await loadLinkMode(nowMs), link ? { name: link.name, language: link.language } : null, stateOf(list, LINK_TEMPLATE), listError);
+  const found = linkTemplateOf(list);
+  const link = found.template;
+  return linkModeOf(await loadLinkMode(nowMs), link ? { name: link.name, language: link.language } : null, found.state, listError, found.note);
 }
-let lastModeLogged = '';
+// The mode line: once per run that sends, whenever the answer changes, and at least every 10 minutes per process even when
+// unchanged, so the PM2 log always says what runs now (owner 2026-10-15: the only line for hours was a stale one).
+let lastModeLogged = '', lastModeLoggedAt = 0;
+export const resetModeLog = () => { lastModeLogged = ''; lastModeLoggedAt = 0; };
 
 interface DueRow {
   id: string; order_id: string; kind: Kind; attempts: number; due_at: string; placed_template: string | null;
@@ -133,12 +144,16 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     const holidays = await loadHolidays(nowMs).catch(() => [] as string[]);
     const brands = new Map<string, BrandWords>();
     for (const b of await loadBrands().catch(() => [])) brands.set(b.id, { name: b.name, email: b.email });
-    const { list, error: listError } = await templateStates(nowMs);
-    // one message or two (owner 2026-10-15): decided ONCE per run, said in the log when it changes and once per run that sends
+    const { list, error: listError, account } = await templateStates(nowMs);
+    // one message or two (owner 2026-10-15): decided ONCE per run, said in the log when it changes, once per run that sends,
+    // and every 10 minutes anyway; when it is two messages for want of the template, the line also says what Meta listed
+    // (the account's last 4 digits, how many templates, the order_* names with their status), so the log answers "why"
     const mode = await currentLinkMode(list, listError, nowMs);
+    const linkFound = linkTemplateOf(list).template;
+    const readNote = mode.on && !mode.approved && !listError ? templatesReadNote(list, account) : '';
     let modeLogged = false;
-    const logMode = () => { if (modeLogged) return; modeLogged = true; lastModeLogged = mode.reason; console.log(`[wa-auto] ${mode.reason}`); };
-    if (mode.reason !== lastModeLogged) logMode();
+    const logMode = () => { if (modeLogged) return; modeLogged = true; lastModeLogged = mode.reason; lastModeLoggedAt = nowMs; console.log(`[wa-auto] ${mode.reason}${readNote ? ` ${readNote}` : ''}`); };
+    if (mode.reason !== lastModeLogged || nowMs - lastModeLoggedAt >= MODE_LOG_EVERY_MS) logMode();
     let budget = BATCH;
     // Meta's rate limit (130429): nothing is sent while the number is paused; new orders are still queued. When the pause
     // is over, the messages that failed with it (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
@@ -214,7 +229,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         if (stopped.has(digits)) { await skip(SKIP.stopped); continue; }
         if (r.kind === 'placed' && nowMs - createdMs > FRESH_MS) { await skip(SKIP.tooOld); continue; }
         if (r.kind === 'tracking') {
-          if (r.placed_template === LINK_TEMPLATE) { await skip(SKIP.inFirst); continue; }   // the link went in the first message
+          if (isLinkTemplateName(r.placed_template)) { await skip(SKIP.inFirst); continue; }   // the link went in the first message (order_placed_link or a remade order_placed_link_2)
           if (r.delivered_at || /^delivered$/i.test(r.tracking_status || '')) { await skip(SKIP.delivered); continue; }
           if (!r.tracking_token) { await skip(SKIP.noLink); continue; }
           if (nowMs - createdMs > TRACKING_TOO_LATE_MS) { await skip(SKIP.tooOld); continue; }
@@ -222,7 +237,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         }
         // one message per order while the mode is active (the switch ON and order_placed_link APPROVED); the order needs
         // its tracking link for it, else the old order_placed goes and the 48-hour message brings the link
-        const linkTpl = mode.active && r.kind === 'placed' && r.tracking_token ? approved(list, LINK_TEMPLATE) : null;
+        const linkTpl = mode.active && r.kind === 'placed' && r.tracking_token ? linkFound : null;   // sent under its real name + language
         if (mode.active && r.kind === 'placed' && !r.tracking_token) console.warn(`[wa-auto] order ${r.order_id} has no tracking link: order_placed goes instead of ${LINK_TEMPLATE}, the tracking message stays in line`);
         const tpl = linkTpl || approved(list, r.kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
         if (!tpl) continue;                                                                    // not approved by Meta yet: it waits
@@ -309,7 +324,9 @@ export interface RecentRow {
 }
 export interface AutoOverview {
   installed: boolean; configured: boolean;
-  templates: { placed: string; tracking: string; link: string; error: string | null };
+  // link = the one-message template's state; linkName = the template that state is about when its name is not exactly
+  // order_placed_link (a remade order_placed_link_2 ...), so the tab shows the real name
+  templates: { placed: string; tracking: string; link: string; linkName: string | null; error: string | null };
   paused: { until: string; reason: string } | null;
   sendEveryMs?: number;
   // ShipTrack's own alerts waiting in the queue (alerts first: order messages wait while any does).
@@ -401,8 +418,11 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   } catch (e) {
     if (missingTable(e)) installed = false; else console.error('[wa-auto] overview:', (e as Error).message);
   }
+  const link = linkTemplateOf(list);
+  const linkName = link.template ? link.template.name.trim().toLowerCase() : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
   return {
-    installed, configured: waConfigured(), templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: stateOf(list, LINK_TEMPLATE), error },
+    installed, configured: waConfigured(),
+    templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: link.state, linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
@@ -449,7 +469,7 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   const results: TestSend[] = [];
   // one message per order while that mode is active (the switch ON and order_placed_link approved, owner 2026-10-15), else the two as before
   const mode = await currentLinkMode(list, error, Date.now());
-  const link = mode.active ? approved(list, LINK_TEMPLATE) : null;
+  const link = mode.active ? linkTemplateOf(list).template : null;   // the found template under its real name
   for (const kind of (link ? ['placed'] : ['placed', 'tracking']) as Kind[]) {
     const tpl = kind === 'placed' && link ? link : approved(list, kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
     if (!tpl) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
