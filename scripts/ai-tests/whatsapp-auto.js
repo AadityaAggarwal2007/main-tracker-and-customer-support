@@ -540,25 +540,27 @@ async function t(name, fn) {
   const LINK = { id: 't3', name: 'order_placed_link', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Track it here: {{4}} . For any confusion, please email us at {{5}} and our team will help you.' }] };
   const tplOf = (f) => f.body.template.name;
   const valuesOf = (f) => f.body.template.components[0].parameters.map((x) => x.text);
-  await t('one message (owner 15 Oct, "pehle hi message mein tracking link"): once order_placed_link is approved the first message carries the link and the 48-hour message is skipped; without it, or without a link, the old two', async () => {
+  await t('one message (owner 15 Oct, "pehle hi message mein tracking link"): once order_placed_link is approved the first message carries the link and the 48-hour message is skipped; without the template the old two; without a link the message WAITS (since the evening: never order_placed in this mode)', async () => {
     const brand = require(path.join(SRC, 'lib/chat/whatsapp-brand-rules.ts'));
     eq(brand.ORDER_LINK_PRESET.name, rules.LINK_TEMPLATE); eq((brand.ORDER_LINK_PRESET.body.match(/\{\{\d\}\}/g) || []).length, 5);
     pause.forgetPauseCache();
     S.metaTemplates.push(LINK); turnOn();
     S.orders = [order(), order({ order_id: '#1554', tracking_token: null })];
-    await run(IST(13, 12));
+    const r1 = await run(IST(13, 12));
     const f = sends();
-    deq(f.map(tplOf), ['order_placed_link', 'order_placed']);                       // #1554 has no link yet: the old message
+    deq(f.map(tplOf), ['order_placed_link']);                                       // #1554 has no link yet: it waits (was: order_placed)
+    deq([r1.sent, r1.waitingLink], [1, 1]);
     deq(valuesOf(f[0]), ['Aaditya', '#1553', 'Vastora', 'https://shiptrack.store/track/tok-1553', 'help@vastora.test']);
     const tr = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking');
     deq([tr.status, tr.error], ['skipped', rules.SKIP.inFirst]);
-    eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'tracking').status, 'pending');
-    // a tracking row whose order already got the link is skipped when its turn comes
+    deq(S.rows.filter((r) => r.order_id === '#1554').map((r) => [r.kind, r.status, r.error]), [['placed', 'pending', null], ['tracking', 'pending', null]]);
+    // a tracking row whose order already got the link is skipped when its turn comes; #1554's placed row is over 24 h old by then
     S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking').status = 'pending';
     S.rows.forEach((r) => { if (r.kind === 'tracking') r.due_at = new Date(IST(15, 12)); });
     S.fetches = []; await run(IST(15, 12));
     deq(sends().map(tplOf), []);                                                    // #1553's went in the first message; #1554 still has no link
     eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'tracking').error, rules.SKIP.noLink);
+    eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'placed').error, rules.SKIP.tooOld);
     eq(S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking').status, 'skipped');
   });
   await t('slow and steady (owner 15 Oct, "har minute 1 ya 2 msg"): no send slot = nothing goes and nothing is claimed; the slot is one per 30 s', async () => {
@@ -820,7 +822,7 @@ async function t(name, fn) {
     delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
     ov = (await route.GET(jreq(OWNER, {}))).body; eq(ov.linkMode.on, true);         // no row = ON
   });
-  await t('why order_placed_link was never picked (owner 15 Oct): the mode is decided ONCE per run and logged with its reason; a template on Meta\'s second page is read (before, only page 1 was); a placed row with no tracking link says so in the log; a stray capital or space in the name never hides it', async () => {
+  await t('why order_placed_link was never picked (owner 15 Oct): the mode is decided ONCE per run and logged with its reason; a template on Meta\'s second page is read (before, only page 1 was); a placed row with no tracking link waits and the log says so once; a stray capital or space in the name never hides it', async () => {
     pause.forgetPauseCache(); turnOn();
     // page 2 of Meta's list: the old code read only the first 100 templates, so a template past them looked MISSING
     S.metaPages = [S.metaTemplates.map((x) => ({ ...x })), [{ ...LINK, name: ' Order_Placed_Link ' }]];
@@ -829,10 +831,13 @@ async function t(name, fn) {
     try { await run(IST(13, 12)); } finally { cap.restore(); }
     eq(S.fetches.filter((f) => /message_templates/.test(f.url)).length, 2, 'both pages read');
     assert.match(S.fetches.filter((f) => /message_templates/.test(f.url))[1].url, /after=p2/);
-    deq(sends().map(tplOf), ['order_placed_link', 'order_placed']);                // the name read clean (readTemplates), so the send takes it
+    deq(sends().map(tplOf), ['order_placed_link']);                                 // the name read clean (readTemplates), so the send takes it; #1554 waits for its link
     eq(cap.lines.filter((l) => /^\[wa-auto\] one message: /.test(l)).length, 1, 'said once per run');
     assert.match(cap.lines.find((l) => /^\[wa-auto\] one message: /.test(l)), /is approved and the switch is ON/);
-    assert.ok(cap.lines.some((l) => /^\[wa-auto\] order #1554 has no tracking link: order_placed goes instead of order_placed_link/.test(l)));
+    eq(cap.lines.filter((l) => /wait.* for the order's tracking link/.test(l)).length, 1, 'once per run, with the count');
+    assert.ok(cap.lines.some((l) => l === rules.waitingLinkLine(1, 'order_placed_link')), cap.lines.join('\n'));
+    assert.ok(!cap.lines.some((l) => /order_placed goes instead/.test(l)), 'the old fallback line is gone');
+    eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'placed').status, 'pending');
     const ov = await auto.automationOverview(null, IST(13, 12));
     eq(ov.templates.link, 'APPROVED'); eq(ov.linkMode.active, true);
     // a later page that cannot be read keeps what page 1 gave (two messages, never nothing)
@@ -1102,7 +1107,7 @@ async function t(name, fn) {
       deq([ov.numberHealth.limitReached, ov.numberHealth.limitFreeAt, ov.numberHealth.limit, ov.numberHealth.used24h], [true, new Date(IST(13, 13, 5)).toISOString(), 250, 250]);
       assert.match(ov.numberHealth.lines.find((l) => /Daily limit reached/.test(l.text)).text, /^Daily limit reached: 250 \/ 250 in the last 24 h — new customers wait until the oldest drops out \(about 1:05 pm\); customers messaged in the last 24 h still get theirs$/);
       eq(ov.numberHealth.lines.find((l) => /Daily limit reached/.test(l.text)).tone, 'danger');
-      eq(ov.numberHealth.refusedNearLimit, null, 'no refusal: nothing to say about it');
+      eq('refusedNearLimit' in ov.numberHealth, false, 'the "Meta refused near the limit" field is gone');
       // the oldest dropped out: 249 in the window, so ONE new customer goes; a second new one in the same run waits (the run counts its own sends)
       S.used = { n: 249, today: 241, oldest: new Date(IST(12, 13, 30)) };
       S.orders.push(order({ order_id: '#1555', customer_mobile: '9811122299' })); S.fetches = [];
@@ -1128,18 +1133,11 @@ async function t(name, fn) {
     } finally { captured.restore(); }
     S.phone = { ...S.phone, messaging_limit_tier: 'TIER_2K' }; wh.resetWaPhoneCache(); S.used = { n: 613, today: 311, oldest: null }; delete S.settings.whatsapp_daily_limit;
   });
-  await t('Meta refused near the limit (owner 15 Oct, 242 messaged today, Meta refused the first message after every pause): a 130429 while the count sits within 10% of the typed limit, or above 230, gets the red line naming Meta\'s starting 250 and what to type; nothing without a refusal or far from the limit', async () => {
-    const t0 = new Date(IST(13, 12)).toISOString();
-    eq(health.METAS_STARTING_LIMIT, 250); eq(health.REFUSED_ABOVE, 230);
-    eq(health.refusedNearLimit(null, 242, 2000), null); eq(health.refusedNearLimit('junk', 242, 2000), null);
-    eq(health.refusedNearLimit(t0, 100, 2000), null); eq(health.refusedNearLimit(t0, 229, null), null);
-    for (const [used, limit] of [[242, 2000], [242, null], [1800, 2000], [230, 5000]]) {
-      const s = health.refusedNearLimit(t0, used, limit);
-      eq(s, `Meta refused at ${used} customers in the last 24 h. Meta's starting limit is 250 customers a day; WhatsApp Manager > Overview may show 2,000 for the business, but this number may still be on 250. Type 250 in WhatsApp > Setup > Daily limit and ShipTrack will wait instead of being refused.`);
+  await t('the daily limit lines (owner 15 Oct): reached / free at / the health line; the "Meta refused near the limit, type 250" line is GONE (the evening\'s live data disproved it: 343 messages in 4 hours the day before with no refusal), cleanly, from the rules, the overview, the card and this suite', async () => {
+    eq(health.refusedNearLimit, undefined); eq(health.METAS_STARTING_LIMIT, undefined); eq(health.REFUSED_ABOVE, undefined); eq(health.REFUSED_NEAR_LIMIT_PCT, undefined);
+    for (const f of ['lib/chat/whatsapp-health-rules.ts', 'lib/chat/whatsapp-auto.ts', 'components/whatsapp/PauseStatusCard.tsx', 'components/whatsapp/AutomationPanel.tsx', 'lib/chat/whatsapp-health.ts', 'components/PanelBoard.tsx']) {
+      assert.ok(!/refusedNearLimit|METAS_STARTING_LIMIT|REFUSED_ABOVE|Type 250/.test(fs.readFileSync(path.join(SRC, f), 'utf8')), `gone from ${f}`);
     }
-    // 250 already typed and still refused: Meta counts a few more than we do: lower it a little
-    assert.match(health.refusedNearLimit(t0, 240, 250), /ShipTrack already waits at 250; Meta may count a few more .* Lower the Daily limit in WhatsApp > Setup a little \(e\.g\. 230\)\.$/);
-    assert.match(health.refusedNearLimit(t0, 55, 60), /e\.g\. 50\)/);
     // the limit lines: reached / free at / the health line (the Today board shows the same line)
     deq([health.limitReached({ used24h: 250, limit: 250 }), health.limitReached({ used24h: 249, limit: 250 }), health.limitReached({ used24h: 999, limit: null }), health.limitReached({ used24h: 1, limit: 0 })], [true, false, false, false]);
     eq(health.limitFreeAt({ oldest24h: new Date(IST(12, 13, 5)).toISOString() }), new Date(IST(13, 13, 5)).toISOString()); eq(health.limitFreeAt({ oldest24h: null }), null); eq(health.limitFreeAt({}), null);
@@ -1148,18 +1146,15 @@ async function t(name, fn) {
     const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'UNKNOWN', limit: 250, limitFrom: 'saved', used24h: 250, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: null, oldest24h: new Date(IST(12, 13, 5)).toISOString() };
     const lines = health.waHealthLines(base); eq(lines.length, 1); eq(lines[0].tone, 'danger'); assert.match(lines[0].text, /^Daily limit reached: 250 \/ 250 .* \(about 1:05 pm\)/);
     assert.match(health.waHealthLines({ ...base, used24h: 230 })[0].text, /^Daily limit almost used: 230 of 250/);
-    // through the overview: a refusal in the last 2 hours + the count near the limit
+    // through the overview: a refusal in the last 2 hours + the count near the typed limit says nothing beyond the limit guard itself
     pause.forgetPauseCache(); wh.resetWaPhoneCache();
     S.settings.whatsapp_daily_limit = '2000'; S.phone = { ...S.phone, messaging_limit_tier: '' }; S.used = { n: 242, today: 242, oldest: new Date(IST(12, 13)) };
     S.settings.wa_pause = JSON.stringify({ until: new Date(IST(13, 12, 15)).toISOString(), reason: '130429 Rate limit hit', at: new Date(IST(13, 12)).toISOString(), strikes: 1 });
-    let ov = await auto.automationOverview(null, IST(13, 12, 5));
-    assert.match(ov.numberHealth.refusedNearLimit, /^Meta refused at 242 customers in the last 24 h\. .*Type 250 in WhatsApp > Setup > Daily limit/);
-    eq(ov.numberHealth.limitReached, false);
-    // the same refusal two and a half hours later: no line (the refusal no longer counts); a low count: no line
-    ov = await auto.automationOverview(null, IST(13, 14, 31)); eq(ov.numberHealth.refusedNearLimit, null);
-    S.used = { n: 40, today: 40, oldest: null }; ov = await auto.automationOverview(null, IST(13, 12, 5)); eq(ov.numberHealth.refusedNearLimit, null);
+    const ov = await auto.automationOverview(null, IST(13, 12, 5));
+    deq([ov.numberHealth.limitReached, ov.numberHealth.limit, ov.numberHealth.used24h, 'refusedNearLimit' in ov.numberHealth], [false, 2000, 242, false]);
+    deq(ov.numberHealth.lines, []);                                                 // 242 of 2,000: nothing to say
     const card = fs.readFileSync(path.join(SRC, 'components/whatsapp/PauseStatusCard.tsx'), 'utf8');
-    assert.match(card, /health\?\.refusedNearLimit/); assert.match(card, /health\?\.limitReached/);
+    assert.match(card, /health\?\.limitReached/);
     delete S.settings.wa_pause; delete S.settings.whatsapp_daily_limit; pause.forgetPauseCache(); S.phone = { ...S.phone, messaging_limit_tier: 'TIER_2K' }; wh.resetWaPhoneCache(); S.used = { n: 613, today: 311, oldest: null };
   });
   await t('template usage chips (owner 15 Oct, "ye wala working hai baaki nahi"): which template ShipTrack sends for what, from the automation\'s mode; the link card carries the one-message switch', () => {
@@ -1171,8 +1166,9 @@ async function t(name, fn) {
     const fourVals = rules.linkModeOf(null, null, 'APPROVED', null, 'order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5: make it again from its preset button');
     const T = (name, status = 'APPROVED') => ({ name, status });
     const u = (t, m) => { const r = rules.templateUsage(t, m); return [r.text, r.tone]; };
-    deq(u(T('order_placed_link'), active), ['In use: every new order (one message)', 'ok']);
-    deq(u(T(' Order_Placed_Link '), active), ['In use: every new order (one message)', 'ok']);
+    const IN_USE = 'In use: every order (new orders, and the 48-hour link for older ones)';
+    deq(u(T('order_placed_link'), active), [IN_USE, 'ok']);
+    deq(u(T(' Order_Placed_Link '), active), [IN_USE, 'ok']);
     deq(u(T('order_placed_link'), off), ['Not in use (switch OFF)', 'warn']);
     deq(u(T('order_placed_link', 'PENDING'), off), ['Not in use (switch OFF)', 'warn']);
     deq(u(T('order_placed_link', 'PENDING'), pending), ['Waiting for approval', 'warn']);
@@ -1180,14 +1176,17 @@ async function t(name, fn) {
     deq(u(T('order_placed_link_v2'), fourVals), ['Not in use: order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5: make it again from its preset button', 'warn']);
     // a remade order_placed_link_2 is the one sent: the old exact one says so
     const remade = rules.linkModeOf(null, { name: 'order_placed_link_2', language: 'en' }, 'APPROVED', null);
-    deq(u(T('order_placed_link_2'), remade), ['In use: every new order (one message)', 'ok']);
+    deq(u(T('order_placed_link_2'), remade), [IN_USE, 'ok']);
     deq(u(T('order_placed_link'), remade), ['Not in use (order_placed_link_2 is the one sent)', 'muted']);
-    deq(u(T('order_placed'), active), ['In use: only orders without a tracking link', 'ok']);
+    // the old two (owner 15 Oct evening, deleted on Meta): never sent in the one-message mode, whatever their status
+    deq(u(T('order_placed'), active), ['Not used (one message mode)', 'muted']);
+    deq(u(T('order_placed', 'MISSING'), active), ['Not used (one message mode)', 'muted']);
+    deq(u(T('order_tracking', 'PENDING'), remade), ['Not used (one message mode)', 'muted']);
     deq(u(T('order_placed'), off), ['In use: every new order', 'ok']);
     deq(u(T('order_placed'), pending), ['In use: every new order', 'ok']);
     deq(u(T('order_placed', 'PENDING'), off), ['In use: every new order — but waiting for approval', 'warn']);
     deq(u(T('order_placed', 'REJECTED'), off), ['In use: every new order — but not approved (rejected)', 'warn']);
-    deq(u(T('order_tracking'), active), ['In use: the 48-hour link for orders whose first message had none', 'ok']);
+    deq(u(T('order_tracking'), active), ['Not used (one message mode)', 'muted']);
     deq(u(T('order_tracking'), off), ['In use: every order, 48 hours later', 'ok']);
     deq(u(T('shiptrack_alert'), active), ['In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises)', 'ok']);
     deq(u(T('shiptrack_alert', 'PENDING'), active), ['In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises) — but waiting for approval', 'warn']);
@@ -1198,6 +1197,153 @@ async function t(name, fn) {
     assert.match(src, /templateUsage\(t, mode\)/); assert.match(src, /isLinkTemplateName\(t\.name\) && \(/); assert.match(src, /action: 'link_mode', on/);
     assert.match(src, /fetch\('\/api\/whatsapp\/automation', \{ headers: auth, cache: 'no-store' \}\)/);
     assert.ok(!/model/i.test(src), 'no model names');
+  });
+
+  // ── owner 15 Oct evening: he DELETED order_placed and order_tracking on Meta; only order_placed_link is left ("jo atka ha
+  // unka new template sa bhejio, mix mat kario" = everything waiting goes with the new template, never mixed with the old) ──
+  console.log('whatsapp automation: only order_placed_link (owner 15 Oct evening)');
+  const oldSent = (id, mobile, createdMs, extra = {}) => ({ id: 'p' + id.replace('#', ''), business_id: 'b1', order_id: id, kind: 'placed', status: 'sent', template: 'order_placed', to_number: '91' + mobile, attempts: 1, due_at: new Date(createdMs), sent_at: new Date(createdMs), wa_id: 'wamid.' + id, updated_at: new Date(createdMs), ...extra });
+  const trackingDue = (id, mobile, dueMs) => ({ id: 't' + id.replace('#', ''), business_id: 'b1', order_id: id, kind: 'tracking', status: 'pending', to_number: '91' + mobile, attempts: 0, due_at: new Date(dueMs), sent_at: null, wa_id: null, updated_at: new Date(dueMs) });
+  await t('a placed row WITHOUT a tracking link waits in the one-message mode: pending, not order_placed, not failed, nothing written; one log line per run with the count; it goes with the link template once the link is there; 24 h without one = the tooOld skip; the pure pick', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn();
+    S.metaTemplates = [LINK, { id: 't9', name: 'shiptrack_alert', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: '{{1}}' }] }];   // the owner's Meta account now
+    S.orders = [order({ order_id: '#1554', tracking_token: null, customer_mobile: '9811122233' }), order({ order_id: '#1555', tracking_token: null, customer_mobile: '9811122244' }), order()];
+    let cap = captureLog(); let r;
+    try { r = await run(IST(13, 12)); } finally { cap.restore(); }
+    deq([r.sent, r.waitingLink, r.failed, r.skipped], [1, 2, 0, 0]);
+    deq(sends().map(tplOf), ['order_placed_link']);
+    for (const id of ['#1554', '#1555']) { const p = S.rows.find((x) => x.order_id === id && x.kind === 'placed'); deq([p.status, p.attempts, p.error, p.template, new Date(p.due_at).getTime()], ['pending', 0, null, undefined, IST(13, 12)]); }
+    const line = rules.waitingLinkLine(2, 'order_placed_link');
+    eq(line, "[wa-auto] 2 order messages wait for the order's tracking link (one message per order: order_placed_link needs it; order_placed is not sent)");
+    eq(rules.waitingLinkLine(1), "[wa-auto] 1 order message waits for the order's tracking link (one message per order: order_placed_link needs it; order_placed is not sent)");
+    eq(cap.lines.filter((l) => l === line).length, 1, 'once per run, with the count, not one line per order');
+    assert.ok(!cap.lines.some((l) => /order_placed goes instead/.test(l)), 'the old per-order fallback line is gone');
+    assert.ok(!cap.lines.some((l) => /#1554|#1555/.test(l)), 'no line per order');
+    // the next run says it again (it still holds); the link arrives for #1554: it goes with the link template, its tracking row skipped
+    S.orders[0].tracking_token = 'tok-1554'; S.fetches = []; cap = captureLog();
+    try { r = await run(IST(13, 12, 1)); } finally { cap.restore(); }
+    deq([r.sent, r.waitingLink], [1, 1]);
+    eq(cap.lines.filter((l) => l === rules.waitingLinkLine(1, 'order_placed_link')).length, 1);
+    deq(sends().map(tplOf), ['order_placed_link']);
+    deq(valuesOf(sends()[0]), ['Aaditya', '#1554', 'Vastora', 'https://shiptrack.store/track/tok-1554', 'help@vastora.test']);
+    const p4 = S.rows.find((x) => x.order_id === '#1554' && x.kind === 'placed'); deq([p4.status, p4.template], ['sent', 'order_placed_link']);
+    deq(S.rows.find((x) => x.order_id === '#1554' && x.kind === 'tracking').error, rules.SKIP.inFirst);
+    // a quiet run with nothing waiting: no line
+    S.orders[1].tracking_token = 'tok-1555'; S.fetches = []; cap = captureLog();
+    try { r = await run(IST(13, 12, 2)); } finally { cap.restore(); }
+    deq([r.sent, r.waitingLink], [1, 0]); eq(cap.lines.filter((l) => /tracking link/.test(l)).length, 0);
+    // 24 hours with no link: tooOld, never order_placed, never failed
+    S.orders.push(order({ order_id: '#1556', tracking_token: null, customer_mobile: '9811122255', created_at: new Date(IST(13, 12, 3)) }));
+    await run(IST(13, 12, 3)); eq(S.rows.find((x) => x.order_id === '#1556' && x.kind === 'placed').status, 'pending');
+    S.fetches = []; await run(IST(14, 12, 4));
+    deq([S.rows.find((x) => x.order_id === '#1556' && x.kind === 'placed').status, S.rows.find((x) => x.order_id === '#1556' && x.kind === 'placed').error], ['skipped', rules.SKIP.tooOld]);
+    eq(sends().length, 0);
+    // the pure pick: the ONE place that says which template a row goes with
+    deq(rules.pickTemplate('placed', false, { active: true }, 'L', 'P', 'T'), { template: null, params: null, waits: 'link' });
+    deq(rules.pickTemplate('placed', true, { active: true }, 'L', 'P', 'T'), { template: 'L', params: 'tracking', waits: null });
+    deq(rules.pickTemplate('tracking', true, { active: true }, 'L', 'P', 'T'), { template: 'L', params: 'tracking', waits: null });
+    deq(rules.pickTemplate('placed', false, { active: false }, 'L', 'P', 'T'), { template: 'P', params: 'placed', waits: null });
+    deq(rules.pickTemplate('placed', true, { active: false }, 'L', 'P', 'T'), { template: 'P', params: 'placed', waits: null });
+    deq(rules.pickTemplate('tracking', true, { active: false }, 'L', 'P', 'T'), { template: 'T', params: 'tracking', waits: null });
+    deq(rules.pickTemplate('placed', true, { active: false }, 'L', null, 'T'), { template: null, params: null, waits: 'approval' });
+    deq(rules.pickTemplate('tracking', true, { active: false }, null, 'P', null), { template: null, params: null, waits: 'approval' });
+    deq(rules.pickTemplate('placed', true, { active: true }, null, 'P', 'T'), { template: 'P', params: 'placed', waits: null });   // active without a template cannot happen; the old one then
+  });
+  await t('the 48-hour tracking row of an order whose first message went with the old order_placed goes with the LINK template and its 5 values, in office hours only (waits at night), with order_tracking gone from Meta; skipped when delivered / cancelled / no link / too old / the link already went in the first message', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn(); S.metaTemplates = [LINK];
+    const at = IST(11, 11), due = IST(13, 11);
+    S.orders = [
+      order({ created_at: new Date(at) }),
+      order({ order_id: '#1554', created_at: new Date(at), customer_mobile: '9811122233', tracking_status: 'Delivered' }),
+      order({ order_id: '#1555', created_at: new Date(at), customer_mobile: '9811122244', tracking_token: null }),
+      order({ order_id: '#1556', created_at: new Date(IST(6, 11)), customer_mobile: '9811122255' }),
+      order({ order_id: '#1557', created_at: new Date(at), customer_mobile: '9811122266' }),
+      order({ order_id: '#1558', created_at: new Date(at), customer_mobile: '9811122277', is_cancelled: true }),
+    ];
+    for (const o of S.orders) { S.rows.push(oldSent(o.order_id, o.customer_mobile, at, o.order_id === '#1557' ? { template: 'order_placed_link' } : {}), trackingDue(o.order_id, o.customer_mobile, due)); }
+    // the pure gate: the office open AND (order_tracking approved OR the one-message mode)
+    deq([rules.trackingCanGo(true, false, true), rules.trackingCanGo(true, true, false), rules.trackingCanGo(true, false, false), rules.trackingCanGo(false, true, true)], [true, true, false, false]);
+    // at night: nothing, and the tracking rows are not even asked for
+    await run(IST(13, 21)); eq(sends().length, 0); eq(S.trackingFlags.slice(-1)[0], false);
+    eq(S.rows.filter((x) => x.kind === 'tracking' && x.status === 'pending').length, 6);
+    // in office hours: the one that can go goes with order_placed_link, the rest are skipped with their reasons
+    const r = await run(IST(13, 12));
+    eq(S.trackingFlags.slice(-1)[0], true);
+    deq([r.sent, r.skipped, r.failed], [1, 5, 0]);
+    deq(sends().map(tplOf), ['order_placed_link']); eq(sends()[0].body.to, '919876543210');
+    deq(valuesOf(sends()[0]), ['Aaditya', '#1553', 'Vastora', 'https://shiptrack.store/track/tok-1553', 'help@vastora.test']);
+    const tr = S.rows.find((x) => x.order_id === '#1553' && x.kind === 'tracking'); deq([tr.status, tr.template], ['sent', 'order_placed_link']);
+    eq(S.rows.find((x) => x.order_id === '#1553' && x.kind === 'placed').status, 'sent', 'the old placed row is untouched');
+    deq(['#1554', '#1555', '#1556', '#1557', '#1558'].map((id) => S.rows.find((x) => x.order_id === id && x.kind === 'tracking').error), [rules.SKIP.delivered, rules.SKIP.noLink, rules.SKIP.tooOld, rules.SKIP.inFirst, rules.SKIP.cancelled]);
+    assert.ok(!sends().some((f) => tplOf(f) === 'order_tracking'));
+  });
+  await t('never the old two in the one-message mode ("mix mat kario"): with order_placed and order_tracking listed APPROVED beside order_placed_link, a placed row with a link, one without and a tracking row go only with order_placed_link (the no-link one waits); the Automation tab greys the old two and hides "Make the missing one"', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn(); S.metaTemplates.push(LINK);   // all three approved
+    S.orders = [order(), order({ order_id: '#1554', tracking_token: null, customer_mobile: '9811122233' }), order({ order_id: '#1555', created_at: new Date(IST(11, 11)), customer_mobile: '9811122244' })];
+    S.rows.push(oldSent('#1555', '9811122244', IST(11, 11)), trackingDue('#1555', '9811122244', IST(13, 11)));
+    const r = await run(IST(13, 12));
+    deq([r.sent, r.waitingLink, r.failed, r.skipped], [2, 1, 0, 0]);
+    deq(sends().map(tplOf), ['order_placed_link', 'order_placed_link']);
+    deq(sends().map((f) => f.body.to).sort(), ['919811122244', '919876543210']);
+    eq(sends().some((f) => ['order_placed', 'order_tracking'].includes(tplOf(f))), false, 'never mixed');
+    eq(S.rows.find((x) => x.order_id === '#1554' && x.kind === 'placed').status, 'pending');
+    const ov = await auto.automationOverview(null, IST(13, 12));
+    deq([ov.linkMode.active, ov.templates.placed, ov.templates.tracking, ov.templates.link], [true, 'APPROVED', 'APPROVED', 'APPROVED']);
+    const panel = fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8');
+    assert.match(panel, /o\.linkMode\?\.active \? <span className="chip chip-muted"[^>]*>not needed \(one message mode\)<\/span> : <span className=\{`chip \$\{tplTone\(o\.templates\.placed\)\}`\}>/);
+    assert.match(panel, /o\.linkMode\?\.active \? <span className="chip chip-muted"[^>]*>not needed \(one message mode\)<\/span> : <span className=\{`chip \$\{tplTone\(o\.templates\.tracking\)\}`\}>/);
+    assert.match(panel, /\{!o\.linkMode\?\.active && \(o\.templates\.placed === 'MISSING' \|\| o\.templates\.tracking === 'MISSING'\) && \(/);
+    assert.ok(!/model/i.test(panel), 'no model names');
+  });
+  await t('the switch OFF while order_placed / order_tracking are gone from Meta: nothing is sent and the rows wait (two-message mode, as today); the Turn OFF confirm warns about it; a panel can still be switched ON while the one-message mode runs', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn(); S.metaTemplates = [LINK];
+    S.settings.wa_link_mode = JSON.stringify({ on: false, by: 'owner', at: 'x' }); auto.forgetLinkModeCache();
+    S.orders = [order()];
+    const r = await run(IST(13, 12));
+    deq([r.sent, r.waitingLink, r.failed, r.skipped], [0, 0, 0, 0]); eq(sends().length, 0);
+    deq(S.rows.map((x) => [x.kind, x.status, x.error]), [['placed', 'pending', null], ['tracking', 'pending', null]]);
+    let ov = await auto.automationOverview(null, IST(13, 12));
+    deq([ov.templates.placed, ov.templates.tracking, ov.templates.link, ov.linkMode.active], ['MISSING', 'MISSING', 'APPROVED', false]);
+    deq([rules.oldTemplatesGone('MISSING', 'APPROVED'), rules.oldTemplatesGone('APPROVED', 'MISSING'), rules.oldTemplatesGone('APPROVED', 'APPROVED'), rules.oldTemplatesGone('PENDING', 'PENDING')], [true, true, false, false]);
+    eq(rules.OLD_TEMPLATES_GONE_TEXT, 'order_placed and order_tracking are not on Meta any more: with the switch OFF, no order message will go until they are made again (Meta blocks a deleted name for about 30 days).');
+    const panel = fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8');
+    assert.match(panel, /oldTemplatesGone\(o\.templates\.placed, o\.templates\.tracking\)/); assert.match(panel, /Turn OFF "One message per order"\?[^`]*\$\{gone \? `\\n\\n\$\{OLD_TEMPLATES_GONE_TEXT\}` : ''\}/);
+    // the panel switch: ON is refused while nothing can send (switch OFF, old templates gone) and allowed once the one-message mode runs
+    let p = await route.POST(jreq(OWNER, { businessId: 'b2', enabled: true }));
+    deq([p.status, /not made yet/.test(p.body.error), /One message per order/.test(p.body.error)], [409, true, true]);
+    delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
+    p = await route.POST(jreq(OWNER, { businessId: 'b2', enabled: true })); deq([p.status, p.body.enabled], [200, true]);
+    // ON again: the waiting rows go with the link template, the tracking row skipped
+    await run(IST(13, 12, 1)); deq(sends().map(tplOf), ['order_placed_link']);
+    deq(S.rows.map((x) => [x.kind, x.status]), [['placed', 'sent'], ['tracking', 'skipped']]);
+    ov = await auto.automationOverview(null, IST(13, 12, 1)); eq(ov.linkMode.active, true);
+  });
+  await t('the test send follows the same rule: in the one-message mode ONE message with the link template; when the brand\'s latest order has no tracking link it says so and sends nothing (never order_placed); with the switch OFF the two as before', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); S.metaTemplates = [LINK];
+    S.orders = [order({ order_id: '#1560', tracking_token: null, created_at: new Date(IST(13, 11, 30)) }), order()];
+    let ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq([ts.order, ts.results.length, ts.results[0].kind, ts.results[0].ok], ['#1560', 1, 'placed', false]);
+    assert.match(ts.results[0].error, /^The latest order #1560 has no tracking link: the one-message template needs it \(order_placed is not sent in this mode\)/);
+    assert.match(ts.mode, /^one message/); eq(sends().length, 0, 'nothing sent');
+    // the latest order has its link: one message, the link template, the 5 values
+    S.orders[0].tracking_token = 'tok-1560'; S.fetches = [];
+    ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => [x.kind, x.ok]), [['placed', true]]); eq(tplOf(sends()[0]), 'order_placed_link');
+    deq(valuesOf(sends()[0]), ['Test', '#1560', 'Vastora', 'https://shiptrack.store/track/tok-1560', 'help@vastora.test']);
+    assert.match(ts.results[0].text, /track\/tok-1560/);
+    // no order at all: says so too
+    S.orders = []; S.fetches = [];
+    ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq([ts.order, ts.results[0].ok], [null, false]); assert.match(ts.results[0].error, /no order yet/); eq(sends().length, 0);
+    // the switch OFF: the two old templates when approved, "not approved" when gone
+    S.settings.wa_link_mode = JSON.stringify({ on: false, by: 'owner', at: 'x' }); auto.forgetLinkModeCache();
+    S.orders = [order()]; S.fetches = [];
+    ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => [x.kind, x.ok, x.error]), [['placed', false, 'Template not approved by Meta yet'], ['tracking', false, 'Template not approved by Meta yet']]); eq(sends().length, 0);
+    S.metaTemplates.push({ id: 't1', name: 'order_placed', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, {{2}} {{3}} {{4}}' }] }); auto.resetTemplateCache();
+    ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => [x.kind, x.ok]), [['placed', true], ['tracking', false]]); eq(tplOf(sends()[0]), 'order_placed');
+    delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
   });
 
   console.log('whatsapp automation: another app on the number (owner 15 Oct)');

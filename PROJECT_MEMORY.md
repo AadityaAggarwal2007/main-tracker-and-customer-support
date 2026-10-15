@@ -313,7 +313,7 @@ Done and live:
   (1-4 order messages a minute, `wa_send_rate`), a daily limit guard (at the typed limit a NEW customer waits pending, a
   customer messaged in the last 24 h still goes, `[wa-auto] daily limit reached` once a run), a red "Meta refused at N
   customers ... type 250 in WhatsApp > Setup > Daily limit" line, and "In use / Not in use" chips + the one-message switch
-  on the Templates tab. OWNER TO DO: type 250 as the Daily limit in WhatsApp > Setup and watch the Number status box.
+  on the Templates tab. (The "type 250" line was removed the same night: the live data disproved it; the limit guard stays.)
   Afternoon, "we need evidence" (343 messages the day before with no refusal, then from 13:00 EVERY message refused, even
   after a 2-hour quiet pause; a `3p_direct_integration_test_template` on the account): the webhook now counts Meta's
   delivery reports for messages ShipTrack never sent (another app on the same number), per India day / hour in
@@ -322,6 +322,11 @@ Done and live:
   look in Meta Business Settings (Partners / Connected apps / System users), or "No other app's messages seen ... Meta
   itself is holding the number back" while Meta refuses us. OWNER TO CHECK after the deploy: that line, and the PM2 line
   `[whatsapp] a delivery report for a message ShipTrack never sent`.
+  Evening, the owner DELETED `order_placed` / `order_tracking` on Meta ("jo atka ha unka new template sa bhejio, mix mat
+  kario"): only `order_placed_link` sends now (`pickTemplate` in whatsapp-auto-rules.ts): a new order with no tracking link
+  waits for it (never order_placed; one `[wa-auto] N order messages wait for the order's tracking link` line a run), the
+  48-hour tracking rows of older orders go with the link template too (office hours), the old two never go while the mode
+  runs; the Automation tab greys them as "not needed"; the "type 250" red line is gone. The 130429 pause stays as it is.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

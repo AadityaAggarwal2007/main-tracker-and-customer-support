@@ -7,6 +7,9 @@
 //      that falls at night, on a Sunday or on a holiday goes out when the office opens next.
 //   3. Never an old order: only orders placed after the panel's switch went ON and within the last 24 hours, so
 //      an old CSV upload never messages anyone. Never a cancelled, delivered or number-less order.
+//   4. Since 2026-10-15 evening only order_placed_link is on Meta (the owner deleted the two above): while the
+//      one-message mode runs, every message (the first one, and the 48-hour link of older orders) goes with it and an
+//      order with no tracking link yet waits for it (pickTemplate below).
 import { isOfficeHours, nextOpenMs } from '@/lib/office-hours';
 
 export const PLACED_TEMPLATE = 'order_placed';
@@ -98,6 +101,39 @@ export function templatesReadNote(list: { name: string; status: string }[] | nul
 // The mode line goes to the log again at least this often per process, so the PM2 log is never stale (owner 2026-10-15).
 export const MODE_LOG_EVERY_MS = 10 * 60 * 1000;
 
+// Only order_placed_link (owner 2026-10-15 evening: he DELETED order_placed and order_tracking on Meta, which keeps a
+// deleted name for about 30 days; "jo atka ha unka new template sa bhejio, mix mat kario" = everything waiting goes with
+// the NEW template, never mixed with the old ones). While the one-message mode is active (the switch ON and the link
+// template APPROVED) this is the ONE place that says which template a due row goes with:
+//   - a 'placed' row WITH its tracking link: the link template (trackingParams, as before);
+//   - a 'placed' row WITHOUT a link: it WAITS (pending, nothing written; the 24-hour tooOld skip still ends it): never
+//     order_placed any more;
+//   - a 'tracking' row (its order's first message went earlier with the old order_placed): the link template with the
+//     same 5 values, still only in office hours and still skipped when delivered / cancelled / no link / too old / the
+//     first message already carried the link;
+//   - order_placed and order_tracking are NEVER sent in this mode, even if Meta lists them APPROVED again.
+// With the switch OFF (two-message mode) nothing changes: the old templates, and a row waits while its template is not
+// approved (or no longer exists).
+export type ParamsKind = 'placed' | 'tracking';
+export type TemplatePick<T> = { template: T; params: ParamsKind; waits: null } | { template: null; params: null; waits: 'link' | 'approval' };
+export function pickTemplate<T>(kind: 'placed' | 'tracking', hasLink: boolean, mode: { active: boolean }, link: T | null, placed: T | null, tracking: T | null): TemplatePick<T> {
+  if (mode.active && link) {
+    if (kind === 'placed' && !hasLink) return { template: null, params: null, waits: 'link' };
+    return { template: link, params: 'tracking', waits: null };
+  }
+  const old = kind === 'placed' ? placed : tracking;
+  return old ? { template: old, params: kind, waits: null } : { template: null, params: null, waits: 'approval' };
+}
+// May tracking rows be asked for now? Only while the office is open, and only when something can send them: the old
+// order_tracking APPROVED, or the one-message mode (the link template carries them since 2026-10-15 evening).
+export const trackingCanGo = (officeOpen: boolean, trackingApproved: boolean, linkActive: boolean): boolean => officeOpen && (trackingApproved || linkActive);
+// The old templates are gone from Meta (deleted; the name blocked ~30 days): the "Turn OFF" confirm of the one-message
+// switch must say that with the switch OFF no order message goes until they are made again.
+export const oldTemplatesGone = (placedState: string, trackingState: string): boolean => placedState === 'MISSING' || trackingState === 'MISSING';
+export const OLD_TEMPLATES_GONE_TEXT = 'order_placed and order_tracking are not on Meta any more: with the switch OFF, no order message will go until they are made again (Meta blocks a deleted name for about 30 days).';
+// The log line, once per run, when 'placed' rows wait for their tracking link in the one-message mode.
+export const waitingLinkLine = (n: number, template: string = LINK_TEMPLATE): string => `[wa-auto] ${n} order message${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''} for the order's tracking link (one message per order: ${template} needs it; order_placed is not sent)`;
+
 // Meta's "130429 Rate limit hit: too many messages sent from this phone number in a short period of time" (owner
 // 2026-10-15: 59 order messages failed in half an hour, and the chargeback alert on the same number did not arrive). It
 // often comes AFTER Meta took the message, as a failed delivery report. The message never went out, so: every send from
@@ -143,15 +179,16 @@ export function templateUsage(t: { name: string; status: string }, mode: LinkMod
   if (isLinkTemplateName(name)) {
     if (mode.active) {
       return mode.template && tplKey(mode.template) === name
-        ? { text: 'In use: every new order (one message)', tone: 'ok' }
+        ? { text: 'In use: every order (new orders, and the 48-hour link for older ones)', tone: 'ok' }
         : { text: `Not in use (${mode.template ? tplKey(mode.template) : LINK_TEMPLATE} is the one sent)`, tone: 'muted' };
     }
     if (!mode.on) return { text: 'Not in use (switch OFF)', tone: 'warn' };
     if (!approved) return { text: t.status === 'PENDING' ? 'Waiting for approval' : `Not in use (${notYet})`, tone: 'warn' };
     return { text: `Not in use: ${mode.reason.replace(/^two messages: /, '')}`, tone: 'warn' };
   }
-  if (name === PLACED_TEMPLATE) return use(mode.active ? 'In use: only orders without a tracking link' : 'In use: every new order');
-  if (name === TRACKING_TEMPLATE) return use(mode.active ? 'In use: the 48-hour link for orders whose first message had none' : 'In use: every order, 48 hours later');
+  // the old two (owner 2026-10-15 evening): never sent while the one-message mode runs
+  if (name === PLACED_TEMPLATE) return mode.active ? { text: 'Not used (one message mode)', tone: 'muted' } : use('In use: every new order');
+  if (name === TRACKING_TEMPLATE) return mode.active ? { text: 'Not used (one message mode)', tone: 'muted' } : use('In use: every order, 48 hours later');
   if (name === ALERT_TEMPLATE) return use('In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises)');
   return { text: 'Not used by ShipTrack', tone: 'muted' };
 }
