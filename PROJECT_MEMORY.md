@@ -298,6 +298,12 @@ Done and live:
   Then: a LATE 130429 report (a message sent before the last pause ended) no longer counts as a new refusal; the log
   line `[whatsapp] late 130429 report` shows it. If refusals still come at 1 a minute, it is Meta's side (ask the owner
   for WhatsApp Manager > the number's status / quality), not our speed.
+  Then (evening): the log said only "two messages: order_placed_link is not made yet" while the Templates tab showed it
+  APPROVED and no order message ever went with it: most likely the approved template is not named exactly
+  `order_placed_link` (Meta keeps a deleted name ~30 days, so a remade one is `order_placed_link_2` or so). The worker now
+  takes an APPROVED `order_placed_link*` with 5 values under its real name, the tab shows that name, and the mode line
+  says what Meta listed (account …last4, count, the order_* names + status) and repeats every 10 min. OWNER TO CHECK after
+  the deploy: the PM2 line `[wa-auto] one message: ...` / `two messages: ... (read N templates ...)`.
   Live data proved it: each 130429 came 8 s after the FIRST message after a pause (Meta's side), and order_placed_link was
   never used though APPROVED (cause not found in code). Now: a "One message per order" ON/OFF switch, the mode + reason in
   the PM2 log (`[wa-auto] one message / two messages`), Meta's quality / status / limit in the Number status box, and a red

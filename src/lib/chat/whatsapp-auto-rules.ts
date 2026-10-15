@@ -45,15 +45,58 @@ export interface LinkMode {
   reason: string;      // which mode runs and why, in words (the [wa-auto] log line and the Automation tab)
   template: { name: string; language: string } | null;
 }
-export function linkModeOf(setting: LinkModeSetting | null, link: { name: string; language: string } | null, linkState: string, listError: string | null): LinkMode {
+export function linkModeOf(setting: LinkModeSetting | null, link: { name: string; language: string } | null, linkState: string, listError: string | null, note?: string | null): LinkMode {
   const on = setting?.on ?? true;
   const approved = !!link;
   if (on && approved) return { on, approved, active: true, reason: `one message: ${link!.name} (${link!.language}) is approved and the switch is ON`, template: link };
   const why = !on ? `the switch "One message per order" is OFF${setting?.by ? ` (by ${setting.by})` : ''}`
     : listError ? `the templates could not be read from Meta: ${listError}`
-      : linkState === 'MISSING' ? `${LINK_TEMPLATE} is not made yet` : `${LINK_TEMPLATE} is ${linkState.toLowerCase()} on Meta, not approved`;
+      : note ? note
+        : linkState === 'MISSING' ? `${LINK_TEMPLATE} is not made yet` : `${LINK_TEMPLATE} is ${linkState.toLowerCase()} on Meta, not approved`;
   return { on, approved, active: false, reason: `two messages: ${why}`, template: link };
 }
+
+// Which template on Meta IS the one-message template (owner 2026-10-15, live: the PM2 log said "order_placed_link is not
+// made yet" for hours while WhatsApp > Templates showed it APPROVED, and no order message ever went with it). Meta keeps
+// a deleted template's name for about 30 days, so a template made again is often order_placed_link_2 / _v2, or the name
+// was typed a little differently; the worker's exact-name lookup then never finds it. The exact name APPROVED wins; else
+// the first APPROVED template whose name starts with order_placed_link AND has exactly the LINK_VARS values trackingParams
+// fills (customer, order, brand, tracking link, support email): one with another count is never picked, Meta would refuse
+// the send. `state` is for the screen and the log: APPROVED when found; else the exact one's status, else the best
+// prefix match's, else MISSING (UNKNOWN when the list could not be read). `note` says in words when a template of the
+// right name is there but cannot be used (the wrong number of values).
+export const LINK_VARS = 5;
+export interface TemplateLike { name: string; language: string; status: string; vars: number }
+const tplKey = (t: { name: string }) => t.name.trim().toLowerCase();
+export const isLinkTemplateName = (name: string | null | undefined): boolean => String(name || '').trim().toLowerCase().startsWith(LINK_TEMPLATE);
+export function findLinkTemplate<T extends TemplateLike>(list: T[] | null): { template: T | null; state: string; note: string | null } {
+  if (!list) return { template: null, state: 'UNKNOWN', note: null };
+  const usable = (t: T) => t.status === 'APPROVED' && t.vars === LINK_VARS;
+  const exact = list.find((t) => tplKey(t) === LINK_TEMPLATE && usable(t)) || null;
+  if (exact) return { template: exact, state: 'APPROVED', note: null };
+  const prefix = list.filter((t) => isLinkTemplateName(t.name));
+  const near = prefix.find(usable) || null;
+  if (near) return { template: near, state: 'APPROVED', note: null };
+  // nothing usable: say what IS there, the exact name first, then the closest by name (5 values before others)
+  const best = prefix.find((t) => tplKey(t) === LINK_TEMPLATE) || prefix.find((t) => t.vars === LINK_VARS) || prefix[0] || null;
+  if (!best) return { template: null, state: 'MISSING', note: null };
+  const note = best.status === 'APPROVED'
+    ? `${tplKey(best)} is approved on Meta but has ${best.vars} value${best.vars === 1 ? '' : 's'}, the automation fills ${LINK_VARS}: make it again from its preset button`
+    : tplKey(best) === LINK_TEMPLATE ? null : `${tplKey(best)} is ${best.status.toLowerCase()} on Meta, not approved`;
+  return { template: null, state: best.status, note };
+}
+// What the worker read from Meta, for the [wa-auto] mode line (owner 2026-10-15: the log said only "not made yet" and
+// nobody could tell what Meta had listed): how many templates, from which account (its last 4 digits, as templateStates
+// masks it), and the ones named order_* with their status, at most `max`. Never a token, never a phone number.
+export function templatesReadNote(list: { name: string; status: string }[] | null, account: string | null, max = 8): string {
+  if (!list) return '';
+  const ours = list.filter((t) => tplKey(t).startsWith('order_'));
+  const names = ours.slice(0, max).map((t) => `${tplKey(t)} ${t.status}`).join(', ');
+  const more = ours.length > max ? `, +${ours.length - max} more` : '';
+  return `(read ${list.length} template${list.length === 1 ? '' : 's'}${account ? ` from account ${account}` : ''}: ${names || 'none named order_…'}${more})`;
+}
+// The mode line goes to the log again at least this often per process, so the PM2 log is never stale (owner 2026-10-15).
+export const MODE_LOG_EVERY_MS = 10 * 60 * 1000;
 
 // Meta's "130429 Rate limit hit: too many messages sent from this phone number in a short period of time" (owner
 // 2026-10-15: 59 order messages failed in half an hour, and the chargeback alert on the same number did not arrive). It
