@@ -20,7 +20,7 @@ function reset() {
     ],
     orders: [{ order_id: '#1553', panel: 'bizVast' }, { order_id: '#7000', panel: 'bizKurt' }],
     alerts: [], convUpdates: [], notified: [], waNumber: '9876543210', waByPanel: null, gwRows: [], moved: null, lastUid: null, lastUidIds: null, imapFail: false, connects: 0, closes: 0, logouts: 0,
-    wa: 'sent', missing: false, mailboxRows: [], settings: null, alertRow: undefined, hosts: [], deadPass: null, netFail: false,
+    wa: 'sent', missing: false, mailboxRows: [], settings: null, alertRow: undefined, hosts: [], deadPass: null, netFail: false, noRoutedBy: false,
   });
 }
 reset();
@@ -37,8 +37,12 @@ const db = {
     if (/SELECT business_id, order_id, subject, snippet FROM chargeback_alerts/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done' && p[0].includes(a.order_id) && p[1].includes(a.business_id)); return { rows, rowCount: rows.length }; }
     if (/FROM orders\s+WHERE business_id::text = ANY/.test(sql)) { const rows = S.orders.filter((o) => p[0].includes(o.panel) && p[1].includes(o.order_id)).map((o) => ({ business_id: o.panel, order_id: o.order_id })); return { rows, rowCount: rows.length }; }
     if (/FROM panel_chargeback WHERE business_id = ANY/.test(sql)) { const rows = S.gwRows.filter((g) => p[0].includes(g.business_id)); return { rows, rowCount: rows.length }; }
-    if (/SELECT id, business_id, gateway, order_id(, routed_by)? FROM chargeback_alerts WHERE status <> 'done'/.test(sql)) { const rows = S.alerts.filter((a) => (a.status || 'new') !== 'done' && (!p[0] || a.id === p[0])); return { rows, rowCount: rows.length }; }
-    if (/UPDATE chargeback_alerts SET business_id = \$2/.test(sql)) { S.moved = { id: p[0], business_id: p[1], order_id: p[2], by: p[3] }; const a = S.alerts.find((x) => x.id === p[0]); if (a) Object.assign(a, { business_id: p[1], order_id: p[2], routed_by: p[3] }); return { rows: [], rowCount: 1 }; }
+    if (/SELECT id, business_id, gateway, order_id, subject, snippet(, routed_by)? FROM chargeback_alerts WHERE status <> 'done' AND .* ORDER BY received_at DESC LIMIT 500/.test(sql)) { const rows = S.alerts.filter((a) => (a.status || 'new') !== 'done' && (!p[0] || a.id === p[0])); return { rows, rowCount: rows.length }; }
+    if (/UPDATE chargeback_alerts SET business_id = \$2/.test(sql)) {
+      // before chargeback-shared.sql: no routed_by column (S.noRoutedBy)
+      if (/routed_by/.test(sql) && S.noRoutedBy) throw Object.assign(new Error('column "routed_by" of relation "chargeback_alerts" does not exist'), { code: '42703' });
+      S.moved = { id: p[0], business_id: p[1], order_id: p[2], by: p[3] }; const a = S.alerts.find((x) => x.id === p[0]); if (a) Object.assign(a, { business_id: p[1], order_id: p[2], ...(p.length > 3 ? { routed_by: p[3] } : {}) }); return { rows: [], rowCount: 1 };
+    }
     if (/UPDATE conversations c SET status = 'human_needed'/.test(sql)) { S.convUpdates.push(p); return { rows: [], rowCount: 1 }; }
     if (/UPDATE chargeback_mailboxes SET app_password = \$1 WHERE id = ANY\(\$2::uuid\[\]\)/.test(sql)) { S.healed = { pass: p[0], ids: p[1] }; for (const b of S.boxes) if (p[1].includes(b.id)) b.app_password = p[0]; return { rows: [], rowCount: p[1].length }; }
     if (/UPDATE chargeback_mailboxes SET last_uid/.test(sql)) { S.lastUid = p[0]; S.lastUidIds = p[1]; return { rows: [], rowCount: 1 }; }
@@ -397,12 +401,17 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.deepStrictEqual(await store.alertCounts(), { installed: true, new: 1, open: 1, mails: 1, panels: [{ id: 'bizVast', name: 'bizVast', open: 1 }] });
   });
 
-  await t('cases (owner 15 Oct): the gateway id, the order or the amount subject joins the reminders of one dispute; two disputes never join by guess', () => {
+  await t('cases (owner 15 Oct): the gateway id, the order or an id-like token in the subject joins the reminders of one dispute; two disputes never join by guess (an amount, a count or a date is never an id)', () => {
     const c = require(path.join(SRC, 'lib/chargeback/cases.ts'));
     assert.strictEqual(c.caseRef('1 chargeback case needs your attention, INR 191.20 at risk', 'Case ID: cb_9xK2LmQ7aa Merchant BLUEWAVE'), 'cb_9xk2lmq7aa');
     assert.strictEqual(c.caseRef('PayU Chargeback Notification', 'PayU ID: 31140208355 Amount 1499'), '31140208355');
     assert.strictEqual(c.caseRef('Chargeback raised', 'Transaction E26092216UJOYK disputed'), 'e26092216ujoyk');
     assert.strictEqual(c.caseRef('Chargeback Notification', 'A chargeback has been raised. Respond soon.'), null, 'no id: never a word like "Notification"');
+    // the loose "transaction / payment / utr: ..." id: a letter in it or 8+ digits, never a date or an amount
+    assert.strictEqual(c.caseRef('x', 'Transaction: 12-Oct-2026'), null, 'a date is never an id');
+    assert.strictEqual(c.caseRef('x', 'Payment: 1499.00'), null, 'an amount is never an id');
+    assert.strictEqual(c.caseRef('x', 'UTR: 311402083551'), '311402083551');
+    assert.strictEqual(c.caseRef('x', 'Transaction: TXN9A8B7C'), 'txn9a8b7c');
     assert.strictEqual(c.baseSubject('Reminder: 1 chargeback case needs your attention, INR 191.20 at risk'), '1 chargeback case needs your attention, inr 191.20 at risk');
     assert.strictEqual(c.baseSubject('Re: Fwd: Final reminder - Dispute #22'), 'dispute #22');
     const m = (id, subject, snippet, extra) => ({ id, business_id: 'b1', gateway: 'PayGlocal', order_id: null, subject, snippet, received_at: '2026-10-1' + id + 'T10:00:00Z', ...extra });
@@ -416,7 +425,16 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
       m('7', 'Reminder: chargeback INR 500 at risk', 'x'), m('8', 'chargeback INR 500 at risk', 'x'),
       m('9', 'chargeback INR 500 at risk', 'x', { business_id: 'b2' }),
     ]);
-    assert.deepStrictEqual(g.map((x) => x.map((r) => r.id)), [['5', '3'], ['4'], ['2', '1'], ['0'], ['6'], ['8', '7'], ['9']]);
+    // 7 and 8: the same ₹500 subject with no id = two customers, two cards (never joined by the amount)
+    assert.deepStrictEqual(g.map((x) => x.map((r) => r.id)), [['5', '3'], ['4'], ['2', '1'], ['0'], ['6'], ['7'], ['8'], ['9']]);
+    // two same-amount subjects without an id are two cases; an id-like token in the subject still joins by the caseRef
+    const two = c.groupCases([m('1', 'Chargeback INR 999 at risk', 'raised'), m('2', 'Chargeback INR 999 at risk', 'raised')]);
+    assert.strictEqual(two.length, 2);
+    const ez = c.groupCases([m('1', 'Chargeback E26092216UJOYK reminder', ''), m('2', 'Chargeback E26092216UJOYK', '')]);
+    assert.deepStrictEqual(ez.map((x) => x.map((r) => r.id)), [['2', '1']]);
+    assert.strictEqual(c.caseKey(m('1', 'Chargeback E26092216UJOYK reminder', '')), 'b1|payglocal|id:e26092216ujoyk');
+    assert.strictEqual(c.caseKey(m('1', 'Dispute cb_9xk2 (reminder)', '')), 'b1|payglocal|subj:dispute cb_9xk2', 'a token too short for the cb_ pattern still groups by the subject');
+    assert.ok(/\|mail:1$/.test(c.caseKey(m('1', 'Chargeback 13-Oct-2026 INR 500', ''))), 'a date and an amount: its own case');
   });
   await t('cases in the list and the counts: one card per case with its mails, Mark done closes them all, a reminder after Done reopens it; a gateway not ticked on the panel is flagged and can be moved to the panel that ticks it', async () => {
     authState.user = { role: 'admin', username: 'owner', displayName: 'Super Admin' };
@@ -451,6 +469,11 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.strictEqual(mv.status, 400); assert.strictEqual(S.moved, null);
     S.alertRow.gateway = 'Easebuzz'; mv = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, businessId: 'bizKurt' }));
     assert.strictEqual(mv.status, 400, 'an Easebuzz mail never moves to a panel just because it exists');
+    // before chargeback-shared.sql (no routed_by column): the move still works without it
+    S.alertRow.gateway = 'PayGlocal'; S.noRoutedBy = true; S.moved = null;
+    mv = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, businessId: 'bizKurt' }));
+    assert.strictEqual(mv.status, 200); assert.strictEqual(S.moved.business_id, 'bizKurt'); assert.strictEqual(S.moved.by, undefined, 'the UPDATE without routed_by');
+    S.noRoutedBy = false;
   });
 
   await t('daily lists (owner 15 Oct): "TOTAL CASES [ n ] [date]" of one gateway + panel are one card; a single PayU ID mail stays its own case', () => {
@@ -477,13 +500,15 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     S.alerts.push({ id: '00000000-0000-4000-8000-000000000077', business_id: 'bizVast', gateway: 'PayGlocal', subject: 'chargeback INR 500', snippet: '', status: 'seen' },
       { id: '00000000-0000-4000-8000-000000000078', business_id: 'bizVast', gateway: 'PayGlocal', subject: 'chargeback INR 600', snippet: '', status: 'seen', routed_by: 'manual' },
       { id: '00000000-0000-4000-8000-000000000079', business_id: 'bizVast', gateway: 'Easebuzz', subject: 'Chargeback Raised: E26092216UJOYK', snippet: '', status: 'seen' },
-      { id: '00000000-0000-4000-8000-000000000080', business_id: 'bizVast', gateway: 'PayGlocal', order_id: '#1553', subject: 'chargeback #1553', snippet: '', status: 'seen' });
+      { id: '00000000-0000-4000-8000-000000000080', business_id: 'bizVast', gateway: 'PayGlocal', order_id: '#1553', subject: 'chargeback #1553', snippet: '', status: 'seen' },
+      { id: '00000000-0000-4000-8000-000000000081', business_id: 'bizVast', gateway: 'PayGlocal', subject: 'Payment received INR 100', snippet: 'Thank you, the payment was received.', status: 'seen' });
     S.msgs = [];
     const store2 = require(path.join(SRC, 'lib/chargeback/store.ts'));
     const moved = await store2.sortByGateway();
     assert.deepStrictEqual(moved.map((m) => m.id), ['00000000-0000-4000-8000-000000000077']);
     assert.strictEqual(S.alerts.find((x) => x.id.endsWith('78')).business_id, 'bizVast'); assert.strictEqual(S.alerts.find((x) => x.id.endsWith('79')).business_id, 'bizVast');
     assert.strictEqual(S.alerts.find((x) => x.id.endsWith('80')).business_id, 'bizVast', 'an order of vastora proves the panel');
+    assert.strictEqual(S.alerts.find((x) => x.id.endsWith('81')).business_id, 'bizVast', 'the gateway\'s other mail (not a chargeback) never moves');
     // a panel that ticked nothing: nothing moves
     S.gwRows = [{ business_id: 'bizVast', gateways: {} }, { business_id: 'bizKurt', gateways: { payglocal: { done: true } } }];
     S.alerts.find((x) => x.id.endsWith('77')).business_id = 'bizVast';

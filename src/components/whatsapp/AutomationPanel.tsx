@@ -151,6 +151,11 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             <strong>Going slower for now:</strong> one order message a minute (instead of 2), because Meta refused messages (130429) in the last 2 hours. Back to 2 a minute by itself after 2 quiet hours.
           </div>
         )}
+        {(o.alertsWaiting ?? 0) > 0 && (
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
+            <strong>{o.alertsWaiting} ShipTrack alert{o.alertsWaiting === 1 ? '' : 's'} waiting to go:</strong> order messages wait until they are sent (alerts first).
+          </div>
+        )}
         {o.paused && (
           <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
             <strong>Paused until {new Date(o.paused.until).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' })}:</strong> Meta said too many messages went from this number in a short time (130429). Nothing is lost: the messages wait and go again by themselves, spaced out. Each new refusal within 2 hours doubles the pause (15, 30, 60, up to 120 minutes). Chargeback and other ShipTrack alerts and test messages still go at once (alerts first: order messages wait while one waits); the automatic &quot;help is by email&quot; reply waits.

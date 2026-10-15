@@ -41,11 +41,13 @@ export const SEND_EVERY_MS = 30_000;
 // Meta keeps refusing after a burst (owner 2026-10-15, live: 77 messages in 3 minutes during the deploy, then 130429 again
 // at ONE message a minute): every new 130429 within STRIKE_WINDOW_MS of the last one is a "strike"; the pause doubles
 // (15, 30, 60, 120 min) and, after the pause, order messages go 1 a minute instead of 2 (owner: "har minute 2-4 msg", never
-// slower than one a minute) until two hours pass without a 130429. Reports of the same burst arriving together (within SAME_STRIKE_MS) count once.
+// slower than one a minute) until two hours pass without a 130429. A 130429 that comes WHILE the pause still runs is the
+// same burst (the reports of messages sent before it, or an alert tried every minute): it counts once, never a new strike
+// (review 2026-10-15: retries of one refused alert pushed the pause up and up). At most MAX_STRIKES strikes.
 export const STRIKE_WINDOW_MS = 2 * 60 * 60 * 1000;
-export const SAME_STRIKE_MS = 2 * 60 * 1000;
 export const MAX_PAUSE_MS = 2 * 60 * 60 * 1000;
 export const MAX_SEND_EVERY_MS = 60 * 1000;
+export const MAX_STRIKES = 10;
 export interface PauseState { until: number; reason: string; at: number; strikes: number }
 export function parsePauseState(value: string | null | undefined): PauseState | null {
   try {
@@ -55,10 +57,10 @@ export function parsePauseState(value: string | null | undefined): PauseState | 
     return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)) };
   } catch { return null; }
 }
-// The next pause after a 130429 at `now`: null = the same burst, keep the current pause as it is.
+// The next pause after a 130429 at `now`: null = the pause still runs (the same burst), keep it as it is.
 export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS): { until: number; strikes: number } | null {
-  if (prev && prev.until > now && now - prev.at < SAME_STRIKE_MS) return null;
-  const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? prev.strikes + 1 : 1;
+  if (prev && prev.until > now) return null;
+  const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1;
   return { until: now + Math.min(base * 2 ** (strikes - 1), MAX_PAUSE_MS), strikes };
 }
 // How far apart order messages go now: the normal SEND_EVERY_MS, wider while the last 130429 is under two hours old.

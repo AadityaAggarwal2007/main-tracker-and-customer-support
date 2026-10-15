@@ -9,28 +9,38 @@
 //   1. the gateway's own case / dispute / payment id in the subject or the text (PayGlocal "cb_...", PayU "PayU ID 311...",
 //      Easebuzz "E26092216UJOYK", Razorpay "disp_..." / "pay_...", any "Case ID: ...");
 //   2. else the order the mail was tied to;
-//   3. else a subject that carries a number (an amount: "INR 191.20 at risk") with the reminder words taken out;
+//   3. else a subject that carries an id-like token (6+ characters mixing letters and digits, "E26092216UJOYK", "cb_9xk2")
+//      with the reminder words taken out; an amount, a count or a date alone ("INR 500 at risk") is NOT one: two
+//      customers disputing the same ₹999 item must stay two cards (review 2026-10-15);
 //   4. else the mail is its own case (never two different disputes in one card by guess).
 // Always inside one panel and one gateway.
 import { gatewayKeyOf } from './parse';
 
 const hasDigit = (s: string) => /\d/.test(s);
-const ID_PATTERNS: RegExp[] = [
-  /\b(cb_[A-Za-z0-9]{6,40})\b/,                                                    // PayGlocal case
-  /\b(disp_[A-Za-z0-9]{8,30})\b/,                                                  // Razorpay dispute
-  /\bPayU\s*(?:ID|Id|id|Payment\s*ID|Txn\s*ID)\s*[:#\-]?\s*(\d{6,20})\b/,           // PayU id
-  /\b(E\d{8}[A-Z0-9]{4,12})\b/,                                                    // Easebuzz easepay id
-  /\b(?:case|dispute|chargeback|cb)\s*(?:id\b|ref(?:erence)?\b|no\b\.?|number\b|#)\s*[:#\-]?\s*([A-Za-z0-9][A-Za-z0-9_\-]{5,39})/i,
-  /\b(pay_[A-Za-z0-9]{8,30})\b/,                                                   // Razorpay payment
-  /\b(?:transaction|txn|payment|arn|rrn|utr)\s*(?:id\b|ref(?:erence)?\b|no\b\.?|number\b)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9_\-]{5,39})/i,
+// "12-Oct-2026", "13/10/2026", "2026-10-13": a date is never an id.
+const looksLikeDate = (s: string) => /^\d{1,2}[-/.]?[A-Za-z]{3,9}[-/.]?\d{2,4}$|^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$|^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(s);
+// A run of 6+ letters / digits with both in it ("E26092216UJOYK", "cb_9xk2"), never a date.
+const ID_TOKEN = /\b(?=[A-Za-z0-9_]*[A-Za-z])(?=[A-Za-z0-9_]*\d)[A-Za-z0-9_]{6,}\b/;
+const hasIdToken = (s: string) => { const m = s.match(ID_TOKEN); return !!m && !looksLikeDate(m[0]); };
+// The loose "transaction / payment / utr: ..." capture may be anything: it counts only with a letter in it or 8+
+// digits (an amount "1499" or a date "12-Oct-2026" never does).
+const looseIdOk = (s: string) => (/[A-Za-z]/.test(s) || /^\d{8,}$/.test(s)) && !looksLikeDate(s);
+const ID_PATTERNS: { re: RegExp; loose?: boolean }[] = [
+  { re: /\b(cb_[A-Za-z0-9]{6,40})\b/ },                                                    // PayGlocal case
+  { re: /\b(disp_[A-Za-z0-9]{8,30})\b/ },                                                  // Razorpay dispute
+  { re: /\bPayU\s*(?:ID|Id|id|Payment\s*ID|Txn\s*ID)\s*[:#\-]?\s*(\d{6,20})\b/ },           // PayU id
+  { re: /\b(E\d{8}[A-Z0-9]{4,12})\b/ },                                                    // Easebuzz easepay id
+  { re: /\b(?:case|dispute|chargeback|cb)\s*(?:id\b|ref(?:erence)?\b|no\b\.?|number\b|#)\s*[:#\-]?\s*([A-Za-z0-9][A-Za-z0-9_\-]{5,39})/i },
+  { re: /\b(pay_[A-Za-z0-9]{8,30})\b/ },                                                   // Razorpay payment
+  { re: /\b(?:transaction|txn|payment|arn|rrn|utr)\s*(?:id\b|ref(?:erence)?\b|no\b\.?|number\b)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9_\-]{5,39})/i, loose: true },
 ];
 
 // The gateway's id for the dispute, lower-case, or null.
 export function caseRef(subject: string, text: string): string | null {
   const hay = `${subject || ''}\n${(text || '').slice(0, 3000)}`;
-  for (const re of ID_PATTERNS) {
+  for (const { re, loose } of ID_PATTERNS) {
     const m = hay.match(re);
-    if (m && hasDigit(m[1])) return m[1].toLowerCase();
+    if (m && hasDigit(m[1]) && (!loose || looseIdOk(m[1]))) return m[1].toLowerCase();
   }
   return null;
 }
@@ -63,7 +73,7 @@ export function caseKey(a: CaseMail): string {
   if (ref) return `${head}|id:${ref}`;
   if (a.order_id) return `${head}|order:${a.order_id.replace(/[^0-9]/g, '')}`;
   const subj = baseSubject(a.subject);
-  if (subj && hasDigit(subj)) return `${head}|subj:${subj}`;
+  if (subj && hasIdToken(subj)) return `${head}|subj:${subj}`;
   return `${head}|mail:${a.id}`;
 }
 

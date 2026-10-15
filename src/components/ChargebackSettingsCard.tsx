@@ -173,6 +173,8 @@ export default function ChargebackSettingsCard({ token, businessId, panelName, o
           <div>
             <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '0.375rem' }}>Step B · Where this email has been added</div>
             <div className="meta" style={{ marginBottom: '0.5rem' }}>Tick a gateway after you typed the chargeback Gmail into its dashboard (Settings → Notifications / Disputes). This is only your checklist.</div>
+            {/* sort by gateway (owner 2026-10-15, "vastora payglocal ni sort hua"): the ticks decide where a mail goes */}
+            <div className="meta" style={{ marginBottom: '0.5rem' }}>Tick every gateway this brand uses: a chargeback mail from a gateway ticked only on another brand moves to that brand by itself.</div>
             <div style={{ display: 'grid', gap: '0.25rem', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
               {d.gatewayList.map(g => {
                 const m = d.gateways[g.key];
