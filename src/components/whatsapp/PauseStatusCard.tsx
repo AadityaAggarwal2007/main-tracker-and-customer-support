@@ -7,7 +7,7 @@
 // messages due now and the alerts waiting. Pause now (15 / 30 / 60 / 120 min) and Resume now. Super Admin only (the tab).
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Pause, Play } from 'lucide-react';
-import { FIRST_AFTER_QUIET_TEXT, type PauseView } from '@/lib/chat/whatsapp-auto-rules';
+import { FIRST_AFTER_QUIET_TEXT, SEND_RATES, type PauseView, type SendRate } from '@/lib/chat/whatsapp-auto-rules';
 import type { NumberHealth } from '@/lib/chat/whatsapp-auto';
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
@@ -21,17 +21,22 @@ const ordinal = (n: number) => (n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3
 const chipTone = (v: string, good: string[]) => (good.includes(v) ? 'chip-ok' : v === 'UNKNOWN' ? 'chip-warn' : 'chip-danger');
 const n = (x: number) => x.toLocaleString('en-IN');
 
-export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, health, onPause, onResume }: {
+export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, health, rate, onPause, onResume, onRate }: {
   info: PauseView; ordersDue: number; alertsWaiting: number; busy: boolean;
   health?: NumberHealth | null;   // Meta's side of the number (owner 2026-10-15): quality, status, messaging limit
-  onPause: (minutes: number) => void; onResume: () => void;
+  rate?: SendRate | null;         // the chosen speed (owner 2026-10-15, "har minute 2, 3, 4 message")
+  onPause: (minutes: number) => void; onResume: () => void; onRate?: (perMinute: number) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(t); }, []);
   const [mins, setMins] = useState(30);
+  const chosen = rate?.perMinute ?? info.perMinute ?? 2;
+  const [pick, setPick] = useState(chosen);
+  useEffect(() => { setPick(chosen); }, [chosen]);
   const paused = info.state === 'paused' && !!info.until && Date.parse(info.until) > now;
   const tone = paused ? 'var(--danger, #b91c1c)' : info.state === 'slow' ? '#b45309' : 'var(--success, #15803d)';
   const perMin = Math.max(1, Math.round(60000 / (info.sendEveryMs || 30000)));
+  const limitAt = health?.limitFreeAt ? time(health.limitFreeAt) : null;
   const resume = () => {
     const text = info.manual
       ? 'Resume sending order messages now?'
@@ -46,8 +51,8 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
           {paused
             ? `${info.manual ? `Paused by ${info.by || 'you'}` : 'Paused by Meta (130429)'} · resumes at ${time(info.until!)} (${inText(Date.parse(info.until!) - now)})`
             : info.state === 'slow'
-              ? `Sending slowly: 1 order message a minute${info.slowUntil ? ` until ${time(info.slowUntil)}` : ''}`
-              : `Sending normally: ${perMin} order messages a minute`}
+              ? `Sending slowly: ${perMin} order message${perMin === 1 ? '' : 's'} a minute${info.slowUntil ? ` until ${time(info.slowUntil)}` : ''}`
+              : `Sending normally: ${perMin} order message${perMin === 1 ? '' : 's'} a minute`}
         </strong>
         <span style={{ flex: 1 }} />
         {paused ? (
@@ -67,6 +72,32 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
         )}
       </div>
       {paused && !info.manual && info.reason && <div className="meta" style={{ fontSize: '0.78rem' }}>Meta said: {info.reason}</div>}
+      {/* the speed (owner 2026-10-15, "button se set kar sakein ki har minute 2, 3, 4 message"): 1-4 order messages a minute */}
+      {onRate && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8125rem' }}>
+          <label htmlFor="wa-rate" style={{ fontWeight: 600 }}>Order messages per minute:</label>
+          <select id="wa-rate" className="form-input" style={{ height: '2rem', width: 'auto' }} value={pick} onChange={(e) => setPick(Number(e.target.value))} disabled={busy}>
+            {SEND_RATES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy || pick === chosen} onClick={() => onRate(pick)}>Save</button>
+          <span className="meta" style={{ fontSize: '0.78rem' }}>
+            Now {chosen} a minute (one every {Math.round(60 / chosen)} s){rate?.by ? `, set by ${rate.by}` : ', the default'}. After a refusal from Meta it is 1 a minute for two hours (never faster than the number you pick). Alerts and test messages do not wait for this.
+          </span>
+        </div>
+      )}
+      {/* the daily limit (owner 2026-10-15): at the limit new customers wait; a refusal near the limit = the real limit is likely 250 */}
+      {health?.limitReached && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>Daily limit reached: {n(health.used24h)} / {n(health.limit || 0)} in the last 24 h — new customers wait until the oldest drops out{limitAt ? ` (about ${limitAt})` : ''}. Customers messaged in the last 24 h still get their message; nothing is lost, the rows wait in line.</span>
+        </div>
+      )}
+      {health?.refusedNearLimit && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>{health.refusedNearLimit}</span>
+        </div>
+      )}
       {/* the refusal hit the FIRST message after a quiet stretch (owner 2026-10-15): Meta's side, not our speed */}
       {info.firstAfterQuiet && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
@@ -89,13 +120,13 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
           {health.error && <span style={{ color: '#b45309' }}>Could not read the number from Meta: {health.error}</span>}
         </div>
       )}
-      {health && health.lines.filter((l) => l.tone !== 'ok').map((l) => (
+      {health && health.lines.filter((l) => l.tone !== 'ok' && !/^Daily limit reached/.test(l.text)).map((l) => (
         <div key={l.text} style={{ fontSize: '0.78rem', color: l.tone === 'danger' ? 'var(--danger, #b91c1c)' : '#b45309' }}>{l.text}</div>
       ))}
       {info.lastRefusalAt && (
         <div className="meta" style={{ fontSize: '0.78rem' }}>
           Meta&apos;s last refusal: {time(info.lastRefusalAt)} · the {ordinal(info.strikes)} in the last 2 hours. If Meta refuses again{paused ? ' after it resumes' : ''}, the number stops for {info.nextPauseMin} min.
-          {info.state !== 'normal' && info.slowUntil && !paused ? ` Back to 2 a minute at ${time(info.slowUntil)} if Meta refuses nothing more.` : ''}
+          {info.state !== 'normal' && info.slowUntil && !paused ? ` Back to ${chosen} a minute at ${time(info.slowUntil)} if Meta refuses nothing more.` : ''}
         </div>
       )}
       {!info.lastRefusalAt && !paused && <div className="meta" style={{ fontSize: '0.78rem' }}>No refusal from Meta in the last 2 hours.</div>}

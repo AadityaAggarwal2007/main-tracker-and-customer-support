@@ -308,6 +308,12 @@ Done and live:
   never used though APPROVED (cause not found in code). Now: a "One message per order" ON/OFF switch, the mode + reason in
   the PM2 log (`[wa-auto] one message / two messages`), Meta's quality / status / limit in the Number status box, and a red
   "first message after a quiet pause" line. OWNER TO CHECK: WhatsApp Manager number status / quality, other apps on it.
+  Evening: 242 customers messaged today / 261 in 24 h, Meta refusing at 1 a minute, no tier from Meta: most likely the number
+  is on Meta's STARTING limit of 250 new customers per rolling 24 h (the 2,000 is the portfolio's). Built: a speed select
+  (1-4 order messages a minute, `wa_send_rate`), a daily limit guard (at the typed limit a NEW customer waits pending, a
+  customer messaged in the last 24 h still goes, `[wa-auto] daily limit reached` once a run), a red "Meta refused at N
+  customers ... type 250 in WhatsApp > Setup > Daily limit" line, and "In use / Not in use" chips + the one-message switch
+  on the Templates tab. OWNER TO DO: type 250 as the Daily limit in WhatsApp > Setup and watch the Number status box.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

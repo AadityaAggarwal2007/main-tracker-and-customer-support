@@ -1,15 +1,18 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2, Pencil, Plus, Power, Trash2 } from 'lucide-react';
 import MetaError from './MetaError';
 import PhonePreview from './PhonePreview';
 import { renderTemplate, varCount, type TemplateInfo } from '@/lib/chat/whatsapp-templates';
 import { ORDER_LINK_PRESET, ORDER_PLACED_PRESET, ORDER_TRACKING_PRESET, SHIPTRACK_ALERT_PRESET } from '@/lib/chat/whatsapp-brand-rules';
+import { isLinkTemplateName, templateUsage, type LinkMode } from '@/lib/chat/whatsapp-auto-rules';
 import BrandsCard from './BrandsCard';
 import { EMPTY_FORM, SECTION, label, spin, type Alert, type Brand, type TemplateForm, type WaLists, type WaProfileData, type WaSettings } from './types';
 
 const STATUS_CLASS: Record<string, string> = { APPROVED: 'chip-ok', PENDING: 'chip-warn', REJECTED: 'chip-danger', PAUSED: 'chip-warn', DISABLED: 'chip-danger' };
+// which template ShipTrack uses for what (owner 2026-10-15, "ye wala working hai baaki nahi"): the chip's colour
+const USAGE_CLASS = { ok: 'chip-ok', warn: 'chip-warn', muted: 'chip-muted' } as const;
 
 // The account's templates with Meta's review status; make a new one or edit one, with the phone showing the
 // message as it is typed (the example values stand in for {{n}}).
@@ -24,6 +27,33 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState<TemplateInfo | null>(null);
   const vars = varCount(form.body);
+  // What the automation runs now (owner 2026-10-15: "template ke bahar on/off ka button ki ye wala working hai baaki
+  // nahi"): a light read of the Automation overview for the "In use" chips and the one-message switch on its card.
+  const [mode, setMode] = useState<LinkMode | null>(null);
+  const loadMode = useCallback(async () => {
+    try {
+      const r = await fetch('/api/whatsapp/automation', { headers: auth, cache: 'no-store' });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.linkMode) setMode(j.linkMode as LinkMode);
+    } catch { /* the chips stay hidden */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+  useEffect(() => { void loadMode(); }, [loadMode, lists]);
+  const switchLink = async (on: boolean) => {
+    const text = on
+      ? 'Turn ON "One message per order"?\n\nOnce Meta has approved order_placed_link, every new order gets ONE message: order placed + its tracking link. The 48-hour tracking message is skipped for those orders. Orders with no tracking link yet still get the two old messages.'
+      : 'Turn OFF "One message per order"?\n\nNew orders get the two old messages again: order_placed when the order comes in, order_tracking 48 hours later, even though order_placed_link is approved.';
+    if (!window.confirm(text)) return;
+    setBusy('link');
+    try {
+      const r = await fetch('/api/whatsapp/automation', { method: 'POST', headers: auth, body: JSON.stringify({ action: 'link_mode', on }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not change it'); return; }
+      onAlert('success', j.linkMode?.reason ? `Saved. Running now: ${j.linkMode.reason}` : (on ? 'One message per order: ON' : 'One message per order: OFF'));
+      if (j.linkMode) setMode(j.linkMode as LinkMode); else await loadMode();
+    } catch { onAlert('error', 'Could not change it'); }
+    finally { setBusy(''); }
+  };
 
   const startNew = () => { setEditId(null); setForm(EMPTY_FORM); setOpen(true); setPreview(null); };
   // The owner's order-placed confirmation, ready to send to Meta (edit any word before sending).
@@ -82,6 +112,14 @@ export default function TemplatesPanel({ token, s, lists, prof, brands, onAlert,
                   <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{t.language} · {t.category}</span>
                   <span className={`chip ${STATUS_CLASS[t.status] || 'chip-muted'}`}>{t.status}</span>
                   {t.vars > 0 && <span style={{ fontSize: '0.75rem', color: 'var(--fg-muted)' }}>{t.vars} value{t.vars > 1 ? 's' : ''}</span>}
+                  {/* what ShipTrack uses it for, from the automation's current mode (owner 2026-10-15) */}
+                  {mode && (() => { const u = templateUsage(t, mode); return <span className={`chip ${USAGE_CLASS[u.tone]}`} title="What ShipTrack sends this template for, as the automation runs now">{u.text}</span>; })()}
+                  {mode && isLinkTemplateName(t.name) && (
+                    <button type="button" className="btn btn-sm btn-outline" style={{ gap: 4 }} disabled={busy === 'link'} title="One message per order: the same switch as in Automation"
+                      onClick={(e) => { e.stopPropagation(); void switchLink(!mode.on); }}>
+                      {busy === 'link' ? <Loader2 size={13} style={spin} /> : <Power size={13} />} One message per order: {mode.on ? 'ON' : 'OFF'} · turn {mode.on ? 'OFF' : 'ON'}
+                    </button>
+                  )}
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 2 }}>
                     {t.id && t.status !== 'PENDING' && <button type="button" className="btn-icon" title="Edit (Meta reviews the change)" onClick={(e) => { e.stopPropagation(); startEdit(t); }}><Pencil size={14} /></button>}
                     <button type="button" className="btn-icon" title="Delete this template" style={{ color: 'var(--danger)' }} disabled={busy === 'del:' + t.name} onClick={(e) => { e.stopPropagation(); void remove(t.name); }}>

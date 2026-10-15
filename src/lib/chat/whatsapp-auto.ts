@@ -16,16 +16,16 @@ import { isOfficeHours } from '@/lib/office-hours';
 import {
   AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MAX_ATTEMPTS, MODE_LOG_EVERY_MS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, placedParams, retryable,
+  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, gapFor, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, placedParams, retryable,
   templatesReadNote, trackingDueMs, trackingParams,
-  type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts,
+  type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts, type SendRate,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
-import { pauseState, pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { loadSendRate, pauseState, pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
 import { alertsWaiting } from './whatsapp-alert-queue';
 import { quietBefore } from './whatsapp-auto-status';
-import { loadWaHealth } from './whatsapp-health';
-import { waHealthLines, type WaLine } from './whatsapp-health-rules';
+import { knownNumbers24h, limitNow, loadWaHealth, usedNumbers } from './whatsapp-health';
+import { limitFreeAt, limitReached, refusedNearLimit, waHealthLines, type WaLine } from './whatsapp-health-rules';
 
 export type Kind = 'placed' | 'tracking';
 const STATUSES = ['pending', 'sent', 'delivered', 'read', 'failed', 'skipped'] as const;
@@ -123,13 +123,32 @@ interface DueRow {
   tracking_token: string | null; tracking_domain: string | null;
 }
 
-export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean }
+// limited = messages to NEW customers that waited for the daily limit this run (they stay pending, not failed / skipped)
+export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number }
 
 const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
 
+// The daily limit guard (owner 2026-10-15: Meta refused every message to a NEW customer at ~250 in 24 h whatever the
+// speed; whatsapp-health-rules.ts). Once per run: the limit (Meta's tier, else the one typed in WhatsApp > Setup) and the
+// count of different customers we started a conversation with in the last 24 hours (one count query). Only when that
+// count is within one batch of the limit are the numbers themselves read (at most `limit` of them), so each row can tell
+// a NEW customer (waits at the limit) from one messaged in the last 24 hours (still goes). ShipTrack's alerts
+// (whatsapp-alert-queue.ts) and the test send never pass through here. A failed read = no guard (never a stuck queue).
+interface DailyGuard { limit: number | null; used: number; known: Set<string> | null }
+async function dailyGuard(nowMs: number): Promise<DailyGuard> {
+  try {
+    const { limit } = await limitNow(nowMs);
+    if (!limit) return { limit: null, used: 0, known: null };
+    const { used24h } = await usedNumbers();
+    return { limit, used: used24h, known: used24h + BATCH >= limit ? await knownNumbers24h() : null };
+  } catch (e) { console.error('[wa-auto] daily limit:', (e as Error).message); return { limit: null, used: 0, known: null }; }
+}
+// a NEW customer for Meta's rolling window (the guard only knows the numbers when the count is near the limit)
+const newCustomer = (guard: DailyGuard, digits: string) => guard.limit != null && guard.known != null && !guard.known.has(digits);
+
 export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
-  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0 };
+  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0, limited: 0 };
   if (g.__waAutoBusy) return { ...out, idle: 'busy' };
   g.__waAutoBusy = true;
   try {
@@ -167,10 +186,14 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         [130429, RATE_MAX_ATTEMPTS]).catch((e) => console.error('[wa-auto] requeue:', (e as Error).message));
     }
     out.paused = paused;
-    // the gap between two order messages: 30 s, wider for two hours after a 130429 (whatsapp-auto-rules.ts sendEveryFor)
+    // the gap between two order messages: the chosen speed (1-4 a minute, 2 by default), the slower of it and 60 s for
+    // two hours after a 130429 (whatsapp-auto-rules.ts sendEveryFor, whatsapp-pause.ts sendEvery)
     const every = await sendEvery(nowMs);
     // numbers whose customer wrote STOP (whatsapp-stop.ts): never messaged
     const stopped = await stoppedNumbers().catch(() => new Set<string>());
+    // the daily limit (owner 2026-10-15): at the limit, a NEW customer waits (the row stays pending), a known one still goes
+    const guard = paused || alertsFirst ? { limit: null, used: 0, known: null } as DailyGuard : await dailyGuard(nowMs);
+    let limitLogged = false;
 
     for (const [panelId, s] of on) {
       out.panels++;
@@ -255,7 +278,13 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, 'This brand has no support email for the message: set it in WhatsApp > Templates > "Each brand\'s own words", then Send again']);
           out.failed++; continue;
         }
-        // Slow and steady (owner 2026-10-15): one order message per 30 s for the whole install; no slot = this run stops
+        // The daily limit (owner 2026-10-15): a NEW customer waits while the last 24 hours' count is at the limit (not
+        // failed, not skipped: the row goes once the oldest conversation drops out of Meta's window); said once per run
+        if (newCustomer(guard, digits) && guard.used >= guard.limit!) {
+          if (!limitLogged) { limitLogged = true; console.warn(`[wa-auto] daily limit reached: ${guard.used} of ${guard.limit} customers in the last 24 h; new customers wait`); }
+          out.limited = (out.limited || 0) + 1; continue;
+        }
+        // Slow and steady (owner 2026-10-15): one order message per chosen gap for the whole install; no slot = this run stops
         if (!(await takeSendSlot(every))) break;
         // The server runs two processes: claim the row first (only one of them gets it) so nobody is messaged twice.
         const claim = await query(
@@ -271,6 +300,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, res.id, digits, tpl.name, renderTemplate(tpl, params.slice(0, tpl.vars))]
           );
           out.sent++;
+          if (newCustomer(guard, digits)) { guard.used++; guard.known!.add(digits); }   // one more of the 24 hours' customers
           if (linkTpl) {
             await query(`UPDATE wa_auto_sends SET status = 'skipped', error = $3, updated_at = now()
                           WHERE business_id = $1 AND order_id = $2 AND kind = 'tracking' AND status = 'pending'`,
@@ -338,20 +368,28 @@ export interface AutoOverview {
   linkMode?: LinkMode;
   // Meta's side of the number (owner 2026-10-15, the Number status box): quality, status, messaging limit; null = not set up.
   numberHealth?: NumberHealth | null;
+  // The speed the owner chose (owner 2026-10-15, "har minute 2, 3, 4 message"): 1-4 order messages a minute, 2 by default.
+  sendRate?: SendRate;
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
 export interface NumberHealth {
   quality: string; status: string; tier: string; limit: number | null; limitFrom: 'meta' | 'saved' | null;
   used24h: number; usedToday: number; error: string | null; lines: WaLine[];
+  // the daily limit guard (owner 2026-10-15): at the limit new customers wait until `limitFreeAt` (the oldest of the
+  // window drops out); `refusedNearLimit` = Meta refused while the count sat near the limit: the real limit is likely 250
+  limitReached: boolean; limitFreeAt: string | null; refusedNearLimit: string | null;
 }
 // The number as Meta sees it (whatsapp-health.ts, Meta read at most every 5 minutes, never throws): for the Number
 // status box, so a refusal can be read next to the quality rating, the status and the messaging limit.
-async function numberHealth(nowMs: number): Promise<NumberHealth | null> {
+async function numberHealth(nowMs: number, lastRefusalAt: string | null): Promise<NumberHealth | null> {
   try {
     const h = await loadWaHealth(nowMs);
     if (!h) return null;
-    return { quality: h.quality, status: h.status, tier: h.tier, limit: h.limit, limitFrom: h.limitFrom, used24h: h.used24h, usedToday: h.usedToday ?? 0, error: h.phoneError, lines: waHealthLines(h) };
+    return {
+      quality: h.quality, status: h.status, tier: h.tier, limit: h.limit, limitFrom: h.limitFrom, used24h: h.used24h, usedToday: h.usedToday ?? 0, error: h.phoneError, lines: waHealthLines(h),
+      limitReached: limitReached(h), limitFreeAt: limitReached(h) ? limitFreeAt(h) : null, refusedNearLimit: refusedNearLimit(lastRefusalAt, h.used24h, h.limit),
+    };
   } catch (e) { console.error('[wa-auto] number health:', (e as Error).message); return null; }
 }
 const maskTo = (n: string | null) => (n ? `••••${n.slice(-4)}` : null);
@@ -420,15 +458,17 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   }
   const link = linkTemplateOf(list);
   const linkName = link.template ? link.template.name.trim().toLowerCase() : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
+  const sendRate = await loadSendRate(nowMs).catch(() => ({ perMinute: 2, by: null, at: null } as SendRate));
+  const pauseInfo = pauseView(await pauseState().catch(() => null), nowMs, gapFor(sendRate.perMinute));
   return {
     installed, configured: waConfigured(),
     templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: link.state, linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
-    pauseInfo: pauseView(await pauseState().catch(() => null), nowMs),
+    pauseInfo, sendRate,
     linkMode: await currentLinkMode(list, error, nowMs),
-    numberHealth: waConfigured() ? await numberHealth(nowMs) : null,
+    numberHealth: waConfigured() ? await numberHealth(nowMs, pauseInfo.lastRefusalAt) : null,
     ordersDue: installed ? await query<{ n: number }>(`SELECT count(*)::int AS n FROM wa_auto_sends WHERE status = 'pending' AND due_at <= now()`)
       .then((r) => Number(r.rows[0]?.n || 0)).catch(() => 0) : 0,
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,

@@ -14,6 +14,9 @@ function reset() {
     // owner 15 Oct: Meta's side of the number (the Number status box) and a template list that Meta pages
     phone: { display_phone_number: '+91 98765 00001', verified_name: 'ShipTrack', name_status: 'APPROVED', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_2K', code_verification_status: 'VERIFIED' },
     metaPages: null,
+    // owner 15 Oct: the customers we started a conversation with in the last 24 h (the daily limit guard); knownExtra =
+    // numbers messaged by the team's templates (not in wa_auto_sends)
+    used: { n: 613, today: 311, oldest: null }, knownExtra: [],
     settings: { whatsapp_messaging_id: '28873951022288651', 'wa_brand:b1': JSON.stringify({ name: 'Vastora', email: 'help@vastora.test' }) },
     panels: [{ id: 'b1', name: 'vastora' }, { id: 'b2', name: 'VASTRIKA' }],
     orders: [], rows: [],
@@ -109,7 +112,13 @@ const db = {
       const rows = Object.keys(m).map((k) => ({ kind: k.split('|')[0], status: k.split('|')[1], n: m[k] }));
       return { rows, rowCount: rows.length };
     }
-    if (/count\(DISTINCT x\.digits\)::int AS n, \(count\(DISTINCT x\.digits\) FILTER \(WHERE x\.at >= /.test(sql)) return { rows: [{ n: 613, today: 311 }], rowCount: 1 };
+    if (/count\(DISTINCT x\.digits\)::int AS n, \(count\(DISTINCT x\.digits\) FILTER \(WHERE x\.at >= /.test(sql)) return { rows: [{ n: S.used.n, today: S.used.today, oldest: S.used.oldest }], rowCount: 1 };
+    // the numbers of the last 24 hours' customers (whatsapp-health.ts knownNumbers24h): the automation's sends + the team's
+    if (/^SELECT DISTINCT x\.digits FROM \(/.test(sql)) {
+      const digits = new Set(S.knownExtra);
+      for (const r of S.rows) if (r.sent_at && ['sent', 'delivered', 'read'].includes(r.status) && S.nowMs - new Date(r.sent_at).getTime() < 24 * 3600 * 1000 && r.to_number) digits.add(r.to_number);
+      const rows = [...digits].map((d) => ({ digits: d })); return { rows, rowCount: rows.length };
+    }
     if (/AS failed, \(count\(\*\) FILTER \(WHERE status = 'pending'\)\)::int AS waiting FROM wa_auto_sends/.test(sql)) return { rows: [{ failed: 0, waiting: S.rows.filter((r) => r.status === 'pending').length }], rowCount: 1 };
     if (/FROM wa_auto_sends GROUP BY 1, 2, 3|FROM wa_auto_sends w GROUP BY 1, 2, 3/.test(sql)) {
       const m = {}, mi = {}; for (const r of S.rows) { const k = r.business_id + '|' + r.kind + '|' + r.status; m[k] = (m[k] || 0) + 1; const t = msgAt(r); if (t >= p[0].getTime() && t < p[1].getTime()) mi[k] = (mi[k] || 0) + 1; }
@@ -1003,6 +1012,192 @@ async function t(name, fn) {
     try { await run(IST(13, 12, 3)); } finally { cap.restore(); }
     const off = cap.lines.find((l) => /^\[wa-auto\] two messages/.test(l)); assert.match(off, /switch .* is OFF \(by owner\)$/); assert.ok(!/read \d+ templates/.test(off));
     delete S.settings.wa_link_mode; auto.forgetLinkModeCache(); auto.resetModeLog();
+  });
+
+  // ── owner 15 Oct, evening: the speed setting, the daily limit guard, "refused near the limit", template usage chips ──
+  const wh = require(path.join(SRC, 'lib/chat/whatsapp-health.ts'));
+  await t('the speed setting (owner 15 Oct, "har minute 2, 3, 4 message"): 1-4 a minute from chat_settings wa_send_rate (no row / junk = 2); after a 130429 the gap is the slower of 60 s and the chosen one, never faster than chosen; the view says "slow" only against the chosen gap', () => {
+    const m = 60000, t0 = IST(13, 14);
+    eq(rules.SEND_RATE_KEY, 'wa_send_rate'); deq([...rules.SEND_RATES], [1, 2, 3, 4]); eq(rules.DEFAULT_PER_MINUTE, 2);
+    deq([null, '', 'junk', JSON.stringify({ perMinute: 5 }), JSON.stringify({ perMinute: 0 }), JSON.stringify({ perMinute: '2.5' })].map((v) => rules.parseSendRate(v).perMinute), [2, 2, 2, 2, 2, 2]);
+    deq(rules.parseSendRate(rules.sendRateValue(3, 'owner', t0)), { perMinute: 3, by: 'owner', at: new Date(t0).toISOString() });
+    deq([1, 2, 3, 4, 7].map(rules.gapFor), [60000, 30000, 20000, 15000, 30000]);
+    eq(rules.gapFor(2), rules.SEND_EVERY_MS);
+    // the gap: chosen when calm; the slower of 60 s and chosen for two hours after a refusal
+    deq([15000, 20000, 30000, 60000].map((b) => rules.sendEveryFor(null, t0, b)), [15000, 20000, 30000, 60000]);
+    const strike = { until: t0 + 15 * m, at: t0, strikes: 1, reason: '' };
+    deq([15000, 20000, 30000, 60000].map((b) => rules.sendEveryFor(strike, t0 + 20 * m, b)), [60000, 60000, 60000, 60000]);
+    deq([15000, 60000].map((b) => rules.sendEveryFor({ ...strike, strikes: 4 }, t0 + 20 * m, b)), [60000, 60000]);   // never slower than 1 a minute, whatever the strikes
+    deq([15000, 60000].map((b) => rules.sendEveryFor(strike, t0 + 2 * 60 * m, b)), [15000, 60000]);               // two quiet hours: the chosen gap again
+    eq(rules.sendEveryFor(strike, t0 + 20 * m), 60000, 'the old default is unchanged');
+    // the view: 4 a minute with a fresh strike = slow (1 a minute until the window ends); 1 a minute with a strike = normal (nothing to slow)
+    let v = rules.pauseView(strike, t0 + 20 * m, 15000); deq([v.state, v.sendEveryMs, v.perMinute, v.slowUntil], ['slow', 60000, 4, new Date(t0 + 120 * m).toISOString()]);
+    v = rules.pauseView(strike, t0 + 20 * m, 60000); deq([v.state, v.sendEveryMs, v.perMinute, v.slowUntil], ['normal', 60000, 1, null]);
+    v = rules.pauseView(null, t0, 20000); deq([v.state, v.sendEveryMs, v.perMinute], ['normal', 20000, 3]);
+    eq(rules.pauseView(null, t0).perMinute, 2);
+  });
+  await t('the speed setting: the route (Super Admin; 1, 2, 3 or 4, anything else 400), the worker takes the chosen gap to the send slot, the overview carries it; a strike makes it 1 a minute whatever was chosen', async () => {
+    pause.forgetPauseCache(); pause.forgetSendRateCache(); delete S.settings.wa_send_rate;
+    eq((await route.POST(jreq(AGENT, { action: 'rate', perMinute: 3 }))).status, 401);
+    eq((await route.POST(jreq(null, { action: 'rate', perMinute: 3 }))).status, 401);
+    for (const bad of [5, 0, -1, 2.5, 'x', '', null, undefined, true, [3]]) { const r = await route.POST(jreq(OWNER, { action: 'rate', perMinute: bad })); eq(r.status, 400, `perMinute ${JSON.stringify(bad)}`); }
+    eq(S.settings.wa_send_rate, undefined, 'nothing saved by a refused call');
+    let r = await route.POST(jreq(OWNER, { action: 'rate', perMinute: '3' }));           // a number as a string is fine (a form field)
+    deq([r.status, r.body.perMinute, r.body.sendRate.by], [200, 3, 'owner']);
+    deq(rules.parseSendRate(S.settings.wa_send_rate).perMinute, 3);
+    // the worker: the slot is asked for 20 s (3 a minute)
+    turnOn(); S.orders = [order()]; pause.forgetSendRateCache();
+    await run(IST(13, 12)); eq(sends().length, 1); eq(S.slotEvery, 20000);
+    // the overview says so
+    let ov = (await route.GET(jreq(OWNER, {}))).body;
+    deq([ov.sendRate.perMinute, ov.sendRate.by, ov.sendEveryMs, ov.pauseInfo.perMinute, ov.pauseInfo.state], [3, 'owner', 20000, 3, 'normal']);
+    // 4 a minute, then a 130429 within the last 2 hours: 1 a minute (the slower of 60 s and 15 s), the view says slow
+    r = await route.POST(jreq(OWNER, { action: 'rate', perMinute: 4 })); eq(r.status, 200); pause.forgetSendRateCache();
+    S.settings.wa_pause = JSON.stringify({ until: new Date(IST(13, 12, 10)).toISOString(), reason: '130429', at: new Date(IST(13, 12, 10) - 15 * 60000).toISOString(), strikes: 1 }); pause.forgetPauseCache();
+    S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233' }));
+    await run(IST(13, 12, 30)); eq(sends().length, 2); eq(S.slotEvery, 60000);
+    ov = await auto.automationOverview(null, IST(13, 12, 30)); deq([ov.sendRate.perMinute, ov.pauseInfo.state, ov.pauseInfo.sendEveryMs], [4, 'slow', 60000]);   // at the worker's time (the strike is 15 min old)
+    // 1 a minute chosen: a strike changes nothing and the view stays normal (never faster than chosen, never slower than 1)
+    r = await route.POST(jreq(OWNER, { action: 'rate', perMinute: 1 })); eq(r.status, 200); pause.forgetSendRateCache();
+    S.orders.push(order({ order_id: '#1555', customer_mobile: '9811122244' }));
+    await run(IST(13, 12, 31)); eq(sends().length, 3); eq(S.slotEvery, 60000);
+    ov = await auto.automationOverview(null, IST(13, 12, 31)); deq([ov.sendRate.perMinute, ov.pauseInfo.state, ov.pauseInfo.sendEveryMs, ov.pauseInfo.perMinute], [1, 'normal', 60000, 1]);
+    // the screens: the select in the Number status box, the Automation paragraph names the chosen speed, the card is wired
+    const card = fs.readFileSync(path.join(SRC, 'components/whatsapp/PauseStatusCard.tsx'), 'utf8');
+    assert.match(card, /Order messages per minute:/); assert.match(card, /SEND_RATES\.map/); assert.match(card, /onRate\(pick\)/);
+    const panel = fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8');
+    assert.match(panel, /action: 'rate', perMinute: n/); assert.match(panel, /o\.sendRate\?\.perMinute \?\? 2\} a minute/); assert.ok(!/one every 30 seconds \(2 a minute/.test(panel), 'the fixed "30 seconds" sentence is gone');
+    delete S.settings.wa_send_rate; delete S.settings.wa_pause; pause.forgetSendRateCache(); pause.forgetPauseCache();
+  });
+  await t('the daily limit guard (owner 15 Oct, 130429 at ~250 customers in 24 h whatever the speed): at the typed limit a NEW customer waits (pending, not failed / skipped) and one messaged in the last 24 h still goes; said once per run; alerts and the test send are never held; one more goes when the count drops; the count is kept within a run', async () => {
+    const captured = captureLog();
+    try {
+      pause.forgetPauseCache(); pause.forgetSendRateCache(); wh.resetWaPhoneCache();
+      S.phone = { ...S.phone, messaging_limit_tier: '' };                     // Meta gives no tier: the typed limit counts
+      S.settings.whatsapp_daily_limit = '250';
+      S.used = { n: 250, today: 242, oldest: new Date(IST(12, 13, 5)) };
+      // one customer was messaged yesterday evening (known to Meta's window), one is new
+      S.rows.push({ id: 'k1', business_id: 'b1', order_id: '#1400', kind: 'placed', status: 'sent', to_number: '919811122233', attempts: 1, due_at: new Date(IST(12, 20)), sent_at: new Date(IST(12, 20)), wa_id: 'wamid.k1', updated_at: new Date(IST(12, 20)) });
+      S.rows.push({ id: 'k2', business_id: 'b1', order_id: '#1400', kind: 'tracking', status: 'skipped', to_number: '919811122233', attempts: 0, due_at: new Date(IST(12, 20)), sent_at: null, wa_id: null, updated_at: new Date(IST(12, 20)) });
+      turnOn(); S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' })];
+      const r1 = await run(IST(13, 12));
+      deq([r1.sent, r1.limited, r1.failed, r1.skipped], [1, 1, 0, 0]);
+      deq(sends().map((f) => f.body.to), ['919811122233']);                 // the known customer went, the new one waits
+      const waiting = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'placed');
+      deq([waiting.status, waiting.attempts, waiting.error, new Date(waiting.due_at).getTime()], ['pending', 0, null, IST(13, 12)]);   // not claimed, not failed, not skipped
+      const line = '[wa-auto] daily limit reached: 250 of 250 customers in the last 24 h; new customers wait';
+      eq(captured.lines.filter((l) => l === line).length, 1, 'once per run');
+      await run(IST(13, 12, 1));
+      eq(captured.lines.filter((l) => l === line).length, 2, 'once per run, every run it holds');
+      eq(sends().length, 1);
+      // ShipTrack's own alerts and the test send never pass through the guard
+      const q = require(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'));
+      const a = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA' });
+      assert.ok(a.id, 'the alert went'); eq(sends().length, 2);
+      const ts = await auto.sendAutomationTest('b1', '9876500002', 'Test');
+      deq(ts.results.map((x) => x.ok), [true, true]); eq(sends().length, 4);
+      for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_sent:')) delete S.settings[k];
+      // the Number status box: reached, when the oldest drops out (24 h after it), the line
+      let ov = await auto.automationOverview(null, IST(13, 12, 2));
+      deq([ov.numberHealth.limitReached, ov.numberHealth.limitFreeAt, ov.numberHealth.limit, ov.numberHealth.used24h], [true, new Date(IST(13, 13, 5)).toISOString(), 250, 250]);
+      assert.match(ov.numberHealth.lines.find((l) => /Daily limit reached/.test(l.text)).text, /^Daily limit reached: 250 \/ 250 in the last 24 h — new customers wait until the oldest drops out \(about 1:05 pm\); customers messaged in the last 24 h still get theirs$/);
+      eq(ov.numberHealth.lines.find((l) => /Daily limit reached/.test(l.text)).tone, 'danger');
+      eq(ov.numberHealth.refusedNearLimit, null, 'no refusal: nothing to say about it');
+      // the oldest dropped out: 249 in the window, so ONE new customer goes; a second new one in the same run waits (the run counts its own sends)
+      S.used = { n: 249, today: 241, oldest: new Date(IST(12, 13, 30)) };
+      S.orders.push(order({ order_id: '#1555', customer_mobile: '9811122299' })); S.fetches = [];
+      const r3 = await run(IST(13, 13, 6));
+      deq([r3.sent, r3.limited], [1, 1]);
+      deq(sends().map((f) => f.body.to), ['919876543210']);                 // the older waiting one first (due_at order)
+      eq(S.rows.find((r) => r.order_id === '#1555' && r.kind === 'placed').status, 'pending');
+      ov = await auto.automationOverview(null, IST(13, 13, 6));
+      eq(ov.numberHealth.limitReached, false);                              // the count says 249: the box is calm again (the next count will say 250)
+      // a known customer still goes at the limit even when the count is far above it
+      S.used = { n: 400, today: 300, oldest: new Date(IST(12, 14)) }; S.fetches = [];
+      S.orders.push(order({ order_id: '#1556', customer_mobile: '9811122233' }));
+      const r4 = await run(IST(13, 13, 7)); deq([r4.sent, r4.limited], [1, 1]); deq(sends().map((f) => f.body.to), ['919811122233']);
+      // no limit typed and no tier from Meta: nothing waits, whatever the count
+      delete S.settings.whatsapp_daily_limit; S.fetches = [];
+      const r5 = await run(IST(13, 13, 8)); deq([r5.sent, r5.limited], [1, 0]); deq(sends().map((f) => f.body.to), ['919811122299']);
+      ov = await auto.automationOverview(null, IST(13, 13, 8)); deq([ov.numberHealth.limit, ov.numberHealth.limitReached], [null, false]);
+      // the guard reads the numbers only near the limit: one count query per run, the numbers only when within a batch of it
+      const src = fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8');
+      assert.match(src, /used24h \+ BATCH >= limit \? await knownNumbers24h\(\) : null/);
+      assert.ok(src.indexOf('newCustomer(guard, digits) && guard.used >= guard.limit') < src.indexOf('takeSendSlot(every)'), 'checked before the slot and the claim');
+      assert.ok(!/dailyGuard|knownNumbers24h|limitNow/.test(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'), 'utf8')), 'alerts never pass through the guard');
+    } finally { captured.restore(); }
+    S.phone = { ...S.phone, messaging_limit_tier: 'TIER_2K' }; wh.resetWaPhoneCache(); S.used = { n: 613, today: 311, oldest: null }; delete S.settings.whatsapp_daily_limit;
+  });
+  await t('Meta refused near the limit (owner 15 Oct, 242 messaged today, Meta refused the first message after every pause): a 130429 while the count sits within 10% of the typed limit, or above 230, gets the red line naming Meta\'s starting 250 and what to type; nothing without a refusal or far from the limit', async () => {
+    const t0 = new Date(IST(13, 12)).toISOString();
+    eq(health.METAS_STARTING_LIMIT, 250); eq(health.REFUSED_ABOVE, 230);
+    eq(health.refusedNearLimit(null, 242, 2000), null); eq(health.refusedNearLimit('junk', 242, 2000), null);
+    eq(health.refusedNearLimit(t0, 100, 2000), null); eq(health.refusedNearLimit(t0, 229, null), null);
+    for (const [used, limit] of [[242, 2000], [242, null], [1800, 2000], [230, 5000]]) {
+      const s = health.refusedNearLimit(t0, used, limit);
+      eq(s, `Meta refused at ${used} customers in the last 24 h. Meta's starting limit is 250 customers a day; WhatsApp Manager > Overview may show 2,000 for the business, but this number may still be on 250. Type 250 in WhatsApp > Setup > Daily limit and ShipTrack will wait instead of being refused.`);
+    }
+    // 250 already typed and still refused: Meta counts a few more than we do: lower it a little
+    assert.match(health.refusedNearLimit(t0, 240, 250), /ShipTrack already waits at 250; Meta may count a few more .* Lower the Daily limit in WhatsApp > Setup a little \(e\.g\. 230\)\.$/);
+    assert.match(health.refusedNearLimit(t0, 55, 60), /e\.g\. 50\)/);
+    // the limit lines: reached / free at / the health line (the Today board shows the same line)
+    deq([health.limitReached({ used24h: 250, limit: 250 }), health.limitReached({ used24h: 249, limit: 250 }), health.limitReached({ used24h: 999, limit: null }), health.limitReached({ used24h: 1, limit: 0 })], [true, false, false, false]);
+    eq(health.limitFreeAt({ oldest24h: new Date(IST(12, 13, 5)).toISOString() }), new Date(IST(13, 13, 5)).toISOString()); eq(health.limitFreeAt({ oldest24h: null }), null); eq(health.limitFreeAt({}), null);
+    eq(health.dailyLimitLine({ used24h: 249, limit: 250 }), null);
+    eq(health.dailyLimitLine({ used24h: 251, limit: 250, oldest24h: null }), 'Daily limit reached: 251 / 250 in the last 24 h — new customers wait until the oldest drops out; customers messaged in the last 24 h still get theirs');
+    const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'UNKNOWN', limit: 250, limitFrom: 'saved', used24h: 250, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: null, oldest24h: new Date(IST(12, 13, 5)).toISOString() };
+    const lines = health.waHealthLines(base); eq(lines.length, 1); eq(lines[0].tone, 'danger'); assert.match(lines[0].text, /^Daily limit reached: 250 \/ 250 .* \(about 1:05 pm\)/);
+    assert.match(health.waHealthLines({ ...base, used24h: 230 })[0].text, /^Daily limit almost used: 230 of 250/);
+    // through the overview: a refusal in the last 2 hours + the count near the limit
+    pause.forgetPauseCache(); wh.resetWaPhoneCache();
+    S.settings.whatsapp_daily_limit = '2000'; S.phone = { ...S.phone, messaging_limit_tier: '' }; S.used = { n: 242, today: 242, oldest: new Date(IST(12, 13)) };
+    S.settings.wa_pause = JSON.stringify({ until: new Date(IST(13, 12, 15)).toISOString(), reason: '130429 Rate limit hit', at: new Date(IST(13, 12)).toISOString(), strikes: 1 });
+    let ov = await auto.automationOverview(null, IST(13, 12, 5));
+    assert.match(ov.numberHealth.refusedNearLimit, /^Meta refused at 242 customers in the last 24 h\. .*Type 250 in WhatsApp > Setup > Daily limit/);
+    eq(ov.numberHealth.limitReached, false);
+    // the same refusal two and a half hours later: no line (the refusal no longer counts); a low count: no line
+    ov = await auto.automationOverview(null, IST(13, 14, 31)); eq(ov.numberHealth.refusedNearLimit, null);
+    S.used = { n: 40, today: 40, oldest: null }; ov = await auto.automationOverview(null, IST(13, 12, 5)); eq(ov.numberHealth.refusedNearLimit, null);
+    const card = fs.readFileSync(path.join(SRC, 'components/whatsapp/PauseStatusCard.tsx'), 'utf8');
+    assert.match(card, /health\?\.refusedNearLimit/); assert.match(card, /health\?\.limitReached/);
+    delete S.settings.wa_pause; delete S.settings.whatsapp_daily_limit; pause.forgetPauseCache(); S.phone = { ...S.phone, messaging_limit_tier: 'TIER_2K' }; wh.resetWaPhoneCache(); S.used = { n: 613, today: 311, oldest: null };
+  });
+  await t('template usage chips (owner 15 Oct, "ye wala working hai baaki nahi"): which template ShipTrack sends for what, from the automation\'s mode; the link card carries the one-message switch', () => {
+    eq(rules.ALERT_TEMPLATE, brandRules.SHIPTRACK_ALERT_PRESET.name);
+    const link = { name: 'order_placed_link', language: 'en_US' };
+    const active = rules.linkModeOf(null, link, 'APPROVED', null);
+    const off = rules.linkModeOf({ on: false, by: 'owner', at: 'x' }, link, 'APPROVED', null);
+    const pending = rules.linkModeOf(null, null, 'PENDING', null);
+    const fourVals = rules.linkModeOf(null, null, 'APPROVED', null, 'order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5: make it again from its preset button');
+    const T = (name, status = 'APPROVED') => ({ name, status });
+    const u = (t, m) => { const r = rules.templateUsage(t, m); return [r.text, r.tone]; };
+    deq(u(T('order_placed_link'), active), ['In use: every new order (one message)', 'ok']);
+    deq(u(T(' Order_Placed_Link '), active), ['In use: every new order (one message)', 'ok']);
+    deq(u(T('order_placed_link'), off), ['Not in use (switch OFF)', 'warn']);
+    deq(u(T('order_placed_link', 'PENDING'), off), ['Not in use (switch OFF)', 'warn']);
+    deq(u(T('order_placed_link', 'PENDING'), pending), ['Waiting for approval', 'warn']);
+    deq(u(T('order_placed_link', 'REJECTED'), rules.linkModeOf(null, null, 'REJECTED', null)), ['Not in use (not approved (rejected))', 'warn']);
+    deq(u(T('order_placed_link_v2'), fourVals), ['Not in use: order_placed_link_v2 is approved on Meta but has 4 values, the automation fills 5: make it again from its preset button', 'warn']);
+    // a remade order_placed_link_2 is the one sent: the old exact one says so
+    const remade = rules.linkModeOf(null, { name: 'order_placed_link_2', language: 'en' }, 'APPROVED', null);
+    deq(u(T('order_placed_link_2'), remade), ['In use: every new order (one message)', 'ok']);
+    deq(u(T('order_placed_link'), remade), ['Not in use (order_placed_link_2 is the one sent)', 'muted']);
+    deq(u(T('order_placed'), active), ['In use: only orders without a tracking link', 'ok']);
+    deq(u(T('order_placed'), off), ['In use: every new order', 'ok']);
+    deq(u(T('order_placed'), pending), ['In use: every new order', 'ok']);
+    deq(u(T('order_placed', 'PENDING'), off), ['In use: every new order — but waiting for approval', 'warn']);
+    deq(u(T('order_placed', 'REJECTED'), off), ['In use: every new order — but not approved (rejected)', 'warn']);
+    deq(u(T('order_tracking'), active), ['In use: the 48-hour link for orders whose first message had none', 'ok']);
+    deq(u(T('order_tracking'), off), ['In use: every order, 48 hours later', 'ok']);
+    deq(u(T('shiptrack_alert'), active), ['In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises)', 'ok']);
+    deq(u(T('shiptrack_alert', 'PENDING'), active), ['In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises) — but waiting for approval', 'warn']);
+    deq(u(T('hello_world'), active), ['Not used by ShipTrack', 'muted']);
+    deq(u(T('order_update_v1'), off), ['Not used by ShipTrack', 'muted']);
+    // the screen: the chip on every card, the switch only on a link template, the same POST as the Automation tab, read from the overview
+    const src = fs.readFileSync(path.join(SRC, 'components/whatsapp/TemplatesPanel.tsx'), 'utf8');
+    assert.match(src, /templateUsage\(t, mode\)/); assert.match(src, /isLinkTemplateName\(t\.name\) && \(/); assert.match(src, /action: 'link_mode', on/);
+    assert.match(src, /fetch\('\/api\/whatsapp\/automation', \{ headers: auth, cache: 'no-store' \}\)/);
+    assert.ok(!/model/i.test(src), 'no model names');
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
