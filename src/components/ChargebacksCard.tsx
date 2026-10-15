@@ -19,6 +19,7 @@ interface Alert {
   // One card per case (owner 2026-10-15): the gateway's reminders of the same dispute are joined (src/lib/chargeback/cases.ts).
   mails?: number; mail_ids?: string[]; first_at?: string; done_mails?: number;
   gateway_elsewhere?: { id: string; name: string }[];
+  gmail_panel?: string | null; gmail_panel_name?: string | null; digest?: boolean;
 }
 interface Counts { open: number; new: number; mails: number; panels?: { id: string; name: string; open: number }[] }
 type View = 'open' | 'done' | 'other' | 'all';
@@ -152,6 +153,8 @@ function AlertsPanel({ token, onAlert, onChanged }: { token: string; onAlert: (t
                 {a.status === 'done' && <span className="chip chip-muted">Done</span>}
                 <b style={{ fontSize: '0.875rem' }}>{a.panel_name || 'Panel'}</b>
                 <span className="chip chip-muted">{a.gateway}</span>
+                {a.digest && <span className="chip chip-muted" title={`${a.gateway}'s daily list of open chargeback cases: every day's list is in this one card (the newest on top).`}>Daily list</span>}
+                {a.gmail_panel_name && <span className="chip chip-muted" title={`This mail came into ${a.gmail_panel_name}'s chargeback Gmail, but ${a.gateway} is ticked for ${a.panel_name || 'this panel'} only, so it is shown here.`}>Came into {a.gmail_panel_name}&apos;s Gmail</span>}
                 {(a.mails ?? 1) > 1 && <span className="chip chip-danger" title={`The gateway sent this case ${a.mails} times (the first notice and its reminders). One card, one Mark done.`}>{a.mails} mails</span>}
                 {(a.gateway_elsewhere?.length ?? 0) > 0 && <span className="chip chip-warn" title={`${a.gateway} is not ticked for ${a.panel_name || 'this panel'} in Settings > Chargeback protection, but it is for ${a.gateway_elsewhere!.map(p => p.name).join(', ')}.`}>{a.gateway} not on this panel</span>}
                 {a.routed_by === 'unsure' && <span className="chip chip-warn" title="Two panels share this Gmail and the mail names no order and no ticked gateway of either. Move it to the right panel.">Panel unsure</span>}
