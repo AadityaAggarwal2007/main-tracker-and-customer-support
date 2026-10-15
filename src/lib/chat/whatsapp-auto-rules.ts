@@ -38,6 +38,34 @@ export const SEND_GAP_MS = 2_000;
 // day. A run that finds the slot taken stops and the next run (every 30 s) goes on. ShipTrack's own alerts do not wait
 // for it (a chargeback alert is never held back by order messages).
 export const SEND_EVERY_MS = 30_000;
+// Meta keeps refusing after a burst (owner 2026-10-15, live: 77 messages in 3 minutes during the deploy, then 130429 again
+// at ONE message a minute): every new 130429 within STRIKE_WINDOW_MS of the last one is a "strike"; the pause doubles
+// (15, 30, 60, 120 min) and, after the pause, order messages go 1 a minute instead of 2 (owner: "har minute 2-4 msg", never
+// slower than one a minute) until two hours pass without a 130429. Reports of the same burst arriving together (within SAME_STRIKE_MS) count once.
+export const STRIKE_WINDOW_MS = 2 * 60 * 60 * 1000;
+export const SAME_STRIKE_MS = 2 * 60 * 1000;
+export const MAX_PAUSE_MS = 2 * 60 * 60 * 1000;
+export const MAX_SEND_EVERY_MS = 60 * 1000;
+export interface PauseState { until: number; reason: string; at: number; strikes: number }
+export function parsePauseState(value: string | null | undefined): PauseState | null {
+  try {
+    const j = JSON.parse(String(value || ''));
+    const until = Date.parse(j?.until), at = Date.parse(j?.at);
+    if (!Number.isFinite(until)) return null;
+    return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)) };
+  } catch { return null; }
+}
+// The next pause after a 130429 at `now`: null = the same burst, keep the current pause as it is.
+export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS): { until: number; strikes: number } | null {
+  if (prev && prev.until > now && now - prev.at < SAME_STRIKE_MS) return null;
+  const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? prev.strikes + 1 : 1;
+  return { until: now + Math.min(base * 2 ** (strikes - 1), MAX_PAUSE_MS), strikes };
+}
+// How far apart order messages go now: the normal SEND_EVERY_MS, wider while the last 130429 is under two hours old.
+export function sendEveryFor(state: PauseState | null, now: number, base = SEND_EVERY_MS): number {
+  if (!state || now - state.at >= STRIKE_WINDOW_MS) return base;
+  return Math.min(base * 2 ** state.strikes, MAX_SEND_EVERY_MS);
+}
 export function isRateLimited(code: number | null | undefined, error?: string | null): boolean {
   return code === RATE_LIMIT_CODE || /^\s*130429\b/.test(String(error || ''));
 }

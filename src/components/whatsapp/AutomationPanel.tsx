@@ -132,7 +132,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={() => void load(true)}><RefreshCw size={13} /> Refresh</button>
         </div>
         <p style={{ fontSize: '0.8125rem', margin: 0, color: 'var(--fg-muted)' }}>
-          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, one every 30 seconds (2 a minute), so Meta does not block the number for sending too fast.
+          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, one every 30 seconds (2 a minute; 1 a minute for two hours after Meta refuses one), so Meta does not block the number for sending too fast. ShipTrack&apos;s alerts (chargeback first) go before any order message.
         </p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8125rem', alignItems: 'center' }}>
           <span>Template <code>order_placed</code>: <span className={`chip ${tplTone(o.templates.placed)}`}>{o.templates.placed}</span></span>
@@ -146,9 +146,14 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             ? <><strong>One message per order:</strong> the first message carries the tracking link (order_placed_link); the 48-hour tracking message is no longer sent for new orders.</>
             : <>Two messages per order now. To send ONE (order placed + tracking link), make the template with the button &quot;Order placed + tracking link (one message)&quot; in Templates; once Meta says APPROVED the automation switches by itself.</>}
         </div>
+        {(o.sendEveryMs ?? 30000) > 30000 && !o.paused && (
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
+            <strong>Going slower for now:</strong> one order message a minute (instead of 2), because Meta refused messages (130429) in the last 2 hours. Back to 2 a minute by itself after 2 quiet hours.
+          </div>
+        )}
         {o.paused && (
           <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
-            <strong>Paused until {new Date(o.paused.until).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' })}:</strong> Meta said too many messages went from this number in a short time (130429). Nothing is lost: the messages wait and go again by themselves, spaced out.
+            <strong>Paused until {new Date(o.paused.until).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' })}:</strong> Meta said too many messages went from this number in a short time (130429). Nothing is lost: the messages wait and go again by themselves, spaced out. Each new refusal within 2 hours doubles the pause (15, 30, 60, up to 120 minutes). Chargeback and other ShipTrack alerts and test messages still go at once (alerts first: order messages wait while one waits); the automatic &quot;help is by email&quot; reply waits.
           </div>
         )}
         {(o.templates.placed === 'MISSING' || o.templates.tracking === 'MISSING') && (

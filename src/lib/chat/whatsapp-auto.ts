@@ -14,13 +14,14 @@ import { loadBrands } from './whatsapp-brands';
 import { loadHolidays } from './holidays';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  AUTO_PREFIX, BATCH, FRESH_MS, LINK_TEMPLATE, MAX_ATTEMPTS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
+  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_TEMPLATE, MAX_ATTEMPTS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
   autoKey, autoValue, dueNow, eligibleFrom, isRateLimited, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
   type AutoSetting, type BrandWords, type OrderFacts,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
-import { pauseWhatsApp, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { alertsWaiting } from './whatsapp-alert-queue';
 
 export type Kind = 'placed' | 'tracking';
 const STATUSES = ['pending', 'sent', 'delivered', 'read', 'failed', 'skipped'] as const;
@@ -100,6 +101,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     // Meta's rate limit (130429): nothing is sent while the number is paused; new orders are still queued. When the pause
     // is over, the messages that failed with it (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
     let paused = !!(await whatsAppPause(nowMs));
+    // ShipTrack's alerts go first (owner 2026-10-15, "chargeback sabse pehle"): while one waits, no order message goes.
+    const alertsFirst = (await alertsWaiting()) > 0;
     if (!paused) {
       await query(
         `UPDATE wa_auto_sends SET status = 'pending', due_at = now(), updated_at = now()
@@ -107,6 +110,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         [130429, RATE_MAX_ATTEMPTS]).catch((e) => console.error('[wa-auto] requeue:', (e as Error).message));
     }
     out.paused = paused;
+    // the gap between two order messages: 30 s, wider for two hours after a 130429 (whatsapp-auto-rules.ts sendEveryFor)
+    const every = await sendEvery(nowMs);
     // numbers whose customer wrote STOP (whatsapp-stop.ts): never messaged
     const stopped = await stoppedNumbers().catch(() => new Set<string>());
 
@@ -139,7 +144,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         out.queued++;
       }
 
-      if (paused) continue;
+      if (paused || alertsFirst) continue;
       // 2. due rows, a few a minute: order-placed first; tracking rows only while the office is open and Meta has
       // approved that template (a pile of waiting tracking rows must never hold back today's order-placed messages)
       const trackingCanGo = isOfficeHours(nowMs, holidays) && !!approved(list, TRACKING_TEMPLATE);
@@ -191,7 +196,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
           out.failed++; continue;
         }
         // Slow and steady (owner 2026-10-15): one order message per 30 s for the whole install; no slot = this run stops
-        if (!(await takeSendSlot())) break;
+        if (!(await takeSendSlot(every))) break;
         // The server runs two processes: claim the row first (only one of them gets it) so nobody is messaged twice.
         const claim = await query(
           `UPDATE wa_auto_sends SET due_at = now() + interval '30 minutes', updated_at = now()
@@ -260,6 +265,7 @@ export interface AutoOverview {
   installed: boolean; configured: boolean;
   templates: { placed: string; tracking: string; link: string; error: string | null };
   paused: { until: string; reason: string } | null;
+  sendEveryMs?: number;
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -331,6 +337,7 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   return {
     installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), link: stateOf(LINK_TEMPLATE), error },
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
+    sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
   };
 }
@@ -353,6 +360,7 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   const digits = waDigits(to);
   if (!digits) return { error: 'Type the WhatsApp number (10 digits = India)' };
   if (!waConfigured()) return { error: 'WhatsApp is not set up on the server (token / phone number id)' };
+  // A test goes at once, pause or not (owner 2026-10-15: "test message sabse pehle jaye"); Meta's answer is shown.
   const { list, error } = await templateStates(Date.now(), true);
   if (!list) return { error: error || 'Could not read the templates' };
   const brand = (await loadBrands().catch(() => [])).find((b) => b.id === panelId);
