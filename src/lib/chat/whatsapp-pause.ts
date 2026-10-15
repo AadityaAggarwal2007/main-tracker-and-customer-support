@@ -4,7 +4,7 @@
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
 import { query, queryOne } from '@/lib/db';
-import { MAX_STRIKES, SEND_EVERY_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
+import { MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, STRIKE_WINDOW_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
 export interface WaPause { until: number; reason: string }
@@ -62,6 +62,43 @@ export async function sendEvery(now = Date.now()): Promise<number> {
 }
 
 export function forgetPauseCache(): void { cache = null; }
+
+async function writePause(value: Record<string, unknown>): Promise<void> {
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [KEY, JSON.stringify(value)]);
+  cache = null;
+}
+
+// "Pause now" from the Automation tab (owner 2026-10-15, "pause ka koi option"): no order message for 15 / 30 / 60 / 120
+// minutes. It never counts as Meta's refusal: the strikes and the time of Meta's last 130429 are kept as they were (none =
+// a time 2 hours back, so nothing goes slower afterwards). Alerts and tests still go, as in Meta's pause.
+export async function manualPause(minutes: number, by: string, now = Date.now()): Promise<number | null> {
+  if (!MANUAL_PAUSE_MIN.includes(minutes)) return null;
+  const prev = await pauseState();
+  const until = Math.max(now + minutes * 60_000, prev && prev.until > now ? prev.until : 0);
+  await writePause({
+    until: new Date(until).toISOString(), reason: `Paused by ${by}`.slice(0, 200),
+    at: new Date(prev ? prev.at : now - STRIKE_WINDOW_MS).toISOString(), strikes: prev ? prev.strikes : 1,
+    manual: true, by: by.slice(0, 60),
+  });
+  console.warn(`[whatsapp] sending paused by hand until ${new Date(until).toISOString()} (${by})`);
+  return until;
+}
+
+// "Resume now": the pause ends at once (Meta's or one by hand). The strikes stay, so after a Meta pause messages still
+// go 1 a minute for the rest of the 2 hours and a new refusal still makes the next pause longer. false = nothing paused.
+export async function resumeNow(by: string, now = Date.now()): Promise<boolean> {
+  const prev = await pauseState();
+  if (!prev || prev.until <= now) return false;
+  await writePause({
+    until: new Date(now).toISOString(), reason: prev.reason, at: new Date(prev.at).toISOString(), strikes: prev.strikes,
+    ...(prev.manual ? { manual: true, by: prev.by || '' } : {}), resumedBy: by.slice(0, 60),
+  });
+  console.warn(`[whatsapp] sending resumed by hand (${by})`);
+  return true;
+}
 
 // The send slot (owner 2026-10-15, "har minute 1 ya 2 msg"): one automation message per SEND_EVERY_MS for the whole
 // install. `wa_send_slot` holds when the last one was let through; taking the slot is one UPDATE that only one process

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Moon, Power, RefreshCw, Search, Sun } from 'lucide-react';
 import { SECTION, spin, type Alert, type AutoOverview } from './types';
+import PauseStatusCard from './PauseStatusCard';
 import {
   SHOW_LABELS, TIME_LABELS, countByPanel, countByShow, countByTime, filterOrders, groupOrders, hourBuckets, istDate, isNight, reasonCounts, whyLine,
   type AutoShow, type AutoTime,
@@ -71,6 +72,16 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
       onAlert('success', enabled ? `${name}: automation is ON` : `${name}: automation is OFF`);
       await load();
     } finally { setBusy(''); }
+  };
+  // Pause now / Resume now (owner 2026-10-15)
+  const pauseAct = async (body: Record<string, unknown>, okText: string) => {
+    setBusy('pause');
+    try {
+      const r = await fetch('/api/whatsapp/automation', { method: 'POST', headers: auth, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) onAlert('error', j.error || 'Could not do that'); else { onAlert('success', okText); await load(); }
+    } catch { onAlert('error', 'Could not do that'); }
+    finally { setBusy(''); }
   };
   const retry = async (id: string) => {
     setBusy('r' + id);
@@ -146,20 +157,10 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             ? <><strong>One message per order:</strong> the first message carries the tracking link (order_placed_link); the 48-hour tracking message is no longer sent for new orders.</>
             : <>Two messages per order now. To send ONE (order placed + tracking link), make the template with the button &quot;Order placed + tracking link (one message)&quot; in Templates; once Meta says APPROVED the automation switches by itself.</>}
         </div>
-        {(o.sendEveryMs ?? 30000) > 30000 && !o.paused && (
-          <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
-            <strong>Going slower for now:</strong> one order message a minute (instead of 2), because Meta refused messages (130429) in the last 2 hours. Back to 2 a minute by itself after 2 quiet hours.
-          </div>
-        )}
-        {(o.alertsWaiting ?? 0) > 0 && (
-          <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
-            <strong>{o.alertsWaiting} ShipTrack alert{o.alertsWaiting === 1 ? '' : 's'} waiting to go:</strong> order messages wait until they are sent (alerts first).
-          </div>
-        )}
-        {o.paused && (
-          <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>
-            <strong>Paused until {new Date(o.paused.until).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' })}:</strong> Meta said too many messages went from this number in a short time (130429). Nothing is lost: the messages wait and go again by themselves, spaced out. Each new refusal within 2 hours doubles the pause (15, 30, 60, up to 120 minutes). Chargeback and other ShipTrack alerts and test messages still go at once (alerts first: order messages wait while one waits); the automatic &quot;help is by email&quot; reply waits.
-          </div>
+        {o.pauseInfo && (
+          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'}
+            onPause={(m) => void pauseAct({ action: 'pause', minutes: m }, `Order messages paused for ${m} minutes`)}
+            onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')} />
         )}
         {(o.templates.placed === 'MISSING' || o.templates.tracking === 'MISSING') && (
           <div className="meta" style={{ fontSize: '0.78rem' }}>Make the missing one in Templates (the buttons &quot;Order placed template&quot; and &quot;Tracking link template&quot; fill it), send it to Meta, and come back when it says APPROVED.</div>
