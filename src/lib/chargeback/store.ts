@@ -1,5 +1,7 @@
 import { query, queryOne } from '@/lib/db';
-import { GATEWAY_KEYS, WHATSAPP_NUMBERS_MAX, chargebackKind, orderCandidates, orderForms, whatsappNumbers, type ChargebackKind } from './parse';
+import { GATEWAY_KEYS, WHATSAPP_NUMBERS_MAX, chargebackKind, gatewayKeyOf, orderCandidates, orderForms, whatsappNumbers, type ChargebackKind } from './parse';
+import { groupCases } from './cases';
+import { matchByContact } from './risk';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 
 // ── Chargeback data (chargeback.sql) ──────────────────────────────────────────────────────────
@@ -18,21 +20,40 @@ export interface AlertRow {
   kind: ChargebackKind;
   // How the panel was chosen when two panels share the Gmail (routing.ts); null on a single-panel mailbox or before chargeback-shared.sql.
   routed_by?: string | null;
-  // The other panels using the same chargeback Gmail: where an alert can be moved by hand.
+  // The other panels using the same chargeback Gmail, or ticking the mail's gateway: where an alert can be moved by hand.
   alt_panels?: { id: string; name: string }[];
+  // One card per chargeback case (owner 2026-10-15, cases.ts): this row is the case's NEWEST mail; `mails` = how many
+  // mails the gateway sent for it (the first notice + reminders), `mail_ids` all of them (Mark done / Move act on all),
+  // `first_at` when the first came, `done_mails` how many were already marked done (a reminder after Done reopens it).
+  mails?: number; mail_ids?: string[]; first_at?: string; done_mails?: number;
+  // The mail's gateway is not ticked in this panel's checklist but is in another panel's (owner 2026-10-15: a PayGlocal
+  // mail in vastora's Gmail, vastora uses Easebuzz): those panels, to check and move it.
+  gateway_elsewhere?: { id: string; name: string }[];
 }
 
+export interface CaseCounts { installed: boolean; new: number; open: number; mails: number; panels: { id: string; name: string; open: number }[] }
+
 // scope: the panels the login may see (null = every panel; the Manager limited to some panels, owner 2026-10-10).
-export async function alertCounts(scope: string[] | null = null): Promise<{ installed: boolean; new: number; open: number }> {
+// Counted per CASE (cases.ts): five reminders of one dispute are one pending chargeback; `mails` = the mails behind them.
+export async function alertCounts(scope: string[] | null = null): Promise<CaseCounts> {
   try {
     // The open rows are few (a chargeback is rare, and Done takes it out); their words decide what counts.
-    const r = await query<{ status: string; subject: string; snippet: string }>(
-      `SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done' AND ($1::text[] IS NULL OR business_id = ANY($1::text[]))`, [scope]);
+    const r = await query<{ id: string; business_id: string; panel_name: string | null; gateway: string; order_id: string | null; received_at: string; status: string; subject: string; snippet: string }>(
+      `SELECT a.id, a.business_id, b.name AS panel_name, a.gateway, a.order_id, a.received_at, a.status, a.subject, a.snippet
+         FROM chargeback_alerts a LEFT JOIN businesses b ON b.id::text = a.business_id
+        WHERE a.status <> 'done' AND ($1::text[] IS NULL OR a.business_id = ANY($1::text[]))`, [scope]);
     const real = r.rows.filter(a => chargebackKind(a.subject, a.snippet) === 'chargeback');
-    return { installed: true, new: real.filter(a => a.status === 'new').length, open: real.length };
+    const cases = groupCases(real);
+    const panels: CaseCounts['panels'] = [];
+    for (const g of cases) {
+      const p = panels.find(x => x.id === g[0].business_id);
+      if (p) p.open++; else panels.push({ id: g[0].business_id, name: g[0].panel_name || 'Panel', open: 1 });
+    }
+    panels.sort((a, b) => b.open - a.open || a.name.localeCompare(b.name));
+    return { installed: true, new: cases.filter(g => g.some(a => a.status === 'new')).length, open: cases.length, mails: real.length, panels };
   } catch (e) {
     if (!missing(e)) console.error('[chargeback] counts:', (e as Error).message);
-    return { installed: !missing(e), new: 0, open: 0 };
+    return { installed: !missing(e), new: 0, open: 0, mails: 0, panels: [] };
   }
 }
 
@@ -58,41 +79,110 @@ async function sharingMap(): Promise<Record<string, { id: string; name: string }
   return out;
 }
 
-export type AlertView = 'open' | 'done' | 'all' | 'other';
-// Open / Done / All list the real chargebacks; Other lists the gateway's other mail from the same Gmail (any status).
-export async function listAlerts(view: AlertView, limit = 100, scope: string[] | null = null): Promise<{ installed: boolean; alerts: AlertRow[] }> {
-  const args = [view, Math.min(Math.max(limit, 1), 200), scope];
+// Each panel's ticked gateways (Settings > Chargeback protection, step 3) with its name. A failure = no ticks known.
+async function gatewayTicks(): Promise<{ id: string; name: string; keys: Set<string> }[]> {
   try {
-    let rows: AlertRow[];
-    try { rows = (await query<AlertRow>(LIST_SQL(', a.routed_by'), args)).rows; }
+    const r = await query<{ business_id: string; name: string | null; gateways: Record<string, { done?: boolean } | undefined> | null }>(
+      `SELECT p.business_id, b.name, p.gateways FROM panel_chargeback p LEFT JOIN businesses b ON b.id::text = p.business_id`);
+    return r.rows.map(x => ({ id: x.business_id, name: x.name || 'Panel',
+      keys: new Set(Object.entries(x.gateways || {}).filter(([, v]) => v?.done === true).map(([k]) => k)) }));
+  } catch { return []; }
+}
+
+// The panels (other than the alert's) that tick the mail's gateway, when the alert's own panel ticks other gateways but
+// not this one. Nothing when the gateway is unknown or the panel ticked nothing (nobody filled the checklist yet).
+function gatewayElsewhere(a: { business_id: string; gateway: string }, ticks: { id: string; name: string; keys: Set<string> }[]): { id: string; name: string }[] {
+  const key = gatewayKeyOf(a.gateway);
+  if (key === 'other') return [];
+  const own = ticks.find(t => t.id === a.business_id);
+  if (!own || own.keys.size === 0 || own.keys.has(key)) return [];
+  return ticks.filter(t => t.id !== a.business_id && t.keys.has(key)).map(t => ({ id: t.id, name: t.name }));
+}
+
+export type AlertView = 'open' | 'done' | 'all' | 'other';
+// Open / Done / All list the real chargebacks, ONE card per case (cases.ts): a case is Open while any of its mails is
+// not done (a reminder after Done brings it back), Done when every mail is. Other lists the gateway's other mail from
+// the same Gmail (any status), one row per mail.
+export async function listAlerts(view: AlertView, limit = 100, scope: string[] | null = null): Promise<{ installed: boolean; alerts: AlertRow[] }> {
+  const read = async (v: AlertView, n: number): Promise<AlertRow[]> => {
+    const args = [v, Math.min(Math.max(n, 1), 400), scope];
+    try { return (await query<AlertRow>(LIST_SQL(', a.routed_by'), args)).rows; }
     catch (e) {
       // routed_by exists only after chargeback-shared.sql: before it, the list is the same without it.
       if ((e as { code?: string })?.code !== '42703') throw e;
-      rows = (await query<AlertRow>(LIST_SQL(''), args)).rows;
+      return (await query<AlertRow>(LIST_SQL(''), args)).rows;
+    }
+  };
+  try {
+    let rows = await read(view, view === 'open' || view === 'done' ? 200 : 400);
+    // The other side, so a case's mails are all in one card: Open needs the case's done mails, Done its open ones.
+    if (view === 'open' || view === 'done') {
+      const seen = new Set(rows.map(a => a.id));
+      for (const a of await read(view === 'open' ? 'done' : 'open', 300)) if (!seen.has(a.id)) rows.push(a);
     }
     for (const a of rows) a.kind = chargebackKind(a.subject, a.snippet);
     rows = rows.filter(a => view === 'other' ? a.kind === 'other' : a.kind === 'chargeback');
-    const share = await sharingMap();
-    for (const a of rows) a.alt_panels = share[a.business_id] ?? [];
-    return { installed: true, alerts: rows };
+    let out: AlertRow[];
+    if (view === 'other') {
+      out = rows.map(a => ({ ...a, mails: 1, mail_ids: [a.id], first_at: a.received_at, done_mails: a.status === 'done' ? 1 : 0 }));
+    } else {
+      out = [];
+      for (const g of groupCases(rows)) {
+        const open = g.filter(a => a.status !== 'done');
+        if (view === 'open' && open.length === 0) continue;
+        if (view === 'done' && open.length > 0) continue;
+        // The card: the newest mail's words; the case's status from its open mails (New while any is unopened).
+        const head = { ...g[0] };
+        if (open.length) {
+          head.status = open.some(a => a.status === 'new') ? 'new' : 'seen';
+          head.done_by_name = null; head.done_at = null;
+        }
+        head.order_id = g.find(a => a.order_id)?.order_id ?? null;
+        head.chat_id = g.find(a => a.chat_id)?.chat_id ?? null;
+        if (!head.note) head.note = g.find(a => a.note)?.note ?? null;
+        if (!head.done_by_name && !open.length) head.done_by_name = g.find(a => a.done_by_name)?.done_by_name ?? null;
+        head.mails = g.length; head.mail_ids = g.map(a => a.id);
+        head.first_at = g[g.length - 1].received_at; head.done_mails = g.length - open.length;
+        out.push(head);
+      }
+      out.sort((x, y) => Number(y.status === 'new') - Number(x.status === 'new') || Date.parse(y.received_at) - Date.parse(x.received_at));
+    }
+    out = out.slice(0, Math.min(Math.max(limit, 1), 200));
+    const [share, ticks] = await Promise.all([sharingMap(), gatewayTicks()]);
+    for (const a of out) {
+      a.gateway_elsewhere = gatewayElsewhere(a, ticks);
+      const alt = [...(share[a.business_id] ?? [])];
+      for (const p of a.gateway_elsewhere) if (!alt.some(x => x.id === p.id)) alt.push(p);
+      a.alt_panels = alt;
+    }
+    return { installed: true, alerts: out };
   } catch (e) {
     if (missing(e)) return { installed: false, alerts: [] };
     throw e;
   }
 }
 
-// "Move to <panel>": a Super Admin's correction when the panel was unsure. Only to a panel reading the same Gmail; the
-// order is looked up again in the new panel (an order number can exist in both).
+// "Move to <panel>": a Super Admin's correction. Only to a panel reading the same Gmail, or (owner 2026-10-15) a panel
+// whose checklist ticks the mail's gateway. The order is looked up again in the new panel (an order number can exist in
+// both): by the number in the mail, else ONE order of the customer's email / phone there (risk.ts, as the poller does).
 export async function setAlertPanel(id: string, businessId: string): Promise<{ ok: boolean; status?: number; error?: string }> {
   if (!/^[0-9a-f-]{36}$/i.test(id) || !businessId) return { ok: false, status: 400, error: 'id and businessId are required' };
-  const a = await queryOne<{ business_id: string; subject: string; snippet: string; email: string | null }>(
-    `SELECT a.business_id, a.subject, a.snippet, (SELECT lower(email) FROM chargeback_mailboxes WHERE id = a.mailbox_id) AS email FROM chargeback_alerts a WHERE a.id = $1`, [id]);
+  const a = await queryOne<{ business_id: string; subject: string; snippet: string; gateway?: string; received_at?: string; email: string | null }>(
+    `SELECT a.business_id, a.subject, a.snippet, a.gateway, a.received_at, (SELECT lower(email) FROM chargeback_mailboxes WHERE id = a.mailbox_id) AS email FROM chargeback_alerts a WHERE a.id = $1`, [id]);
   if (!a) return { ok: false, status: 404, error: 'Alert not found.' };
-  const share = await sharingMap();
   if (a.business_id === businessId) return { ok: true };
-  if (!(share[a.business_id] ?? []).some(p => p.id === businessId)) return { ok: false, status: 400, error: 'That panel does not use this Gmail.' };
+  const share = await sharingMap();
+  const sameGmail = (share[a.business_id] ?? []).some(p => p.id === businessId);
+  const byGateway = !sameGmail && a.gateway ? gatewayElsewhere({ business_id: a.business_id, gateway: a.gateway }, await gatewayTicks()).some(p => p.id === businessId) : false;
+  if (!sameGmail && !byGateway) return { ok: false, status: 400, error: 'That panel does not use this Gmail or this gateway.' };
   const forms = orderForms(orderCandidates(a.subject, a.snippet));
-  const o = forms.length ? await queryOne<{ order_id: string }>(`SELECT order_id FROM orders WHERE business_id::text = $1::text AND order_id = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`, [businessId, forms]) : null;
+  let o = forms.length ? await queryOne<{ order_id: string }>(`SELECT order_id FROM orders WHERE business_id::text = $1::text AND order_id = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`, [businessId, forms]) : null;
+  if (!o) {
+    try {
+      const m = await matchByContact([businessId], `${a.subject}\n${a.snippet}`, a.received_at ? Date.parse(a.received_at) : Date.now());
+      if (m.length === 1) o = { order_id: m[0].order_id };
+    } catch (e) { console.error('[chargeback] move match:', (e as Error).message); }
+  }
   await query(`UPDATE chargeback_alerts SET business_id = $2, order_id = $3, routed_by = 'manual' WHERE id = $1`, [id, businessId, o?.order_id ?? null]);
   return { ok: true };
 }

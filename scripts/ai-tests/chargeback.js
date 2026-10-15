@@ -31,7 +31,8 @@ const db = {
     if (/lower\(m\.email\) AS email/.test(sql)) { const rows = S.boxes.map((b) => ({ business_id: b.business_id, email: b.email.toLowerCase(), name: b.panel_name })); return { rows, rowCount: rows.length }; }
     if (/FROM chargeback_mailboxes m/.test(sql)) return { rows: S.boxes, rowCount: S.boxes.length };
     const withStatus = () => S.alerts.map((a) => ({ status: 'new', from_name: '', ...a, panel_name: a.business_id }));
-    if (/SELECT status, subject, snippet FROM chargeback_alerts WHERE status <> 'done'/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done'); return { rows, rowCount: rows.length }; }
+    if (/SELECT a\.id, a\.business_id, b\.name AS panel_name, a\.gateway, a\.order_id, a\.received_at, a\.status/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done' && (!p[0] || p[0].includes(a.business_id))); return { rows, rowCount: rows.length }; }
+    if (/FROM panel_chargeback p LEFT JOIN businesses/.test(sql)) { const rows = S.gwRows.map((g) => ({ name: g.business_id, ...g })); return { rows, rowCount: rows.length }; }
     if (/FROM chargeback_alerts a LEFT JOIN businesses/.test(sql)) { const rows = withStatus().filter((a) => p[0] === 'all' || p[0] === 'other' || (p[0] === 'open' ? a.status !== 'done' : a.status === 'done')); return { rows, rowCount: rows.length }; }
     if (/SELECT business_id, order_id, subject, snippet FROM chargeback_alerts/.test(sql)) { const rows = withStatus().filter((a) => a.status !== 'done' && p[0].includes(a.order_id) && p[1].includes(a.business_id)); return { rows, rowCount: rows.length }; }
     if (/FROM orders\s+WHERE business_id::text = ANY/.test(sql)) { const rows = S.orders.filter((o) => p[0].includes(o.panel) && p[1].includes(o.order_id)).map((o) => ({ business_id: o.panel, order_id: o.order_id })); return { rows, rowCount: rows.length }; }
@@ -216,7 +217,7 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
   });
   await t('routes: counts and list work before the SQL is applied (installed:false, no error), PATCH validates its body', async () => {
     S.missing = true;
-    let d = await (await routeCb.GET(req('GET', '/api/chargebacks?counts=1'))).json(); assert.deepStrictEqual(d, { installed: false, new: 0, open: 0 });
+    let d = await (await routeCb.GET(req('GET', '/api/chargebacks?counts=1'))).json(); assert.deepStrictEqual(d, { installed: false, new: 0, open: 0, mails: 0, panels: [] });
     d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=open'))).json(); assert.strictEqual(d.installed, false); assert.deepStrictEqual(d.alerts, []);
     assert.strictEqual((await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: 'x', status: 'gone' }))).status, 400);
     assert.strictEqual((await routeCb.PATCH(req('PATCH', '/api/chargebacks', { status: 'done' }))).status, 400);
@@ -392,7 +393,63 @@ const t = async (name, fn) => { reset(); S.wa = 'sent'; authState.user = { role:
     assert.strictEqual((await store.openChargebackKeys([{ business_id: 'bizVast', order_id: '#1553' }])).size, 0, 'a payment mail never tags the chat');
     S.alerts = [real];
     assert.strictEqual((await store.openChargebackKeys([{ business_id: 'bizVast', order_id: '#1553' }])).size, 1);
-    assert.deepStrictEqual(await store.alertCounts(), { installed: true, new: 1, open: 1 });
+    assert.deepStrictEqual(await store.alertCounts(), { installed: true, new: 1, open: 1, mails: 1, panels: [{ id: 'bizVast', name: 'bizVast', open: 1 }] });
+  });
+
+  await t('cases (owner 15 Oct): the gateway id, the order or the amount subject joins the reminders of one dispute; two disputes never join by guess', () => {
+    const c = require(path.join(SRC, 'lib/chargeback/cases.ts'));
+    assert.strictEqual(c.caseRef('1 chargeback case needs your attention, INR 191.20 at risk', 'Case ID: cb_9xK2LmQ7aa Merchant BLUEWAVE'), 'cb_9xk2lmq7aa');
+    assert.strictEqual(c.caseRef('PayU Chargeback Notification', 'PayU ID: 31140208355 Amount 1499'), '31140208355');
+    assert.strictEqual(c.caseRef('Chargeback raised', 'Transaction E26092216UJOYK disputed'), 'e26092216ujoyk');
+    assert.strictEqual(c.caseRef('Chargeback Notification', 'A chargeback has been raised. Respond soon.'), null, 'no id: never a word like "Notification"');
+    assert.strictEqual(c.baseSubject('Reminder: 1 chargeback case needs your attention, INR 191.20 at risk'), '1 chargeback case needs your attention, inr 191.20 at risk');
+    assert.strictEqual(c.baseSubject('Re: Fwd: Final reminder - Dispute #22'), 'dispute #22');
+    const m = (id, subject, snippet, extra) => ({ id, business_id: 'b1', gateway: 'PayGlocal', order_id: null, subject, snippet, received_at: '2026-10-1' + id + 'T10:00:00Z', ...extra });
+    const g = c.groupCases([
+      m('5', 'Reminder: 1 chargeback case needs your attention, INR 191.20 at risk', 'Case cb_AAAA1111'),
+      m('3', '1 chargeback case needs your attention, INR 191.20 at risk', 'Case cb_AAAA1111'),
+      m('4', '1 chargeback case needs your attention, INR 191.20 at risk', 'Case cb_BBBB2222'),
+      m('2', 'Chargeback Notification', 'raised', { order_id: '#1553' }),
+      m('1', 'Chargeback Notification', 'raised again', { order_id: '1553' }),
+      m('0', 'Chargeback Notification', 'no id'), m('6', 'Chargeback Notification', 'no id'),
+      m('7', 'Reminder: chargeback INR 500 at risk', 'x'), m('8', 'chargeback INR 500 at risk', 'x'),
+      m('9', 'chargeback INR 500 at risk', 'x', { business_id: 'b2' }),
+    ]);
+    assert.deepStrictEqual(g.map((x) => x.map((r) => r.id)), [['5', '3'], ['4'], ['2', '1'], ['0'], ['6'], ['8', '7'], ['9']]);
+  });
+  await t('cases in the list and the counts: one card per case with its mails, Mark done closes them all, a reminder after Done reopens it; a gateway not ticked on the panel is flagged and can be moved to the panel that ticks it', async () => {
+    authState.user = { role: 'admin', username: 'owner', displayName: 'Super Admin' };
+    S.missing = false; S.boxes = [{ id: 'mb1', business_id: 'bizVast', email: 'cb.vastora@gmail.com', app_password: 'x', last_uid: 5, panel_name: 'vastora' }];
+    const pg = (id, st, day) => ({ id: `00000000-0000-4000-8000-00000000000${id}`, business_id: 'bizVast', gateway: 'PayGlocal', order_id: null, status: st, subject: `${day > 1 ? 'Reminder: ' : ''}1 chargeback case needs your attention, INR 191.20 at risk`, snippet: 'Case ID: cb_AAAA1111 BLUEWAVE', received_at: `2026-10-1${day}T10:00:00Z`, mailbox_id: 'mb1' });
+    S.alerts = [pg(1, 'done', 1), pg(2, 'new', 2), pg(3, 'seen', 3),
+      { id: '00000000-0000-4000-8000-000000000009', business_id: 'bizVast', gateway: 'Easebuzz', order_id: '#1553', status: 'seen', subject: 'Chargeback raised', snippet: 'E26092216UJOYK disputed', received_at: '2026-10-12T09:00:00Z' }];
+    S.gwRows = [{ business_id: 'bizVast', gateways: { easebuzz: { done: true } } }, { business_id: 'bizKurt', gateways: { payglocal: { done: true } } }];
+    let d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=open'))).json();
+    assert.strictEqual(d.alerts.length, 2, 'three PayGlocal mails = one card');
+    const card = d.alerts.find((a) => a.gateway === 'PayGlocal');
+    assert.strictEqual(card.mails, 3); assert.strictEqual(card.done_mails, 1); assert.strictEqual(card.status, 'new'); assert.strictEqual(card.mail_ids.length, 3);
+    assert.strictEqual(card.id, pg(3).id, 'the newest mail is the card'); assert.strictEqual(card.first_at, pg(1, 'done', 1).received_at);
+    assert.deepStrictEqual(card.gateway_elsewhere, [{ id: 'bizKurt', name: 'bizKurt' }]); assert.ok(card.alt_panels.some((p) => p.id === 'bizKurt'), 'can be moved to the panel using PayGlocal');
+    const ez = d.alerts.find((a) => a.gateway === 'Easebuzz');
+    assert.deepStrictEqual(ez.gateway_elsewhere, [], 'Easebuzz is ticked on vastora'); assert.strictEqual(ez.mails, 1);
+    assert.deepStrictEqual(d.counts, { installed: true, new: 1, open: 2, mails: 3, panels: [{ id: 'bizVast', name: 'bizVast', open: 2 }] });
+    d = await (await routeCb.GET(req('GET', '/api/chargebacks?view=done'))).json();
+    assert.strictEqual(d.alerts.length, 0, 'a case with an open reminder is not Done');
+    // Mark done on the card: every mail of the case
+    const done = [];
+    const realQ = db.query;
+    db.query = async (sql, p) => { if (/UPDATE chargeback_alerts SET status = 'done'/.test(sql)) { done.push(p[0]); return { rows: [], rowCount: 1 }; } return realQ(sql, p); };
+    const r = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, ids: card.mail_ids, status: 'done', note: 'answered' }));
+    db.query = realQ;
+    assert.strictEqual(r.status, 200); assert.deepStrictEqual(done.sort(), card.mail_ids.slice().sort());
+    // Move: allowed to the panel ticking PayGlocal although it reads another Gmail; another panel is refused
+    S.alertRow = { business_id: 'bizVast', subject: 'chargeback INR 191.20', snippet: 'cb_AAAA1111', gateway: 'PayGlocal', received_at: '2026-10-13T10:00:00Z', email: 'cb.vastora@gmail.com' }; S.moved = null;
+    let mv = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, businessId: 'bizKurt' }));
+    assert.strictEqual(mv.status, 200); assert.strictEqual(S.moved.business_id, 'bizKurt');
+    S.moved = null; mv = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, businessId: 'bizOther1' }));
+    assert.strictEqual(mv.status, 400); assert.strictEqual(S.moved, null);
+    S.alertRow.gateway = 'Easebuzz'; mv = await routeCb.PATCH(req('PATCH', '/api/chargebacks', { id: card.id, businessId: 'bizKurt' }));
+    assert.strictEqual(mv.status, 400, 'an Easebuzz mail never moves to a panel just because it exists');
   });
 
   global.fetch = realFetch;

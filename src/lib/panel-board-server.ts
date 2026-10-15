@@ -2,6 +2,7 @@ import { query } from '@/lib/db';
 import { CASE_SECTION_SQL, CHAT_SUPPORT_SQL, WAITING_LATERAL, WAITING_SINCE_SQL } from '@/lib/chat/waiting-sql';
 import { WAITING_OVERDUE_HOURS } from '@/lib/chat/waiting';
 import { chargebackKind } from '@/lib/chargeback/parse';
+import { groupCases } from '@/lib/chargeback/cases';
 import { getMailboxStatus } from '@/lib/chat/mailbox-status';
 import { aiHealth, AI_REASON_TEXT, type AiHealth } from '@/lib/chat/ai-health';
 import { loadHolidays } from '@/lib/chat/holidays';
@@ -104,10 +105,12 @@ export async function loadPanelBoard(businessIds: string[] | null, superAdmin: b
   // GET /api/refunds/counts?byPanel=1 and fills refundRequestsNew itself.
   const cbOpen = new Map<string, number>();
   if (superAdmin) {
-    for (const a of await safe('chargebacks', async () => (await query<{ business_id: string; subject: string; snippet: string }>(
-      `SELECT business_id::text AS business_id, subject, snippet FROM chargeback_alerts WHERE status <> 'done' AND business_id::text = ANY($1::text[])`, [ids])).rows, [])) {
-      if (chargebackKind(a.subject, a.snippet) === 'chargeback') cbOpen.set(a.business_id, (cbOpen.get(a.business_id) ?? 0) + 1);
-    }
+    // One per CASE (owner 2026-10-15): a gateway's reminders of the same dispute count once (chargeback/cases.ts).
+    const rows = await safe('chargebacks', async () => (await query<{ id: string; business_id: string; gateway: string | null; order_id: string | null; received_at: string | null; subject: string; snippet: string }>(
+      `SELECT id::text AS id, business_id::text AS business_id, gateway, order_id, received_at, subject, snippet FROM chargeback_alerts WHERE status <> 'done' AND business_id::text = ANY($1::text[])`, [ids])).rows, []);
+    const real = rows.filter(a => chargebackKind(a.subject, a.snippet) === 'chargeback')
+      .map((a, i) => ({ ...a, id: a.id || String(i), gateway: a.gateway || 'Unknown', received_at: a.received_at || '' }));
+    for (const g of groupCases(real)) cbOpen.set(g[0].business_id, (cbOpen.get(g[0].business_id) ?? 0) + 1);
   }
 
   return panels.map(p => {

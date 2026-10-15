@@ -281,6 +281,11 @@ Done and live:
   `order_placed_link` (order placed + tracking link) is approved by Meta; 2 messages a minute for the whole install;
   a 130429 pauses the number 15 min and the messages / alerts wait and go again by themselves; the 59 failed ones go
   back in line. OWNER TO DO: WhatsApp > Templates > "Order placed + tracking link (one message)" > send to Meta.
+- **15 Oct, chargeback reminders + PayGlocal on vastora**: a gateway's reminders of one dispute are now ONE card
+  ("N mails", one Mark done for all) and the tab says "N chargebacks pending" (badge and Today board count cases too).
+  A PayGlocal mail showed on vastora (Easebuzz) because it came into vastora's OWN chargeback Gmail:
+  some PayGlocal account has that Gmail as its dispute email. Now flagged "PayGlocal not on this panel" with Move to
+  kurtiya (the panel that ticks PayGlocal). OWNER TO CHECK: which brand that PayGlocal merchant / MID is.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
