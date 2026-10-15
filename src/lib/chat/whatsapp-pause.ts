@@ -4,7 +4,7 @@
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
 import { query, queryOne } from '@/lib/db';
-import { MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, STRIKE_WINDOW_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
+import { MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, STRIKE_WINDOW_MS, firstAfterQuietOf, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
 export interface WaPause { until: number; reason: string }
@@ -31,22 +31,26 @@ export async function whatsAppPause(now = Date.now()): Promise<WaPause | null> {
 
 // Pause the number after a 130429. `ms` given = exactly that long (tests); else the strikes decide (nextPause: 15, 30,
 // 60, 120 minutes; a 130429 while the pause runs is the same burst and counts once). Returns when the number may send again.
-export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number, sentAt?: number | null): Promise<number> {
+// quietBefore (owner 2026-10-15): the caller looked and found no order message in the 10 minutes before the refused one;
+// with that, or a message sent within 2 minutes of the previous pause's end, the pause carries `firstAfterQuiet` (the
+// Number status box: "not our speed", whatsapp-auto-rules.ts FIRST_AFTER_QUIET_TEXT).
+export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number, sentAt?: number | null, quietBefore = false): Promise<number> {
   const prev = await pauseState();
   const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1 } : nextPause(prev, now, undefined, sentAt);
   if (!next) {                                                     // the same burst: the pause already ran / runs
     if (prev && sentAt != null && prev.until <= now) console.warn(`[whatsapp] late 130429 report for a message sent ${Math.round((now - sentAt) / 60000)} min ago, before the last pause ended: not a new refusal`);
     return prev!.until;
   }
+  const firstAfterQuiet = firstAfterQuietOf(prev, sentAt, quietBefore);
   const until = new Date(next.until).toISOString();
-  const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString(), strikes: next.strikes });
+  const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString(), strikes: next.strikes, ...(firstAfterQuiet ? { firstAfterQuiet: true } : {}) });
   cache = { at: now, pause: { until: next.until, reason } };
   try {
     await query(
       `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
       [KEY, value]);
-    console.warn(`[whatsapp] sending paused until ${until} (strike ${next.strikes}): ${reason.slice(0, 120)}`);
+    console.warn(`[whatsapp] sending paused until ${until} (strike ${next.strikes}${firstAfterQuiet ? ', the FIRST message after a quiet stretch: not our speed' : ''}): ${reason.slice(0, 120)}`);
   } catch (e) { console.error('[whatsapp] pause:', (e as Error).message); }
   return next.until;
 }
@@ -84,7 +88,7 @@ export async function manualPause(minutes: number, by: string, now = Date.now())
   await writePause({
     until: new Date(until).toISOString(), reason: `Paused by ${by}`.slice(0, 200),
     at: new Date(prev ? prev.at : now - STRIKE_WINDOW_MS).toISOString(), strikes: prev ? prev.strikes : 1,
-    manual: true, by: by.slice(0, 60),
+    manual: true, by: by.slice(0, 60), ...(prev?.firstAfterQuiet ? { firstAfterQuiet: true } : {}),
   });
   console.warn(`[whatsapp] sending paused by hand until ${new Date(until).toISOString()} (${by})`);
   return until;
@@ -97,7 +101,7 @@ export async function resumeNow(by: string, now = Date.now()): Promise<boolean> 
   if (!prev || prev.until <= now) return false;
   await writePause({
     until: new Date(now).toISOString(), reason: prev.reason, at: new Date(prev.at).toISOString(), strikes: prev.strikes,
-    ...(prev.manual ? { manual: true, by: prev.by || '' } : {}), resumedBy: by.slice(0, 60),
+    ...(prev.manual ? { manual: true, by: prev.by || '' } : {}), resumedBy: by.slice(0, 60), ...(prev.firstAfterQuiet ? { firstAfterQuiet: true } : {}),
   });
   console.warn(`[whatsapp] sending resumed by hand (${by})`);
   return true;

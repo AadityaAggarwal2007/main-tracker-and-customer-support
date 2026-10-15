@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
-import { automationOverview, panelExists, resetTemplateCache, retryFailed, saveAuto, sendAutomationTest } from '@/lib/chat/whatsapp-auto';
+import { automationOverview, panelExists, resetTemplateCache, retryFailed, saveAuto, saveLinkMode, sendAutomationTest } from '@/lib/chat/whatsapp-auto';
 import { manualPause, resumeNow } from '@/lib/chat/whatsapp-pause';
 
 export const dynamic = 'force-dynamic';
@@ -16,6 +16,8 @@ export const dynamic = 'force-dynamic';
 // (nothing recorded, no customer messaged).
 // POST { action: 'pause', minutes: 15 | 30 | 60 | 120 }: no order message for that long (owner 2026-10-15, "pause ka
 // option"); POST { action: 'resume' }: the pause (Meta's or one by hand) ends now.
+// POST { action: 'link_mode', on: boolean }: the switch "One message per order" (owner 2026-10-15, "switch ya jo bhi
+// banana h bana"): ON = order_placed_link once Meta approved it, OFF = the two old templates as before.
 
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
@@ -30,9 +32,16 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || !isSuperAdmin(user)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: { businessId?: unknown; enabled?: unknown; action?: unknown; id?: unknown; to?: unknown; name?: unknown; minutes?: unknown };
+  let body: { businessId?: unknown; enabled?: unknown; action?: unknown; id?: unknown; to?: unknown; name?: unknown; minutes?: unknown; on?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   try {
+    if (body.action === 'link_mode') {
+      if (typeof body.on !== 'boolean') return NextResponse.json({ error: 'Send on: true or false' }, { status: 400 });
+      const s = await saveLinkMode(body.on, user.displayName || user.username);
+      resetTemplateCache();
+      const o = await automationOverview();
+      return NextResponse.json({ ok: true, on: s.on, linkMode: o.linkMode });
+    }
     if (body.action === 'retry') {
       const id = String(body.id ?? '');
       if (!/^\d{1,18}$/.test(id)) return NextResponse.json({ error: 'Not a message id' }, { status: 400 });

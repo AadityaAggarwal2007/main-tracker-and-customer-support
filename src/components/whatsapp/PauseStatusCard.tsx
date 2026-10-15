@@ -6,8 +6,9 @@
 // Meta's words, its last refusal, which refusal of the last 2 hours it was, how long the next pause would be; the order
 // messages due now and the alerts waiting. Pause now (15 / 30 / 60 / 120 min) and Resume now. Super Admin only (the tab).
 import { useEffect, useState } from 'react';
-import { Loader2, Pause, Play } from 'lucide-react';
-import type { PauseView } from '@/lib/chat/whatsapp-auto-rules';
+import { AlertTriangle, Loader2, Pause, Play } from 'lucide-react';
+import { FIRST_AFTER_QUIET_TEXT, type PauseView } from '@/lib/chat/whatsapp-auto-rules';
+import type { NumberHealth } from '@/lib/chat/whatsapp-auto';
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 function inText(ms: number): string {
@@ -16,9 +17,13 @@ function inText(ms: number): string {
   return m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`;
 }
 const ordinal = (n: number) => (n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`);
+// Meta's words for the number, as chips: GREEN / CONNECTED are fine, anything else stands out (whatsapp-health-rules.ts).
+const chipTone = (v: string, good: string[]) => (good.includes(v) ? 'chip-ok' : v === 'UNKNOWN' ? 'chip-warn' : 'chip-danger');
+const n = (x: number) => x.toLocaleString('en-IN');
 
-export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, onPause, onResume }: {
+export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, health, onPause, onResume }: {
   info: PauseView; ordersDue: number; alertsWaiting: number; busy: boolean;
+  health?: NumberHealth | null;   // Meta's side of the number (owner 2026-10-15): quality, status, messaging limit
   onPause: (minutes: number) => void; onResume: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -62,6 +67,31 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
         )}
       </div>
       {paused && !info.manual && info.reason && <div className="meta" style={{ fontSize: '0.78rem' }}>Meta said: {info.reason}</div>}
+      {/* the refusal hit the FIRST message after a quiet stretch (owner 2026-10-15): Meta's side, not our speed */}
+      {info.firstAfterQuiet && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>{FIRST_AFTER_QUIET_TEXT}</span>
+        </div>
+      )}
+      {/* Meta's side of the number: what WhatsApp Manager shows, read at most every 5 minutes */}
+      {health && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.78rem' }}>
+          <span className="meta">Meta&apos;s side:</span>
+          <span>quality <span className={`chip ${chipTone(health.quality, ['GREEN'])}`}>{health.quality}</span></span>
+          <span>status <span className={`chip ${chipTone(health.status, ['CONNECTED'])}`}>{health.status}</span></span>
+          <span>
+            messaging limit{' '}
+            <strong>{health.limit ? `${n(health.limit)} customers a day` : health.tier === 'TIER_UNLIMITED' ? 'unlimited' : 'not known'}</strong>
+            {health.limit ? <span className="meta"> ({health.limitFrom === 'meta' ? `Meta's ${health.tier}` : 'typed in WhatsApp > Setup'})</span> : null}
+          </span>
+          <span className="meta">· {n(health.usedToday)} customers messaged today, {n(health.used24h)} in the last 24 h</span>
+          {health.error && <span style={{ color: '#b45309' }}>Could not read the number from Meta: {health.error}</span>}
+        </div>
+      )}
+      {health && health.lines.filter((l) => l.tone !== 'ok').map((l) => (
+        <div key={l.text} style={{ fontSize: '0.78rem', color: l.tone === 'danger' ? 'var(--danger, #b91c1c)' : '#b45309' }}>{l.text}</div>
+      ))}
       {info.lastRefusalAt && (
         <div className="meta" style={{ fontSize: '0.78rem' }}>
           Meta&apos;s last refusal: {time(info.lastRefusalAt)} · the {ordinal(info.strikes)} in the last 2 hours. If Meta refuses again{paused ? ' after it resumes' : ''}, the number stops for {info.nextPauseMin} min.

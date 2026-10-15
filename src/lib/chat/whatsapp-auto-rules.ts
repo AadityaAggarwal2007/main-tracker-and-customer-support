@@ -20,9 +20,40 @@ export const BATCH = 15;                            // sends per minute: Meta's 
 
 // ONE message per order (owner 2026-10-15: "pehle hi message mein saath mein tracking link chala jaye ... double double
 // message ... do do hazar messages"): once Meta has APPROVED the "order_placed_link" template (order placed + the
-// tracking link, the brand-rules preset ORDER_LINK_PRESET) the first message carries the link and the 48-hour tracking
-// message is skipped for that order; until then the two messages go as before. Its values are trackingParams'.
+// tracking link, the brand-rules preset ORDER_LINK_PRESET) AND the switch below is ON (or unset) the first message
+// carries the link and the 48-hour tracking message is skipped for that order; until then the two messages go as before.
+// Its values are trackingParams'.
 export const LINK_TEMPLATE = 'order_placed_link';
+// The switch "One message per order" (owner 2026-10-15, "switch ya jo bhi banana h bana": the link template was APPROVED
+// at 13:44 and the tab said one-message mode was on, yet every 'placed' row of the afternoon went as order_placed): one
+// row in chat_settings `wa_link_mode` = {on, by, at}. No row = ON (the template decides, as before). OFF = the two old
+// messages exactly as before, whatever Meta approved. `linkModeOf` is the ONE place that decides which mode runs, with
+// the reason in words: the worker logs it, the overview shows it, the test send follows it.
+export const LINK_MODE_KEY = 'wa_link_mode';
+export interface LinkModeSetting { on: boolean | null; by: string | null; at: string | null }
+export function parseLinkMode(value: string | null | undefined): LinkModeSetting {
+  try {
+    const j = JSON.parse(String(value || ''));
+    return { on: typeof j?.on === 'boolean' ? j.on : null, by: typeof j?.by === 'string' ? j.by.slice(0, 60) : null, at: typeof j?.at === 'string' ? j.at : null };
+  } catch { return { on: null, by: null, at: null }; }
+}
+export const linkModeValue = (on: boolean, by: string, nowMs: number) => JSON.stringify({ on, by: by.slice(0, 60), at: new Date(nowMs).toISOString() });
+export interface LinkMode {
+  on: boolean;         // the switch (no row = on)
+  approved: boolean;   // Meta has APPROVED order_placed_link
+  active: boolean;     // on AND approved = the first message carries the link, the 48-hour message is skipped
+  reason: string;      // which mode runs and why, in words (the [wa-auto] log line and the Automation tab)
+  template: { name: string; language: string } | null;
+}
+export function linkModeOf(setting: LinkModeSetting | null, link: { name: string; language: string } | null, linkState: string, listError: string | null): LinkMode {
+  const on = setting?.on ?? true;
+  const approved = !!link;
+  if (on && approved) return { on, approved, active: true, reason: `one message: ${link!.name} (${link!.language}) is approved and the switch is ON`, template: link };
+  const why = !on ? `the switch "One message per order" is OFF${setting?.by ? ` (by ${setting.by})` : ''}`
+    : listError ? `the templates could not be read from Meta: ${listError}`
+      : linkState === 'MISSING' ? `${LINK_TEMPLATE} is not made yet` : `${LINK_TEMPLATE} is ${linkState.toLowerCase()} on Meta, not approved`;
+  return { on, approved, active: false, reason: `two messages: ${why}`, template: link };
+}
 
 // Meta's "130429 Rate limit hit: too many messages sent from this phone number in a short period of time" (owner
 // 2026-10-15: 59 order messages failed in half an hour, and the chargeback alert on the same number did not arrive). It
@@ -50,14 +81,28 @@ export const MAX_SEND_EVERY_MS = 60 * 1000;
 export const MAX_STRIKES = 10;
 // manual / by: a pause the Super Admin set from the Automation tab (owner 2026-10-15, "pause ka option"); resumedBy: who
 // ended a pause early.
-export interface PauseState { until: number; reason: string; at: number; strikes: number; manual?: boolean; by?: string; resumedBy?: string }
+// firstAfterQuiet (owner 2026-10-15, the afternoon's three 130429 reports came 8 seconds after the FIRST order message
+// sent after a 15 / 30 minute pause, at 1-2 messages a minute): Meta refused a message that followed at least 10 quiet
+// minutes (QUIET_MS: no order message sent before it) or came within 2 minutes of the previous pause's end
+// (AFTER_PAUSE_MS). That is not our speed: the number itself is limited on Meta's side (quality, a restriction, another
+// app sending from it). The Number status box says so in red; the strike / pause rules stay as they are.
+export const QUIET_MS = 10 * 60 * 1000;
+export const AFTER_PAUSE_MS = 2 * 60 * 1000;
+export const FIRST_AFTER_QUIET_TEXT = 'Meta refused the very first message after a quiet pause: this is not our speed. Check the number in WhatsApp Manager (status, quality, messaging limit) and make sure no other app or tool is sending from this number.';
+export function firstAfterQuietOf(prev: PauseState | null, sentAt: number | null | undefined, quietBefore: boolean): boolean {
+  if (quietBefore) return true;
+  if (!prev || sentAt == null || !Number.isFinite(sentAt)) return false;
+  return sentAt >= prev.until && sentAt - prev.until <= AFTER_PAUSE_MS;
+}
+export interface PauseState { until: number; reason: string; at: number; strikes: number; manual?: boolean; by?: string; resumedBy?: string; firstAfterQuiet?: boolean }
 export function parsePauseState(value: string | null | undefined): PauseState | null {
   try {
     const j = JSON.parse(String(value || ''));
     const until = Date.parse(j?.until), at = Date.parse(j?.at);
     if (!Number.isFinite(until)) return null;
     return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)),
-      ...(j?.manual ? { manual: true, by: String(j?.by || '').slice(0, 60) } : {}), ...(j?.resumedBy ? { resumedBy: String(j.resumedBy).slice(0, 60) } : {}) };
+      ...(j?.manual ? { manual: true, by: String(j?.by || '').slice(0, 60) } : {}), ...(j?.resumedBy ? { resumedBy: String(j.resumedBy).slice(0, 60) } : {}),
+      ...(j?.firstAfterQuiet === true ? { firstAfterQuiet: true } : {}) };
   } catch { return null; }
 }
 // The next pause after a 130429 at `now`: null = the pause still runs (the same burst), keep it as it is.
@@ -84,6 +129,7 @@ export interface PauseView {
   sendEveryMs: number;
   nextPauseMin: number;          // if Meta refuses again now / after the pause
   resumedBy: string | null;
+  firstAfterQuiet: boolean;      // Meta's last refusal hit the first message after a quiet stretch: not our speed
 }
 export function pauseView(st: PauseState | null, now: number): PauseView {
   const inWindow = !!st && now - st.at < STRIKE_WINDOW_MS && !(st.manual && st.at <= now - STRIKE_WINDOW_MS);
@@ -102,6 +148,7 @@ export function pauseView(st: PauseState | null, now: number): PauseView {
     sendEveryMs: every,
     nextPauseMin: Math.round(Math.min(PAUSE_MS * 2 ** (strikes > 0 ? Math.min(strikes, MAX_STRIKES - 1) : 0), MAX_PAUSE_MS) / 60000),
     resumedBy: st && !paused ? st.resumedBy || null : null,
+    firstAfterQuiet: !!(st && st.firstAfterQuiet && (paused || strikes > 0)),
   };
 }
 export const MANUAL_PAUSE_MIN = [15, 30, 60, 120];
