@@ -289,6 +289,10 @@ Done and live:
   Same afternoon ("mza ni aya"): such a mail now MOVES by itself to the one panel ticking its gateway (chip "Came into
   vastora's Gmail"), PayU's daily "TOTAL CASES [n] [date]" lists are one "Daily list" card, old "Panel unsure" clears
   when only that panel ticks the gateway. If PayGlocal is really vastora's too, tick it on vastora and Move it back.
+- **15 Oct, 130429 again**: the owner's numbers showed 77 order messages in 12:58-13:00 (old and new code during the
+  deploy), then Meta refused at one a minute. Now each new 130429 within 2 h doubles the pause (15/30/60/120 min) and
+  orders go 1 a minute for 2 h; chargeback / ShipTrack alerts and tests go at once, pause or not, and orders wait while
+  an alert waits; the auto "help is by email" reply waits during a pause.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

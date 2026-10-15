@@ -4,7 +4,7 @@
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
 import { query, queryOne } from '@/lib/db';
-import { PAUSE_MS, SEND_EVERY_MS } from './whatsapp-auto-rules';
+import { SEND_EVERY_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
 export interface WaPause { until: number; reason: string }
@@ -29,17 +29,36 @@ export async function whatsAppPause(now = Date.now()): Promise<WaPause | null> {
   return pause;
 }
 
-export async function pauseWhatsApp(reason: string, now = Date.now(), ms = PAUSE_MS): Promise<void> {
-  const until = new Date(now + ms).toISOString();
-  const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString() });
-  cache = { at: now, pause: { until: now + ms, reason } };
+// Pause the number after a 130429. `ms` given = exactly that long (tests); else the strikes decide (nextPause: 15, 30,
+// 60, 120 minutes; the same burst's reports count once). Returns when the number may send again.
+export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number): Promise<number> {
+  const prev = await pauseState();
+  const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? prev.strikes + 1 : 1 } : nextPause(prev, now);
+  if (!next) return prev!.until;                                   // the same burst: the pause already runs
+  const until = new Date(next.until).toISOString();
+  const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString(), strikes: next.strikes });
+  cache = { at: now, pause: { until: next.until, reason } };
   try {
     await query(
       `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
       [KEY, value]);
-    console.warn(`[whatsapp] sending paused until ${until}: ${reason.slice(0, 120)}`);
+    console.warn(`[whatsapp] sending paused until ${until} (strike ${next.strikes}): ${reason.slice(0, 120)}`);
   } catch (e) { console.error('[whatsapp] pause:', (e as Error).message); }
+  return next.until;
+}
+
+// The stored pause, expired or not (the strikes and when the last 130429 came). A failed read = none.
+export async function pauseState(): Promise<PauseState | null> {
+  try {
+    const r = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [KEY]);
+    return parsePauseState(r?.value);
+  } catch { return null; }
+}
+
+// The gap between two order messages right now (wider for two hours after a 130429).
+export async function sendEvery(now = Date.now()): Promise<number> {
+  return sendEveryFor(await pauseState(), now);
 }
 
 export function forgetPauseCache(): void { cache = null; }

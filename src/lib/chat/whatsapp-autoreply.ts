@@ -11,6 +11,7 @@
 
 import { query, queryOne } from '@/lib/db';
 import { sendWhatsAppText } from './whatsapp';
+import { whatsAppPause } from './whatsapp-pause';
 import { loadBrands } from './whatsapp-brands';
 
 export const AUTO_REPLY_HOURS = 24;
@@ -46,7 +47,7 @@ async function knownBrand(panelId: string, digits: string): Promise<{ name: stri
   return b && b.email ? { name: b.name, email: b.email } : null;
 }
 
-export type AutoReplyOutcome = 'sent' | 'failed' | 'already' | 'no_chat';
+export type AutoReplyOutcome = 'sent' | 'failed' | 'already' | 'no_chat' | 'paused';
 
 export async function sendWaAutoReply(conversationId: string, digits: string, env: NodeJS.ProcessEnv = process.env): Promise<AutoReplyOutcome> {
   const conv = await queryOne<{ panel: string | null }>(
@@ -54,6 +55,9 @@ export async function sendWaAutoReply(conversationId: string, digits: string, en
     [conversationId]
   );
   if (!conv) return 'no_chat';
+  // Meta has the number paused (130429, owner 2026-10-15): nothing is claimed, so the customer's next message after the
+  // pause gets the reply; sending now would only be refused and make the pause longer.
+  if (await whatsAppPause().catch(() => null)) return 'paused';
   const text = autoReplyText(conv.panel ? await knownBrand(conv.panel, digits) : null);
   // Claim first (one reply per chat per 24 hours, even when two webhook calls arrive together), then send.
   const claimed = await queryOne<{ id: string }>(

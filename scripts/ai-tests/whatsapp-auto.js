@@ -32,7 +32,7 @@ const db = {
     if (/FROM chat_settings WHERE key LIKE 'wa_brand:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_brand:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     // owner 15 Oct: the send slot (one order message per 30 s) and the 130429 handling
     if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO NOTHING$/.test(sql)) { if (!(p[0] in S.settings)) S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
-    if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
+    if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { S.slotEvery = p[1]; if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^SELECT key FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ key })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
@@ -109,6 +109,7 @@ const db = {
     }
     if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT 1 FROM businesses WHERE id::text = \$1/.test(sql)) return S.panels.some((x) => x.id === p[0]) ? { rows: [{ x: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
+    if (/^SELECT count\(\*\)::text AS n FROM chat_settings WHERE key LIKE \$1/.test(sql)) { const pre = p[0].replace('%', ''); const n = String(Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).length); return { rows: [{ n }], rowCount: 1 }; }
     if (/^SELECT value FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? { rows: [], rowCount: 0 } : { rows: [{ value: v }], rowCount: 1 }; }
     throw new Error('fake db query: ' + sql.slice(0, 120));
   },
@@ -543,7 +544,7 @@ async function t(name, fn) {
     S.slotBusy = false; await run(IST(13, 12, 1));
     eq(sends().length, 1);
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8');
-    assert.ok(src.indexOf('takeSendSlot()') < src.indexOf("SET due_at = now() + interval '30 minutes'"), 'the slot is taken before the row is claimed');
+    assert.ok(src.indexOf('takeSendSlot(every)') > 0 && src.indexOf('takeSendSlot(every)') < src.indexOf("SET due_at = now() + interval '30 minutes'"), 'the slot is taken before the row is claimed');
   });
   await t('130429 at once (owner 15 Oct): the number pauses 15 min, the row waits (not Failed), nothing more goes that run or while paused; after the pause it goes', async () => {
     pause.forgetPauseCache(); turnOn(); S.orders = [order(), order({ order_id: '#1554' })];
@@ -577,25 +578,69 @@ async function t(name, fn) {
     await run(IST(13, 12, 21));
     eq(S.rows.find((r) => r.id === 'many').status, 'failed');                      // tried enough
   });
-  await t('ShipTrack\'s own alerts (the chargeback alert, owner 15 Oct): while paused they wait in a queue and go after the pause; a later 130429 report puts one back in line', async () => {
+  await t('ShipTrack\'s own alerts go FIRST (owner 15 Oct, "chargeback aur test sabse pehle"): sent at once even while paused; a 130429 queues it and the queue is tried every minute pause or not; order messages wait while an alert waits; a later 130429 report puts one back in line', async () => {
     const q = require(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'));
     q.setAlertGap(0);
     pause.forgetPauseCache();
     await pause.pauseWhatsApp('130429 test', Date.now());
-    const r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA', chargebackId: 'cb1' });
-    deq(['error' in r, r.id], [false, null]);                                       // queued, answered like a sent one
-    eq(sends().length, 0);
-    const queued = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:'));
-    eq(queued.length, 1);
-    delete S.settings.wa_pause; pause.forgetPauseCache();
+    let r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA', chargebackId: 'cb1' });
+    eq(sends().length, 1); eq(sends()[0].body.template.name, 'shiptrack_alert'); assert.ok(r.id, 'sent through the pause');
+    // Meta refuses it now: queued, and order messages hold while it waits
+    S.fetches = []; S.sendFail = { code: 130429, message: 'Rate limit hit' };
+    r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on kurtiya', chargebackId: 'cb2' });
+    deq(['error' in r, r.id], [false, null]);
+    eq(await q.alertsWaiting(), 1);
+    delete S.settings.wa_pause; pause.forgetPauseCache(); S.sendFail = null;
+    turnOn(); S.orders = [order()]; S.fetches = [];
+    await run(IST(13, 12));
+    eq(sends().filter((x) => x.body.template.name !== 'shiptrack_alert').length, 0);    // the alert first
+    // the next minute's queue run: sent even though the number is paused again
+    await pause.pauseWhatsApp('130429 again', Date.now()); S.fetches = [];
     eq(await q.runAlertQueue(), 1);
     eq(sends().length, 1); eq(sends()[0].body.template.name, 'shiptrack_alert');
     eq(await q.runAlertQueue(), 0);                                                 // claimed once
-    const wamid = Object.keys(S.settings).find((k) => k.startsWith('wa_alert_sent:')).slice('wa_alert_sent:'.length);
+    eq(await q.alertsWaiting(), 0);
+    const wamid = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_sent:')).pop().slice('wa_alert_sent:'.length);
     eq(await q.noteAlertStatus(wamid, 'failed', '130429 · Rate limit hit'), true);
     eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:') && !JSON.parse(S.settings[k]).done).length, 1);   // in line again
     assert.ok(!('done' in JSON.parse(S.settings[Object.keys(S.settings).find((k) => k.startsWith('wa_alert_sent:'))])), 'the sent record never carries the queue\'s done mark');
     eq(await q.noteAlertStatus('wamid.unknown', 'failed', '130429'), false);
+    for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:')) delete S.settings[k];
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+  await t('130429 again and again (owner 15 Oct, live: refused at one message a minute after a burst): each new strike within 2 h doubles the pause (15, 30, 60, 120 min) and order messages go 1 a minute instead of 2 (never slower); the same burst\'s reports count once; 2 quiet hours = back to normal', async () => {
+    const P = rules.PAUSE_MS, m = 60000, t0 = IST(13, 13);
+    eq(rules.nextPause(null, t0).until - t0, P);
+    let st = { until: t0 + P, at: t0, strikes: 1, reason: '' };
+    eq(rules.nextPause(st, t0 + m), null);                                          // the same burst
+    const n2 = rules.nextPause(st, t0 + 20 * m); deq([n2.strikes, n2.until - (t0 + 20 * m)], [2, 2 * P]);
+    st = { until: n2.until, at: t0 + 20 * m, strikes: 2, reason: '' };
+    const n3 = rules.nextPause(st, t0 + 60 * m); deq([n3.strikes, n3.until - (t0 + 60 * m)], [3, 4 * P]);
+    const n9 = rules.nextPause({ until: 0, at: t0, strikes: 9, reason: '' }, t0 + 10 * m); eq(n9.until - (t0 + 10 * m), rules.MAX_PAUSE_MS);
+    eq(rules.nextPause({ until: 0, at: t0, strikes: 3, reason: '' }, t0 + 3 * 60 * m).strikes, 1);   // quiet for 3 h: a fresh start
+    eq(rules.sendEveryFor(null, t0), rules.SEND_EVERY_MS);
+    deq([1, 2, 3, 4].map((k) => rules.sendEveryFor({ until: 0, at: t0, strikes: k, reason: '' }, t0 + 30 * m)), [60000, 60000, 60000, 60000]);
+    eq(rules.sendEveryFor({ until: 0, at: t0, strikes: 4, reason: '' }, t0 + 2 * 60 * m), rules.SEND_EVERY_MS);
+    // the stored pause: strikes kept, the worker passes the wider gap to the slot
+    pause.forgetPauseCache(); delete S.settings.wa_pause;
+    await pause.pauseWhatsApp('130429 a', t0);
+    await pause.pauseWhatsApp('130429 b', t0 + m);                                  // same burst: unchanged
+    eq(JSON.parse(S.settings.wa_pause).strikes, 1);
+    const u2 = await pause.pauseWhatsApp('130429 c', t0 + 20 * m);
+    deq([JSON.parse(S.settings.wa_pause).strikes, u2 - (t0 + 20 * m)], [2, 2 * P]);
+    turnOn(); S.orders = [order()]; pause.forgetPauseCache();
+    await run(t0 + 20 * m + 2 * P + m);
+    eq(sends().length, 1); eq(S.slotEvery, 60000);                                  // after the pause, one a minute
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+  await t('while paused: the test send still goes at once (owner: "test sabse pehle"), and a customer\'s message gets no auto reply now (nothing claimed)', async () => {
+    pause.forgetPauseCache(); turnOn(); S.orders = [order()]; S.fetches = [];
+    await pause.pauseWhatsApp('130429 test', Date.now());
+    const r = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    assert.ok(!('error' in r)); assert.ok(sends().length >= 1);
+    const ar = fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-autoreply.ts'), 'utf8');
+    assert.ok(ar.indexOf("return 'paused'") > 0 && ar.indexOf("return 'paused'") < ar.indexOf('INSERT INTO messages'), 'checked before the claim');
+    delete S.settings.wa_pause; pause.forgetPauseCache();
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
