@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Moon, Power, RefreshCw, Search, Sun } from 'lucide-react';
 import { SECTION, spin, type Alert, type AutoOverview } from './types';
 import PauseStatusCard from './PauseStatusCard';
+import { OLD_TEMPLATES_GONE_TEXT, oldTemplatesGone } from '@/lib/chat/whatsapp-auto-rules';
 import {
   SHOW_LABELS, TIME_LABELS, countByPanel, countByShow, countByTime, filterOrders, groupOrders, hourBuckets, istDate, isNight, reasonCounts, whyLine,
   type AutoShow, type AutoTime,
@@ -85,9 +86,11 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
   };
   // the switch "One message per order" (owner 2026-10-15)
   const linkMode = async (on: boolean) => {
+    // owner 2026-10-15 evening: he deleted order_placed / order_tracking on Meta; OFF then sends nothing until they are made again
+    const gone = !!o && oldTemplatesGone(o.templates.placed, o.templates.tracking);
     const text = on
-      ? 'Turn ON "One message per order"?\n\nOnce Meta has approved order_placed_link, every new order gets ONE message: order placed + its tracking link. The 48-hour tracking message is skipped for those orders. Orders with no tracking link yet still get the two old messages.'
-      : 'Turn OFF "One message per order"?\n\nNew orders get the two old messages again: order_placed when the order comes in, order_tracking 48 hours later, even though order_placed_link is approved.';
+      ? 'Turn ON "One message per order"?\n\nOnce Meta has approved order_placed_link, every order gets ONE message: order placed + its tracking link (an order with no tracking link yet waits for it). The 48-hour tracking message of older orders goes with the same template. order_placed and order_tracking are not sent in this mode.'
+      : `Turn OFF "One message per order"?\n\nNew orders get the two old messages again: order_placed when the order comes in, order_tracking 48 hours later, even though order_placed_link is approved.${gone ? `\n\n${OLD_TEMPLATES_GONE_TEXT}` : ''}`;
     if (!window.confirm(text)) return;
     setBusy('link');
     try {
@@ -162,8 +165,9 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, <strong>{o.sendRate?.perMinute ?? 2} a minute</strong> (one every {Math.round(60 / (o.sendRate?.perMinute ?? 2))} seconds; 1 a minute for two hours after Meta refuses one): pick the speed in the Number status box below. Once the daily limit (WhatsApp &gt; Setup) is reached in the last 24 hours, new customers wait for their turn and customers already messaged in those 24 hours still get theirs, so Meta does not refuse the number for sending too many new conversations. ShipTrack&apos;s alerts (chargeback first) go before any order message.
         </p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8125rem', alignItems: 'center' }}>
-          <span>Template <code>order_placed</code>: <span className={`chip ${tplTone(o.templates.placed)}`}>{o.templates.placed}</span></span>
-          <span>Template <code>order_tracking</code>: <span className={`chip ${tplTone(o.templates.tracking)}`}>{o.templates.tracking}</span></span>
+          {/* the old two are not needed while the one-message mode runs (owner 2026-10-15 evening: he deleted them on Meta): grey, not a red MISSING */}
+          <span>Template <code>order_placed</code>: {o.linkMode?.active ? <span className="chip chip-muted" title="Not sent while One message per order runs">not needed (one message mode)</span> : <span className={`chip ${tplTone(o.templates.placed)}`}>{o.templates.placed}</span>}</span>
+          <span>Template <code>order_tracking</code>: {o.linkMode?.active ? <span className="chip chip-muted" title="Not sent while One message per order runs">not needed (one message mode)</span> : <span className={`chip ${tplTone(o.templates.tracking)}`}>{o.templates.tracking}</span>}</span>
           {/* the real name when it is not exactly order_placed_link (a remade order_placed_link_2 ..., owner 2026-10-15) */}
           {o.templates.link && <span>One message <code>{o.templates.linkName || 'order_placed_link'}</code>: <span className={`chip ${tplTone(o.templates.link)}`}>{o.templates.link}</span>{o.templates.linkName && <span className="meta" style={{ fontSize: '0.72rem' }}> (found by its name starting with order_placed_link, 5 values)</span>}</span>}
           {o.templates.error && <span style={{ color: 'var(--danger, #b91c1c)' }}>Could not read templates: {o.templates.error}</span>}
@@ -179,7 +183,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             <span className="meta" style={{ fontSize: '0.78rem', flexBasis: '100%' }}>
               <strong style={{ color: o.linkMode.active ? '#15803d' : '#b45309' }}>Running now: {o.linkMode.active ? 'one message per order' : 'two messages per order'}</strong> · {o.linkMode.reason}.
               {o.linkMode.active
-                ? ' The first message carries the tracking link; the 48-hour tracking message is skipped for new orders.'
+                ? ' Every order message goes with this template: the first message carries the tracking link (an order with no link yet waits for it), and the 48-hour link of older orders goes with it too. order_placed and order_tracking are not sent.'
                 : o.linkMode.on && !o.linkMode.approved
                   ? ' To send ONE (order placed + tracking link), make the template with the button "Order placed + tracking link (one message)" in Templates; once Meta says APPROVED it runs by itself.'
                   : ' order_placed goes when the order comes in and order_tracking 48 hours later, as before.'}
@@ -192,7 +196,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')}
             onRate={(n) => void pauseAct({ action: 'rate', perMinute: n }, `Order messages: ${n} a minute from now on`)} />
         )}
-        {(o.templates.placed === 'MISSING' || o.templates.tracking === 'MISSING') && (
+        {!o.linkMode?.active && (o.templates.placed === 'MISSING' || o.templates.tracking === 'MISSING') && (
           <div className="meta" style={{ fontSize: '0.78rem' }}>Make the missing one in Templates (the buttons &quot;Order placed template&quot; and &quot;Tracking link template&quot; fill it), send it to Meta, and come back when it says APPROVED.</div>
         )}
         {!o.installed && <div style={{ padding: '0.6rem 0.75rem', borderRadius: 8, background: 'var(--warn-bg, #fef3c7)', fontSize: '0.8125rem' }}>Not installed yet: the database file <code>whatsapp-automation.sql</code> has to be run on the server once. Until then nothing can be switched on.</div>}

@@ -11,10 +11,11 @@ export const dynamic = 'force-dynamic';
 // 48 hours later, per panel ON / OFF (default OFF), with what was sent / delivered / read / failed. Super Admin only.
 // GET [?day=]: the switches, the counts per panel (all time and the chosen days), the orders that came in those days,
 // the template states and every message of those days (numbers masked to the last 4).
-// POST { businessId, enabled }: the switch (turning ON needs the table and an approved order_placed template; it
-// starts the clock: only orders placed from then on are ever messaged). POST { action: 'retry', id }: a Failed row again.
-// POST { action: 'test', businessId, to, name }: both messages of that brand to one number, filled from its latest order
-// (nothing recorded, no customer messaged).
+// POST { businessId, enabled }: the switch (turning ON needs the table and a template that can send: the one-message
+// mode running, else an approved order_placed; it starts the clock: only orders placed from then on are ever messaged).
+// POST { action: 'retry', id }: a Failed row again.
+// POST { action: 'test', businessId, to, name }: the brand's message(s) to one number, filled from its latest order
+// (nothing recorded, no customer messaged; in the one-message mode the link template alone).
 // POST { action: 'pause', minutes: 15 | 30 | 60 | 120 }: no order message for that long (owner 2026-10-15, "pause ka
 // option"); POST { action: 'resume' }: the pause (Meta's or one by hand) ends now.
 // POST { action: 'link_mode', on: boolean }: the switch "One message per order" (owner 2026-10-15, "switch ya jo bhi
@@ -79,7 +80,9 @@ export async function POST(request: NextRequest) {
       const o = await automationOverview();
       if (!o.installed) return NextResponse.json({ error: 'Not installed yet: whatsapp-automation.sql has to be run on the server first' }, { status: 409 });
       if (!o.configured) return NextResponse.json({ error: 'WhatsApp is not set up on the server (token / phone number id)' }, { status: 409 });
-      if (o.templates.placed !== 'APPROVED') return NextResponse.json({ error: `The "order_placed" template is ${o.templates.placed === 'MISSING' ? 'not made yet' : o.templates.placed.toLowerCase()}: switch on after Meta approves it` }, { status: 409 });
+      // something must be able to send the order message: the one-message mode running (owner 2026-10-15 evening: he
+      // deleted order_placed on Meta, so a panel switched on tomorrow must not need it), else an APPROVED order_placed
+      if (!o.linkMode?.active && o.templates.placed !== 'APPROVED') return NextResponse.json({ error: `The "order_placed" template is ${o.templates.placed === 'MISSING' ? 'not made yet' : o.templates.placed.toLowerCase()} and "One message per order" is not running (${o.linkMode?.reason || 'order_placed_link not approved'}): switch on after Meta approves one of them` }, { status: 409 });
     }
     const s = await saveAuto(businessId, body.enabled);
     return NextResponse.json({ ok: true, enabled: s.enabled, since: s.since ? new Date(s.since).toISOString() : null });

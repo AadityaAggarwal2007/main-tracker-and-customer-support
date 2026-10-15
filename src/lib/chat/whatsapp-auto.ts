@@ -16,8 +16,8 @@ import { isOfficeHours } from '@/lib/office-hours';
 import {
   AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MAX_ATTEMPTS, MODE_LOG_EVERY_MS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, gapFor, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, placedParams, retryable,
-  templatesReadNote, trackingDueMs, trackingParams,
+  autoKey, autoValue, dueNow, eligibleFrom, findLinkTemplate, gapFor, isLinkTemplateName, isRateLimited, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, pickTemplate, placedParams, retryable,
+  templatesReadNote, trackingCanGo, trackingDueMs, trackingParams, waitingLinkLine,
   type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts, type SendRate,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
@@ -25,7 +25,7 @@ import { loadSendRate, pauseState, pauseWhatsApp, sendEvery, takeSendSlot, whats
 import { alertsWaiting } from './whatsapp-alert-queue';
 import { quietBefore } from './whatsapp-auto-status';
 import { knownNumbers24h, limitNow, loadWaHealth, usedNumbers } from './whatsapp-health';
-import { limitFreeAt, limitReached, refusedNearLimit, waHealthLines, type WaLine } from './whatsapp-health-rules';
+import { limitFreeAt, limitReached, waHealthLines, type WaLine } from './whatsapp-health-rules';
 import { loadForeignToday, noteTestSent } from './whatsapp-foreign';
 import { foreignLine, type ForeignLine, type ForeignToday } from './whatsapp-foreign-rules';
 
@@ -125,8 +125,9 @@ interface DueRow {
   tracking_token: string | null; tracking_domain: string | null;
 }
 
-// limited = messages to NEW customers that waited for the daily limit this run (they stay pending, not failed / skipped)
-export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number }
+// limited = messages to NEW customers that waited for the daily limit this run (they stay pending, not failed / skipped);
+// waitingLink = 'placed' rows that waited for their order's tracking link in the one-message mode (owner 2026-10-15 evening)
+export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number; waitingLink?: number }
 
 const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
@@ -150,7 +151,7 @@ async function dailyGuard(nowMs: number): Promise<DailyGuard> {
 const newCustomer = (guard: DailyGuard, digits: string) => guard.limit != null && guard.known != null && !guard.known.has(digits);
 
 export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
-  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0, limited: 0 };
+  const out: AutoRun = { panels: 0, queued: 0, sent: 0, failed: 0, skipped: 0, retried: 0, limited: 0, waitingLink: 0 };
   if (g.__waAutoBusy) return { ...out, idle: 'busy' };
   g.__waAutoBusy = true;
   try {
@@ -227,9 +228,10 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
       }
 
       if (paused || alertsFirst) continue;
-      // 2. due rows, a few a minute: order-placed first; tracking rows only while the office is open and Meta has
-      // approved that template (a pile of waiting tracking rows must never hold back today's order-placed messages)
-      const trackingCanGo = isOfficeHours(nowMs, holidays) && !!approved(list, TRACKING_TEMPLATE);
+      // 2. due rows, a few a minute: order-placed first; tracking rows only while the office is open and something can
+      // send them: order_tracking APPROVED, or the one-message mode (the link template carries them since 2026-10-15
+      // evening). A pile of waiting tracking rows must never hold back today's order-placed messages.
+      const trackingNow = trackingCanGo(isOfficeHours(nowMs, holidays), !!approved(list, TRACKING_TEMPLATE), mode.active);
       const due = await query<DueRow>(
         `SELECT w.id::text AS id, w.order_id, w.kind, w.attempts, w.due_at,
                 (SELECT p.template FROM wa_auto_sends p WHERE p.business_id = w.business_id AND p.order_id = w.order_id AND p.kind = 'placed') AS placed_template,
@@ -240,7 +242,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
            LEFT JOIN businesses b ON b.id = o.business_id
           WHERE w.business_id = $1 AND w.status = 'pending' AND w.due_at <= now() AND (w.kind = 'placed' OR $2::boolean)
           ORDER BY (w.kind = 'placed') DESC, w.due_at ASC LIMIT 40`,
-        [panelId, trackingCanGo]
+        [panelId, trackingNow]
       );
       const brand: BrandWords = brands.get(panelId) || { name: '', email: '' };
       for (const r of due.rows) {
@@ -260,16 +262,19 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
           if (nowMs - createdMs > TRACKING_TOO_LATE_MS) { await skip(SKIP.tooOld); continue; }
           if (!dueNow('tracking', new Date(r.due_at).getTime(), nowMs, holidays)) continue;   // office closed: it waits
         }
-        // one message per order while the mode is active (the switch ON and order_placed_link APPROVED); the order needs
-        // its tracking link for it, else the old order_placed goes and the 48-hour message brings the link
-        const linkTpl = mode.active && r.kind === 'placed' && r.tracking_token ? linkFound : null;   // sent under its real name + language
-        if (mode.active && r.kind === 'placed' && !r.tracking_token) console.warn(`[wa-auto] order ${r.order_id} has no tracking link: order_placed goes instead of ${LINK_TEMPLATE}, the tracking message stays in line`);
-        const tpl = linkTpl || approved(list, r.kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
-        if (!tpl) continue;                                                                    // not approved by Meta yet: it waits
+        // Which template (whatsapp-auto-rules.ts pickTemplate, owner 2026-10-15 evening: only order_placed_link while the
+        // one-message mode runs, under its real name + language): a 'placed' row with its link and a 'tracking' row go
+        // with it; a 'placed' row without a link WAITS (never order_placed); the old two never go in this mode. With the
+        // switch OFF the old templates as before, and a row whose template is not approved waits.
+        const pick = pickTemplate(r.kind, !!r.tracking_token, mode, linkFound, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
+        if (pick.waits === 'link') { out.waitingLink = (out.waitingLink || 0) + 1; continue; }   // said once per run, below
+        if (!pick.template) continue;                                                          // not approved by Meta yet: it waits
+        const tpl = pick.template;
+        const sentWithLink = r.kind === 'placed' && pick.params === 'tracking';             // the first message carries the link
         logMode();
         const base = (r.tracking_domain || process.env.TRACKING_BASE_URL || 'https://shiptrack.store').replace(/\/+$/, '');
         const facts: OrderFacts = { orderId: r.order_id, customerName: r.customer_name, trackingLink: r.tracking_token ? `${base}/track/${r.tracking_token}` : null };
-        const params = linkTpl || r.kind === 'tracking' ? trackingParams(facts, brand) : placedParams(facts, brand);
+        const params = pick.params === 'tracking' ? trackingParams(facts, brand) : placedParams(facts, brand);
         if (params.length < tpl.vars) {
           await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
             [r.id, `The template "${tpl.name}" has ${tpl.vars} values but the automation fills ${params.length}. Make the template again from its preset button.`]);
@@ -303,7 +308,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
           );
           out.sent++;
           if (newCustomer(guard, digits)) { guard.used++; guard.known!.add(digits); }   // one more of the 24 hours' customers
-          if (linkTpl) {
+          if (sentWithLink) {
             await query(`UPDATE wa_auto_sends SET status = 'skipped', error = $3, updated_at = now()
                           WHERE business_id = $1 AND order_id = $2 AND kind = 'tracking' AND status = 'pending'`,
               [panelId, r.order_id, SKIP.inFirst]).catch(() => undefined);
@@ -331,6 +336,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         }
       }
     }
+    // the orders whose message waits for a tracking link (one message per order): one line per run with the count
+    if (out.waitingLink) console.warn(waitingLinkLine(out.waitingLink, linkFound?.name.trim().toLowerCase()));
     return out;
   } finally {
     g.__waAutoBusy = false;
@@ -382,18 +389,18 @@ export interface NumberHealth {
   quality: string; status: string; tier: string; limit: number | null; limitFrom: 'meta' | 'saved' | null;
   used24h: number; usedToday: number; error: string | null; lines: WaLine[];
   // the daily limit guard (owner 2026-10-15): at the limit new customers wait until `limitFreeAt` (the oldest of the
-  // window drops out); `refusedNearLimit` = Meta refused while the count sat near the limit: the real limit is likely 250
-  limitReached: boolean; limitFreeAt: string | null; refusedNearLimit: string | null;
+  // window drops out). (The "Meta refused near the limit, type 250" line is gone: the live data disproved it.)
+  limitReached: boolean; limitFreeAt: string | null;
 }
 // The number as Meta sees it (whatsapp-health.ts, Meta read at most every 5 minutes, never throws): for the Number
 // status box, so a refusal can be read next to the quality rating, the status and the messaging limit.
-async function numberHealth(nowMs: number, lastRefusalAt: string | null): Promise<NumberHealth | null> {
+async function numberHealth(nowMs: number): Promise<NumberHealth | null> {
   try {
     const h = await loadWaHealth(nowMs);
     if (!h) return null;
     return {
       quality: h.quality, status: h.status, tier: h.tier, limit: h.limit, limitFrom: h.limitFrom, used24h: h.used24h, usedToday: h.usedToday ?? 0, error: h.phoneError, lines: waHealthLines(h),
-      limitReached: limitReached(h), limitFreeAt: limitReached(h) ? limitFreeAt(h) : null, refusedNearLimit: refusedNearLimit(lastRefusalAt, h.used24h, h.limit),
+      limitReached: limitReached(h), limitFreeAt: limitReached(h) ? limitFreeAt(h) : null,
     };
   } catch (e) { console.error('[wa-auto] number health:', (e as Error).message); return null; }
 }
@@ -476,7 +483,7 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
     pauseInfo, sendRate,
     linkMode: await currentLinkMode(list, error, nowMs),
-    numberHealth: waConfigured() ? await numberHealth(nowMs, pauseInfo.lastRefusalAt) : null,
+    numberHealth: waConfigured() ? await numberHealth(nowMs) : null,
     foreign: { ...foreignToday, line: foreignLine(foreignToday, refusing) },
     ordersDue: installed ? await query<{ n: number }>(`SELECT count(*)::int AS n FROM wa_auto_sends WHERE status = 'pending' AND due_at <= now()`)
       .then((r) => Number(r.rows[0]?.n || 0)).catch(() => 0) : 0,
@@ -494,9 +501,11 @@ export async function panelExists(id: string): Promise<boolean> {
   return !!(await queryOne(`SELECT 1 FROM businesses WHERE id::text = $1`, [id]));
 }
 
-// "Send a test to my number" (owner 2026-10-10: "har cheez check kario"): both automation messages exactly as a
+// "Send a test to my number" (owner 2026-10-10: "har cheez check kario"): the automation message(s) exactly as a
 // customer of this brand would get them, filled from the brand's latest order (its order id and real tracking link)
-// with the name typed, to the number typed. Nothing is recorded in wa_auto_sends and no customer is messaged.
+// with the name typed, to the number typed. Nothing is recorded in wa_auto_sends and no customer is messaged. In the
+// one-message mode (owner 2026-10-15 evening) it is the link template alone, and when the brand's latest order has no
+// tracking link it says so instead of sending anything (order_placed is never sent in that mode).
 export interface TestSend { kind: Kind; ok: boolean; text: string; error: string | null }
 export async function sendAutomationTest(panelId: string, to: string, name: string): Promise<{ results: TestSend[]; order: string | null; mode: string } | { error: string }> {
   const digits = waDigits(to);
@@ -519,10 +528,15 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   // one message per order while that mode is active (the switch ON and order_placed_link approved, owner 2026-10-15), else the two as before
   const mode = await currentLinkMode(list, error, Date.now());
   const link = mode.active ? linkTemplateOf(list).template : null;   // the found template under its real name
+  if (link && !o?.tracking_token) {
+    // the same rule as the worker: no link = the message waits, never order_placed
+    return { results: [{ kind: 'placed', ok: false, text: '', error: `${o ? `The latest order ${o.order_id}` : 'This brand has no order yet, so nothing'} has no tracking link: the one-message template needs it (order_placed is not sent in this mode). Try again once an order has its link.` }], order: o?.order_id || null, mode: mode.reason };
+  }
   for (const kind of (link ? ['placed'] : ['placed', 'tracking']) as Kind[]) {
-    const tpl = kind === 'placed' && link ? link : approved(list, kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
-    if (!tpl) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
-    const params = (kind === 'tracking' || tpl === link ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);
+    const pick = pickTemplate(kind, !!o?.tracking_token, mode, link, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
+    if (!pick.template) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
+    const tpl = pick.template;
+    const params = (pick.params === 'tracking' ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);
     const r = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params);
     if (!('error' in r)) await noteTestSent(r.id, digits);   // its delivery reports are ours, not another app's (whatsapp-foreign.ts)
     results.push({ kind, ok: !('error' in r), text: renderTemplate(tpl, params), error: 'error' in r ? r.error : null });

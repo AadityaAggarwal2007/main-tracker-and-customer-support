@@ -86,17 +86,11 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
           </span>
         </div>
       )}
-      {/* the daily limit (owner 2026-10-15): at the limit new customers wait; a refusal near the limit = the real limit is likely 250 */}
+      {/* the daily limit (owner 2026-10-15): at the limit new customers wait */}
       {health?.limitReached && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
           <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
           <span>Daily limit reached: {n(health.used24h)} / {n(health.limit || 0)} in the last 24 h — new customers wait until the oldest drops out{limitAt ? ` (about ${limitAt})` : ''}. Customers messaged in the last 24 h still get their message; nothing is lost, the rows wait in line.</span>
-        </div>
-      )}
-      {health?.refusedNearLimit && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
-          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-          <span>{health.refusedNearLimit}</span>
         </div>
       )}
       {/* the refusal hit the FIRST message after a quiet stretch (owner 2026-10-15): Meta's side, not our speed */}

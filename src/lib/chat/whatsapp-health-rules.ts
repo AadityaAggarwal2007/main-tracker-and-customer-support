@@ -29,11 +29,10 @@ export interface WaHealth {
 }
 export const FOREIGN_BOARD_TEXT = (n: number) => `Another app sent ${n} message${n === 1 ? '' : 's'} from this number today (Meta's reports for messages ShipTrack never sent): the two share Meta's limit. Open WhatsApp > Automation > Number status for where to look`;
 
-// The daily limit guard (owner 2026-10-15: at 242 customers messaged today Meta refused every message to a NEW customer
-// with 130429 whatever the speed; Meta's starting limit is 250 business-initiated customers per rolling 24 hours, and the
-// "2,000" in WhatsApp Manager is the business portfolio's, not necessarily this number's). The worker (whatsapp-auto.ts)
-// stops messaging NEW customers once used24h reaches the limit; a customer messaged in the last 24 hours still gets theirs.
-export const METAS_STARTING_LIMIT = 250;
+// The daily limit guard (owner 2026-10-15): the worker (whatsapp-auto.ts) stops messaging NEW customers once used24h
+// reaches the limit (Meta's tier, else the one typed in WhatsApp > Setup: 2,000 today); a customer messaged in the last
+// 24 hours still gets theirs. (The evening's "Meta refused near the limit: the real limit is 250, type 250" line was
+// removed the same night: the day before, the number sent 343 messages in 4 hours with no refusal, so that guess was wrong.)
 export const limitReached = (h: { used24h: number; limit: number | null }): boolean => h.limit != null && h.limit > 0 && h.used24h >= h.limit;
 // When the oldest conversation of the window drops out of Meta's rolling 24 hours (ISO), null = not known.
 export function limitFreeAt(h: { oldest24h?: string | null }): string | null {
@@ -46,21 +45,6 @@ export function dailyLimitLine(h: { used24h: number; limit: number | null; oldes
   const at = limitFreeAt(h);
   return `Daily limit reached: ${h.used24h} / ${h.limit} in the last 24 h — new customers wait until the oldest drops out${at ? ` (about ${istTime(at)})` : ''}; customers messaged in the last 24 h still get theirs`;
 }
-// Meta refused (130429) while the count sits within 10% of the typed limit, or above 230 whatever is typed: the real limit
-// is most likely Meta's starting 250, not the 2,000 the portfolio shows. One red line in plain words; null = nothing to say.
-export const REFUSED_NEAR_LIMIT_PCT = 0.9;
-export const REFUSED_ABOVE = 230;
-export function refusedNearLimit(refusedAt: string | null | undefined, used24h: number, limit: number | null): string | null {
-  if (!refusedAt || !Number.isFinite(Date.parse(refusedAt))) return null;
-  const near = (limit != null && limit > 0 && used24h >= limit * REFUSED_NEAR_LIMIT_PCT) || used24h >= REFUSED_ABOVE;
-  if (!near) return null;
-  const head = `Meta refused at ${used24h} customers in the last 24 h. Meta's starting limit is ${METAS_STARTING_LIMIT} customers a day; WhatsApp Manager > Overview may show 2,000 for the business, but this number may still be on ${METAS_STARTING_LIMIT}.`;
-  if (limit != null && limit <= METAS_STARTING_LIMIT) {
-    return `${head} ShipTrack already waits at ${limit}; Meta may count a few more than ShipTrack does (messages from another tool, or the team's template messages). Lower the Daily limit in WhatsApp > Setup a little (e.g. ${Math.max(50, limit - 20)}).`;
-  }
-  return `${head} Type ${METAS_STARTING_LIMIT} in WhatsApp > Setup > Daily limit and ShipTrack will wait instead of being refused.`;
-}
-
 export type WaTone = 'ok' | 'warn' | 'danger';
 export interface WaLine { tone: WaTone; text: string }
 
