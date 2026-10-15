@@ -25,6 +25,15 @@ const db = {
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql.replace(/\s+/g, ' '))) { const rows = S.panels.map((x) => ({ id: x.id, name: x.id === 'bizVast' ? 'vastora' : 'kurtiya' })); return { rows, rowCount: rows.length }; }
     if (/FROM site_emails se JOIN sites s/.test(sql.replace(/\s+/g, ' '))) return { rows: [{ id: 'bizVast', email: 'help@vastora.in' }], rowCount: 1 };
     if (/FROM chat_settings WHERE key LIKE 'wa_brand:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_brand:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
+    // owner 15 Oct, another app on the number: the atomic jsonb add (whatsapp-foreign.ts FOREIGN_ADD_SQL), played in JS
+    if (/ON CONFLICT \(key\) DO UPDATE SET updated_at = now\(\), value = \(\s*jsonb_set\(/.test(sql)) {
+      S.foreignAdds = (S.foreignAdds || 0) + 1;
+      if (!(p[0] in S.settings)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+      const j = { hours: {}, ...JSON.parse(S.settings[p[0]]), ...JSON.parse(p[2]) };
+      const h = { ...(j.hours[p[3]] || {}) }; h[p[4]] = (h[p[4]] || 0) + 1; if (p[5]) h.failed130429 = (h.failed130429 || 0) + 1;
+      j.hours = { ...j.hours, [p[3]]: h }; S.settings[p[0]] = JSON.stringify(j); return { rows: [], rowCount: 1 };
+    }
+    if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO NOTHING$/.test(sql)) { if (!(p[0] in S.settings)) S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
@@ -45,6 +54,9 @@ const db = {
       const m = { id: 'm' + (++seq), conversation_id: p[0], sender: 'ai', content: p[1], metadata: { channel: 'whatsapp', wa_auto_reply: true } }; S.msgs.push(m); return { id: m.id };
     }
     if (/FROM wa_auto_sends WHERE to_number = \$1/.test(sql)) { const r = (S.autoRows || []).filter((x) => x.to_number === p[0] && ['sent', 'delivered', 'read'].includes(x.status)).pop(); return r ? { business_id: r.business_id } : null; }
+    // owner 15 Oct, another app on the number: is the wamid an automation row's, an alert's or a test send's? (whatsapp-foreign.ts isOurWaId)
+    if (/^SELECT 1 FROM wa_auto_sends WHERE wa_id = \$1 LIMIT 1/.test(sql)) { if (S.noAutoTable) { const e = new Error('relation "wa_auto_sends" does not exist'); e.code = '42P01'; throw e; } return (S.autoRows || []).some((x) => x.wa_id === p[0]) ? { '?column?': 1 } : null; }
+    if (/^SELECT 1 FROM chat_settings WHERE key IN \(\$1, \$2\) LIMIT 1/.test(sql)) return p[0] in S.settings || p[1] in S.settings ? { '?column?': 1 } : null;
     if (/FROM orders o\s+WHERE o\.business_id IS NOT NULL/.test(sql)) { const b = (S.orderPanels || {})[p[0]]; return b ? { business_id: b } : null; }
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
     if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
@@ -114,6 +126,9 @@ global.fetch = async (url, init = {}) => {
 
 const wa = require(path.join(SRC, 'lib/chat/whatsapp.ts'));
 const inbound = require(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'));
+const foreign = require(path.join(SRC, 'lib/chat/whatsapp-foreign.ts'));
+const foreignRules = require(path.join(SRC, 'lib/chat/whatsapp-foreign-rules.ts'));
+foreign.setForeignRecheckMs(0);   // the 20-second second look runs at once here; the groups below await foreignSettled()
 const route = require(path.join(SRC, 'app/api/whatsapp/webhook/route.ts'));
 const autoReply = require(path.join(SRC, 'lib/chat/whatsapp-autoreply.ts'));
 const stopLib = require(path.join(SRC, 'lib/chat/whatsapp-stop.ts'));
@@ -793,6 +808,77 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const g2 = await rBrands.GET(jreq(OWNER, {}));
     deq(g2.body.brands.map((b) => [b.id, b.name, b.email, b.savedName, b.savedEmail]), [['bizVast', 'vastora', 'help@vastora.in', null, null], ['bizKurt', 'Kurtiya Official', 'care@kurtiya.in', 'Kurtiya Official', 'care@kurtiya.in']]);
   }));
+
+  console.log('whatsapp: another app on the number (owner 15 Oct, "we need evidence")');
+  // 15 Oct 2026 13:05 and 14:01 India time
+  const AT13 = Date.UTC(2026, 9, 15, 13, 5) - 330 * 60000, AT14 = Date.UTC(2026, 9, 15, 14, 1) - 330 * 60000;
+  await t('a report whose wamid is none of ours is counted after the second look, per India day and hour: sent / delivered / read / failed and failed130429 apart, the last report, the last failure\'s words, the number masked to its last 4', async () => {
+    foreign.resetForeignLog();
+    eq(await inbound.storeWaStatus({ id: 'wamid.x1', status: 'sent', error: null, recipient: '919876500001' }), false);
+    await foreign.foreignSettled();
+    // storeWaStatus does not carry a clock: the row is today's; the pure add is checked with fixed times below
+    const key = Object.keys(S.settings).find((k) => k.startsWith('wa_foreign:'));
+    assert.match(key, /^wa_foreign:\d{4}-\d{2}-\d{2}$/);
+    assert.ok(!/9876500001/.test(S.settings[key]), 'never the full number');
+    // the pure add + the fake's replay of the SQL: two hours, a 130429 failure and another failure
+    delete S.settings[key];
+    for (const [st, err, to, at] of [['sent', null, '919876500001', AT13], ['delivered', null, '919876500001', AT13 + 1000], ['sent', null, '919876500002', AT14], ['failed', '130429 · Rate limit hit', '919876500002', AT14 + 8000], ['failed', '131026 · not a WhatsApp user', '919876500003', AT14 + 9000]]) {
+      eq(await foreign.countForeign(st, err, to, at), true);
+    }
+    eq(await foreign.countForeign('bogus', null, null, AT14), false);
+    const s = await foreign.loadForeignToday(AT14);
+    deq([s.sent, s.delivered, s.read, s.failed, s.failed130429, s.lastStatus, s.lastTo, s.lastError], [2, 1, 0, 2, 1, 'failed', '••••0003', '131026 · not a WhatsApp user']);
+    deq(s.hours.map((h) => [h.hour, h.sent, h.delivered, h.failed, h.failed130429]), [[13, 1, 1, 0, 0], [14, 1, 0, 2, 1]]);
+    eq(s.lastFailAt, new Date(AT14 + 9000).toISOString());
+    eq(foreignRules.foreignKey(AT14), 'wa_foreign:2026-10-15');
+    deq([foreignRules.istDayOf(AT14), foreignRules.istHourOf(AT14), foreignRules.istHourOf(Date.UTC(2026, 9, 15, 23, 0) - 330 * 60000)], ['2026-10-15', 14, 23]);
+    // another day = its own row; yesterday's row is not today's summary
+    eq((await foreign.loadForeignToday(AT14 + 24 * 3600000)).sent, 0);
+  });
+  await t('our own messages are never counted: a chat message\'s wamid (even one written only AFTER the report came, the second look finds it), an automation row\'s, an alert\'s, a test send\'s', async () => {
+    foreign.setForeignRecheckMs(40);
+    const keep = setInterval(() => undefined, 500);   // the second look's timer is unref'd (it never holds a server open): keep this process alive meanwhile
+    try {
+      // the report lands first, the send's UPDATE writes the wamid a moment later (the live race)
+      eq(await inbound.storeWaStatus({ id: 'wamid.race', status: 'sent', error: null, recipient: '919876500001' }), false);
+      S.msgs.push({ id: 'late', conversation_id: 'c1', sender: 'agent', content: 'Hi', metadata: { wa_id: 'wamid.race', wa_sent: true } });
+      await foreign.foreignSettled();
+      eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_foreign:')).length, 0, 'the second look saw our message');
+    } finally { foreign.setForeignRecheckMs(0); clearInterval(keep); }
+    S.autoRows = [{ id: '7', business_id: 'bizVast', to_number: '919876500002', status: 'sent', body_text: 'x', wa_id: 'wamid.auto', template: 'order_placed' }];
+    S.settings['wa_alert_sent:wamid.alert'] = JSON.stringify({ to: '919876500003', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK', tries: 1 });
+    S.settings['wa_test_sent:wamid.test'] = JSON.stringify({ to: '••••0004', at: '2026-10-15T08:00:00.000Z' });
+    for (const id of ['wamid.auto', 'wamid.alert', 'wamid.test']) await inbound.storeWaStatus({ id, status: 'delivered', error: null, recipient: null });
+    await foreign.foreignSettled();
+    eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_foreign:')).length, 0);
+    deq([await foreign.isOurWaId('wamid.auto'), await foreign.isOurWaId('wamid.alert'), await foreign.isOurWaId('wamid.test'), await foreign.isOurWaId('wamid.nobody'), await foreign.isOurWaId('')], [true, true, true, false, true]);
+    // the automation table not installed: that look says "not ours", the others still count
+    S.noAutoTable = true;
+    eq(await foreign.isOurWaId('wamid.auto'), false); eq(await foreign.isOurWaId('wamid.test'), true);
+    S.noAutoTable = false;
+    // the test send keeps its wamid (whatsapp-auto.ts sendAutomationTest -> noteTestSent)
+    await foreign.noteTestSent('wamid.t9', '919876500005');
+    eq(S.settings['wa_test_sent:wamid.t9'] && JSON.parse(S.settings['wa_test_sent:wamid.t9']).to, '••••0005');
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await noteTestSent\(r\.id, digits\)/);
+  });
+  await t('a foreign 130429 failure counts in failed130429 AND still pauses the number (it is shared); the webhook answers 200 before the count, nothing waits on it', async () => {
+    delete S.settings.wa_pause; require(path.join(SRC, 'lib/chat/whatsapp-pause.ts')).forgetPauseCache();
+    const body = JSON.stringify(webhookBody([], [{ id: 'wamid.other1', status: 'sent', timestamp: '1760500000', recipient_id: '919876500001' }, { id: 'wamid.other2', status: 'failed', timestamp: '1760500010', recipient_id: '919876500002', errors: [{ code: 130429, title: 'Rate limit hit', message: 'Rate limit hit' }] }]));
+    const r = await route.POST(req('POST', { body }));
+    deq([r.status, r.body], [200, { ok: true, stored: 0, duplicates: 0, reports: 0 }]);
+    assert.ok(S.settings.wa_pause, 'the shared number paused on the 130429 at once');
+    await foreign.foreignSettled();
+    const s = await foreign.loadForeignToday(Date.now());
+    deq([s.sent, s.failed, s.failed130429, s.lastTo], [1, 1, 1, '••••0002']);
+    assert.match(s.lastError, /^130429/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'), 'utf8'), /if \(!ours\) void noteForeignStatus\(s\);/);
+    // the log: the first report, then at most one line a minute per process
+    const warn = console.warn, lines = []; console.warn = (m) => lines.push(String(m));
+    try { foreign.resetForeignLog(); for (let i = 0; i < 5; i++) await foreign.countForeign('sent', null, '919876500009', AT14 + i * 1000); await foreign.countForeign('sent', null, '919876500009', AT14 + 61000); }
+    finally { console.warn = warn; }
+    deq(lines.map((l) => /never sent/.test(l)), [true, true]); assert.match(lines[1], /4 more since the last line/);
+    assert.ok(!/9876500009/.test(lines.join('\n')), 'the log masks the number');
+  });
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

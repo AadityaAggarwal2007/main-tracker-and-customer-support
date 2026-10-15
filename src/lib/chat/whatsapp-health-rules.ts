@@ -23,7 +23,11 @@ export interface WaHealth {
   // When the OLDEST of the last 24 hours' conversations started (ISO): 24 hours after it, Meta's rolling count drops by
   // one and the automation may message a new customer again (owner 2026-10-15, the daily limit guard).
   oldest24h?: string | null;
+  // Another app on the number (owner 2026-10-15): Meta's reports today for messages ShipTrack never sent
+  // (whatsapp-foreign-rules.ts foreignSeen); 0 / missing = none seen.
+  foreignToday?: number;
 }
+export const FOREIGN_BOARD_TEXT = (n: number) => `Another app sent ${n} message${n === 1 ? '' : 's'} from this number today (Meta's reports for messages ShipTrack never sent): the two share Meta's limit. Open WhatsApp > Automation > Number status for where to look`;
 
 // The daily limit guard (owner 2026-10-15: at 242 customers messaged today Meta refused every message to a NEW customer
 // with 130429 whatever the speed; Meta's starting limit is 250 business-initiated customers per rolling 24 hours, and the
@@ -84,6 +88,7 @@ export function waHealthLines(h: WaHealth): WaLine[] {
     else if (pct >= 0.9) out.push({ tone: 'danger', text: `Daily limit almost used: ${h.used24h} of ${h.limit} customers in the last 24 hours. New ones will wait once it is reached` });
     else if (pct >= 0.7) out.push({ tone: 'warn', text: `Daily limit ${Math.round(pct * 100)}% used: ${h.used24h} of ${h.limit} customers in the last 24 hours` });
   }
+  if (h.foreignToday && h.foreignToday > 0) out.push({ tone: 'danger', text: FOREIGN_BOARD_TEXT(h.foreignToday) });
   if (h.failedToday > 0) out.push({ tone: 'warn', text: `${h.failedToday} automation ${h.failedToday === 1 ? 'message' : 'messages'} failed today: open WhatsApp > Automation > Failed` });
   if (h.phoneError) out.push({ tone: 'warn', text: `Could not read the number from Meta: ${h.phoneError}` });
   return out;

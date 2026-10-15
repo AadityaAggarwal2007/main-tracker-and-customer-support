@@ -1200,6 +1200,81 @@ async function t(name, fn) {
     assert.ok(!/model/i.test(src), 'no model names');
   });
 
+  console.log('whatsapp automation: another app on the number (owner 15 Oct)');
+  const fr = require(path.join(SRC, 'lib/chat/whatsapp-foreign-rules.ts'));
+  await t('the pure rules: one report -> the fresh row and the atomic add\'s pieces (India hour, 130429 apart, the number masked); a stored row parsed and summed per hour; junk = nothing seen', () => {
+    const at = IST(15, 13, 5);
+    const a = fr.foreignAdd('failed', '130429 · Rate limit hit · too many messages', '919876500002', at);
+    deq([a.key, a.hour, a.status, a.rateLimited], ['wa_foreign:2026-10-15', '13', 'failed', true]);
+    deq(JSON.parse(a.fresh), { hours: { 13: { failed: 1, failed130429: 1 } }, lastAt: new Date(at).toISOString(), lastStatus: 'failed', lastTo: '••••0002', lastFailAt: new Date(at).toISOString(), lastError: '130429 · Rate limit hit · too many messages' });
+    deq(Object.keys(JSON.parse(a.top)).sort(), ['lastAt', 'lastError', 'lastFailAt', 'lastStatus', 'lastTo']);
+    const b = fr.foreignAdd('sent', null, '919876500001', IST(15, 23, 59));
+    deq([b.hour, b.rateLimited, JSON.parse(b.fresh).hours, JSON.parse(b.top).lastFailAt], ['23', false, { 23: { sent: 1 } }, undefined]);
+    eq(fr.foreignAdd('failed', '131026 · not a WhatsApp user', null, at).rateLimited, false);
+    eq(fr.foreignAdd('bogus', null, null, at), null);
+    eq(fr.foreignAdd('sent', null, '12', at).fresh.includes('lastTo":null'), true);
+    assert.ok(!/9876500002/.test(a.fresh + a.top), 'never the full number');
+    // a stored day: hours summed, in order; a 130429 inside failed; the last fields
+    const day = fr.parseForeignDay(JSON.stringify({ hours: { 14: { sent: 30, failed: 2, failed130429: 2 }, 13: { sent: 5, delivered: 4, read: 1 }, x: { sent: 9 } }, lastAt: '2026-10-15T09:05:00.000Z', lastStatus: 'failed', lastTo: '••••0002', lastFailAt: '2026-10-15T09:05:00.000Z', lastError: '130429 · Rate limit hit' }));
+    const s = fr.foreignSummary(day);
+    deq([s.sent, s.delivered, s.read, s.failed, s.failed130429, s.hours.map((h) => h.hour), fr.foreignSeen(s)], [35, 4, 1, 2, 2, [13, 14], 42]);
+    deq(fr.foreignSummary(null), { sent: 0, delivered: 0, read: 0, failed: 0, failed130429: 0, lastAt: null, lastStatus: null, lastTo: null, lastFailAt: null, lastError: null, hours: [] });
+    deq([fr.parseForeignDay('junk'), fr.parseForeignDay(''), fr.parseForeignDay('[1]')], [null, null, null]);
+    eq(fr.foreignSummary(fr.parseForeignDay('{"hours":{"13":{"sent":"3","failed":-2}}}')).sent, 3);
+    eq(fr.FOREIGN_RECHECK_MS, 20000);
+  });
+  await t('the line: another app sent N today (red, where to look in Meta Business Settings) / none seen while Meta refuses us (as far as ShipTrack can see, it lifts on Meta\'s side) / nothing to say', () => {
+    const seen = fr.foreignSummary(fr.parseForeignDay(JSON.stringify({ hours: { 13: { sent: 41, failed: 2, failed130429: 1 } }, lastAt: new Date(IST(15, 13, 40)).toISOString(), lastStatus: 'sent', lastTo: '••••0007', lastFailAt: new Date(IST(15, 13, 30)).toISOString(), lastError: '130429 · Rate limit hit' })));
+    const l = fr.foreignLine(seen, true);
+    eq(l.tone, 'danger');
+    assert.match(l.text, /^Another app sent 41 messages from this number today \(Meta's reports for messages ShipTrack never sent\)\. 2 of them failed \(1 with Meta's 130429 rate limit\)\. Last one 1:40 pm to ••••0007\. Two apps on one number share Meta's limit: find it in Meta Business Settings > Accounts > WhatsApp accounts > \(this account\) > Partners, and Business Settings > Integrations > Connected apps \/ System users, and remove what you don't use\.$/);
+    eq(fr.foreignLine(seen, false).tone, 'danger');                                   // seen = red, refusing or not
+    const one = fr.foreignLine(fr.foreignSummary(fr.parseForeignDay('{"hours":{"9":{"sent":1}}}')), false);
+    assert.match(one.text, /^Another app sent 1 message from this number today/); assert.ok(!/failed/.test(one.text));
+    // only failures seen: still another app tried to send
+    assert.match(fr.foreignLine(fr.foreignSummary(fr.parseForeignDay('{"hours":{"9":{"failed":3,"failed130429":3}}}')), false).text, /^Another app sent 3 messages .* 3 of them failed \(3 with Meta's 130429 rate limit\)/);
+    const none = fr.foreignLine(fr.foreignSummary(null), true);
+    deq([none.tone, none.text], ['ok', 'No other app\'s messages seen from this number today, as far as ShipTrack can see (an app under another Meta app sends its reports elsewhere): Meta itself is holding the number back after this afternoon\'s burst; it lifts on Meta\'s side.']);
+    eq(fr.foreignLine(fr.foreignSummary(null), false), null);
+  });
+  await t('the overview carries `foreign` (today\'s counts + the line): red with foreign reports; while Meta refuses us (a 130429 in 2 h, or Meta\'s pause) and none seen, the "no other app" line; a pause by hand alone or a quiet number = no line; the Today board gets the red line too', async () => {
+    const now = IST(13, 12);
+    let o = await auto.automationOverview(null, now);
+    deq([o.foreign.sent, o.foreign.failed, o.foreign.line, o.foreign.hours], [0, 0, null, []]);
+    // a 130429 of the last 2 hours, none foreign seen
+    S.settings.wa_pause = JSON.stringify({ until: new Date(now - 60000).toISOString(), reason: '130429 · Rate limit hit', at: new Date(now - 30 * 60000).toISOString(), strikes: 1 });
+    o = await auto.automationOverview(null, now);
+    eq(o.foreign.line.tone, 'ok'); assert.match(o.foreign.line.text, /^No other app's messages seen/);
+    // Meta's pause still running
+    S.settings.wa_pause = JSON.stringify({ until: new Date(now + 10 * 60000).toISOString(), reason: '130429 · Rate limit hit', at: new Date(now - 5 * 60000).toISOString(), strikes: 1 });
+    eq((await auto.automationOverview(null, now)).foreign.line.tone, 'ok');
+    // a pause by hand with no refusal of Meta's: nothing to say
+    S.settings.wa_pause = JSON.stringify({ until: new Date(now + 10 * 60000).toISOString(), reason: 'Paused by owner', at: new Date(now - rules.STRIKE_WINDOW_MS).toISOString(), strikes: 1, manual: true, by: 'owner' });
+    eq((await auto.automationOverview(null, now)).foreign.line, null);
+    // foreign reports today (the India day of `now`): red, with the hours; yesterday's row never counts
+    S.settings['wa_foreign:2026-10-12'] = JSON.stringify({ hours: { 11: { sent: 300 } } });
+    S.settings['wa_foreign:2026-10-13'] = JSON.stringify({ hours: { 11: { sent: 12, delivered: 10 }, 12: { sent: 3, failed: 1, failed130429: 1 } }, lastAt: new Date(now - 60000).toISOString(), lastStatus: 'failed', lastTo: '••••0002', lastFailAt: new Date(now - 60000).toISOString(), lastError: '130429 · Rate limit hit' });
+    delete S.settings.wa_pause;
+    o = await auto.automationOverview(null, now);
+    deq([o.foreign.sent, o.foreign.delivered, o.foreign.failed, o.foreign.failed130429, o.foreign.hours.map((h) => [h.hour, h.sent]), o.foreign.line.tone], [15, 10, 1, 1, [[11, 12], [12, 3]], 'danger']);
+    assert.match(o.foreign.line.text, /^Another app sent 15 messages from this number today/);
+    // the route answers it
+    const g = await route.GET(jreq(OWNER, {}, 'http://x/api/whatsapp/automation'));
+    eq(g.status, 200); assert.ok('foreign' in g.body && Array.isArray(g.body.foreign.hours));
+    // the Today board (whatsapp-health-rules.ts): one red line from WaHealth.foreignToday, filled by whatsapp-health.ts
+    const base = { quality: 'GREEN', status: 'CONNECTED', tier: 'TIER_250', limit: 250, limitFrom: 'meta', used24h: 10, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: null };
+    deq(health.waHealthLines({ ...base, foreignToday: 0 }), []);
+    const lines = health.waHealthLines({ ...base, foreignToday: 15 });
+    deq([lines.length, lines[0].tone], [1, 'danger']); assert.match(lines[0].text, /^Another app sent 15 messages from this number today .* Open WhatsApp > Automation > Number status/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-health.ts'), 'utf8'), /h\.foreignToday = foreignSeen\(await loadForeignToday\(now\)\)/);
+    // the screen: the Number status box shows the line, red when another app was seen, with the hours; the panel passes it
+    const card = fs.readFileSync(path.join(SRC, 'components/whatsapp/PauseStatusCard.tsx'), 'utf8');
+    assert.match(card, /foreign\?\.line && \(/); assert.match(card, /foreign\.line\.text/); assert.match(card, /By India hour:/);
+    assert.match(fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8'), /foreign=\{o\.foreign \?\? null\}/);
+    for (const f of ['lib/chat/whatsapp-foreign-rules.ts', 'lib/chat/whatsapp-foreign.ts', 'components/whatsapp/PauseStatusCard.tsx']) assert.ok(!/model/i.test(fs.readFileSync(path.join(SRC, f), 'utf8')), 'no model names in ' + f);
+    assert.ok(!/^import /m.test(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-foreign-rules.ts'), 'utf8')), 'the rules file is pure');
+  });
+
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
   process.exit(fail ? 1 : 0);
 })();

@@ -8,7 +8,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Pause, Play } from 'lucide-react';
 import { FIRST_AFTER_QUIET_TEXT, SEND_RATES, type PauseView, type SendRate } from '@/lib/chat/whatsapp-auto-rules';
-import type { NumberHealth } from '@/lib/chat/whatsapp-auto';
+import type { AutoOverview, NumberHealth } from '@/lib/chat/whatsapp-auto';
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 function inText(ms: number): string {
@@ -21,10 +21,11 @@ const ordinal = (n: number) => (n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3
 const chipTone = (v: string, good: string[]) => (good.includes(v) ? 'chip-ok' : v === 'UNKNOWN' ? 'chip-warn' : 'chip-danger');
 const n = (x: number) => x.toLocaleString('en-IN');
 
-export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, health, rate, onPause, onResume, onRate }: {
+export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, health, rate, foreign, onPause, onResume, onRate }: {
   info: PauseView; ordersDue: number; alertsWaiting: number; busy: boolean;
   health?: NumberHealth | null;   // Meta's side of the number (owner 2026-10-15): quality, status, messaging limit
   rate?: SendRate | null;         // the chosen speed (owner 2026-10-15, "har minute 2, 3, 4 message")
+  foreign?: AutoOverview['foreign'] | null;   // another app on the number (owner 2026-10-15): reports for messages we never sent
   onPause: (minutes: number) => void; onResume: () => void; onRate?: (perMinute: number) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -103,6 +104,22 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
           <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
           <span>{FIRST_AFTER_QUIET_TEXT}</span>
+        </div>
+      )}
+      {/* another app on the number (owner 2026-10-15, "we need evidence"): Meta's reports today for messages ShipTrack never
+          sent, red when there are any; while Meta refuses us and none were seen, the honest other answer */}
+      {foreign?.line && (
+        <div className="wa-foreign" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: foreign.line.tone === 'danger' ? 'var(--danger, #b91c1c)' : 'inherit', fontWeight: foreign.line.tone === 'danger' ? 600 : 400 }}>
+          {foreign.line.tone === 'danger' && <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />}
+          <span>
+            {foreign.line.text}
+            {foreign.line.tone === 'danger' && foreign.hours.length > 0 && (
+              <span className="meta" style={{ display: 'block', fontWeight: 400, marginTop: 2 }}>
+                By India hour: {foreign.hours.map((h) => `${h.hour}:00 → ${h.sent} sent${h.failed ? `, ${h.failed} failed` : ''}`).join(' · ')}
+                {foreign.lastError ? ` · last failure: ${foreign.lastError}` : ''}
+              </span>
+            )}
+          </span>
         </div>
       )}
       {/* Meta's side of the number: what WhatsApp Manager shows, read at most every 5 minutes */}
