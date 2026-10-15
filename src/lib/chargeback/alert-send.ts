@@ -5,7 +5,8 @@
 // WhatsApp > Templates or the button on the Chargeback card, the same one the AI-credit and risk alerts use) now carries
 // it too: when the env template is set it still wins; else, with the WhatsApp token + phone number id on the server and
 // "shiptrack_alert" APPROVED on the Messaging account, the alert goes as {{1}} = chargebackAlertText. Never throws.
-import { sendWhatsAppTemplate, waConfigured } from '@/lib/chat/whatsapp';
+import { waConfigured } from '@/lib/chat/whatsapp';
+import { ALERT_WAITING, sendAlert } from '@/lib/chat/whatsapp-alert-queue';
 import { listTemplates } from '@/lib/chat/whatsapp-templates';
 import { templatesAccount } from '@/lib/chat/whatsapp-settings';
 import { chargebackAlertText, sendChargebackWhatsApp, whatsappConfigured, type NotifyResult } from './notify';
@@ -51,13 +52,16 @@ export async function chargebackWhatsAppSetup(fresh = false): Promise<Chargeback
   return { ready: t?.status === 'APPROVED', token: true, envTemplate: false, template: t ? { name: t.name, status: t.status } : null, error: null };
 }
 
-export async function notifyChargeback(to: string, vars: { panel: string; gateway: string; order: string }): Promise<NotifyResult> {
+export async function notifyChargeback(to: string, vars: { panel: string; gateway: string; order: string }, alertId?: string | null): Promise<NotifyResult> {
   if (whatsappConfigured()) return sendChargebackWhatsApp(to, vars);
   if (!waConfigured()) return 'not_configured';
   const got = await alertTemplate();
   const t: Tpl = got && 'error' in got ? lastApproved : (got as Tpl);
   if (!t && got && 'error' in got) return `failed: could not read the WhatsApp templates from Meta (${String(got.error).slice(0, 120)})`;
   if (!t || t.status !== 'APPROVED') return 'not_configured';
-  const r = await sendWhatsAppTemplate(to, t.name, t.language, [chargebackAlertText(vars)]);
-  return 'error' in r ? `failed: ${String(r.error).slice(0, 160)}` : 'sent';
+  // through the alert queue (owner 2026-10-15): Meta's rate limit makes it wait and go by itself, and a later failed
+  // delivery report updates this alert's line (whatsapp-alert-queue.ts)
+  const r = await sendAlert({ to, name: t.name, language: t.language, text: chargebackAlertText(vars), chargebackId: alertId || null });
+  if ('error' in r) return `failed: ${String(r.error).slice(0, 160)}`;
+  return r.id ? 'sent' : ALERT_WAITING;
 }

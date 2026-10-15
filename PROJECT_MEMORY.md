@@ -276,6 +276,11 @@ Done and live:
 - **15 Oct, inbox full**: a VASTRIKA customer's Gmail was out of storage (452 4.2.2) and the team re-sent the reply
   several times. Now the reply box asks before sending to a customer whose mails came back for a reason resending cannot
   fix (full / no such address / Gmail's suspicious block / daily limit), and says how many came back.
+- **15 Oct, WhatsApp 130429**: Meta answered "Rate limit hit" for the ShipTrack number: 59 order messages Failed and
+  the VASTRIKA chargeback alert never arrived. Built: ONE message per order once the owner's new template
+  `order_placed_link` (order placed + tracking link) is approved by Meta; 2 messages a minute for the whole install;
+  a 130429 pauses the number 15 min and the messages / alerts wait and go again by themselves; the 59 failed ones go
+  back in line. OWNER TO DO: WhatsApp > Templates > "Order placed + tracking link (one message)" > send to Meta.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

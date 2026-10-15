@@ -10,7 +10,7 @@ const IST = (d, h, m = 0) => Date.UTC(2026, 9, d, h, m) - 330 * 60000;   // an I
 const S = {};
 function reset() {
   Object.assign(S, {
-    nowMs: IST(13, 12), noTable: false, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0,
+    nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0,
     settings: { whatsapp_messaging_id: '28873951022288651', 'wa_brand:b1': JSON.stringify({ name: 'Vastora', email: 'help@vastora.test' }) },
     panels: [{ id: 'b1', name: 'vastora' }, { id: 'b2', name: 'VASTRIKA' }],
     orders: [], rows: [],
@@ -30,7 +30,16 @@ const db = {
     if (S.noTable && /wa_auto_sends/.test(sql)) { const e = new Error('relation "wa_auto_sends" does not exist'); e.code = '42P01'; throw e; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_auto:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_auto:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM chat_settings WHERE key LIKE 'wa_brand:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_brand:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
+    // owner 15 Oct: the send slot (one order message per 30 s) and the 130429 handling
+    if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO NOTHING$/.test(sql)) { if (!(p[0] in S.settings)) S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^SELECT key FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ key })); return { rows, rowCount: rows.length }; }
+    if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'pending', due_at = now\(\), updated_at = now\(\) WHERE status = 'failed' AND \(code = \$1 OR error LIKE '130429%'\)/.test(sql)) { let n = 0; for (const r of S.rows) if (r.status === 'failed' && (r.code === p[0] || /^130429/.test(r.error || '')) && r.attempts < p[1]) { Object.assign(r, { status: 'pending', due_at: new Date(S.nowMs) }); n++; } return { rows: [], rowCount: n }; }
+    if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs + p[3]), error: p[1], code: 130429 }); return { rows: [], rowCount: r ? 1 : 0 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$3, updated_at = now\(\) WHERE business_id = \$1 AND order_id = \$2 AND kind = 'tracking'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.order_id === p[1] && r.kind === 'tracking' && r.status === 'pending') { r.status = 'skipped'; r.error = p[2]; n++; } return { rows: [], rowCount: n }; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql)) return { rows: S.panels.map((x) => ({ ...x })), rowCount: S.panels.length };
     if (/FROM site_emails se JOIN sites s/.test(sql)) return { rows: [], rowCount: 0 };
@@ -67,7 +76,8 @@ const db = {
       S.trackingFlags = (S.trackingFlags || []).concat([p[1]]);
       const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
         const o = orderOf(r);
-        return { id: r.id, order_id: r.order_id, kind: r.kind, attempts: r.attempts, due_at: r.due_at, gone: !o, customer_name: o && o.customer_name, customer_mobile: o && o.customer_mobile, created_at: o && o.created_at, is_cancelled: o && o.is_cancelled, tracking_status: o && o.tracking_status, delivered_at: o && o.delivered_at, tracking_token: o && o.tracking_token, tracking_domain: null };
+        const placed = S.rows.find((x) => x.business_id === r.business_id && x.order_id === r.order_id && x.kind === 'placed');
+        return { id: r.id, order_id: r.order_id, kind: r.kind, attempts: r.attempts, due_at: r.due_at, placed_template: placed ? placed.template || null : null, gone: !o, customer_name: o && o.customer_name, customer_mobile: o && o.customer_mobile, created_at: o && o.created_at, is_cancelled: o && o.is_cancelled, tracking_status: o && o.tracking_status, delivered_at: o && o.delivered_at, tracking_token: o && o.tracking_token, tracking_domain: null };
       });
       return { rows, rowCount: rows.length };
     }
@@ -495,6 +505,97 @@ async function t(name, fn) {
     deq(h.today, { placedWent: 1, placedRead: 0, trackingWent: 0, trackingRead: 0, failed: 0, skipped: 2, dueLater: 0 });   // #1554 has no number: both skipped
     eq(h.waitingToday, 1);   // #1553's tracking link, due on the 15th
     deq([h.usedToday, h.used24h], [311, 613]);   // today first (the limit is a day's), Meta's rolling 24 h beside it
+  });
+
+  // ── owner 15 Oct: ONE message with the tracking link; Meta's 130429 rate limit; 2 messages a minute ──
+  const pause = require(path.join(SRC, 'lib/chat/whatsapp-pause.ts'));
+  const LINK = { id: 't3', name: 'order_placed_link', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Track it here: {{4}} . For any confusion, please email us at {{5}} and our team will help you.' }] };
+  const tplOf = (f) => f.body.template.name;
+  const valuesOf = (f) => f.body.template.components[0].parameters.map((x) => x.text);
+  await t('one message (owner 15 Oct, "pehle hi message mein tracking link"): once order_placed_link is approved the first message carries the link and the 48-hour message is skipped; without it, or without a link, the old two', async () => {
+    const brand = require(path.join(SRC, 'lib/chat/whatsapp-brand-rules.ts'));
+    eq(brand.ORDER_LINK_PRESET.name, rules.LINK_TEMPLATE); eq((brand.ORDER_LINK_PRESET.body.match(/\{\{\d\}\}/g) || []).length, 5);
+    pause.forgetPauseCache();
+    S.metaTemplates.push(LINK); turnOn();
+    S.orders = [order(), order({ order_id: '#1554', tracking_token: null })];
+    await run(IST(13, 12));
+    const f = sends();
+    deq(f.map(tplOf), ['order_placed_link', 'order_placed']);                       // #1554 has no link yet: the old message
+    deq(valuesOf(f[0]), ['Aaditya', '#1553', 'Vastora', 'https://shiptrack.store/track/tok-1553', 'help@vastora.test']);
+    const tr = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking');
+    deq([tr.status, tr.error], ['skipped', rules.SKIP.inFirst]);
+    eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'tracking').status, 'pending');
+    // a tracking row whose order already got the link is skipped when its turn comes
+    S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking').status = 'pending';
+    S.rows.forEach((r) => { if (r.kind === 'tracking') r.due_at = new Date(IST(15, 12)); });
+    S.fetches = []; await run(IST(15, 12));
+    deq(sends().map(tplOf), []);                                                    // #1553's went in the first message; #1554 still has no link
+    eq(S.rows.find((r) => r.order_id === '#1554' && r.kind === 'tracking').error, rules.SKIP.noLink);
+    eq(S.rows.find((r) => r.order_id === '#1553' && r.kind === 'tracking').status, 'skipped');
+  });
+  await t('slow and steady (owner 15 Oct, "har minute 1 ya 2 msg"): no send slot = nothing goes and nothing is claimed; the slot is one per 30 s', async () => {
+    eq(rules.SEND_EVERY_MS, 30000);
+    pause.forgetPauseCache(); turnOn(); S.orders = [order()]; S.slotBusy = true;
+    await run(IST(13, 12));
+    eq(sends().length, 0);
+    const placed = S.rows.find((r) => r.kind === 'placed');
+    deq([placed.status, new Date(placed.due_at).getTime()], ['pending', IST(13, 12)]);   // not claimed: goes on the next run
+    S.slotBusy = false; await run(IST(13, 12, 1));
+    eq(sends().length, 1);
+    const src = fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8');
+    assert.ok(src.indexOf('takeSendSlot()') < src.indexOf("SET due_at = now() + interval '30 minutes'"), 'the slot is taken before the row is claimed');
+  });
+  await t('130429 at once (owner 15 Oct): the number pauses 15 min, the row waits (not Failed), nothing more goes that run or while paused; after the pause it goes', async () => {
+    pause.forgetPauseCache(); turnOn(); S.orders = [order(), order({ order_id: '#1554' })];
+    S.sendFail = { code: 130429, message: 'Rate limit hit' };
+    const r1 = await run(IST(13, 12));
+    eq(sends().length, 1); eq(r1.paused, true);
+    const row = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'placed');
+    deq([row.status, row.attempts, row.code], ['pending', 1, 130429]);
+    eq(new Date(row.due_at).getTime(), IST(13, 12) + rules.PAUSE_MS);
+    assert.ok(JSON.parse(S.settings.wa_pause).until, 'paused for both processes');
+    S.sendFail = null; S.fetches = []; pause.forgetPauseCache();
+    await run(IST(13, 12, 5));
+    eq(sends().length, 0);                                                          // still paused
+    pause.forgetPauseCache(); await run(IST(13, 12, 16));
+    eq(sends().length, 2);
+  });
+  await t('130429 later, in Meta\'s delivery report: the row goes back to waiting and the number pauses; the old failed ones go again after the pause (at most 6 tries)', async () => {
+    pause.forgetPauseCache(); turnOn(); S.orders = [order()];
+    await run(IST(13, 12));
+    const row = S.rows.find((r) => r.kind === 'placed');
+    eq(row.status, 'sent');
+    await status.noteAutoStatus(row.wa_id, 'failed', '130429 · Rate limit hit · Message failed to send because there were too many messages sent from this phone number in a short period of time.');
+    deq([row.status, row.code], ['pending', 130429]);
+    assert.ok(S.settings.wa_pause, 'the report paused the number');
+    // a row that already sits in Failed with 130429 (before this fix) waits in line again once not paused
+    S.rows.push({ id: 'old', business_id: 'b1', order_id: '#1553', kind: 'tracking', status: 'failed', to_number: '919876543210', error: '130429 · Rate limit hit', code: null, attempts: 1, due_at: new Date(IST(13, 9)), sent_at: null, wa_id: null, updated_at: new Date(IST(13, 9)) });
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+    await run(IST(13, 12, 20));
+    eq(S.rows.find((r) => r.id === 'old').status, 'sent');                          // back in line, and it was due: it went
+    S.rows.push({ id: 'many', business_id: 'b1', order_id: '#1553', kind: 'placed', status: 'failed', error: '130429 · Rate limit hit', code: 130429, attempts: 6, due_at: new Date(IST(13, 9)), updated_at: new Date(IST(13, 9)) });
+    await run(IST(13, 12, 21));
+    eq(S.rows.find((r) => r.id === 'many').status, 'failed');                      // tried enough
+  });
+  await t('ShipTrack\'s own alerts (the chargeback alert, owner 15 Oct): while paused they wait in a queue and go after the pause; a later 130429 report puts one back in line', async () => {
+    const q = require(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'));
+    q.setAlertGap(0);
+    pause.forgetPauseCache();
+    await pause.pauseWhatsApp('130429 test', Date.now());
+    const r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA', chargebackId: 'cb1' });
+    deq(['error' in r, r.id], [false, null]);                                       // queued, answered like a sent one
+    eq(sends().length, 0);
+    const queued = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:'));
+    eq(queued.length, 1);
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+    eq(await q.runAlertQueue(), 1);
+    eq(sends().length, 1); eq(sends()[0].body.template.name, 'shiptrack_alert');
+    eq(await q.runAlertQueue(), 0);                                                 // claimed once
+    const wamid = Object.keys(S.settings).find((k) => k.startsWith('wa_alert_sent:')).slice('wa_alert_sent:'.length);
+    eq(await q.noteAlertStatus(wamid, 'failed', '130429 · Rate limit hit'), true);
+    eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:') && !JSON.parse(S.settings[k]).done).length, 1);   // in line again
+    assert.ok(!('done' in JSON.parse(S.settings[Object.keys(S.settings).find((k) => k.startsWith('wa_alert_sent:'))])), 'the sent record never carries the queue\'s done mark');
+    eq(await q.noteAlertStatus('wamid.unknown', 'failed', '130429'), false);
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

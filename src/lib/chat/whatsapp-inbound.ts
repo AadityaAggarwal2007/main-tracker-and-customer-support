@@ -9,6 +9,9 @@
 // goes back out on WhatsApp through the same messages route. Delivery reports (sent / delivered /
 // read / failed) land on our own message's metadata (`wa_status`, `wa_error`).
 
+import { noteAlertStatus } from './whatsapp-alert-queue';
+import { isRateLimited } from './whatsapp-auto-rules';
+import { pauseWhatsApp } from './whatsapp-pause';
 import { query, queryOne } from '@/lib/db';
 import { ensureSiteForPanel } from './site';
 import { updateConversationSubject } from './subject';
@@ -139,5 +142,9 @@ export async function storeWaStatus(s: WaStatus): Promise<boolean> {
   );
   // the automation's own messages (WhatsApp > Automation) have no chat message: their row takes the report
   const auto = await noteAutoStatus(s.id, s.status, s.error);
-  return (r.rowCount ?? 0) > 0 || auto;
+  // ShipTrack's own alerts (chargeback, AI credit, risk, stuck promises): a rate-limited one waits and goes again
+  // (whatsapp-alert-queue.ts); any 130429 report pauses the number (owner 2026-10-15)
+  const alert = auto ? false : await noteAlertStatus(s.id, s.status, s.error).catch(() => false);
+  if (s.status === 'failed' && !auto && !alert && isRateLimited(null, s.error)) await pauseWhatsApp(String(s.error)).catch(() => undefined);
+  return (r.rowCount ?? 0) > 0 || auto || alert;
 }

@@ -20,7 +20,7 @@ interface Alert {
 type View = 'open' | 'done' | 'other' | 'all';
 const VIEWS: { key: View; label: string }[] = [{ key: 'open', label: 'Open' }, { key: 'done', label: 'Done' }, { key: 'other', label: 'Other mail' }, { key: 'all', label: 'All' }];
 
-const notifyText = (s: string) => s === 'not_chargeback' ? 'Not a chargeback: nothing sent' : s === 'sent' ? 'WhatsApp sent' : s === 'no_number' ? 'No WhatsApp number' : s === 'not_configured' ? 'WhatsApp not set up' : s === 'pending' ? 'WhatsApp pending' : s.replace(/^failed: ?/, 'WhatsApp failed: ');
+const notifyText = (s: string) => s === 'not_chargeback' ? 'Not a chargeback: nothing sent' : s === 'sent' ? 'WhatsApp sent' : s === 'delivered' ? 'WhatsApp delivered' : s === 'read' ? 'WhatsApp read' : s.startsWith('waiting') ? 'WhatsApp waiting: Meta paused the number for a few minutes (too many messages); it goes by itself' : s === 'no_number' ? 'No WhatsApp number' : s === 'not_configured' ? 'WhatsApp not set up' : s === 'pending' ? 'WhatsApp pending' : s.replace(/^failed: ?/, 'WhatsApp failed: ');
 
 // Chargeback Shield (owner 2026-10-10): the tab opens on "Stop them" (the orders at risk now), then the chargebacks that
 // came, then the study of all of them. Remembered in localStorage `cb_mode`.

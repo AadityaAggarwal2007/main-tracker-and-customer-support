@@ -210,7 +210,7 @@ async function record(group: Group, uid: number, source: Buffer): Promise<boolea
     const s = await queryOne<{ whatsapp_number: string }>(`SELECT whatsapp_number FROM panel_chargeback WHERE business_id = $1`, [target.business_id]);
     const to = whatsappNumbers(s?.whatsapp_number || '').numbers;
     const results: string[] = [];
-    for (const n of to) results.push(await notifyChargeback(n, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' }));
+    for (const n of to) results.push(await notifyChargeback(n, { panel: target.panel_name || 'Panel', gateway, order: orderId || 'not found' }, ins.id));
     if (results.length) {
       const sent = results.filter((r) => r === 'sent').length;
       notify = sent === results.length ? 'sent' : sent > 0 ? `sent ${sent} of ${results.length}; ${results.find((r) => r !== 'sent')}` : results[0];
