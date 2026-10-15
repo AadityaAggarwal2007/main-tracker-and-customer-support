@@ -9,7 +9,7 @@ import { getReplyWrap, setReplyWrap } from '@/components/replyWrap';
 import { agoText } from '@/app/admin/_lib/format';
 import { ASK_VERIFY_EN, ASK_VERIFY_HINGLISH, MAIL_MAX_FILES, MAIL_MAX_TOTAL_BYTES, frameHeight, quotedText } from '@/lib/chat/mail-view';
 import { ATTACHMENT_ACCEPT, checkBrowserFile, formatFileSize } from '@/lib/chat/attachment-rules';
-import { BOUNCE_WHY, BUCKET_LABEL, bounceInfo, initials, isBounce, type BounceWhy, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
+import { BOUNCE_WHY, BUCKET_LABEL, bounceInfo, initials, isBounce, resendWarning, type BounceWhy, type CustomerCase, type MailBucket } from '@/lib/chat/mail-filters';
 import MailConversation, { useFrameChars } from './MailConversation';
 import CustomerCard from './CustomerCard';
 import { CorrectionDialog } from '@/components/CorrectionDialog';
@@ -33,7 +33,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
   onBack: () => void; onPrev: (() => void) | null; onNext: (() => void) | null;
   backLabel?: string; position?: string;   // "To reply" / "3 of 41"
   bucket?: MailBucket;                      // To reply / Replied / Not a customer (mail-filters.ts bucketOf)
-  bounced?: { at: string; why: string; to: string | null } | null;   // our last reply to this customer came back undelivered (owner 2026-10-14)
+  bounced?: { at: string; why: string; to: string | null; count?: number; open?: boolean } | null;   // our last reply to this customer came back undelivered (owner 2026-10-14)
   caseInfo?: CustomerCase | null;           // the customer's case (owner 2026-10-11 afternoon; closed by a reply or by hand since 12:45); null = not a customer
   onCase?: (action: 'close' | 'reopen') => void;                                       // Close case / Reopen case (canReply only)
   onNextAfterSend?: boolean;                // after Send the screen opens the next mail to reply to
@@ -154,6 +154,9 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
 
   const send = async () => {
     if (!box || sending) return;
+    // a bounce sending again does not fix (owner 2026-10-15: an inbox was full and the reply was re-sent many times)
+    const warn = resendWarning(bounced);
+    if (warn && !window.confirm(warn)) return;
     setSending(true);
     try {
       const form = new FormData();
@@ -328,7 +331,7 @@ export default function MailReader({ token, box, mail, versions, thread, threadL
       {!bounce && bounced && (
         <div className="mail-verify bad">
           <AlertTriangle size={16} />
-          <span><b>Our last reply{bounced.to ? <> to {bounced.to}</> : null} was not delivered</b> ({agoText(Date.parse(bounced.at))}). {BOUNCE_WHY[(bounced.why in BOUNCE_WHY ? bounced.why : 'other') as BounceWhy]} The customer is back in To reply until you write again.</span>
+          <span><b>{bounced.count && bounced.count > 1 ? `${bounced.count} of our mails` : 'Our last reply'}{bounced.to ? <> to {bounced.to}</> : null} {bounced.count && bounced.count > 1 ? 'came back' : 'was not delivered'}</b> (last {agoText(Date.parse(bounced.at))}). {BOUNCE_WHY[(bounced.why in BOUNCE_WHY ? bounced.why : 'other') as BounceWhy]} {bounced.open ? 'The customer is back in To reply until you write again.' : 'You wrote again after it; that mail may come back too.'}</span>
         </div>
       )}
       {/* Verification: automatic first, then the team (owner 2026-10-08); a bounce gets its own red line instead */}

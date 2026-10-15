@@ -35,9 +35,10 @@ export interface MailListItem {
   // We have written to this address before (a Sent mail to it in the store): a customer even with a work / college
   // address, not only Gmail / Yahoo / ... (owner 2026-10-14; mail-filters.ts isCustomerMail).
   contact?: boolean;
-  // Our reply came back undelivered after our last reply (owner 2026-10-14; mail-store-rules.ts applyBounces): the mail
-  // counts as not replied until we write again. why = mail-filters.ts BounceWhy.
-  bounce?: { at: string; why: string; to: string | null };
+  // Gmail's "could not deliver" report(s) after the customer's newest mail (owner 2026-10-14; mail-store-rules.ts
+  // applyBounces): why = mail-filters.ts BounceWhy, count = how many; open = newer than our last reply, so the mail counts
+  // as not replied until we write again.
+  bounce?: { at: string; why: string; to: string | null; count?: number; open?: boolean };
 }
 
 // The start of the window: IMAP SINCE works on whole days, so the day is what counts.

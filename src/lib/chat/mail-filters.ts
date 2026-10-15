@@ -7,9 +7,10 @@ export type MailSort = 'unreadfirst' | 'newest' | 'oldest';
 
 // repliedAt: when we last wrote to this customer after this mail, in any conversation (ISO; the mail store only, mail-store.ts storeList).
 export interface FilterItem { uid: number; from: string; fromAddress: string; subject: string; date: string; unread: boolean; hasAttachment: boolean; answered: boolean; replied?: boolean; repliedAt?: string; snippet?: string; contact?: boolean; bounce?: MailBounce }
-// Our reply to this customer came back from Gmail undelivered, after our last reply (mail-store-rules.ts applyBounces,
-// owner 2026-10-14): the mail counts as NOT replied (To reply, Active case) until we write again; why = BounceWhy.
-export interface MailBounce { at: string; why: string; to: string | null }
+// Gmail's "could not deliver" report(s) on our mails to this customer since their newest mail (mail-store-rules.ts
+// applyBounces, owner 2026-10-14): why = BounceWhy, count = how many. open = it came after our last reply, so the mail
+// counts as NOT replied (To reply, Active case) until we write again.
+export interface MailBounce { at: string; why: string; to: string | null; count?: number; open?: boolean }
 export type VerifiedMap = Record<string, { orderId: string }[] | undefined>;
 
 // ── Cases per customer (owner 2026-10-11 afternoon: "active case aur close case ... jo customer dobara dobara email kar
@@ -193,9 +194,9 @@ export const BOUNCE_WHY: Record<BounceWhy, string> = {
   // mail before it left; nothing reached the customer and their address is fine.
   suspicious: 'Gmail itself stopped our mail before it left (it never reached the customer): Google thought it looked suspicious. Their address is fine; it is about how much and what this Gmail sends. Do not send the same text again and again (each try makes Google stricter): send one short, plain reply without links, and tell the Super Admin if it keeps happening.',
   limit: 'This Gmail has reached Google\'s daily sending limit, so nothing more goes out from it for up to 24 hours. Reply again tomorrow and tell the Super Admin.',
-  full: 'Their mailbox is full, so Gmail could not hand our mail over. Nothing is wrong on our side: they have to free space first. Try again in a day or two, or answer them where they write next.',
+  full: 'Their Gmail inbox is full (out of storage), so our mail could not be handed over. Nothing is wrong on our side. Gmail keeps trying by itself for about a day: if they free space, it arrives then. Do NOT send it again: every new mail bounces too and makes Google trust this Gmail less. Answer them when they write again, or Close case.',
   blocked: 'Their mail server refused our mail, usually because it looked like spam (many links, a long tracking link, or many mails sent from this Gmail in a short time). Send a short mail without links, or ask them to check Spam.',
-  not_found: 'This address does not exist. Check the email on the order for a typo.',
+  not_found: 'This address does not exist. Check the email on the order for a typo. Sending again to the same address will bounce again.',
   other: 'Gmail could not deliver our mail. Its reason is in the mail below.',
 };
 const EMAIL_IN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
@@ -233,4 +234,18 @@ export function gmailBlocksToday(items: FilterItem[], now: number): number {
     if (w === 'suspicious' || w === 'limit') n++;
   }
   return n;
+}
+
+// A bounce for which sending again does not help (owner 2026-10-15: a customer's inbox was full and the team re-sent
+// the reply many times): the reply box asks before another mail goes to that customer. Short words for that question.
+export const RESEND_USELESS: Record<string, string> = {
+  full: 'their Gmail inbox is full',
+  not_found: 'the address does not exist',
+  suspicious: 'Gmail stopped our mail as suspicious',
+  limit: 'this Gmail reached its daily sending limit',
+};
+export function resendWarning(b: MailBounce | null | undefined): string | null {
+  if (!b || !(b.why in RESEND_USELESS)) return null;
+  const n = b.count && b.count > 1 ? `${b.count} of our mails` : 'Our last mail';
+  return `${n} to this customer came back: ${RESEND_USELESS[b.why]}. This one will most likely come back too, and every bounce makes Google trust this Gmail less. Send anyway?`;
 }
