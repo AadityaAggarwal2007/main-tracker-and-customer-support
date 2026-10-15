@@ -11,7 +11,7 @@
 import { query, queryOne } from '@/lib/db';
 import {
   MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, SEND_RATE_KEY, SEND_RATES, STOP_BY, STOP_MS, STRIKE_WINDOW_MS, firstAfterQuietOf, gapFor, nextPause, parsePauseState, parseSendRate,
-  sendEveryFor, sendRateValue, stopLogLine, type PauseState, type SendRate,
+  sendEveryFor, sendRateValue, stopLogLine, withTemplate, type PauseState, type SendRate,
 } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
@@ -152,7 +152,8 @@ export async function resumeNow(by: string, now = Date.now()): Promise<boolean> 
 // already runs (the same failure reported twice, a second message of the same burst), and a LATE report for a message
 // SENT before the last pause / stop ended (`sentAt`, as nextPause reads it) belongs to the failure the owner already saw:
 // no new stop, the row still goes back in line. Returns whether a NEW stop began (the caller then alerts the owner once).
-export interface StopInfo { code: number | null; words: string; order?: string | null; kind?: string | null }
+// template (2026-10-15 night): the template Meta refused, so the reason says at once when an old one went out
+export interface StopInfo { code: number | null; words: string; order?: string | null; kind?: string | null; template?: string | null }
 export interface StopResult { started: boolean; until: number; at: number }
 export async function stopWhatsApp(info: StopInfo, now = Date.now(), sentAt?: number | null, quietBefore = false): Promise<StopResult> {
   const prev = await pauseState();
@@ -164,7 +165,7 @@ export async function stopWhatsApp(info: StopInfo, now = Date.now(), sentAt?: nu
   const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1;
   const firstAfterQuiet = firstAfterQuietOf(prev, sentAt, quietBefore);
   const words = String(info.words || '').replace(/[\r\n\t]+/g, ' ').trim();
-  const reason = (info.code != null && !new RegExp(`^${info.code}\\b`).test(words) ? `${info.code} ${words}` : words).trim().slice(0, 200) || 'no words from Meta';   // a report's words already start with the code
+  const reason = withTemplate((info.code != null && !new RegExp(`^${info.code}\\b`).test(words) ? `${info.code} ${words}` : words).trim().slice(0, 200) || 'no words from Meta', info.template);   // a report's words already start with the code
   const until = now + STOP_MS;
   cache = { at: now, pause: { until, reason, stopped: true } };
   try {
@@ -174,7 +175,7 @@ export async function stopWhatsApp(info: StopInfo, now = Date.now(), sentAt?: nu
       ...(firstAfterQuiet ? { firstAfterQuiet: true } : {}),
     });
     cache = { at: now, pause: { until, reason, stopped: true } };
-    console.error(stopLogLine(info.code, info.words, info.order));
+    console.error(stopLogLine(info.code, info.words, info.order, info.template));
   } catch (e) { console.error('[whatsapp] stop:', (e as Error).message); }
   return { started: true, until, at: now };
 }

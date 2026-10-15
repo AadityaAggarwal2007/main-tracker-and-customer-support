@@ -100,7 +100,7 @@ export async function alertStopped(stop: StopResult, info: StopInfo, now = Date.
     const list = await listTemplates(await templatesAccount());
     const tpl = list.ok ? list.value.find((t) => t.name.trim().toLowerCase() === ALERT_TEMPLATE && t.status === 'APPROVED') : null;
     if (!tpl) { console.warn(`[whatsapp] stop alert not sent: ${'error' in list ? list.error : `the ${ALERT_TEMPLATE} template is not approved`}`); return 0; }
-    const text = stopAlertText(info.code, info.order, stop.at, info.kind);
+    const text = stopAlertText(info.code, info.order, stop.at, info.kind, info.template);
     let sent = 0;
     for (const to of numbers) {
       const r = await sendAlert({ to, name: tpl.name, language: tpl.language, text });

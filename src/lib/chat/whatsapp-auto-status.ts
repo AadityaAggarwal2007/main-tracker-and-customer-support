@@ -31,14 +31,15 @@ export async function noteAutoStatus(waId: string, status: string, error: string
         `UPDATE wa_auto_sends
             SET status = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'pending' END,
                 due_at = now(), error = $2, code = $4, updated_at = now()
-          WHERE wa_id = $1 AND status IN ('pending', 'sent') RETURNING sent_at, order_id, kind`,
+          WHERE wa_id = $1 AND status IN ('pending', 'sent') RETURNING sent_at, order_id, kind, template`,
         [waId, error, RATE_MAX_ATTEMPTS, code]);
-      const row = r.rows?.[0] as { sent_at?: string | Date | null; order_id?: string | null; kind?: string | null } | undefined;
+      const row = r.rows?.[0] as { sent_at?: string | Date | null; order_id?: string | null; kind?: string | null; template?: string | null } | undefined;
       // when that message went: a late report of a message sent before the last pause / stop ended is no new stop
       const sentAt = row?.sent_at ? new Date(row.sent_at).getTime() : null;
       // and was it the first order message after a quiet stretch? (then the refusal is Meta's side, not our speed)
       const quiet = sentAt != null ? await quietBefore(sentAt, waId) : false;
-      await safetyStop({ code, words: String(error || 'WhatsApp could not deliver it'), order: row?.order_id ?? null, kind: row?.kind ?? null }, Date.now(), sentAt, quiet);
+      // the template that message went with (2026-10-15 night): the stop's reason names it
+      await safetyStop({ code, words: String(error || 'WhatsApp could not deliver it'), order: row?.order_id ?? null, kind: row?.kind ?? null, template: row?.template ?? null }, Date.now(), sentAt, quiet);
       return (r.rowCount ?? 0) > 0;
     } catch (e) {
       if ((e as { code?: string })?.code !== '42P01') console.error('[whatsapp] automation status:', (e as Error).message);

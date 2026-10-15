@@ -334,6 +334,7 @@ Done and live:
   row goes back in line (never lost), a customer-side failure (not on WhatsApp, 131026 etc.) fails that one message only;
   one WhatsApp to the alert numbers per stop; the Number status box / Today board say it in red; the test message's Meta
   report is now stored, logged (`[whatsapp] test message to ••••1234: ...`) and shown under the test boxes.
+  Later that night (the stop fired "132001 ... order #4231", 9 failed with 132001: Meta's template list flipped for a while after the deletion, some reads listed the old two APPROVED and missed order_placed_link, so the worker fell back to order_placed): the link template a read last listed APPROVED is remembered in `chat_settings` `wa_link_seen` for 7 days; with the switch ON a read that misses it changes nothing (the remembered template sends, the mode line says "last seen approved HH:MM; this read did not list it", the old two are NEVER sent again), only a read listing it REJECTED / PAUSED / DISABLED forgets it; a failed row and the stop's reason now name the template Meta refused. OWNER TO DO after the deploy: press Resume in WhatsApp > Automation (the stop of 20:41 still holds) and watch the PM2 mode line.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

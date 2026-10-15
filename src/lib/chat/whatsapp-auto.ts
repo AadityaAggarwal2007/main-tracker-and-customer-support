@@ -11,14 +11,16 @@ import { stoppedNumbers } from './whatsapp-stop';
 import { listTemplates, renderTemplate, type TemplateInfo } from './whatsapp-templates';
 import { templatesAccount } from './whatsapp-settings';
 import { loadBrands } from './whatsapp-brands';
+import { ORDER_LINK_PRESET } from './whatsapp-brand-rules';
 import { loadHolidays } from './holidays';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_TEMPLATE, MODE_LOG_EVERY_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, SKIP,
+  AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_MODE_KEY, LINK_SEEN_CLEARED, LINK_SEEN_KEY, LINK_TEMPLATE, LINK_VARS, MODE_LOG_EVERY_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, failureSide, findLinkTemplate, gapFor, isLinkTemplateName, linkModeOf, linkModeValue, parseAuto, parseLinkMode, pauseView, pickTemplate, placedParams,
-  templatesReadNote, trackingCanGo, trackingDueMs, trackingParams, waitingLinkLine,
-  type AutoSetting, type LinkMode, type LinkModeSetting, type PauseView, type BrandWords, type OrderFacts, type SendRate,
+  autoKey, autoValue, dueNow, eligibleFrom, failureSide, findLinkTemplate, gapFor, isLinkTemplateName, linkMemoryAction, linkModeOf, linkModeValue, linkSeenFresh, linkSeenValue, linkStateText,
+  parseAuto, parseLinkMode, parseLinkSeen, pauseView, pickTemplate, placedParams,
+  templatesReadNote, trackingCanGo, trackingDueMs, trackingParams, waitingLinkLine, waitingTemplateLine,
+  type AutoSetting, type LinkMode, type LinkModeSetting, type LinkSeen, type PauseView, type BrandWords, type OrderFacts, type SendRate,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
 import { loadSendRate, pauseState, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
@@ -107,12 +109,69 @@ export async function saveLinkMode(on: boolean, by: string, nowMs = Date.now()):
   return parseLinkMode(value);
 }
 export const forgetLinkModeCache = () => { linkModeCache = null; };
-// Which mode runs now and why, from the templates read and the switch (the ONE decision the worker, the overview and the
-// test send share). Logged by the worker once per run that sends, and whenever the answer changes.
+// Never back to the deleted templates (2026-10-15 night; whatsapp-auto-rules.ts LINK_SEEN_KEY): the link template a read
+// last listed APPROVED is remembered in chat_settings `wa_link_seen` (read with a 10-second cache per process, like the
+// switch), written only when it changed or the stored time is older than 10 minutes, cleared only by a read that lists
+// that name REJECTED / PAUSED / DISABLED. A read that flips (Meta listing the old two and missing the link template for a
+// while after a deletion) then changes nothing: the remembered template sends, the old two never go.
+let linkSeenCache: { at: number; seen: LinkSeen | null } | null = null;
+// the last APPROVED link template this process read in full (its real words for the message record); the memory row keeps
+// only the name + language, so after a restart the preset's words stand in until the next read lists it
+let lastLinkInfo: TemplateInfo | null = null;
+export async function loadLinkSeen(nowMs = Date.now()): Promise<LinkSeen | null> {
+  if (linkSeenCache && nowMs - linkSeenCache.at < 10_000) return linkSeenCache.seen;
+  let seen: LinkSeen | null = null;
+  try {
+    const r = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [LINK_SEEN_KEY]);
+    seen = parseLinkSeen(r?.value);
+  } catch (e) { console.error('[wa-auto] link seen:', (e as Error).message); }
+  linkSeenCache = { at: nowMs, seen };
+  return seen;
+}
+export const forgetLinkSeenCache = () => { linkSeenCache = null; lastLinkInfo = null; };
+async function writeLinkSeen(value: string, seen: LinkSeen | null, nowMs: number): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [LINK_SEEN_KEY, value]);
+    linkSeenCache = { at: nowMs, seen };
+  } catch (e) { console.error('[wa-auto] link seen:', (e as Error).message); }
+}
+const rememberedInfo = (seen: LinkSeen): TemplateInfo => (lastLinkInfo && lastLinkInfo.name.trim().toLowerCase() === seen.name && lastLinkInfo.language === seen.language ? lastLinkInfo
+  : { id: '', name: seen.name, language: seen.language, category: ORDER_LINK_PRESET.category, status: 'APPROVED', header: ORDER_LINK_PRESET.header || null, body: ORDER_LINK_PRESET.body, footer: ORDER_LINK_PRESET.footer || null, vars: LINK_VARS, rejectedReason: null });
+// after a read: the memory follows what it found (write / clear / keep), and the fresh memory comes back for linkModeOf
+async function rememberLink(list: TemplateInfo[] | null, found: TemplateInfo | null, nowMs: number): Promise<LinkSeen | null> {
+  const seen = linkSeenFresh(await loadLinkSeen(nowMs), nowMs);
+  const action = linkMemoryAction(seen, found, list, nowMs);
+  if (found) lastLinkInfo = found;
+  if (action === 'write') {
+    const next: LinkSeen = { name: found!.name.trim().toLowerCase(), language: found!.language, at: nowMs };
+    await writeLinkSeen(linkSeenValue(found!.name, found!.language, nowMs), next, nowMs);
+    if (!seen || seen.name !== next.name) console.log(`[wa-auto] remembered ${next.name} (${next.language}) as approved: a read that misses it changes nothing, the old templates are never sent`);
+    return next;
+  }
+  if (action === 'clear') {
+    const st = list?.find((t) => t.name.trim().toLowerCase() === seen!.name)?.status || 'gone';
+    await writeLinkSeen(LINK_SEEN_CLEARED(nowMs, `${seen!.name} is ${st}`), null, nowMs);
+    console.warn(`[wa-auto] ${seen!.name} is ${st.toLowerCase()} on Meta: the remembered one-message template is forgotten`);
+    return null;
+  }
+  return seen;
+}
+// Which mode runs now and why, from the templates read, the switch and the memory (the ONE decision the worker, the
+// overview and the test send share). Logged by the worker once per run that sends, and whenever the answer changes.
 async function currentLinkMode(list: TemplateInfo[] | null, listError: string | null, nowMs: number): Promise<LinkMode> {
   const found = linkTemplateOf(list);
   const link = found.template;
-  return linkModeOf(await loadLinkMode(nowMs), link ? { name: link.name, language: link.language } : null, found.state, listError, found.note);
+  const seen = await rememberLink(list, link, nowMs);
+  return linkModeOf(await loadLinkMode(nowMs), link ? { name: link.name, language: link.language } : null, found.state, listError, found.note, seen);
+}
+// The template a send goes with: the one this read listed APPROVED, else the remembered one while the mode runs on it.
+function linkInfoFor(list: TemplateInfo[] | null, mode: LinkMode): TemplateInfo | null {
+  const found = linkTemplateOf(list).template;
+  if (found) return found;
+  return mode.active && mode.remembered && mode.template ? rememberedInfo({ name: mode.template.name, language: mode.template.language, at: Date.parse(mode.seenAt || '') || 0 }) : null;
 }
 // The mode line: once per run that sends, whenever the answer changes, and at least every 10 minutes per process even when
 // unchanged, so the PM2 log always says what runs now (owner 2026-10-15: the only line for hours was a stale one).
@@ -128,8 +187,9 @@ interface DueRow {
 
 // limited = messages to NEW customers that waited for the daily limit this run (they stay pending, not failed / skipped);
 // waitingLink = 'placed' rows that waited for their order's tracking link in the one-message mode (owner 2026-10-15 evening);
-// stopped = this run met a Meta-side failure and stopped every order message until Resume (owner 2026-10-15 night)
-export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number; waitingLink?: number; stopped?: boolean }
+// stopped = this run met a Meta-side failure and stopped every order message until Resume (owner 2026-10-15 night);
+// waitingTemplate = rows that waited because the one-message template was neither listed nor remembered in words (never the old two)
+export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean; limited?: number; waitingLink?: number; waitingTemplate?: number; stopped?: boolean }
 
 const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
@@ -173,7 +233,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     // and every 10 minutes anyway; when it is two messages for want of the template, the line also says what Meta listed
     // (the account's last 4 digits, how many templates, the order_* names with their status), so the log answers "why"
     const mode = await currentLinkMode(list, listError, nowMs);
-    const linkFound = linkTemplateOf(list).template;
+    const linkFound = linkInfoFor(list, mode);   // this read's, else the remembered one (never back to the deleted templates)
     const readNote = mode.on && !mode.approved && !listError ? templatesReadNote(list, account) : '';
     let modeLogged = false;
     const logMode = () => { if (modeLogged) return; modeLogged = true; lastModeLogged = mode.reason; lastModeLoggedAt = nowMs; console.log(`[wa-auto] ${mode.reason}${readNote ? ` ${readNote}` : ''}`); };
@@ -237,7 +297,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
       const trackingNow = trackingCanGo(isOfficeHours(nowMs, holidays), !!approved(list, TRACKING_TEMPLATE), mode.active);
       const due = await query<DueRow>(
         `SELECT w.id::text AS id, w.order_id, w.kind, w.attempts, w.due_at,
-                (SELECT p.template FROM wa_auto_sends p WHERE p.business_id = w.business_id AND p.order_id = w.order_id AND p.kind = 'placed') AS placed_template,
+                (SELECT p.template FROM wa_auto_sends p WHERE p.business_id = w.business_id AND p.order_id = w.order_id AND p.kind = 'placed' AND p.sent_at IS NOT NULL) AS placed_template,
                 (o.order_id IS NULL) AS gone, o.customer_name, o.customer_mobile, o.created_at, o.is_cancelled,
                 o.tracking_status, o.delivered_at, o.tracking_token::text AS tracking_token, b.tracking_domain
            FROM wa_auto_sends w
@@ -269,8 +329,10 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         // one-message mode runs, under its real name + language): a 'placed' row with its link and a 'tracking' row go
         // with it; a 'placed' row without a link WAITS (never order_placed); the old two never go in this mode. With the
         // switch OFF the old templates as before, and a row whose template is not approved waits.
-        const pick = pickTemplate(r.kind, !!r.tracking_token, mode, linkFound, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
+        // noOld (2026-10-15 night): the switch ON and the link template approved (this read or remembered) = the old two never
+        const pick = pickTemplate(r.kind, !!r.tracking_token, { active: mode.active, noOld: mode.on && mode.approved }, linkFound, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
         if (pick.waits === 'link') { out.waitingLink = (out.waitingLink || 0) + 1; continue; }   // said once per run, below
+        if (pick.waits === 'link-template') { out.waitingTemplate = (out.waitingTemplate || 0) + 1; continue; }
         if (!pick.template) continue;                                                          // not approved by Meta yet: it waits
         const tpl = pick.template;
         const sentWithLink = r.kind === 'placed' && pick.params === 'tracking';             // the first message carries the link
@@ -318,31 +380,33 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
           }
         } else if (failureSide(res.code, res.error) === 'customer') {
           // this ONE number (not on WhatsApp, blocked us, the per-user limit): that message fails, the rest go on
-          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = $3, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
-            [r.id, res.error, res.code]);
+          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = $3, attempts = attempts + 1, template = $4, updated_at = now() WHERE id = $1`,
+            [r.id, res.error, res.code, tpl.name]);
           out.failed++;
         } else if (res.error === TIMED_OUT) {
           // Meta may have taken it before the answer was lost: never sent again by itself (a second copy to the customer
           // is worse than one Send again); the number still stops (owner 2026-10-15 night: a lost answer is Meta's side)
-          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
-            [r.id, 'WhatsApp did not answer in time: it may still have been delivered. Check with the customer before Send again.']);
+          await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, template = $3, updated_at = now() WHERE id = $1`,
+            [r.id, 'WhatsApp did not answer in time: it may still have been delivered. Check with the customer before Send again.', tpl.name]);
           out.failed++;
-          await safetyStop({ code: null, words: res.error, order: r.order_id, kind: r.kind }, nowMs, nowMs, await quietBefore(nowMs));
+          await safetyStop({ code: null, words: res.error, order: r.order_id, kind: r.kind, template: tpl.name }, nowMs, nowMs, await quietBefore(nowMs));
           paused = true; out.paused = true; out.stopped = true;
         } else {
           // META's side (owner 2026-10-15 night, "1 msg bhi fail ho toh pause ho jae": 130429 rate limit, 132001 template
           // missing while Meta propagates a deletion, the token, a hiccup, an unknown code): the message is NOT lost (it
           // waits in line again, due now; failed only after RATE_MAX_ATTEMPTS tries) and every order message STOPS until
           // the Super Admin presses Resume. Refused right after 10 quiet minutes = Meta's side, not our speed: the stop says so.
-          await query(`UPDATE wa_auto_sends SET status = $5, attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
-            [r.id, res.error, res.code, new Date(nowMs), r.attempts + 1 >= RATE_MAX_ATTEMPTS ? 'failed' : 'pending']);
-          await safetyStop({ code: res.code, words: res.error, order: r.order_id, kind: r.kind }, nowMs, nowMs, await quietBefore(nowMs));
+          // the row keeps the template Meta refused (2026-10-15 night), so a failed row says which one, and the stop's reason too
+          await query(`UPDATE wa_auto_sends SET status = $5, attempts = attempts + 1, error = $2, code = $3, due_at = $4, template = $6, updated_at = now() WHERE id = $1`,
+            [r.id, res.error, res.code, new Date(nowMs), r.attempts + 1 >= RATE_MAX_ATTEMPTS ? 'failed' : 'pending', tpl.name]);
+          await safetyStop({ code: res.code, words: res.error, order: r.order_id, kind: r.kind, template: tpl.name }, nowMs, nowMs, await quietBefore(nowMs));
           paused = true; out.paused = true; out.stopped = true; out.retried++;
         }
       }
     }
     // the orders whose message waits for a tracking link (one message per order): one line per run with the count
     if (out.waitingLink) console.warn(waitingLinkLine(out.waitingLink, linkFound?.name.trim().toLowerCase()));
+    if (out.waitingTemplate) console.warn(waitingTemplateLine(out.waitingTemplate));
     return out;
   } finally {
     g.__waAutoBusy = false;
@@ -477,7 +541,9 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     if (missingTable(e)) installed = false; else console.error('[wa-auto] overview:', (e as Error).message);
   }
   const link = linkTemplateOf(list);
-  const linkName = link.template ? link.template.name.trim().toLowerCase() : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
+  const linkMode = await currentLinkMode(list, error, nowMs);
+  // the name the mode runs on: this read's, else the remembered one, else the closest by name on Meta
+  const linkName = link.template ? link.template.name.trim().toLowerCase() : linkMode.remembered && linkMode.template ? linkMode.template.name : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
   const sendRate = await loadSendRate(nowMs).catch(() => ({ perMinute: 2, by: null, at: null } as SendRate));
   const pauseInfo = pauseView(await pauseState().catch(() => null), nowMs, gapFor(sendRate.perMinute));
   // Meta refusing OUR messages now: a 130429 in the last 2 hours, a pause Meta set that still runs, or the safety stop
@@ -485,12 +551,12 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   const foreignToday = await loadForeignToday(nowMs);
   return {
     installed, configured: waConfigured(),
-    templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: link.state, linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
+    templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: linkStateText(link.state, linkMode), linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason, ...(p.stopped ? { stopped: true } : {}) } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
     pauseInfo, sendRate,
-    linkMode: await currentLinkMode(list, error, nowMs),
+    linkMode,
     numberHealth: waConfigured() ? await numberHealth(nowMs) : null,
     foreign: { ...foreignToday, line: foreignLine(foreignToday, refusing) },
     tests: await loadTestReports(),
@@ -537,13 +603,13 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   const results: TestSend[] = [];
   // one message per order while that mode is active (the switch ON and order_placed_link approved, owner 2026-10-15), else the two as before
   const mode = await currentLinkMode(list, error, Date.now());
-  const link = mode.active ? linkTemplateOf(list).template : null;   // the found template under its real name
+  const link = mode.active ? linkInfoFor(list, mode) : null;   // the found template under its real name, else the remembered one
   if (link && !o?.tracking_token) {
     // the same rule as the worker: no link = the message waits, never order_placed
     return { results: [{ kind: 'placed', ok: false, text: '', error: `${o ? `The latest order ${o.order_id}` : 'This brand has no order yet, so nothing'} has no tracking link: the one-message template needs it (order_placed is not sent in this mode). Try again once an order has its link.` }], order: o?.order_id || null, mode: mode.reason };
   }
   for (const kind of (link ? ['placed'] : ['placed', 'tracking']) as Kind[]) {
-    const pick = pickTemplate(kind, !!o?.tracking_token, mode, link, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
+    const pick = pickTemplate(kind, !!o?.tracking_token, { active: mode.active, noOld: mode.on && mode.approved }, link, approved(list, PLACED_TEMPLATE), approved(list, TRACKING_TEMPLATE));
     if (!pick.template) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
     const tpl = pick.template;
     const params = (pick.params === 'tracking' ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);

@@ -10,7 +10,7 @@ const IST = (d, h, m = 0) => Date.UTC(2026, 9, d, h, m) - 330 * 60000;   // an I
 const S = {};
 function reset() {
   Object.assign(S, {
-    nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0, stopAlertClaims: 0,
+    nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0, stopAlertClaims: 0, linkSeenWrites: 0,
     // owner 15 Oct: Meta's side of the number (the Number status box) and a template list that Meta pages
     phone: { display_phone_number: '+91 98765 00001', verified_name: 'ShipTrack', name_status: 'APPROVED', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_2K', code_verification_status: 'VERIFIED' },
     metaPages: null,
@@ -41,19 +41,19 @@ const db = {
     if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { S.slotEvery = p[1]; if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
     // the one owner alert per stop (whatsapp-alert-queue.ts alertStopped): claimed by the stop's time, one UPDATE wins
     if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO UPDATE SET value = EXCLUDED\.value, updated_at = now\(\) WHERE chat_settings\.value IS DISTINCT FROM EXCLUDED\.value RETURNING key$/.test(sql)) { if (S.settings[p[0]] === p[1]) return { rows: [], rowCount: 0 }; S.settings[p[0]] = p[1]; S.stopAlertClaims = (S.stopAlertClaims || 0) + 1; return { rows: [{ key: p[0] }], rowCount: 1 }; }
-    if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^INSERT INTO chat_settings/.test(sql)) { if (p[0] === 'wa_link_seen') S.linkSeenWrites = (S.linkSeenWrites || 0) + 1; S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^SELECT key FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ key })); return { rows, rowCount: rows.length }; }
     if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ value: S.settings[key] })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', due_at = now\(\), updated_at = now\(\) WHERE status = 'failed' AND \(code = \$1 OR error LIKE '130429%'\)/.test(sql)) { let n = 0; for (const r of S.rows) if (r.status === 'failed' && (r.code === p[0] || /^130429/.test(r.error || '')) && r.attempts < p[1]) { Object.assign(r, { status: 'pending', due_at: new Date(S.nowMs) }); n++; } return { rows: [], rowCount: n }; }
-    if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3], template: p[5] }); return { rows: [], rowCount: 1 }; }
     // owner 15 Oct: was any order message sent in the 10 minutes before the refused one? (whatsapp-auto-status.ts quietBefore)
     if (/^SELECT 1 FROM wa_auto_sends WHERE sent_at > \$1::timestamptz - \$2 \* interval '1 millisecond' AND sent_at < \$1::timestamptz/.test(sql)) {
       const at = p[0].getTime(); const rows = S.rows.filter((r) => r.sent_at && new Date(r.sent_at).getTime() > at - p[1] && new Date(r.sent_at).getTime() < at && (p[2] == null || r.wa_id !== p[2]));
       return { rows: rows.slice(0, 1).map(() => ({ '?column?': 1 })), rowCount: Math.min(rows.length, 1) };
     }
     // owner 15 Oct night: a Meta-side failed report puts the row back in line (due now, the report's code), the stop follows
-    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs), error: p[1], code: p[3] }); return { rows: r ? [{ sent_at: r.sent_at || null, order_id: r.order_id, kind: r.kind }] : [], rowCount: r ? 1 : 0 }; }
+    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs), error: p[1], code: p[3] }); return { rows: r ? [{ sent_at: r.sent_at || null, order_id: r.order_id, kind: r.kind, template: r.template || null }] : [], rowCount: r ? 1 : 0 }; }
     if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 ORDER BY updated_at DESC LIMIT 20$/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre)).map((k) => ({ value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$3, updated_at = now\(\) WHERE business_id = \$1 AND order_id = \$2 AND kind = 'tracking'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.order_id === p[1] && r.kind === 'tracking' && r.status === 'pending') { r.status = 'skipped'; r.error = p[2]; n++; } return { rows: [], rowCount: n }; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
@@ -93,19 +93,19 @@ const db = {
       const rows = S.rows.filter((r) => r.business_id === p[0] && r.status === 'pending' && new Date(r.due_at).getTime() <= S.nowMs && (r.kind === 'placed' || p[1])).sort((a, b) => (a.kind === 'placed' ? 0 : 1) - (b.kind === 'placed' ? 0 : 1)).slice(0, 40).map((r) => {
         const o = orderOf(r);
         const placed = S.rows.find((x) => x.business_id === r.business_id && x.order_id === r.order_id && x.kind === 'placed');
-        return { id: r.id, order_id: r.order_id, kind: r.kind, attempts: r.attempts, due_at: r.due_at, placed_template: placed ? placed.template || null : null, gone: !o, customer_name: o && o.customer_name, customer_mobile: o && o.customer_mobile, created_at: o && o.created_at, is_cancelled: o && o.is_cancelled, tracking_status: o && o.tracking_status, delivered_at: o && o.delivered_at, tracking_token: o && o.tracking_token, tracking_domain: null };
+        return { id: r.id, order_id: r.order_id, kind: r.kind, attempts: r.attempts, due_at: r.due_at, placed_template: placed && placed.sent_at ? placed.template || null : null, gone: !o, customer_name: o && o.customer_name, customer_mobile: o && o.customer_mobile, created_at: o && o.created_at, is_cancelled: o && o.is_cancelled, tracking_status: o && o.tracking_status, delivered_at: o && o.delivered_at, tracking_token: o && o.tracking_token, tracking_domain: null };
       });
       return { rows, rowCount: rows.length };
     }
     if (/^UPDATE wa_auto_sends SET due_at = now\(\) \+ interval '30 minutes'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'pending' && new Date(x.due_at).getTime() <= S.nowMs); if (!r || S.stealClaims) return { rows: [], rowCount: 0 }; r.due_at = new Date(S.nowMs + 30 * 60000); return { rows: [{ id: r.id }], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped', error = 'Automation was switched off'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.status === 'pending') { r.status = 'skipped'; r.error = 'Automation was switched off'; n++; } return { rows: [], rowCount: n }; }
     if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, updated_at = now\(\) WHERE id = \$1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'failed'; r.error = p[1]; return { rows: [], rowCount: 1 }; }
-    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = NULL, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: null, attempts: r.attempts + 1 }); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = NULL, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: null, attempts: r.attempts + 1, template: p[2] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'skipped'; r.error = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, attempts = attempts \+ 1, updated_at/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); r.status = 'failed'; r.error = p[1]; r.attempts++; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'sent'/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'sent', wa_id: p[1], to_number: p[2], template: p[3], body_text: p[4], error: null, attempts: r.attempts + 1, sent_at: new Date(S.nowMs) }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
-    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = \$3, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: p[2], attempts: r.attempts + 1 }); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = \$3, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: p[2], attempts: r.attempts + 1, template: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', attempts = 0/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'failed'); if (r) Object.assign(r, { status: 'pending', attempts: 0, error: null, due_at: new Date(S.nowMs) }); return { rows: [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) {
       S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]);
@@ -198,7 +198,7 @@ const run = (ms) => { S.nowMs = ms; return auto.runWaAutomation(ms); };
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
-  reset(); auto.resetTemplateCache(); auto.forgetLinkModeCache(); pause.forgetPauseCache(); pause.forgetSendRateCache(); delete global.__waAutoBusy; delete require('child_process').__x;
+  reset(); auto.resetTemplateCache(); auto.forgetLinkModeCache(); auto.forgetLinkSeenCache(); pause.forgetPauseCache(); pause.forgetSendRateCache(); delete global.__waAutoBusy; delete require('child_process').__x;
   try { await fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e).toString().split('\n').slice(0, 14).join('\n       ')); }
 }
 
@@ -1364,6 +1364,226 @@ async function t(name, fn) {
     delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
   });
 
+  // ── 15 Oct night, never back to the deleted templates: the safety stop fired "132001 ... order #4231" and 9 order messages failed
+  // that day because Meta's template list FLIPPED for a while after the owner deleted order_placed / order_tracking (some reads
+  // still listed the old two APPROVED and missed order_placed_link): linkModeOf said "not active", pickTemplate fell back to
+  // order_placed, Meta answered 132001. Now the link template is remembered (chat_settings `wa_link_seen`) and the old two never go. ──
+  console.log('whatsapp automation: never back to the deleted templates (15 Oct night)');
+  const OLD_TWO = () => [
+    { id: 't1', name: 'order_placed', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, {{2}} {{3}} {{4}}' }] },
+    { id: 't2', name: 'order_tracking', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, {{2}} {{3}} {{4}} {{5}}' }] },
+  ];
+  const seenRow = () => rules.parseLinkSeen(S.settings.wa_link_seen);
+  const stopRow = () => (S.settings.wa_pause ? rules.parsePauseState(S.settings.wa_pause) : null);
+  await t('the pure rules: wa_link_seen parsed / written / fresh for 7 days; linkMemoryAction write (new or 10 min old) / keep (a read that misses it, or cannot be read) / clear (REJECTED, PAUSED, DISABLED); linkModeOf on the memory = active + remembered with the "last seen" line (switch OFF ignores it); pickTemplate never the old two with noOld; the stop lines name the template', () => {
+    const at = IST(13, 12);
+    eq(rules.LINK_SEEN_KEY, 'wa_link_seen'); eq(rules.LINK_SEEN_MS, 7 * 24 * 3600 * 1000); eq(rules.LINK_SEEN_REWRITE_MS, 10 * 60 * 1000); deq([...rules.LINK_DEAD_STATES], ['REJECTED', 'PAUSED', 'DISABLED']);
+    const v = rules.linkSeenValue(' Order_Placed_Link ', 'en_US', at);
+    deq(JSON.parse(v), { name: 'order_placed_link', language: 'en_US', at: new Date(at).toISOString() });
+    deq(rules.parseLinkSeen(v), { name: 'order_placed_link', language: 'en_US', at });
+    deq([rules.parseLinkSeen('junk'), rules.parseLinkSeen(''), rules.parseLinkSeen(null), rules.parseLinkSeen('{"name":"x"}'), rules.parseLinkSeen(rules.LINK_SEEN_CLEARED(at, 'order_placed_link is REJECTED'))], [null, null, null, null, null]);
+    deq(JSON.parse(rules.LINK_SEEN_CLEARED(at, 'why')), { cleared: true, why: 'why', at: new Date(at).toISOString() });
+    const seen = { name: 'order_placed_link', language: 'en_US', at };
+    deq([rules.linkSeenFresh(seen, at), rules.linkSeenFresh(seen, at + rules.LINK_SEEN_MS - 1), rules.linkSeenFresh(seen, at + rules.LINK_SEEN_MS), rules.linkSeenFresh(null, at), rules.linkSeenFresh(seen, at - 1)], [seen, seen, null, null, null]);
+    // the memory after a read
+    const found = { name: 'order_placed_link', language: 'en_US' };
+    const listed = (status) => [{ name: 'order_placed_link', status }, { name: 'order_placed', status: 'APPROVED' }];
+    eq(rules.linkMemoryAction(null, found, listed('APPROVED'), at), 'write', 'first seen');
+    eq(rules.linkMemoryAction(seen, found, listed('APPROVED'), at + 5 * 60000), 'keep', 'the same template, 5 min old: not rewritten');
+    eq(rules.linkMemoryAction(seen, found, listed('APPROVED'), at + rules.LINK_SEEN_REWRITE_MS), 'write', '10 min old: the time moves');
+    eq(rules.linkMemoryAction(seen, { name: 'order_placed_link_2', language: 'en_US' }, null, at), 'write', 'another template');
+    eq(rules.linkMemoryAction(seen, { name: 'order_placed_link', language: 'hi' }, null, at), 'write', 'another language');
+    eq(rules.linkMemoryAction(seen, null, OLD_TWO(), at), 'keep', 'a read that misses it: the flip');
+    eq(rules.linkMemoryAction(seen, null, null, at), 'keep', 'a list that could not be read');
+    eq(rules.linkMemoryAction(seen, null, listed('PENDING'), at), 'keep', 'pending again (a remade one): the memory stands');
+    for (const st of ['REJECTED', 'PAUSED', 'DISABLED', 'rejected']) eq(rules.linkMemoryAction(seen, null, listed(st), at), 'clear', st);
+    eq(rules.linkMemoryAction(seen, null, [{ name: 'order_placed_link_2', status: 'REJECTED' }], at), 'keep', 'another name rejected clears nothing');
+    eq(rules.linkMemoryAction(null, null, listed('REJECTED'), at), 'keep', 'nothing remembered');
+    // the mode on the memory
+    let m = rules.linkModeOf(null, null, 'MISSING', null, null, seen);
+    deq([m.on, m.approved, m.active, m.remembered, m.seenAt, m.template], [true, true, true, true, new Date(at).toISOString(), { name: 'order_placed_link', language: 'en_US' }]);
+    eq(m.reason, 'one message: order_placed_link (en_US), last seen approved 12:00 pm; this read did not list it');
+    m = rules.linkModeOf(null, null, 'UNKNOWN', 'The WhatsApp token was refused', null, seen); deq([m.active, m.remembered], [true, true]);
+    m = rules.linkModeOf(null, found, 'APPROVED', null, null, seen); deq([m.active, m.remembered], [true, undefined]); assert.match(m.reason, /is approved and the switch is ON$/);
+    m = rules.linkModeOf({ on: false, by: 'owner', at: 'x' }, null, 'MISSING', null, null, seen); deq([m.on, m.approved, m.active, m.remembered], [false, false, false, undefined]); assert.match(m.reason, /^two messages: the switch "One message per order" is OFF/);
+    m = rules.linkModeOf(null, null, 'MISSING', null, null, null); deq([m.active, m.remembered], [false, undefined]); assert.match(m.reason, /not made yet/);
+    deq([rules.linkStateText('MISSING', m), rules.linkStateText('MISSING', rules.linkModeOf(null, null, 'MISSING', null, null, seen)), rules.linkStateText('APPROVED', null)], ['MISSING', 'APPROVED (last seen 12:00 pm)', 'APPROVED']);
+    // the pick: with noOld the old two are never the answer; without it, as before
+    deq(rules.pickTemplate('placed', true, { active: true, noOld: true }, 'L', 'P', 'T'), { template: 'L', params: 'tracking', waits: null });
+    deq(rules.pickTemplate('placed', false, { active: true, noOld: true }, 'L', 'P', 'T'), { template: null, params: null, waits: 'link' });
+    deq(rules.pickTemplate('tracking', true, { active: true, noOld: true }, 'L', 'P', 'T'), { template: 'L', params: 'tracking', waits: null });
+    deq(rules.pickTemplate('placed', true, { active: true, noOld: true }, null, 'P', 'T'), { template: null, params: null, waits: 'link-template' });
+    deq(rules.pickTemplate('tracking', true, { active: false, noOld: true }, null, 'P', 'T'), { template: null, params: null, waits: 'link-template' });
+    deq(rules.pickTemplate('placed', true, { active: true, noOld: false }, null, 'P', 'T'), { template: 'P', params: 'placed', waits: null });
+    deq(rules.pickTemplate('placed', true, { active: false }, null, 'P', 'T'), { template: 'P', params: 'placed', waits: null });
+    eq(rules.waitingTemplateLine(2), '[wa-auto] 2 order messages wait for the one-message template (it was seen approved, this read did not list it and nothing is remembered to send with; the old templates are never sent)');
+    // the stop names the template Meta refused
+    deq([rules.withTemplate('132001 x', 'Order_Placed'), rules.withTemplate('132001 x', null), rules.withTemplate('132001 x')], ['132001 x (template order_placed)', '132001 x', '132001 x']);
+    eq(rules.stopLogLine(132001, 'Template name does not exist', '#4231', 'order_placed'), '[whatsapp] order messages STOPPED after a Meta failure (132001 Template name does not exist (template order_placed), order #4231): press Resume in WhatsApp > Automation');
+    eq(rules.stopLogLine(132001, 'Template name does not exist', '#4231'), '[whatsapp] order messages STOPPED after a Meta failure (132001 Template name does not exist, order #4231): press Resume in WhatsApp > Automation');
+    eq(rules.stopAlertText(132001, '#4231', IST(15, 20, 41), 'placed', 'order_placed'), 'WhatsApp order messages STOPPED: Meta refused (132001, template order_placed) on order #4231 at 8:41 pm. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.');
+    eq(rules.stopAlertText(132001, '#4231', IST(15, 20, 41)), 'WhatsApp order messages STOPPED: Meta refused (132001) on order #4231 at 8:41 pm. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.');
+    for (const f of ['lib/chat/whatsapp-auto-rules.ts', 'lib/chat/whatsapp-auto.ts', 'lib/chat/whatsapp-pause.ts', 'lib/chat/whatsapp-auto-status.ts', 'components/whatsapp/AutomationPanel.tsx']) assert.ok(!/\bmodel\b/i.test(fs.readFileSync(path.join(SRC, f), 'utf8')), 'no model names in ' + f);
+  });
+  await t('alternating reads (the live flip): a read with the link template sends with it and remembers it; a read that lists ONLY the old two sends the next order with the REMEMBERED link template, never order_placed, no stop, the mode line says "last seen approved ... this read did not list it"; the memory is rewritten only after 10 minutes; a read that could not be read at all = the same', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn();
+    S.metaTemplates = [LINK, ...OLD_TWO()];
+    S.orders = [order()];
+    let cap = captureLog(); let r;
+    try { r = await run(IST(13, 12)); } finally { cap.restore(); }
+    deq([r.sent, r.failed, r.stopped], [1, 0, false]); deq(sends().map(tplOf), ['order_placed_link']);
+    deq(seenRow(), { name: 'order_placed_link', language: 'en_US', at: IST(13, 12) }); eq(S.linkSeenWrites, 1);
+    assert.ok(cap.lines.some((l) => l === '[wa-auto] remembered order_placed_link (en_US) as approved: a read that misses it changes nothing, the old templates are never sent'), cap.lines.join('\n'));
+    // the flip: Meta lists the old two as APPROVED and misses order_placed_link
+    S.metaTemplates = OLD_TWO(); auto.resetTemplateCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233', created_at: new Date(IST(13, 12, 1)) }));
+    cap = captureLog();
+    try { r = await run(IST(13, 12, 1)); } finally { cap.restore(); }
+    deq([r.sent, r.failed, r.retried, r.stopped, r.paused, r.waitingTemplate || 0], [1, 0, 0, false, false, 0]);
+    deq(sends().map(tplOf), ['order_placed_link'], 'the remembered template, never order_placed');
+    deq([sends()[0].body.template.language.code, sends()[0].body.to], ['en_US', '919811122233']);
+    deq(valuesOf(sends()[0]), ['Aaditya', '#1554', 'Vastora', 'https://shiptrack.store/track/tok-1553', 'help@vastora.test']);
+    const p4 = S.rows.find((x) => x.order_id === '#1554' && x.kind === 'placed');
+    deq([p4.status, p4.template, /Track it here/.test(p4.body_text)], ['sent', 'order_placed_link', true], 'sent, and the record keeps the template\'s own words this process read');
+    eq(S.rows.find((x) => x.order_id === '#1554' && x.kind === 'tracking').error, rules.SKIP.inFirst);
+    eq(S.settings.wa_pause, undefined, 'no stop'); eq(S.linkSeenWrites, 1, 'a read that misses it writes nothing');
+    const line = '[wa-auto] one message: order_placed_link (en_US), last seen approved 12:00 pm; this read did not list it';
+    eq(cap.lines.filter((l) => l === line).length, 1, cap.lines.join('\n'));
+    assert.ok(!cap.lines.some((l) => /two messages/.test(l)), 'never "two messages"');
+    // the list back with the link template within 10 minutes: not rewritten; 10 minutes on: the time moves
+    S.metaTemplates = [LINK, ...OLD_TWO()]; auto.resetTemplateCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1555', customer_mobile: '9811122244', created_at: new Date(IST(13, 12, 2)) }));
+    await run(IST(13, 12, 2)); deq(sends().map(tplOf), ['order_placed_link']); eq(S.linkSeenWrites, 1);
+    S.orders.push(order({ order_id: '#1556', customer_mobile: '9811122255', created_at: new Date(IST(13, 12, 9)) }));
+    auto.resetTemplateCache(); await run(IST(13, 12, 9)); eq(S.linkSeenWrites, 1, '9 min: still the same row');
+    S.orders.push(order({ order_id: '#1557', customer_mobile: '9811122266', created_at: new Date(IST(13, 12, 10)) }));
+    auto.resetTemplateCache(); await run(IST(13, 12, 10)); eq(S.linkSeenWrites, 2, '10 min: rewritten'); eq(seenRow().at, IST(13, 12, 10));
+    // the flip again, three runs in a row, then a read that fails altogether: still the remembered template, never a stop
+    S.metaTemplates = OLD_TWO(); auto.resetTemplateCache(); S.fetches = [];
+    for (let i = 0; i < 3; i++) { S.orders.push(order({ order_id: '#156' + i, customer_mobile: '981112230' + i, created_at: new Date(IST(13, 12, 11 + i)) })); auto.resetTemplateCache(); await run(IST(13, 12, 11 + i)); }
+    deq(sends().map(tplOf), ['order_placed_link', 'order_placed_link', 'order_placed_link']); eq(S.settings.wa_pause, undefined);
+    S.metaTemplates = null; auto.resetTemplateCache(); S.fetches = [];
+    const realFetch = global.fetch; global.fetch = async (url, init) => { if (/message_templates/.test(url)) return { ok: false, status: 400, json: async () => ({ error: { code: 190, message: 'Invalid OAuth access token' } }) }; return realFetch(url, init); };
+    try { S.orders.push(order({ order_id: '#1570', customer_mobile: '9811122299', created_at: new Date(IST(13, 12, 20)) })); r = await run(IST(13, 12, 20)); } finally { global.fetch = realFetch; }
+    deq([r.sent, sends().map(tplOf)], [1, ['order_placed_link']], 'the list could not be read: the remembered template still sends');
+    assert.ok(!sends().some((f) => ['order_placed', 'order_tracking'].includes(tplOf(f))), 'never an old template in the whole group');
+  });
+  await t('what clears the memory: a read that lists the remembered name REJECTED (or PAUSED / DISABLED) forgets it with a log line, and today\'s rules apply again (the old two when approved); a PENDING remade one keeps it; 7 days without seeing it = forgotten; with no memory at all the flip still falls back as before', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn();
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(13, 11));
+    // pending again (a remade one under the same name): the memory stands, the remembered one sends
+    S.metaTemplates = [{ ...LINK, status: 'PENDING' }, ...OLD_TWO()]; S.orders = [order()];
+    await run(IST(13, 12)); deq(sends().map(tplOf), ['order_placed_link']); eq(seenRow().name, 'order_placed_link');
+    // rejected: forgotten, and the old two go (today's rules)
+    S.metaTemplates = [{ ...LINK, status: 'REJECTED' }, ...OLD_TWO()]; auto.resetTemplateCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233', created_at: new Date(IST(13, 12, 1)) }));
+    const cap = captureLog(); let r;
+    try { r = await run(IST(13, 12, 1)); } finally { cap.restore(); }
+    eq(seenRow(), null); deq(JSON.parse(S.settings.wa_link_seen).cleared, true); assert.match(S.settings.wa_link_seen, /order_placed_link is REJECTED/);
+    assert.ok(cap.lines.some((l) => l === '[wa-auto] order_placed_link is rejected on Meta: the remembered one-message template is forgotten'), cap.lines.join('\n'));
+    deq([r.sent, sends().map(tplOf)], [1, ['order_placed']]);
+    assert.ok(cap.lines.some((l) => /^\[wa-auto\] two messages: order_placed_link is rejected on Meta, not approved/.test(l)), cap.lines.join('\n'));
+    // a cleared row never comes back by itself: the next flip (old two only) falls back as before the memory existed
+    S.metaTemplates = OLD_TWO(); auto.resetTemplateCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1555', customer_mobile: '9811122244', created_at: new Date(IST(13, 12, 2)) }));
+    await run(IST(13, 12, 2)); deq(sends().map(tplOf), ['order_placed']);
+    // paused / disabled clear it too (pure action proved above; the worker's path once more with PAUSED)
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(13, 12, 2)); auto.forgetLinkSeenCache();
+    S.metaTemplates = [{ ...LINK, status: 'PAUSED' }, ...OLD_TWO()]; auto.resetTemplateCache();
+    S.orders.push(order({ order_id: '#1556', customer_mobile: '9811122255', created_at: new Date(IST(13, 12, 3)) }));
+    await run(IST(13, 12, 3)); eq(seenRow(), null);
+    // 7 days without seeing it: the memory is stale, the flip falls back (the row itself is left as it is)
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(6, 12, 4)); auto.forgetLinkSeenCache();
+    S.metaTemplates = OLD_TWO(); auto.resetTemplateCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1557', customer_mobile: '9811122266', created_at: new Date(IST(13, 12, 4)) }));
+    await run(IST(13, 12, 4)); deq(sends().map(tplOf), ['order_placed']);
+    eq((await auto.automationOverview(null, IST(13, 12, 4))).linkMode.remembered, undefined);
+    // 6 days: still remembered
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(7, 12, 6)); auto.forgetLinkSeenCache(); S.fetches = [];
+    S.orders.push(order({ order_id: '#1558', customer_mobile: '9811122277', created_at: new Date(IST(13, 12, 5)) }));
+    await run(IST(13, 12, 5)); deq(sends().map(tplOf), ['order_placed_link']);
+  });
+  await t('the switch OFF: nothing changes, memory or not: the old two go when approved (as today), the overview says two messages and a plain template state, the test send sends the two; ON again = the remembered template at once', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn();
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(13, 11));
+    S.settings.wa_link_mode = JSON.stringify({ on: false, by: 'owner', at: 'x' }); auto.forgetLinkModeCache();
+    S.metaTemplates = OLD_TWO(); S.orders = [order()];
+    await run(IST(13, 12)); deq(sends().map(tplOf), ['order_placed']);
+    eq(S.rows.find((x) => x.kind === 'tracking').status, 'pending', 'the tracking row waits for its 48 hours as before');
+    let ov = await auto.automationOverview(null, IST(13, 12));
+    deq([ov.linkMode.on, ov.linkMode.active, ov.linkMode.remembered, ov.templates.link, ov.templates.placed], [false, false, undefined, 'MISSING', 'APPROVED']);
+    assert.match(ov.linkMode.reason, /^two messages: the switch "One message per order" is OFF/);
+    S.fetches = [];
+    const ts = await auto.sendAutomationTest('b1', '9876500001', 'Test'); deq(ts.results.map((x) => [x.kind, x.ok]), [['placed', true], ['tracking', true]]); deq(sends().map(tplOf), ['order_placed', 'order_tracking']);
+    eq(seenRow().name, 'order_placed_link', 'the memory is untouched by the switch');
+    // ON again (the route): the remembered template at once, although this read still misses it
+    const p = await route.POST(jreq(OWNER, { action: 'link_mode', on: true })); eq(p.status, 200); deq([p.body.linkMode.active, p.body.linkMode.remembered], [true, true]);
+    S.fetches = []; S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233', created_at: new Date(IST(13, 12, 1)) }));
+    await run(IST(13, 12, 1)); deq(sends().map(tplOf), ['order_placed_link']);
+    delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
+  });
+  await t('the overview and the test send on the memory: templates.link "APPROVED (last seen 12:00 pm)" (green on the tab), linkMode remembered with the line, linkName unchanged; the test message goes with the remembered template; the panel ON check passes; a remembered remade name (order_placed_link_2) shows as such', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog();
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link', 'en_US', IST(13, 12));
+    S.metaTemplates = OLD_TWO(); S.orders = [order()];
+    let ov = await auto.automationOverview(null, IST(13, 12, 5));
+    deq([ov.templates.link, ov.templates.linkName, ov.templates.placed, ov.linkMode.active, ov.linkMode.remembered, ov.linkMode.seenAt, ov.linkMode.template], ['APPROVED (last seen 12:00 pm)', null, 'APPROVED', true, true, new Date(IST(13, 12)).toISOString(), { name: 'order_placed_link', language: 'en_US' }]);
+    eq(ov.linkMode.reason, 'one message: order_placed_link (en_US), last seen approved 12:00 pm; this read did not list it');
+    const g = await route.GET(jreq(OWNER, {})); eq(g.status, 200); eq(g.body.templates.link, 'APPROVED (last seen 12:00 pm)');
+    const panel = fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8');
+    assert.match(panel, /const tplTone = \(s: string\) => \(s\.startsWith\('APPROVED'\) \? 'chip-ok'/, 'the chip stays green with the "last seen" words');
+    // the test send: the remembered template, one message
+    const ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => [x.kind, x.ok]), [['placed', true]]); deq(sends().map(tplOf), ['order_placed_link']); assert.match(ts.mode, /last seen approved/);
+    assert.match(ts.results[0].text, /Order Placed Successfully\nHi Test, your order #1553 with Vastora/, 'the preset\'s words stand in for the record when this process never read the template');
+    // the panel ON check accepts the mode running on the memory (order_placed being listed or not)
+    S.metaTemplates = [{ id: 't9', name: 'shiptrack_alert', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: '{{1}}' }] }]; auto.resetTemplateCache();
+    const p = await route.POST(jreq(OWNER, { businessId: 'b2', enabled: true })); deq([p.status, p.body.enabled], [200, true]);
+    // a remade name remembered
+    S.settings.wa_link_seen = rules.linkSeenValue('order_placed_link_2', 'en', IST(13, 12)); auto.forgetLinkSeenCache();
+    ov = await auto.automationOverview(null, IST(13, 12, 6));
+    deq([ov.templates.link, ov.templates.linkName, ov.linkMode.template], ['APPROVED (last seen 12:00 pm)', 'order_placed_link_2', { name: 'order_placed_link_2', language: 'en' }]);
+  });
+  await t('the failed row keeps the template name (customer side, our timeout, Meta\'s side) and the stop\'s reason, log line, Number status box and owner alert name it; a later failed report names the row\'s template; a placed row that failed with the link template but never went is not "the link went in the first message"', async () => {
+    pause.forgetPauseCache(); auto.resetModeLog(); turnOn(); S.metaTemplates = [LINK];
+    S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' }), order({ order_id: '#1555', customer_mobile: '9811122244' })];
+    let n = 0; const realFetch = global.fetch;
+    global.fetch = async (url, init) => {
+      if (!/\/messages$/.test(url)) return realFetch(url, init);
+      n++; S.fetches.push({ url, method: 'POST', body: JSON.parse(init.body) });
+      if (n === 1) return { ok: false, status: 400, json: async () => ({ error: { code: 131026, message: 'Message undeliverable' } }) };
+      if (n === 2) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.ok' + n }] }) };
+    };
+    let r; try { r = await run(IST(13, 12)); } finally { global.fetch = realFetch; }
+    deq([r.failed, r.stopped], [2, true]);
+    deq(S.rows.filter((x) => x.kind === 'placed').map((x) => [x.status, x.code, x.template]), [['failed', 131026, 'order_placed_link'], ['failed', null, 'order_placed_link'], ['pending', null, undefined]]);
+    let st = stopRow(); eq(st.reason, 'WhatsApp did not answer in time (template order_placed_link)'); eq(rules.pauseView(st, IST(13, 12, 1)).reason, 'WhatsApp did not answer in time (template order_placed_link)');
+    // Meta's side at send time
+    await pause.resumeNow('owner', IST(13, 12, 2)); pause.forgetPauseCache(); S.fetches = [];
+    S.sendFail = { code: 132001, message: 'Template name does not exist in the translation' };
+    const errs = console.error; const errLines = []; console.error = (...a) => errLines.push(a.join(' '));
+    try { r = await run(IST(13, 12, 3)); } finally { console.error = errs; }
+    const p5 = S.rows.find((x) => x.order_id === '#1555' && x.kind === 'placed'); deq([p5.status, p5.code, p5.template], ['pending', 132001, 'order_placed_link']);
+    st = stopRow(); eq(st.reason, '132001 WhatsApp refused the message (Template name does not exist in the translation) (template order_placed_link)');
+    eq(errLines.filter((l) => l === rules.stopLogLine(132001, 'WhatsApp refused the message (Template name does not exist in the translation)', '#1555', 'order_placed_link')).length, 1);
+    eq((await auto.automationOverview(null, IST(13, 12, 4))).pauseInfo.reason, st.reason);
+    // a later failed delivery report names the row's template in the stop
+    S.sendFail = null; await pause.resumeNow('owner', IST(13, 12, 5)); pause.forgetPauseCache(); S.fetches = [];
+    await run(IST(13, 12, 6)); deq([p5.status, p5.template], ['sent', 'order_placed_link']);
+    await status.noteAutoStatus(p5.wa_id, 'failed', '130429 · Rate limit hit');
+    deq([p5.status, stopRow().reason], ['pending', '130429 · Rate limit hit (template order_placed_link)']);
+    // the tracking row of an order whose placed row carries the link template but never went (sent_at null): not inFirst
+    S.rows.push({ id: 'nf', business_id: 'b1', order_id: '#1590', kind: 'placed', status: 'skipped', template: 'order_placed_link', error: rules.SKIP.tooOld, to_number: '919811122299', attempts: 1, due_at: new Date(IST(11, 11)), sent_at: null, wa_id: null, updated_at: new Date(IST(12, 11)) });
+    S.rows.push(trackingDue('#1590', '9811122299', IST(13, 11)));
+    S.orders.push(order({ order_id: '#1590', customer_mobile: '9811122299', created_at: new Date(IST(11, 11)) }));
+    await pause.resumeNow('owner', IST(13, 12, 7)); pause.forgetPauseCache(); S.fetches = [];
+    await run(IST(13, 12, 8));
+    const tr = S.rows.find((x) => x.order_id === '#1590' && x.kind === 'tracking'); deq([tr.status, tr.template], ['sent', 'order_placed_link']);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /p\.kind = 'placed' AND p\.sent_at IS NOT NULL\) AS placed_template/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto-status.ts'), 'utf8'), /RETURNING sent_at, order_id, kind, template`/);
+  });
+
   console.log('whatsapp automation: another app on the number (owner 15 Oct)');
   const fr = require(path.join(SRC, 'lib/chat/whatsapp-foreign-rules.ts'));
   await t('the pure rules: one report -> the fresh row and the atomic add\'s pieces (India hour, 130429 apart, the number masked); a stored row parsed and summed per hour; junk = nothing seen', () => {
@@ -1484,10 +1704,13 @@ async function t(name, fn) {
     for (const id of ['#1554', '#1555']) { const p = S.rows.find((x) => x.order_id === id && x.kind === 'placed'); deq([p.status, p.attempts], ['pending', 0]); }
     const st = stopState(); deq([st.stopped, st.by, st.code, st.order, st.kind, st.strikes], [true, 'Meta failure', 132001, '#1553', 'placed', 1]);
     eq(st.until - IST(13, 12), rules.STOP_MS);
-    eq(errLines.filter((l) => l === rules.stopLogLine(132001, 'WhatsApp refused the message (Template name does not exist in the translation)', '#1553')).length, 1, 'the STOPPED line once');
+    eq(errLines.filter((l) => l === rules.stopLogLine(132001, 'WhatsApp refused the message (Template name does not exist in the translation)', '#1553', 'order_placed')).length, 1, 'the STOPPED line once, naming the template Meta refused');
+    eq(p1.template, 'order_placed', 'the failed row keeps the template Meta refused');
+    eq(st.reason, '132001 WhatsApp refused the message (Template name does not exist in the translation) (template order_placed)');
     // the owner's WhatsApp: once, to every alert number, through the queue's sendAlert; the claim keeps the second process out
     const a = alertSends(); eq(a.length, 2); deq(a.map((f) => f.body.to).sort(), ['919876500001', '919876500002']);
-    eq(valuesOf(a[0])[0], rules.stopAlertText(132001, '#1553', IST(13, 12)));
+    eq(valuesOf(a[0])[0], rules.stopAlertText(132001, '#1553', IST(13, 12), 'placed', 'order_placed'));
+    assert.match(valuesOf(a[0])[0], /^WhatsApp order messages STOPPED: Meta refused \(132001, template order_placed\) on order #1553 at 12:00 pm\./, 'the owner\'s WhatsApp names the template Meta refused');
     eq(S.settings.wa_stop_alert, new Date(IST(13, 12)).toISOString()); eq(S.stopAlertClaims, 1);
     // stopped: Meta recovered meanwhile, yet nothing goes (5 min, an hour, a day later); new orders are still queued
     S.sendFail = null; S.fetches = []; S.orders.push(order({ order_id: '#1556', customer_mobile: '9811122255', created_at: new Date(IST(13, 12, 30)) }));
@@ -1506,7 +1729,7 @@ async function t(name, fn) {
     S.fetches = []; S.sendFail = { code: 130429, message: 'Rate limit hit' }; S.orders.push(order({ order_id: '#1557', customer_mobile: '9811122266', created_at: new Date(IST(13, 13, 20)) }));
     await run(IST(13, 13, 30));
     deq([stopState().stopped, stopState().code, stopState().strikes, alertSends().length, S.stopAlertClaims], [true, 130429, 2, 2, 2]);   // the 2nd refusal within 2 hours
-    assert.match(valuesOf(alertSends()[0])[0], /^WhatsApp order messages STOPPED: Meta refused \(130429\) on order #1557 at 1:30 pm/);
+    assert.match(valuesOf(alertSends()[0])[0], /^WhatsApp order messages STOPPED: Meta refused \(130429, template order_placed\) on order #1557 at 1:30 pm/);
     S.sendFail = null; delete S.settings.whatsapp_alert_to; delete S.settings.whatsapp_alert_extra; delete S.settings.wa_stop_alert;
   });
   await t('customer-side at send time (131026 not on WhatsApp, 131049 per-user limit, our own "Not a WhatsApp number"): that ONE row fails with the words and code, the rest go on in the same run, nothing stops, no alert', async () => {
@@ -1630,7 +1853,7 @@ async function t(name, fn) {
     assert.match(card, /info\.state === 'stopped'/); assert.match(card, /Stopped after a Meta failure · \$\{info\.reason/); assert.match(card, /STOP_RESUME_CONFIRM\(chosen, ordersDue\)/); assert.match(card, /nothing is lost, \$\{n\(ordersDue\)\} message/);
     assert.ok(!/the number stops for \{info\.nextPauseMin\} min/.test(card), 'the old "stops for N min" words are gone');
     assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-health.ts'), 'utf8'), /h\.safetyStop = st\?\.stopped && st\.until > now/);
-    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await safetyStop\(\{ code: res\.code, words: res\.error, order: r\.order_id, kind: r\.kind \}/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await safetyStop\(\{ code: res\.code, words: res\.error, order: r\.order_id, kind: r\.kind, template: tpl\.name \}/);
     assert.ok(!/pauseWhatsApp|retryable\(|RETRY_MS|MAX_ATTEMPTS\b/.test(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8').replace(/RATE_MAX_ATTEMPTS/g, '')), 'the worker no longer pauses for a while or retries by itself');
     assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto-status.ts'), 'utf8'), /failureSide\(null, error\) === 'meta'/);
     assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'), 'utf8'), /tries === 1 && failureSide\(r\.code, r\.error\) === 'meta'/);

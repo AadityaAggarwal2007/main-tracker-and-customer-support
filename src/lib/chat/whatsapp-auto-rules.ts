@@ -43,15 +43,24 @@ export function parseLinkMode(value: string | null | undefined): LinkModeSetting
 export const linkModeValue = (on: boolean, by: string, nowMs: number) => JSON.stringify({ on, by: by.slice(0, 60), at: new Date(nowMs).toISOString() });
 export interface LinkMode {
   on: boolean;         // the switch (no row = on)
-  approved: boolean;   // Meta has APPROVED order_placed_link
+  approved: boolean;   // Meta has APPROVED order_placed_link (this read, or remembered from a read of the last 7 days)
   active: boolean;     // on AND approved = the first message carries the link, the 48-hour message is skipped
   reason: string;      // which mode runs and why, in words (the [wa-auto] log line and the Automation tab)
   template: { name: string; language: string } | null;
+  // Never back to the deleted templates (2026-10-15 night): true = this read did not list the link template, the mode
+  // runs on the remembered one (`wa_link_seen`, seenAt = when a read last listed it APPROVED, ISO); the old two never go.
+  remembered?: boolean; seenAt?: string | null;
 }
-export function linkModeOf(setting: LinkModeSetting | null, link: { name: string; language: string } | null, linkState: string, listError: string | null, note?: string | null): LinkMode {
+export function linkModeOf(setting: LinkModeSetting | null, link: { name: string; language: string } | null, linkState: string, listError: string | null, note?: string | null, seen?: LinkSeen | null): LinkMode {
   const on = setting?.on ?? true;
   const approved = !!link;
   if (on && approved) return { on, approved, active: true, reason: `one message: ${link!.name} (${link!.language}) is approved and the switch is ON`, template: link };
+  if (on && seen) {
+    // the read flipped (Meta lists an old state for a while after a template is deleted / made): the remembered template
+    // sends, the mode stays active, and the line says so; a read that lists it REJECTED / PAUSED / DISABLED cleared `seen`
+    const t = { name: seen.name, language: seen.language };
+    return { on, approved: true, active: true, reason: `one message: ${seen.name} (${seen.language}), last seen approved ${istClock(seen.at)}; this read did not list it`, template: t, remembered: true, seenAt: new Date(seen.at).toISOString() };
+  }
   const why = !on ? `the switch "One message per order" is OFF${setting?.by ? ` (by ${setting.by})` : ''}`
     : listError ? `the templates could not be read from Meta: ${listError}`
       : note ? note
@@ -101,6 +110,50 @@ export function templatesReadNote(list: { name: string; status: string }[] | nul
 // The mode line goes to the log again at least this often per process, so the PM2 log is never stale (owner 2026-10-15).
 export const MODE_LOG_EVERY_MS = 10 * 60 * 1000;
 
+// ── Never back to the deleted templates (2026-10-15 night; live: the safety stop fired "132001 ... order #4231", 9 order
+// messages failed that day) ──
+// After the owner deleted order_placed / order_tracking, Meta's template list FLIPPED for a while: some reads still listed
+// the old two as APPROVED and missed order_placed_link. In such a read linkModeOf said "not active", pickTemplate fell back
+// to order_placed, Meta answered 132001 (deleted) and the stop fired. So the link template is REMEMBERED: a read that finds
+// it APPROVED (findLinkTemplate, 5 values) writes chat_settings `wa_link_seen` = {name, language, at} (only when it
+// changed, or the stored `at` is older than LINK_SEEN_REWRITE_MS); while the switch is ON and it was seen in the last
+// LINK_SEEN_MS, a read that misses it changes nothing: the remembered template sends (linkModeOf `remembered`), the old two
+// NEVER go (pickTemplate `noOld` waits 'link-template' rather than fall back). Only a read that lists the remembered name
+// REJECTED / PAUSED / DISABLED clears the memory (linkMemoryAction 'clear'); then today's rules apply. Switch OFF = unchanged.
+export const LINK_SEEN_KEY = 'wa_link_seen';
+export const LINK_SEEN_MS = 7 * 24 * 3600 * 1000;
+export const LINK_SEEN_REWRITE_MS = 10 * 60 * 1000;
+export const LINK_DEAD_STATES: readonly string[] = ['REJECTED', 'PAUSED', 'DISABLED'];
+export interface LinkSeen { name: string; language: string; at: number }
+export function parseLinkSeen(value: string | null | undefined): LinkSeen | null {
+  try {
+    const j = JSON.parse(String(value || ''));
+    const at = Date.parse(j?.at);
+    const name = typeof j?.name === 'string' ? j.name.trim().toLowerCase() : '';
+    if (!name || !Number.isFinite(at)) return null;
+    return { name: name.slice(0, 512), language: (typeof j?.language === 'string' && j.language.trim()) || 'en_US', at };
+  } catch { return null; }
+}
+export const linkSeenValue = (name: string, language: string, nowMs: number) => JSON.stringify({ name: name.trim().toLowerCase(), language, at: new Date(nowMs).toISOString() });
+export const LINK_SEEN_CLEARED = (nowMs: number, why: string) => JSON.stringify({ cleared: true, why: why.slice(0, 120), at: new Date(nowMs).toISOString() });
+// the memory counts only for 7 days (a template gone for a week is gone)
+export const linkSeenFresh = (seen: LinkSeen | null, nowMs: number): LinkSeen | null => (seen && nowMs - seen.at >= 0 && nowMs - seen.at < LINK_SEEN_MS ? seen : null);
+// What to do with the memory after a read: 'write' (found APPROVED and the memory is another template / older than 10 min),
+// 'clear' (the read lists the remembered name in a dead state), else 'keep' (a read that misses it, a list that could not
+// be read, or a fresh enough memory of the same template).
+export type LinkMemoryAction = 'write' | 'clear' | 'keep';
+export function linkMemoryAction(seen: LinkSeen | null, found: { name: string; language: string } | null, list: { name: string; status: string }[] | null, nowMs: number): LinkMemoryAction {
+  if (found) {
+    const same = !!seen && seen.name === tplKey(found) && seen.language === found.language;
+    return !same || nowMs - seen!.at >= LINK_SEEN_REWRITE_MS ? 'write' : 'keep';
+  }
+  if (seen && list?.some((t) => tplKey(t) === seen.name && LINK_DEAD_STATES.includes(String(t.status || '').toUpperCase()))) return 'clear';
+  return 'keep';
+}
+// The one-message template's state for the overview: "APPROVED (last seen 8:41 pm)" while the mode runs on the memory.
+export const linkStateText = (state: string, mode: { remembered?: boolean; seenAt?: string | null } | null): string =>
+  (mode?.remembered && mode.seenAt ? `APPROVED (last seen ${istClock(Date.parse(mode.seenAt))})` : state);
+
 // Only order_placed_link (owner 2026-10-15 evening: he DELETED order_placed and order_tracking on Meta, which keeps a
 // deleted name for about 30 days; "jo atka ha unka new template sa bhejio, mix mat kario" = everything waiting goes with
 // the NEW template, never mixed with the old ones). While the one-message mode is active (the switch ON and the link
@@ -114,13 +167,17 @@ export const MODE_LOG_EVERY_MS = 10 * 60 * 1000;
 //   - order_placed and order_tracking are NEVER sent in this mode, even if Meta lists them APPROVED again.
 // With the switch OFF (two-message mode) nothing changes: the old templates, and a row waits while its template is not
 // approved (or no longer exists).
+// `mode.noOld` (2026-10-15 night, never back to the deleted templates): the switch is ON and the link template was seen
+// APPROVED in the last 7 days, so the old two are never picked: with no link template in hand the row waits
+// ('link-template') instead of falling back. The worker hands the remembered template in as `link`, so this is the backstop.
 export type ParamsKind = 'placed' | 'tracking';
-export type TemplatePick<T> = { template: T; params: ParamsKind; waits: null } | { template: null; params: null; waits: 'link' | 'approval' };
-export function pickTemplate<T>(kind: 'placed' | 'tracking', hasLink: boolean, mode: { active: boolean }, link: T | null, placed: T | null, tracking: T | null): TemplatePick<T> {
-  if (mode.active && link) {
+export type TemplatePick<T> = { template: T; params: ParamsKind; waits: null } | { template: null; params: null; waits: 'link' | 'approval' | 'link-template' };
+export function pickTemplate<T>(kind: 'placed' | 'tracking', hasLink: boolean, mode: { active: boolean; noOld?: boolean }, link: T | null, placed: T | null, tracking: T | null): TemplatePick<T> {
+  if ((mode.active || mode.noOld) && link) {
     if (kind === 'placed' && !hasLink) return { template: null, params: null, waits: 'link' };
     return { template: link, params: 'tracking', waits: null };
   }
+  if (mode.noOld) return { template: null, params: null, waits: 'link-template' };
   const old = kind === 'placed' ? placed : tracking;
   return old ? { template: old, params: kind, waits: null } : { template: null, params: null, waits: 'approval' };
 }
@@ -133,6 +190,8 @@ export const oldTemplatesGone = (placedState: string, trackingState: string): bo
 export const OLD_TEMPLATES_GONE_TEXT = 'order_placed and order_tracking are not on Meta any more: with the switch OFF, no order message will go until they are made again (Meta blocks a deleted name for about 30 days).';
 // The log line, once per run, when 'placed' rows wait for their tracking link in the one-message mode.
 export const waitingLinkLine = (n: number, template: string = LINK_TEMPLATE): string => `[wa-auto] ${n} order message${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''} for the order's tracking link (one message per order: ${template} needs it; order_placed is not sent)`;
+// The log line, once per run, when rows wait because no one-message template is in hand although one is remembered (the backstop).
+export const waitingTemplateLine = (n: number): string => `[wa-auto] ${n} order message${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''} for the one-message template (it was seen approved, this read did not list it and nothing is remembered to send with; the old templates are never sent)`;
 
 // Meta's "130429 Rate limit hit: too many messages sent from this phone number in a short period of time" (owner
 // 2026-10-15: 59 order messages failed in half an hour, and the chargeback alert on the same number did not arrive). It
@@ -339,13 +398,17 @@ const codeWords = (code: number | null | undefined, words: string | null | undef
   const c = code != null && !new RegExp(`^\\s*${code}\\b`).test(w) ? `${code} ` : '';
   return `${c}${w}`.trim() || 'no words from Meta';
 };
+// The template Meta refused, in the stop's reason / log line / alert (2026-10-15 night: "132001 ... (template order_placed)"
+// says at once that an old template went out; nothing when the failure named none).
+export const withTemplate = (text: string, template?: string | null): string => (template ? `${text} (template ${String(template).trim().toLowerCase()})` : text);
 // The PM2 line, once per stop.
-export const stopLogLine = (code: number | null | undefined, words: string | null | undefined, order: string | null | undefined): string =>
-  `[whatsapp] order messages STOPPED after a Meta failure (${codeWords(code, words)}, order ${order || '—'}): press Resume in WhatsApp > Automation`;
+export const stopLogLine = (code: number | null | undefined, words: string | null | undefined, order: string | null | undefined, template?: string | null): string =>
+  `[whatsapp] order messages STOPPED after a Meta failure (${withTemplate(codeWords(code, words), template)}, order ${order || '—'}): press Resume in WhatsApp > Automation`;
 // The one WhatsApp to the owner: one line, no breaks, at most 600 characters (a template value).
-export function stopAlertText(code: number | null | undefined, order: string | null | undefined, atMs: number, kind?: string | null): string {
+export function stopAlertText(code: number | null | undefined, order: string | null | undefined, atMs: number, kind?: string | null, template?: string | null): string {
   const what = kind === 'test' ? 'on the test message' : kind === 'alert' ? 'on a ShipTrack alert' : `on order ${order || '—'}`;
-  return `WhatsApp order messages STOPPED: Meta refused (${code ?? 'no code'}) ${what} at ${istClock(atMs)}. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.`.replace(/\s+/g, ' ').slice(0, 600);
+  const which = template ? `, template ${String(template).trim().toLowerCase()}` : '';
+  return `WhatsApp order messages STOPPED: Meta refused (${code ?? 'no code'}${which}) ${what} at ${istClock(atMs)}. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.`.replace(/\s+/g, ' ').slice(0, 600);
 }
 // The Today board's red line (whatsapp-health-rules.ts) and the Number status box's first line.
 export const stopBoardLine = (reason: string | null | undefined, atMs: number, order?: string | null): string =>
