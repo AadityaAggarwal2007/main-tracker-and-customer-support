@@ -11,6 +11,9 @@ const S = {};
 function reset() {
   Object.assign(S, {
     nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0,
+    // owner 15 Oct: Meta's side of the number (the Number status box) and a template list that Meta pages
+    phone: { display_phone_number: '+91 98765 00001', verified_name: 'ShipTrack', name_status: 'APPROVED', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_2K', code_verification_status: 'VERIFIED' },
+    metaPages: null,
     settings: { whatsapp_messaging_id: '28873951022288651', 'wa_brand:b1': JSON.stringify({ name: 'Vastora', email: 'help@vastora.test' }) },
     panels: [{ id: 'b1', name: 'vastora' }, { id: 'b2', name: 'VASTRIKA' }],
     orders: [], rows: [],
@@ -39,6 +42,11 @@ const db = {
     if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', due_at = now\(\), updated_at = now\(\) WHERE status = 'failed' AND \(code = \$1 OR error LIKE '130429%'\)/.test(sql)) { let n = 0; for (const r of S.rows) if (r.status === 'failed' && (r.code === p[0] || /^130429/.test(r.error || '')) && r.attempts < p[1]) { Object.assign(r, { status: 'pending', due_at: new Date(S.nowMs) }); n++; } return { rows: [], rowCount: n }; }
     if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
+    // owner 15 Oct: was any order message sent in the 10 minutes before the refused one? (whatsapp-auto-status.ts quietBefore)
+    if (/^SELECT 1 FROM wa_auto_sends WHERE sent_at > \$1::timestamptz - \$2 \* interval '1 millisecond' AND sent_at < \$1::timestamptz/.test(sql)) {
+      const at = p[0].getTime(); const rows = S.rows.filter((r) => r.sent_at && new Date(r.sent_at).getTime() > at - p[1] && new Date(r.sent_at).getTime() < at && (p[2] == null || r.wa_id !== p[2]));
+      return { rows: rows.slice(0, 1).map(() => ({ '?column?': 1 })), rowCount: Math.min(rows.length, 1) };
+    }
     if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs + p[3]), error: p[1], code: 130429 }); return { rows: r ? [{ sent_at: r.sent_at || null }] : [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$3, updated_at = now\(\) WHERE business_id = \$1 AND order_id = \$2 AND kind = 'tracking'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.order_id === p[1] && r.kind === 'tracking' && r.status === 'pending') { r.status = 'skipped'; r.error = p[2]; n++; } return { rows: [], rowCount: n }; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
@@ -132,7 +140,16 @@ Module._load = function (request, parent, ...rest) { if (fakes[request]) return 
 global.fetch = async (url, init = {}) => {
   const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
   S.fetches.push({ url, method: init.method || 'GET', body });
-  if (/message_templates/.test(url)) return { ok: true, status: 200, json: async () => ({ data: S.metaTemplates.map((t) => ({ ...t })) }) };
+  if (/message_templates/.test(url)) {
+    // Meta pages the list: S.metaPages = [[page 1 templates], [page 2 templates]] gives a paging.next on page 1 (owner 15 Oct)
+    if (S.metaPages) {
+      const n = Number((url.match(/[?&]after=p(\d+)/) || [])[1] || 1);
+      const next = n < S.metaPages.length ? `https://graph.facebook.com/v25.0/28873951022288651/message_templates?fields=name,status&limit=100&after=p${n + 1}` : null;
+      return { ok: true, status: 200, json: async () => ({ data: S.metaPages[n - 1].map((t) => ({ ...t })), paging: next ? { cursors: { after: `p${n + 1}` }, next } : {} }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ data: S.metaTemplates.map((t) => ({ ...t })) }) };
+  }
+  if (/\/1335396902996145\?fields=/.test(url)) return { ok: true, status: 200, json: async () => S.phone };
   if (/\/messages$/.test(url)) {
     if (S.sendThrow) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
     if (S.sendFail) return { ok: false, status: 400, json: async () => ({ error: { code: S.sendFail.code, message: S.sendFail.message } }) };
@@ -162,7 +179,7 @@ const run = (ms) => { S.nowMs = ms; return auto.runWaAutomation(ms); };
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
-  reset(); auto.resetTemplateCache(); delete global.__waAutoBusy; delete require('child_process').__x;
+  reset(); auto.resetTemplateCache(); auto.forgetLinkModeCache(); delete global.__waAutoBusy; delete require('child_process').__x;
   try { await fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e).toString().split('\n').slice(0, 14).join('\n       ')); }
 }
 
@@ -745,6 +762,148 @@ async function t(name, fn) {
     st = rules.parsePauseState(S.settings.wa_pause);
     deq([st.strikes, st.until > Date.now()], [3, true]);                          // a real new refusal
     delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+
+  // ── owner 15 Oct afternoon: the one-message mode never ran in production although the tab said it was on ──
+  const captureLog = () => { const lines = []; const o = { log: console.log, warn: console.warn }; console.log = (...a) => lines.push(a.join(' ')); console.warn = (...a) => lines.push(a.join(' ')); return { lines, restore: () => { console.log = o.log; console.warn = o.warn; } }; };
+  await t('the switch "One message per order" (owner 15 Oct, "switch ya jo bhi banana h bana"): route 401 / 400; OFF = order_placed + the tracking row kept although the link template is approved; ON = the link message and the tracking row skipped; the test send follows it', async () => {
+    pause.forgetPauseCache(); S.metaTemplates.push(LINK); turnOn();
+    eq((await route.POST(jreq(AGENT, { action: 'link_mode', on: false }))).status, 401);
+    eq((await route.POST(jreq(null, { action: 'link_mode', on: false }))).status, 401);
+    eq((await route.POST(jreq(OWNER, { action: 'link_mode', on: 'no' }))).status, 400);
+    eq((await route.POST(jreq(OWNER, { action: 'link_mode' }))).status, 400);
+    // no row = ON when the template is approved
+    deq(rules.parseLinkMode(undefined), { on: null, by: null, at: null }); deq(rules.parseLinkMode('junk').on, null);
+    let m = rules.linkModeOf(null, { name: 'order_placed_link', language: 'en_US' }, 'APPROVED', null);
+    deq([m.on, m.approved, m.active], [true, true, true]); assert.match(m.reason, /^one message: order_placed_link \(en_US\)/);
+    m = rules.linkModeOf(null, null, 'PENDING', null); deq([m.on, m.approved, m.active], [true, false, false]); assert.match(m.reason, /^two messages: order_placed_link is pending on Meta/);
+    m = rules.linkModeOf(null, null, 'MISSING', null); assert.match(m.reason, /not made yet/);
+    m = rules.linkModeOf(null, null, 'UNKNOWN', 'The WhatsApp token was refused'); assert.match(m.reason, /could not be read from Meta: The WhatsApp token was refused/);
+    m = rules.linkModeOf({ on: false, by: 'owner', at: 'x' }, { name: 'order_placed_link', language: 'en_US' }, 'APPROVED', null);
+    deq([m.on, m.approved, m.active], [false, true, false]); assert.match(m.reason, /^two messages: the switch "One message per order" is OFF \(by owner\)/);
+    // OFF: the two old messages exactly as before
+    let r = await route.POST(jreq(OWNER, { action: 'link_mode', on: false }));
+    deq([r.status, r.body.on, r.body.linkMode.active], [200, false, false]);
+    const saved = JSON.parse(S.settings.wa_link_mode); deq([saved.on, saved.by, typeof saved.at], [false, 'owner', 'string']);
+    S.orders = [order()];
+    await run(IST(13, 12));
+    deq(sends().map(tplOf), ['order_placed']);
+    deq(S.rows.map((x) => [x.kind, x.status]), [['placed', 'sent'], ['tracking', 'pending']]);
+    await run(IST(15, 11, 5));
+    deq(sends().map(tplOf), ['order_placed', 'order_tracking']);                  // the 48-hour message still goes
+    let ov = (await route.GET(jreq(OWNER, {}))).body;
+    deq([ov.linkMode.on, ov.linkMode.approved, ov.linkMode.active], [false, true, false]); assert.match(ov.linkMode.reason, /switch .* is OFF/);
+    eq(ov.templates.link, 'APPROVED');
+    // the test send: OFF = both messages
+    S.fetches = []; let ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => x.kind), ['placed', 'tracking']); assert.match(ts.mode, /^two messages/); eq(tplOf(sends()[0]), 'order_placed');
+    // ON: one message, the tracking row skipped
+    r = await route.POST(jreq(OWNER, { action: 'link_mode', on: true }));
+    deq([r.status, r.body.on, r.body.linkMode.active], [200, true, true]);
+    S.orders.push(order({ order_id: '#1554', customer_mobile: '9811122233' })); S.fetches = [];
+    await run(IST(13, 12, 1));
+    deq(sends().map(tplOf), ['order_placed_link']);
+    const tr = S.rows.find((x) => x.order_id === '#1554' && x.kind === 'tracking'); deq([tr.status, tr.error], ['skipped', rules.SKIP.inFirst]);
+    ov = (await route.GET(jreq(OWNER, {}))).body; deq([ov.linkMode.on, ov.linkMode.active], [true, true]);
+    S.fetches = []; ts = await auto.sendAutomationTest('b1', '9876500001', 'Test');
+    deq(ts.results.map((x) => x.kind), ['placed']); assert.match(ts.mode, /^one message/); eq(tplOf(sends()[0]), 'order_placed_link');
+    // OFF again drops the waiting messages of nobody: a row already skipped stays, new orders get two
+    delete S.settings.wa_link_mode; auto.forgetLinkModeCache();
+    ov = (await route.GET(jreq(OWNER, {}))).body; eq(ov.linkMode.on, true);         // no row = ON
+  });
+  await t('why order_placed_link was never picked (owner 15 Oct): the mode is decided ONCE per run and logged with its reason; a template on Meta\'s second page is read (before, only page 1 was); a placed row with no tracking link says so in the log; a stray capital or space in the name never hides it', async () => {
+    pause.forgetPauseCache(); turnOn();
+    // page 2 of Meta's list: the old code read only the first 100 templates, so a template past them looked MISSING
+    S.metaPages = [S.metaTemplates.map((x) => ({ ...x })), [{ ...LINK, name: ' Order_Placed_Link ' }]];
+    S.orders = [order(), order({ order_id: '#1554', tracking_token: null, customer_mobile: '9811122233' })];
+    const cap = captureLog();
+    try { await run(IST(13, 12)); } finally { cap.restore(); }
+    eq(S.fetches.filter((f) => /message_templates/.test(f.url)).length, 2, 'both pages read');
+    assert.match(S.fetches.filter((f) => /message_templates/.test(f.url))[1].url, /after=p2/);
+    deq(sends().map(tplOf), ['order_placed_link', 'order_placed']);                // the name read clean (readTemplates), so the send takes it
+    eq(cap.lines.filter((l) => /^\[wa-auto\] one message: /.test(l)).length, 1, 'said once per run');
+    assert.match(cap.lines.find((l) => /^\[wa-auto\] one message: /.test(l)), /is approved and the switch is ON/);
+    assert.ok(cap.lines.some((l) => /^\[wa-auto\] order #1554 has no tracking link: order_placed goes instead of order_placed_link/.test(l)));
+    const ov = await auto.automationOverview(null, IST(13, 12));
+    eq(ov.templates.link, 'APPROVED'); eq(ov.linkMode.active, true);
+    // a later page that cannot be read keeps what page 1 gave (two messages, never nothing)
+    auto.resetTemplateCache();
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => (/after=p2/.test(url) ? { ok: false, status: 500, json: async () => ({ error: { message: 'An unknown error occurred', code: 1 } }) } : realFetch(url, init));
+    try { const { list, error } = await auto.templateStates(IST(13, 13), true); eq(error, null); eq(list.length, 2); } finally { global.fetch = realFetch; }
+    // the templates module itself: paging.next is followed, never past Meta's own API, at most 5 pages
+    eq(tpl.nextPageOf({ paging: { next: 'https://graph.facebook.com/v25.0/x?after=1' } }), 'https://graph.facebook.com/v25.0/x?after=1'); eq(tpl.nextPageOf({ data: [] }), null);
+    eq(tpl.TEMPLATE_PAGES_MAX, 5);
+    S.metaPages = null; S.fetches = []; auto.resetTemplateCache();
+    const r = await tpl.listTemplates('28873951022288651', process.env, async () => ({ ok: true, status: 200, json: async () => ({ data: [], paging: { next: 'https://evil.example/steal?token' } }) }));
+    deq([r.ok, r.value.length], [true, 0]);
+  });
+  await t('firstAfterQuiet (owner 15 Oct, 130429 eight seconds after the FIRST message of a 15 / 30 min pause): a refusal of the first order message after 10 quiet minutes, or within 2 minutes of the previous pause\'s end, flags the pause; the view and the overview carry it; a pause by hand / Resume keep it; a refusal in a run of messages never', async () => {
+    const m = 60000, t0 = IST(13, 14);
+    eq(rules.QUIET_MS, 10 * m); eq(rules.AFTER_PAUSE_MS, 2 * m);
+    assert.match(rules.FIRST_AFTER_QUIET_TEXT, /not our speed/); assert.match(rules.FIRST_AFTER_QUIET_TEXT, /WhatsApp Manager/);
+    // the pure rule
+    eq(rules.firstAfterQuietOf(null, t0, true), true);
+    eq(rules.firstAfterQuietOf(null, t0, false), false);
+    eq(rules.firstAfterQuietOf({ until: t0, at: t0 - 15 * m, strikes: 1, reason: '' }, t0 + 90 * 1000, false), true);    // 90 s after the pause ended
+    eq(rules.firstAfterQuietOf({ until: t0, at: t0 - 15 * m, strikes: 1, reason: '' }, t0 + 5 * m, false), false);
+    eq(rules.firstAfterQuietOf({ until: t0, at: t0 - 15 * m, strikes: 1, reason: '' }, t0 - m, false), false);          // sent before it ended: the old burst
+    // the view: shown while the refusal counts (paused or within 2 h), gone after
+    let v = rules.pauseView({ until: t0 + 15 * m, at: t0, strikes: 1, reason: '130429', firstAfterQuiet: true }, t0 + m);
+    deq([v.state, v.firstAfterQuiet], ['paused', true]);
+    eq(rules.pauseView({ until: t0 + 15 * m, at: t0, strikes: 1, reason: '130429', firstAfterQuiet: true }, t0 + 130 * m).firstAfterQuiet, false);
+    eq(rules.pauseView({ until: t0 + 15 * m, at: t0, strikes: 1, reason: '130429' }, t0 + m).firstAfterQuiet, false);
+    eq(rules.parsePauseState(JSON.stringify({ until: new Date(t0).toISOString(), at: new Date(t0).toISOString(), strikes: 1, firstAfterQuiet: true })).firstAfterQuiet, true);
+    eq(rules.parsePauseState(JSON.stringify({ until: new Date(t0).toISOString(), at: new Date(t0).toISOString(), strikes: 1, firstAfterQuiet: 'yes' })).firstAfterQuiet, undefined);
+    // through Meta's delivery report: the first message after 10 quiet minutes
+    pause.forgetPauseCache(); delete S.settings.wa_pause;
+    const now = Date.now();
+    S.rows.push({ id: 'q1', business_id: 'b1', order_id: '#1553', kind: 'placed', status: 'sent', wa_id: 'wamid.q1', attempts: 1, sent_at: new Date(now - 8000), due_at: new Date(), updated_at: new Date() });
+    await status.noteAutoStatus('wamid.q1', 'failed', '130429 · Rate limit hit');
+    let st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.firstAfterQuiet], [1, true]);
+    eq(rules.pauseView(st, Date.now()).firstAfterQuiet, true);
+    const ov = (await route.GET(jreq(OWNER, {}))).body;
+    eq(ov.pauseInfo.firstAfterQuiet, true);
+    // a pause by hand and Resume now keep what Meta's refusal told
+    eq((await route.POST(jreq(OWNER, { action: 'resume' }))).status, 200);
+    eq(rules.parsePauseState(S.settings.wa_pause).firstAfterQuiet, true);
+    eq((await route.POST(jreq(OWNER, { action: 'pause', minutes: 15 }))).status, 200);
+    eq(rules.parsePauseState(S.settings.wa_pause).firstAfterQuiet, true);
+    // a refusal in the middle of a run of messages (one went 3 minutes before): no flag
+    pause.forgetPauseCache(); delete S.settings.wa_pause; S.rows.length = 0;
+    S.rows.push({ id: 'q2', business_id: 'b1', order_id: '#1554', kind: 'placed', status: 'sent', wa_id: 'wamid.q2', attempts: 1, sent_at: new Date(now - 3 * m), due_at: new Date(), updated_at: new Date() });
+    S.rows.push({ id: 'q3', business_id: 'b1', order_id: '#1555', kind: 'placed', status: 'sent', wa_id: 'wamid.q3', attempts: 1, sent_at: new Date(now - 8000), due_at: new Date(), updated_at: new Date() });
+    await status.noteAutoStatus('wamid.q3', 'failed', '130429 · Rate limit hit');
+    st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.firstAfterQuiet], [1, undefined]);
+    eq((await route.GET(jreq(OWNER, {}))).body.pauseInfo.firstAfterQuiet, false);
+    // at send time: Meta refuses the first message after a quiet stretch at once
+    pause.forgetPauseCache(); delete S.settings.wa_pause; S.rows.length = 0; S.fetches = [];
+    turnOn(); S.orders = [order()]; S.sendFail = { code: 130429, message: 'Rate limit hit' };
+    await run(IST(13, 12));
+    st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.firstAfterQuiet], [1, true]);
+    S.sendFail = null; delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+  await t('Meta\'s side in the Number status box (owner 15 Oct): the overview carries the number\'s quality, status and messaging limit (read at most every 5 min, never throws); nothing when WhatsApp is not set up', async () => {
+    const wh = require(path.join(SRC, 'lib/chat/whatsapp-health.ts'));
+    wh.resetWaPhoneCache(); S.settings.whatsapp_daily_limit = '2000';
+    let ov = await auto.automationOverview(null, IST(13, 12));
+    const h = ov.numberHealth;
+    deq([h.quality, h.status, h.tier, h.limit, h.limitFrom, h.used24h, h.usedToday, h.error], ['GREEN', 'CONNECTED', 'TIER_2K', 2000, 'meta', 613, 311, null]);
+    deq(h.lines, []);
+    // Meta says the number is restricted and RED: the lines say so
+    wh.resetWaPhoneCache(); S.phone = { ...S.phone, quality_rating: 'RED', status: 'RESTRICTED' };
+    ov = await auto.automationOverview(null, IST(13, 12));
+    deq(ov.numberHealth.lines.map((l) => l.tone), ['danger', 'danger']); assert.match(ov.numberHealth.lines[0].text, /RESTRICTED/);
+    // Meta unreadable: the box still has our own numbers, with the reason
+    wh.resetWaPhoneCache(); S.phone = null;
+    ov = await auto.automationOverview(null, IST(13, 12));
+    deq([ov.numberHealth.quality, typeof ov.numberHealth.error], ['UNKNOWN', 'string']);
+    const keep = process.env.WHATSAPP_CLOUD_TOKEN; delete process.env.WHATSAPP_CLOUD_TOKEN;
+    try { eq((await auto.automationOverview(null, IST(13, 12))).numberHealth, null); } finally { process.env.WHATSAPP_CLOUD_TOKEN = keep; }
+    wh.resetWaPhoneCache();
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

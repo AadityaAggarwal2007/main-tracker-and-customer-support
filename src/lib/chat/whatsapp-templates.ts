@@ -117,8 +117,9 @@ export function readTemplates(json: unknown): TemplateInfo[] {
       else if (type === 'BODY') body = str(comp?.text);
       else if (type === 'FOOTER') footer = str(comp?.text) || null;
     }
+    // the name as Meta keys it (small letters, no spaces): what the sends and the automation compare against
     out.push({
-      id: str(t.id), name: str(t.name), language: str(t.language), category: str(t.category).toUpperCase(), status: str(t.status).toUpperCase() || 'UNKNOWN',
+      id: str(t.id), name: str(t.name).trim().toLowerCase(), language: str(t.language), category: str(t.category).toUpperCase(), status: str(t.status).toUpperCase() || 'UNKNOWN',
       header, body, footer, vars: varCount(body),
       rejectedReason: str(t.rejected_reason) && str(t.rejected_reason).toUpperCase() !== 'NONE' ? str(t.rejected_reason) : null,
     });
@@ -150,7 +151,11 @@ async function call<T>(path: string, init: RequestInit, env: NodeJS.ProcessEnv, 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 20_000);
   try {
-    const res = await fetchImpl(`${apiBase(env)}/${path}`, {
+    // a full URL is only ever Meta's own paging link (listTemplates), and only on Meta's host: the token goes nowhere else
+    const base = apiBase(env);
+    const url = /^https?:\/\//.test(path) ? path : `${base}/${path}`;
+    if (!url.startsWith(`${base}/`)) return { ok: false, error: 'WhatsApp gave a paging link outside its own API' };
+    const res = await fetchImpl(url, {
       ...init,
       headers: { Authorization: `Bearer ${env.WHATSAPP_CLOUD_TOKEN}`, 'Content-Type': 'application/json', ...(init.headers || {}) },
       signal: ctl.signal,
@@ -168,9 +173,31 @@ async function call<T>(path: string, init: RequestInit, env: NodeJS.ProcessEnv, 
 
 const WABA_RE = /^\d{6,30}$/;
 
+// Meta's next page of a list ("paging": {"next": "https://graph.facebook.com/..."}), when there is one.
+export function nextPageOf(json: unknown): string | null {
+  const next = str(rec(rec(json)?.paging)?.next);
+  return next ? next : null;
+}
+export const TEMPLATE_PAGES_MAX = 5;
+
+// Every template of the account: Meta pages the list (100 a page), so an account with more templates than one page
+// holds is read page by page (owner 2026-10-15: a template the automation never picked was one suspect; before this only
+// the first page was read, so a template past it looked MISSING to the worker).
 export async function listTemplates(waba: string, env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): Promise<TemplateApiResult<TemplateInfo[]>> {
   if (!WABA_RE.test(waba)) return { ok: false, error: 'Set the WhatsApp Business Account id first' };
-  return call(`${waba}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`, { method: 'GET' }, env, fetchImpl, readTemplates);
+  const out: TemplateInfo[] = [];
+  let page: string | null = `${waba}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`;
+  for (let n = 0; page && n < TEMPLATE_PAGES_MAX; n++) {
+    const r = await call<{ list: TemplateInfo[]; next: string | null }>(page, { method: 'GET' }, env, fetchImpl, (json) => ({ list: readTemplates(json), next: nextPageOf(json) }));
+    if (r.ok === false) {                                          // a later page that fails: what was read still counts
+      if (n === 0) return { ok: false, error: r.error };
+      console.warn(`[whatsapp] templates page ${n + 1} could not be read (${r.error}): ${out.length} templates from the pages before it`);
+      return { ok: true, value: out };
+    }
+    out.push(...r.value.list);
+    page = r.value.next;
+  }
+  return { ok: true, value: out };
 }
 
 export async function createTemplate(waba: string, spec: TemplateSpec, env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): Promise<TemplateApiResult<{ id: string; status: string }>> {

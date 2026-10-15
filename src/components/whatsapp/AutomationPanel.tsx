@@ -83,6 +83,22 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
     } catch { onAlert('error', 'Could not do that'); }
     finally { setBusy(''); }
   };
+  // the switch "One message per order" (owner 2026-10-15)
+  const linkMode = async (on: boolean) => {
+    const text = on
+      ? 'Turn ON "One message per order"?\n\nOnce Meta has approved order_placed_link, every new order gets ONE message: order placed + its tracking link. The 48-hour tracking message is skipped for those orders. Orders with no tracking link yet still get the two old messages.'
+      : 'Turn OFF "One message per order"?\n\nNew orders get the two old messages again: order_placed when the order comes in, order_tracking 48 hours later, even though order_placed_link is approved.';
+    if (!window.confirm(text)) return;
+    setBusy('link');
+    try {
+      const r = await fetch('/api/whatsapp/automation', { method: 'POST', headers: auth, body: JSON.stringify({ action: 'link_mode', on }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { onAlert('error', j.error || 'Could not change it'); return; }
+      onAlert('success', j.linkMode?.reason ? `Saved. Running now: ${j.linkMode.reason}` : (on ? 'One message per order: ON' : 'One message per order: OFF'));
+      await load(true);
+    } catch { onAlert('error', 'Could not change it'); }
+    finally { setBusy(''); }
+  };
   const retry = async (id: string) => {
     setBusy('r' + id);
     try {
@@ -103,7 +119,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
       if (!r.ok) { onAlert('error', j.error || 'Could not send the test'); return; }
       setTestOut((x) => ({ ...x, [id]: j.results || [] }));
       const sent = (j.results || []).filter((x: { ok: boolean }) => x.ok).length;
-      onAlert(sent ? 'success' : 'error', `${name}: ${sent} of 2 test messages sent to ${testTo}${j.order ? ` (filled from order ${j.order})` : ''}`);
+      onAlert(sent ? 'success' : 'error', `${name}: ${sent} of ${(j.results || []).length || 2} test messages sent to ${testTo}${j.order ? ` (filled from order ${j.order})` : ''}${j.mode ? ` · ${j.mode}` : ''}`);
     } finally { setBusy(''); }
   };
   const lines = useMemo(() => groupOrders(o?.recent || []), [o]);
@@ -151,14 +167,26 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           {o.templates.link && <span>One message <code>order_placed_link</code>: <span className={`chip ${tplTone(o.templates.link)}`}>{o.templates.link}</span></span>}
           {o.templates.error && <span style={{ color: 'var(--danger, #b91c1c)' }}>Could not read templates: {o.templates.error}</span>}
         </div>
-        {/* one message per order (owner 2026-10-15): which mode runs now */}
-        <div className="meta" style={{ fontSize: '0.78rem' }}>
-          {o.templates.link === 'APPROVED'
-            ? <><strong>One message per order:</strong> the first message carries the tracking link (order_placed_link); the 48-hour tracking message is no longer sent for new orders.</>
-            : <>Two messages per order now. To send ONE (order placed + tracking link), make the template with the button &quot;Order placed + tracking link (one message)&quot; in Templates; once Meta says APPROVED the automation switches by itself.</>}
-        </div>
+        {/* one message per order (owner 2026-10-15, "switch ya jo bhi banana h bana"): the switch, and which mode runs now and why */}
+        {o.linkMode && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8125rem', padding: '0.5rem 0.75rem', borderRadius: 8, border: '1px solid var(--border)' }}>
+            <strong>One message per order (order_placed_link):</strong>
+            <span className={`chip ${o.linkMode.on ? 'chip-ok' : 'chip-warn'}`}>{o.linkMode.on ? 'ON' : 'OFF'}</span>
+            <button type="button" className="btn btn-sm btn-outline" disabled={busy === 'link'} onClick={() => void linkMode(!o.linkMode!.on)}>
+              {busy === 'link' ? <Loader2 size={13} style={spin} /> : <Power size={13} />} {o.linkMode.on ? 'Turn OFF' : 'Turn ON'}
+            </button>
+            <span className="meta" style={{ fontSize: '0.78rem', flexBasis: '100%' }}>
+              <strong style={{ color: o.linkMode.active ? '#15803d' : '#b45309' }}>Running now: {o.linkMode.active ? 'one message per order' : 'two messages per order'}</strong> · {o.linkMode.reason}.
+              {o.linkMode.active
+                ? ' The first message carries the tracking link; the 48-hour tracking message is skipped for new orders.'
+                : o.linkMode.on && !o.linkMode.approved
+                  ? ' To send ONE (order placed + tracking link), make the template with the button "Order placed + tracking link (one message)" in Templates; once Meta says APPROVED it runs by itself.'
+                  : ' order_placed goes when the order comes in and order_tracking 48 hours later, as before.'}
+            </span>
+          </div>
+        )}
         {o.pauseInfo && (
-          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'}
+          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'} health={o.numberHealth ?? null}
             onPause={(m) => void pauseAct({ action: 'pause', minutes: m }, `Order messages paused for ${m} minutes`)}
             onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')} />
         )}
@@ -292,12 +320,12 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
             <span className="meta">Check it on your own phone:</span>
             <input className="form-input" style={{ width: 150, height: 32 }} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="Your number" inputMode="tel" />
             <input className="form-input" style={{ width: 130, height: 32 }} value={testName} onChange={(e) => setTestName(e.target.value)} placeholder="Name (optional)" />
-            <button type="button" className="btn btn-sm btn-outline" disabled={busy === 't' + p.id} onClick={() => void test(p.id, p.name)}>{busy === 't' + p.id ? <Loader2 size={13} style={spin} /> : 'Send both as a test'}</button>
-            <span className="meta">(the brand's latest order fills them; no customer is messaged, nothing is counted)</span>
+            <button type="button" className="btn btn-sm btn-outline" disabled={busy === 't' + p.id} onClick={() => void test(p.id, p.name)}>{busy === 't' + p.id ? <Loader2 size={13} style={spin} /> : o.linkMode?.active ? 'Send the message as a test' : 'Send both as a test'}</button>
+            <span className="meta">(the brand's latest order fills {o.linkMode?.active ? 'it' : 'them'}; the same mode as the automation runs now; no customer is messaged, nothing is counted)</span>
           </div>
           {(testOut[p.id] || []).map((t) => (
             <div key={t.kind} style={{ fontSize: '0.78rem', padding: '6px 8px', borderRadius: 8, background: t.ok ? 'var(--ok-bg, #ecfdf3)' : 'var(--danger-bg, #fef3f2)' }}>
-              <strong>{t.kind === 'placed' ? 'Order placed' : 'Tracking link'}:</strong> {t.ok ? 'sent' : `not sent (${t.error})`}
+              <strong>{t.kind === 'placed' ? (/track\//.test(t.text) ? 'Order placed + tracking link' : 'Order placed') : 'Tracking link'}:</strong> {t.ok ? 'sent' : `not sent (${t.error})`}
               {t.text && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: 'var(--fg-muted)' }}>{t.text}</div>}
             </div>
           ))}

@@ -298,6 +298,10 @@ Done and live:
   Then: a LATE 130429 report (a message sent before the last pause ended) no longer counts as a new refusal; the log
   line `[whatsapp] late 130429 report` shows it. If refusals still come at 1 a minute, it is Meta's side (ask the owner
   for WhatsApp Manager > the number's status / quality), not our speed.
+  Live data proved it: each 130429 came 8 s after the FIRST message after a pause (Meta's side), and order_placed_link was
+  never used though APPROVED (cause not found in code). Now: a "One message per order" ON/OFF switch, the mode + reason in
+  the PM2 log (`[wa-auto] one message / two messages`), Meta's quality / status / limit in the Number status box, and a red
+  "first message after a quiet pause" line. OWNER TO CHECK: WhatsApp Manager number status / quality, other apps on it.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
