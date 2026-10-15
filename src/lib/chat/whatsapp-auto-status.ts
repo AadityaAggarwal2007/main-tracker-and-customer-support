@@ -15,9 +15,12 @@ export async function noteAutoStatus(waId: string, status: string, error: string
         `UPDATE wa_auto_sends
             SET status = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'pending' END,
                 due_at = now() + $4 * interval '1 millisecond', error = $2, code = 130429, updated_at = now()
-          WHERE wa_id = $1 AND status IN ('pending', 'sent')`,
+          WHERE wa_id = $1 AND status IN ('pending', 'sent') RETURNING sent_at`,
         [waId, error, RATE_MAX_ATTEMPTS, PAUSE_MS]);
-      await pauseWhatsApp(String(error || '130429 rate limit'));
+      // when that message went: a late report of a message sent before the last pause ended is no new refusal
+      const sent = (r.rows?.[0] as { sent_at?: string | Date | null } | undefined)?.sent_at;
+      const sentAt = sent ? new Date(sent).getTime() : null;
+      await pauseWhatsApp(String(error || '130429 rate limit'), Date.now(), undefined, sentAt);
       return (r.rowCount ?? 0) > 0;
     } catch (e) {
       if ((e as { code?: string })?.code !== '42P01') console.error('[whatsapp] automation status:', (e as Error).message);
