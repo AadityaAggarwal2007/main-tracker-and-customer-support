@@ -273,6 +273,9 @@ Done and live:
   worth it (a brand runs 20-25 days, about 3,000 mails), "gap wala bana de, 1 minute mein 3-4": the outbox now sends at
   most 4 mails a minute per Gmail, 15 s apart, across both processes. Advice given: reuse an older Gmail for a new
   brand instead of a fresh one each time; short replies, no repeated text to a bounced customer.
+- **15 Oct, inbox full**: a VASTRIKA customer's Gmail was out of storage (452 4.2.2) and the team re-sent the reply
+  several times. Now the reply box asks before sending to a customer whose mails came back for a reason resending cannot
+  fix (full / no such address / Gmail's suspicious block / daily limit), and says how many came back.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

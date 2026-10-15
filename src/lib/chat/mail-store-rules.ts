@@ -51,30 +51,33 @@ export function rowToListItem(r: StoreRow & { snippet?: string | null; replied?:
 // mail's own time) puts the customer back: replied / answered off, repliedAt gone, bounce = when, why, to whom. A bounce
 // report Gmail kept in its own conversation counts for the customer whose address it names. Writing again (a newer
 // Sent mail) clears it by itself.
-export interface BounceSource { item: MailListItem; bounceAt?: string | Date | null; bounceText?: string | null }
+export interface BounceSource { item: MailListItem; bounceAt?: string | Date | null; bounceText?: string | null; bounceCount?: number | null }
 export function applyBounces(rows: BounceSource[]): MailListItem[] {
   const ms = (v: string | Date | null | undefined) => (v ? new Date(v).getTime() || 0 : 0);
-  const loose = new Map<string, { at: number; text: string }>();
+  const loose = new Map<string, { at: number; text: string }[]>();
   for (const r of rows) {
     if (!isBounce(r.item.fromAddress, r.item.subject)) continue;
     const text = r.bounceText || `${r.item.subject} ${r.item.snippet || ''}`;
     const to = bounceInfo(text).to;
-    const at = ms(r.item.date);
-    if (to && at > (loose.get(to)?.at || 0)) loose.set(to, { at, text });
+    if (to) loose.set(to, [...(loose.get(to) || []), { at: ms(r.item.date), text }]);
   }
   return rows.map(r => {
     const it = r.item;
     if (isBounce(it.fromAddress, it.subject)) return it;
-    let b = r.bounceAt ? { at: ms(r.bounceAt), text: r.bounceText || '' } : null;
-    const other = loose.get(it.fromAddress.toLowerCase());
-    if (other && other.at > (b?.at || 0)) b = other;
+    let b = r.bounceAt ? { at: ms(r.bounceAt), text: r.bounceText || '', count: Math.max(1, Number(r.bounceCount) || 1) } : null;
+    // reports in their own conversation, after this mail, for this address
+    const others = (loose.get(it.fromAddress.toLowerCase()) || []).filter(x => x.at > ms(it.date)).sort((x, y) => y.at - x.at);
+    if (others.length) b = others[0].at > (b?.at || 0) ? { ...others[0], count: others.length + (b?.count || 0) } : { ...(b as { at: number; text: string; count: number }), count: (b?.count || 0) + others.length };
     if (!b || b.at <= ms(it.date)) return it;
-    const ours = it.repliedAt ? ms(it.repliedAt) : (it.replied || it.answered ? ms(it.date) : 0);
-    if (!ours || b.at <= ours) return it;
     const info = bounceInfo(b.text);
+    const ours = it.repliedAt ? ms(it.repliedAt) : (it.replied || it.answered ? ms(it.date) : 0);
+    const open = !!ours && b.at > ours;
+    const bounce = { at: new Date(b.at).toISOString(), why: info.why, to: info.to, count: b.count, open };
+    // written again after it: still told (the next mail may bounce too), but the mail counts as replied
+    if (!open) return { ...it, bounce };
     const { repliedAt: _r, ...rest } = it;
     void _r;
-    return { ...rest, replied: false, answered: false, bounce: { at: new Date(b.at).toISOString(), why: info.why, to: info.to } };
+    return { ...rest, replied: false, answered: false, bounce };
   });
 }
 

@@ -196,19 +196,28 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     const it = (uid, a, date, o = {}) => ({ uid, from: 'X', fromAddress: a, subject: 's', date, unread: false, hasAttachment: false, answered: false, authPass: false, ...o });
     const S = "Message not delivered Your message to cust.five@gmail.com appears suspicious and wasn't delivered.";
     let out = r.applyBounces([{ item: it(1, 'cust.five@gmail.com', '2026-10-14T11:00:00Z', { replied: true, repliedAt: '2026-10-14T11:40:00Z', answered: true }), bounceAt: '2026-10-14T11:41:00Z', bounceText: S }]);
-    deq([out[0].replied, out[0].answered, 'repliedAt' in out[0], out[0].bounce], [false, false, false, { at: '2026-10-14T11:41:00.000Z', why: 'suspicious', to: 'cust.five@gmail.com' }]);
+    deq([out[0].replied, out[0].answered, 'repliedAt' in out[0], out[0].bounce], [false, false, false, { at: '2026-10-14T11:41:00.000Z', why: 'suspicious', to: 'cust.five@gmail.com', count: 1, open: true }]);
     eq(f.bucketOf(out[0], {}), 'todo'); eq(f.caseState(out[0], {}), 'active');
     // we wrote again after the bounce = replied as before
     out = r.applyBounces([{ item: it(1, 'cust.five@gmail.com', '2026-10-14T11:00:00Z', { replied: true, repliedAt: '2026-10-14T12:00:00Z' }), bounceAt: '2026-10-14T11:41:00Z', bounceText: S }]);
-    deq([out[0].replied, out[0].bounce], [true, undefined]);
+    deq([out[0].replied, out[0].bounce.open, out[0].bounce.why], [true, false, 'suspicious']);   // still told: the next mail may bounce too
     // a bounce before their mail, or no reply of ours at all = nothing changes
     out = r.applyBounces([{ item: it(1, 'cust.five@gmail.com', '2026-10-14T12:00:00Z', { replied: true, repliedAt: '2026-10-14T12:30:00Z' }), bounceAt: '2026-10-14T11:41:00Z', bounceText: S },
       { item: it(2, 'new@gmail.com', '2026-10-14T11:00:00Z'), bounceAt: '2026-10-14T11:41:00Z', bounceText: S }]);
-    deq(out.map((x) => [x.replied, x.bounce]), [[true, undefined], [undefined, undefined]]);
+    deq(out.map((x) => [x.replied, x.bounce && x.bounce.open]), [[true, undefined], [undefined, false]]);   // before their mail: nothing; never answered: told, not put back
     // a bounce report in its own conversation counts for the customer it names (and the report itself stays a bounce row)
     out = r.applyBounces([{ item: it(9, 'mailer-daemon@googlemail.com', '2026-10-14T11:41:00Z', { subject: 'Delivery Status Notification (Failure)', snippet: S }) },
       { item: it(1, 'cust.five@gmail.com', '2026-10-14T11:00:00Z', { answered: true }) }, { item: it(3, 'other@gmail.com', '2026-10-14T11:00:00Z', { answered: true }) }]);
     deq(out.map((x) => [x.uid, x.answered, x.bounce && x.bounce.why]), [[9, false, undefined], [1, false, 'suspicious'], [3, true, undefined]]);
+    // owner 15 Oct: a full inbox, our reply re-sent many times: every report counts, the reply box asks before another one
+    const FULL = (to) => `Delivery incomplete There was a temporary problem delivering your message to ${to}. Gmail will retry for 22 more hours. The response was: 452 4.2.2 The recipient's inbox is out of storage space.`;
+    const fullOut = r.applyBounces([{ item: it(1, 'full.box@gmail.com', '2026-10-14T09:00:00Z', { replied: true, repliedAt: '2026-10-15T10:38:00Z' }), bounceAt: '2026-10-15T11:51:00Z', bounceText: FULL('full.box@gmail.com'), bounceCount: 2 },
+      { item: it(8, 'mailer-daemon@googlemail.com', '2026-10-14T10:32:00Z', { subject: 'Delivery Status Notification (Delay)', snippet: FULL('full.box@gmail.com') }) }]);
+    deq([fullOut[0].bounce.why, fullOut[0].bounce.count, fullOut[0].bounce.open, fullOut[0].replied], ['full', 3, true, false]);
+    assert.match(f.resendWarning(fullOut[0].bounce), /^3 of our mails to this customer came back: their Gmail inbox is full\. .*Send anyway\?$/);
+    eq(f.resendWarning({ at: 'x', why: 'other', to: null }), null);                  // an unknown reason: no question
+    assert.match(f.BOUNCE_WHY.full, /Do NOT send it again/);
+    assert.match(reader, /const warn = resendWarning\(bounced\);\n    if \(warn && !window\.confirm\(warn\)\) return;/);
     // today's warning counts Gmail's own blocks only
     const now = Date.parse('2026-10-14T12:00:00Z');
     eq(f.gmailBlocksToday([out[1], it(4, 'mailer-daemon@googlemail.com', '2026-10-14T10:00:00Z', { subject: 'Delivery Status Notification (Failure)', snippet: "Address not found Your message wasn't delivered to x@gmial.com because the address couldn't be found" }),
@@ -287,7 +296,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     // as storeList counts a reply to the customer) and opens the next active customer from Active cases
     const card = fs.readFileSync(path.join(SRC, 'components/MailCard.tsx'), 'utf8');
     assert.match(card, /const at = new Date\(\)\.toISOString\(\);/);
-    assert.match(card, /x\.uid === uid \|\| \(addr && caseAddress\(x\.fromAddress\) === addr\) \? \{ \.\.\.x, answered: true, replied: true, repliedAt: at, bounce: undefined \}/);
+    assert.match(card, /x\.uid === uid \|\| \(addr && caseAddress\(x\.fromAddress\) === addr\) \? \{ \.\.\.x, answered: true, replied: true, repliedAt: at, bounce: x\.bounce \? \{ \.\.\.x\.bounce, open: false \} : undefined \}/);
     assert.match(card, /else if \(view === 'active'\) goNext\(uid, x => caseState\(x, cases\) === 'active'\)/);
     // the server side (mail-cases.ts): the chat_settings key, the masked address for the log, and no DELETE anywhere
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/mail-cases.ts'), 'utf8');
@@ -717,7 +726,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       const l = await store.storeList(BOX);
       eq(l.mails.some((m) => m.uid === 61), false, 'the bounce never becomes the conversation\'s row');
       row = l.mails.find((m) => m.fromAddress === 'cust@example.com');
-      deq([row.uid, row.replied, 'repliedAt' in row, row.bounce && row.bounce.why, row.bounce && row.bounce.to], [60, false, false, 'suspicious', 'cust@example.com']);
+      deq([row.uid, row.replied, 'repliedAt' in row, row.bounce && row.bounce.why, row.bounce && row.bounce.to, row.bounce.open, row.bounce.count], [60, false, false, 'suspicious', 'cust@example.com', true, 1]);
       eq(f.caseState(row, {}), 'active'); eq(f.bucketOf(row, { 'cust@example.com': [{ orderId: '#1001' }] }), 'todo');
       // writing again closes it
       await new Promise((r) => setTimeout(r, 400));
@@ -725,7 +734,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
       eq(res.status, 200);
       await outbox.runOutbox();
       row = (await store.storeList(BOX)).mails.find((m) => m.fromAddress === 'cust@example.com');
-      deq([row.uid, row.replied, row.bounce], [60, true, undefined]);
+      deq([row.uid, row.replied, row.bounce.open, row.bounce.count], [60, true, false, 1]);   // replied; the report is still shown
     });
     await t('answered per CUSTOMER, not per thread (owner 11 Oct 13:02, kurtiya: Bhanu\'s two mails, one answer in the first thread): a Sent row to the sender after the mail counts in any thread; to another address, or before the mail, does not', async () => {
       const f = require(path.join(SRC, 'lib/chat/mail-filters.ts'));

@@ -34,7 +34,7 @@ export default function MailRows({ items, verified, openUid, onOpen, showVerify 
             </span>
             <span className="mail-tags">
               {bounce && <span className="mail-chip no" title="Gmail could not deliver one of our mails: open it to see to whom and why">Delivery failed</span>}
-              {m.bounce && <span className="mail-chip no" title="Our last reply to this customer came back undelivered: open it to see why, then reply again">Reply not delivered</span>}
+              {m.bounce?.open && <span className="mail-chip no" title="Our last reply to this customer came back undelivered: open it to see why, then reply again">Reply not delivered</span>}
               {showVerify && !bounce && (v ? <span className="mail-chip ok" title={`Verified for order ${v.orderId}${v.byName ? ` · ${v.byName}` : ''}`}><BadgeCheck size={11} /> {v.orderId}</span>
                 : <span className="mail-chip no" title="Nobody has verified this sender yet">Not verified</span>)}
               {showVerify && !bounce && !v && nums.map(n => <span key={n} className="mail-chip num" title="Order number written in the subject">{n}</span>)}
