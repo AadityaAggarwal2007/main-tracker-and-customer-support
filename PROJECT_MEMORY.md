@@ -314,6 +314,14 @@ Done and live:
   customer messaged in the last 24 h still goes, `[wa-auto] daily limit reached` once a run), a red "Meta refused at N
   customers ... type 250 in WhatsApp > Setup > Daily limit" line, and "In use / Not in use" chips + the one-message switch
   on the Templates tab. OWNER TO DO: type 250 as the Daily limit in WhatsApp > Setup and watch the Number status box.
+  Afternoon, "we need evidence" (343 messages the day before with no refusal, then from 13:00 EVERY message refused, even
+  after a 2-hour quiet pause; a `3p_direct_integration_test_template` on the account): the webhook now counts Meta's
+  delivery reports for messages ShipTrack never sent (another app on the same number), per India day / hour in
+  `chat_settings` `wa_foreign:<day>` (counted 20 s after a second look, so our own late-written wamids never count); the
+  Number status box and the Today board say in red "Another app sent N messages from this number today" with where to
+  look in Meta Business Settings (Partners / Connected apps / System users), or "No other app's messages seen ... Meta
+  itself is holding the number back" while Meta refuses us. OWNER TO CHECK after the deploy: that line, and the PM2 line
+  `[whatsapp] a delivery report for a message ShipTrack never sent`.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

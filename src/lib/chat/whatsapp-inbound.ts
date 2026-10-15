@@ -18,6 +18,7 @@ import { updateConversationSubject } from './subject';
 import { updateConversationHealth } from './health';
 import type { WaInbound, WaStatus } from './whatsapp';
 import { noteAutoStatus } from './whatsapp-auto-status';
+import { noteForeignStatus } from './whatsapp-foreign';
 
 // The panel WhatsApp chats belong to: WHATSAPP_PANEL_ID, else the default panel. One number, one panel,
 // until the owner wants a number per panel.
@@ -146,5 +147,9 @@ export async function storeWaStatus(s: WaStatus): Promise<boolean> {
   // (whatsapp-alert-queue.ts); any 130429 report pauses the number (owner 2026-10-15)
   const alert = auto ? false : await noteAlertStatus(s.id, s.status, s.error).catch(() => false);
   if (s.status === 'failed' && !auto && !alert && isRateLimited(null, s.error)) await pauseWhatsApp(String(s.error)).catch(() => undefined);
-  return (r.rowCount ?? 0) > 0 || auto || alert;
+  const ours = (r.rowCount ?? 0) > 0 || auto || alert;
+  // A report that matched nothing of ours is a message ANOTHER app sent from the number (owner 2026-10-15: "we need
+  // evidence"): counted after a short re-check, never awaited here (whatsapp-foreign.ts)
+  if (!ours) void noteForeignStatus(s);
+  return ours;
 }

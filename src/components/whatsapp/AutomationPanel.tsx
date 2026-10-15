@@ -187,7 +187,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           </div>
         )}
         {o.pauseInfo && (
-          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'} health={o.numberHealth ?? null} rate={o.sendRate ?? null}
+          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'} health={o.numberHealth ?? null} rate={o.sendRate ?? null} foreign={o.foreign ?? null}
             onPause={(m) => void pauseAct({ action: 'pause', minutes: m }, `Order messages paused for ${m} minutes`)}
             onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')}
             onRate={(n) => void pauseAct({ action: 'rate', perMinute: n }, `Order messages: ${n} a minute from now on`)} />

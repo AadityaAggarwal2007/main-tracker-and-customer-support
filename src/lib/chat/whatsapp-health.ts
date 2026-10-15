@@ -10,6 +10,8 @@ import { getPhone } from './whatsapp-profile';
 import { tierLimit, type WaHealth } from './whatsapp-health-rules';
 import { stoppedNumbers } from './whatsapp-stop';
 import { dailyLimit } from './whatsapp-settings';
+import { loadForeignToday } from './whatsapp-foreign';
+import { foreignSeen } from './whatsapp-foreign-rules';
 
 const PHONE_TTL_MS = 5 * 60_000;
 type PhoneCache = { at: number; quality: string; status: string; tier: string; error: string | null };
@@ -107,6 +109,8 @@ export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
   try {
     h.stopped = (await stoppedNumbers()).size;
   } catch (e) { ignoreMissing(e, 'stopped'); }
+  // another app on the number (owner 2026-10-15): one small read, never throws
+  h.foreignToday = foreignSeen(await loadForeignToday(now));
   return h;
 }
 

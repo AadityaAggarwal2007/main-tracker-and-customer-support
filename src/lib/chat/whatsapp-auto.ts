@@ -26,6 +26,8 @@ import { alertsWaiting } from './whatsapp-alert-queue';
 import { quietBefore } from './whatsapp-auto-status';
 import { knownNumbers24h, limitNow, loadWaHealth, usedNumbers } from './whatsapp-health';
 import { limitFreeAt, limitReached, refusedNearLimit, waHealthLines, type WaLine } from './whatsapp-health-rules';
+import { loadForeignToday, noteTestSent } from './whatsapp-foreign';
+import { foreignLine, type ForeignLine, type ForeignToday } from './whatsapp-foreign-rules';
 
 export type Kind = 'placed' | 'tracking';
 const STATUSES = ['pending', 'sent', 'delivered', 'read', 'failed', 'skipped'] as const;
@@ -370,6 +372,9 @@ export interface AutoOverview {
   numberHealth?: NumberHealth | null;
   // The speed the owner chose (owner 2026-10-15, "har minute 2, 3, 4 message"): 1-4 order messages a minute, 2 by default.
   sendRate?: SendRate;
+  // Another app on the number (owner 2026-10-15): Meta's delivery reports today for messages ShipTrack never sent
+  // (whatsapp-foreign-rules.ts), and the line the Number status box shows (null = nothing to say).
+  foreign?: ForeignToday & { line: ForeignLine | null };
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -460,6 +465,9 @@ export async function automationOverview(day: string | null = null, nowMs = Date
   const linkName = link.template ? link.template.name.trim().toLowerCase() : (list?.filter((t) => isLinkTemplateName(t.name))[0]?.name.trim().toLowerCase() ?? null);
   const sendRate = await loadSendRate(nowMs).catch(() => ({ perMinute: 2, by: null, at: null } as SendRate));
   const pauseInfo = pauseView(await pauseState().catch(() => null), nowMs, gapFor(sendRate.perMinute));
+  // Meta refusing OUR messages now: a 130429 in the last 2 hours, or a pause Meta set that still runs
+  const refusing = pauseInfo.strikes > 0 || (pauseInfo.state === 'paused' && !pauseInfo.manual);
+  const foreignToday = await loadForeignToday(nowMs);
   return {
     installed, configured: waConfigured(),
     templates: { placed: stateOf(list, PLACED_TEMPLATE), tracking: stateOf(list, TRACKING_TEMPLATE), link: link.state, linkName: linkName && linkName !== LINK_TEMPLATE ? linkName : null, error },
@@ -469,6 +477,7 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     pauseInfo, sendRate,
     linkMode: await currentLinkMode(list, error, nowMs),
     numberHealth: waConfigured() ? await numberHealth(nowMs, pauseInfo.lastRefusalAt) : null,
+    foreign: { ...foreignToday, line: foreignLine(foreignToday, refusing) },
     ordersDue: installed ? await query<{ n: number }>(`SELECT count(*)::int AS n FROM wa_auto_sends WHERE status = 'pending' AND due_at <= now()`)
       .then((r) => Number(r.rows[0]?.n || 0)).catch(() => 0) : 0,
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
@@ -515,6 +524,7 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
     if (!tpl) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
     const params = (kind === 'tracking' || tpl === link ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);
     const r = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params);
+    if (!('error' in r)) await noteTestSent(r.id, digits);   // its delivery reports are ours, not another app's (whatsapp-foreign.ts)
     results.push({ kind, ok: !('error' in r), text: renderTemplate(tpl, params), error: 'error' in r ? r.error : null });
   }
   return { results, order: o?.order_id || null, mode: mode.reason };
