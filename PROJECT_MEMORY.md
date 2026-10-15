@@ -293,6 +293,8 @@ Done and live:
   deploy), then Meta refused at one a minute. Now each new 130429 within 2 h doubles the pause (15/30/60/120 min) and
   orders go 1 a minute for 2 h; chargeback / ShipTrack alerts and tests go at once, pause or not, and orders wait while
   an alert waits; the auto "help is by email" reply waits during a pause.
+  Same day: WhatsApp > Automation has a "Number status" box (paused by Meta / by hand until when with a countdown,
+  slow until when, Meta's last refusal, next pause, messages due) with Pause now (15-120 min) and Resume now.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

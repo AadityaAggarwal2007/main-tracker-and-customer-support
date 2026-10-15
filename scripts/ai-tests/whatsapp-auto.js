@@ -685,6 +685,48 @@ async function t(name, fn) {
     delete S.settings.wa_pause; pause.forgetPauseCache();
   });
 
+  await t('Number status + Pause now / Resume now (owner 15 Oct, "pause ka option, pata chal jaee kab tak resume"): the view says paused / slow / normal, until when, Meta\'s last refusal and the next pause; a pause by hand never counts as Meta\'s refusal; Resume ends any pause', async () => {
+    const m = 60000, t0 = IST(13, 14);
+    // the pure view
+    deq(rules.pauseView(null, t0).state, 'normal'); eq(rules.pauseView(null, t0).nextPauseMin, 15); eq(rules.pauseView(null, t0).strikes, 0);
+    let v = rules.pauseView({ until: t0 + 30 * m, at: t0, strikes: 2, reason: '130429 · Rate limit hit' }, t0 + 5 * m);
+    deq([v.state, v.until, v.manual, v.strikes, v.nextPauseMin, v.reason], ['paused', new Date(t0 + 30 * m).toISOString(), false, 2, 60, '130429 · Rate limit hit']);
+    eq(v.lastRefusalAt, new Date(t0).toISOString());
+    v = rules.pauseView({ until: t0 + 30 * m, at: t0, strikes: 2, reason: 'x' }, t0 + 40 * m);
+    deq([v.state, v.until, v.sendEveryMs, v.slowUntil], ['slow', null, 60000, new Date(t0 + 120 * m).toISOString()]);
+    v = rules.pauseView({ until: t0 + 30 * m, at: t0, strikes: 2, reason: 'x' }, t0 + 130 * m);
+    deq([v.state, v.strikes, v.lastRefusalAt, v.nextPauseMin], ['normal', 0, null, 15]);
+    eq(rules.pauseView({ until: 0, at: t0, strikes: 9, reason: '' }, t0 + m).nextPauseMin, 120);
+    // the route: pause by hand, never a strike; only 15 / 30 / 60 / 120; Super Admin only
+    pause.forgetPauseCache(); delete S.settings.wa_pause;
+    eq((await route.POST(jreq(AGENT, { action: 'pause', minutes: 30 }))).status, 401);
+    eq((await route.POST(jreq(OWNER, { action: 'pause', minutes: 7 }))).status, 400);
+    eq((await route.POST(jreq(OWNER, { action: 'resume' }))).status, 409);                // nothing paused
+    let r = await route.POST(jreq(OWNER, { action: 'pause', minutes: 30 }));
+    eq(r.status, 200);
+    let st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.manual, st.by, Math.round((st.until - Date.now()) / m)], [true, 'owner', 30]);
+    v = rules.pauseView(st, Date.now());
+    deq([v.state, v.manual, v.by, v.strikes, v.lastRefusalAt, v.sendEveryMs], ['paused', true, 'owner', 0, null, 30000]);   // not Meta's
+    pause.forgetPauseCache(); assert.ok(await pause.whatsAppPause(), 'order messages wait');
+    // the overview carries it
+    const ov = (await route.GET(jreq(OWNER, {}))).body;
+    eq(ov.pauseInfo.state, 'paused'); eq(ov.pauseInfo.manual, true); eq(typeof ov.ordersDue, 'number');
+    // Resume now: ends it; after a Meta pause the strikes stay (still slow, the next pause still longer)
+    r = await route.POST(jreq(OWNER, { action: 'resume' }));
+    eq(r.status, 200); pause.forgetPauseCache();
+    eq(await pause.whatsAppPause(), null);
+    eq(rules.parsePauseState(S.settings.wa_pause).resumedBy, 'owner');
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+    await pause.pauseWhatsApp('130429 Rate limit hit', Date.now());
+    await pause.pauseWhatsApp('130429 Rate limit hit', Date.now() + 16 * m);         // a 2nd strike after the first ended
+    eq((await route.POST(jreq(OWNER, { action: 'resume' }))).status, 200);
+    st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.until <= Date.now() + 16 * m + 1000], [2, true]);
+    eq(rules.pauseView(st, Date.now() + 17 * m).state, 'slow');
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);
   process.exit(fail ? 1 : 0);
 })();

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthFromRequest } from '@/lib/auth';
 import { isSuperAdmin } from '@/lib/permissions';
 import { automationOverview, panelExists, resetTemplateCache, retryFailed, saveAuto, sendAutomationTest } from '@/lib/chat/whatsapp-auto';
+import { manualPause, resumeNow } from '@/lib/chat/whatsapp-pause';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,8 @@ export const dynamic = 'force-dynamic';
 // starts the clock: only orders placed from then on are ever messaged). POST { action: 'retry', id }: a Failed row again.
 // POST { action: 'test', businessId, to, name }: both messages of that brand to one number, filled from its latest order
 // (nothing recorded, no customer messaged).
+// POST { action: 'pause', minutes: 15 | 30 | 60 | 120 }: no order message for that long (owner 2026-10-15, "pause ka
+// option"); POST { action: 'resume' }: the pause (Meta's or one by hand) ends now.
 
 export async function GET(request: NextRequest) {
   const user = getAuthFromRequest(request);
@@ -27,7 +30,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = getAuthFromRequest(request);
   if (!user || !isSuperAdmin(user)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: { businessId?: unknown; enabled?: unknown; action?: unknown; id?: unknown; to?: unknown; name?: unknown };
+  let body: { businessId?: unknown; enabled?: unknown; action?: unknown; id?: unknown; to?: unknown; name?: unknown; minutes?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Not JSON' }, { status: 400 }); }
   try {
     if (body.action === 'retry') {
@@ -35,6 +38,14 @@ export async function POST(request: NextRequest) {
       if (!/^\d{1,18}$/.test(id)) return NextResponse.json({ error: 'Not a message id' }, { status: 400 });
       const ok = await retryFailed(id);
       return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'Only a Failed message can be sent again' }, { status: 409 });
+    }
+    if (body.action === 'pause') {
+      const until = await manualPause(Number(body.minutes), user.displayName || user.username);
+      return until ? NextResponse.json({ ok: true, until: new Date(until).toISOString() }) : NextResponse.json({ error: 'Pick 15, 30, 60 or 120 minutes' }, { status: 400 });
+    }
+    if (body.action === 'resume') {
+      const ok = await resumeNow(user.displayName || user.username);
+      return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'The number is not paused' }, { status: 409 });
     }
     if (body.action === 'test') {
       const panel = String(body.businessId ?? '');

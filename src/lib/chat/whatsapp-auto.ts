@@ -16,11 +16,11 @@ import { isOfficeHours } from '@/lib/office-hours';
 import {
   AUTO_PREFIX, BATCH, SEND_EVERY_MS, FRESH_MS, LINK_TEMPLATE, MAX_ATTEMPTS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
   TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, isRateLimited, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
-  type AutoSetting, type BrandWords, type OrderFacts,
+  autoKey, autoValue, dueNow, eligibleFrom, isRateLimited, parseAuto, pauseView, placedParams, retryable, trackingDueMs, trackingParams,
+  type AutoSetting, type PauseView, type BrandWords, type OrderFacts,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
-import { pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
+import { pauseState, pauseWhatsApp, sendEvery, takeSendSlot, whatsAppPause } from './whatsapp-pause';
 import { alertsWaiting } from './whatsapp-alert-queue';
 
 export type Kind = 'placed' | 'tracking';
@@ -268,6 +268,9 @@ export interface AutoOverview {
   sendEveryMs?: number;
   // ShipTrack's own alerts waiting in the queue (alerts first: order messages wait while any does).
   alertsWaiting?: number;
+  // The "Number status" box (owner 2026-10-15): paused / slow / normal, until when, Meta's last refusal; and how many
+  // order messages are due now (waiting only for their turn or the pause).
+  pauseInfo?: PauseView; ordersDue?: number;
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -341,6 +344,9 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
     alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
+    pauseInfo: pauseView(await pauseState().catch(() => null), nowMs),
+    ordersDue: installed ? await query<{ n: number }>(`SELECT count(*)::int AS n FROM wa_auto_sends WHERE status = 'pending' AND due_at <= now()`)
+      .then((r) => Number(r.rows[0]?.n || 0)).catch(() => 0) : 0,
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
   };
 }

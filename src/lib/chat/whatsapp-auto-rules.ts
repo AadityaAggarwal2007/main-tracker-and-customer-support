@@ -48,13 +48,16 @@ export const STRIKE_WINDOW_MS = 2 * 60 * 60 * 1000;
 export const MAX_PAUSE_MS = 2 * 60 * 60 * 1000;
 export const MAX_SEND_EVERY_MS = 60 * 1000;
 export const MAX_STRIKES = 10;
-export interface PauseState { until: number; reason: string; at: number; strikes: number }
+// manual / by: a pause the Super Admin set from the Automation tab (owner 2026-10-15, "pause ka option"); resumedBy: who
+// ended a pause early.
+export interface PauseState { until: number; reason: string; at: number; strikes: number; manual?: boolean; by?: string; resumedBy?: string }
 export function parsePauseState(value: string | null | undefined): PauseState | null {
   try {
     const j = JSON.parse(String(value || ''));
     const until = Date.parse(j?.until), at = Date.parse(j?.at);
     if (!Number.isFinite(until)) return null;
-    return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)) };
+    return { until, reason: String(j?.reason || ''), at: Number.isFinite(at) ? at : until - PAUSE_MS, strikes: Math.max(1, Math.floor(Number(j?.strikes) || 1)),
+      ...(j?.manual ? { manual: true, by: String(j?.by || '').slice(0, 60) } : {}), ...(j?.resumedBy ? { resumedBy: String(j.resumedBy).slice(0, 60) } : {}) };
   } catch { return null; }
 }
 // The next pause after a 130429 at `now`: null = the pause still runs (the same burst), keep it as it is.
@@ -63,6 +66,41 @@ export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS)
   const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1;
   return { until: now + Math.min(base * 2 ** (strikes - 1), MAX_PAUSE_MS), strikes };
 }
+// What the Automation tab's "Number status" box says (owner 2026-10-15: "pata chal jaee ki meta na pause kia ha, kab tak
+// resume ho jaega"): paused (by Meta or by hand) until when, or sending slowly until when, or normal; Meta's last refusal,
+// which refusal of the last 2 hours it was, and how long the NEXT pause would be if Meta refuses again.
+export interface PauseView {
+  state: 'paused' | 'slow' | 'normal';
+  until: string | null;          // paused: when it sends again
+  manual: boolean; by: string | null;
+  reason: string | null;         // Meta's words (or "Paused by ...")
+  lastRefusalAt: string | null;  // Meta's last 130429 (not a pause by hand)
+  strikes: number;               // refusals in the last 2 hours (0 = none)
+  slowUntil: string | null;      // 1 a minute until then
+  sendEveryMs: number;
+  nextPauseMin: number;          // if Meta refuses again now / after the pause
+  resumedBy: string | null;
+}
+export function pauseView(st: PauseState | null, now: number): PauseView {
+  const inWindow = !!st && now - st.at < STRIKE_WINDOW_MS && !(st.manual && st.at <= now - STRIKE_WINDOW_MS);
+  const strikes = st && inWindow ? st.strikes : 0;
+  const paused = !!st && st.until > now;
+  const every = sendEveryFor(st && inWindow ? st : null, now);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  return {
+    state: paused ? 'paused' : every > SEND_EVERY_MS ? 'slow' : 'normal',
+    until: paused ? iso(st!.until) : null,
+    manual: !!(paused && st!.manual), by: paused && st!.manual ? st!.by || null : null,
+    reason: st ? st.reason || null : null,
+    lastRefusalAt: st && strikes > 0 ? iso(st.at) : null,
+    strikes,
+    slowUntil: !paused && every > SEND_EVERY_MS && st ? iso(st.at + STRIKE_WINDOW_MS) : null,
+    sendEveryMs: every,
+    nextPauseMin: Math.round(Math.min(PAUSE_MS * 2 ** (strikes > 0 ? Math.min(strikes, MAX_STRIKES - 1) : 0), MAX_PAUSE_MS) / 60000),
+    resumedBy: st && !paused ? st.resumedBy || null : null,
+  };
+}
+export const MANUAL_PAUSE_MIN = [15, 30, 60, 120];
 // How far apart order messages go now: the normal SEND_EVERY_MS, wider while the last 130429 is under two hours old.
 export function sendEveryFor(state: PauseState | null, now: number, base = SEND_EVERY_MS): number {
   if (!state || now - state.at >= STRIKE_WINDOW_MS) return base;
