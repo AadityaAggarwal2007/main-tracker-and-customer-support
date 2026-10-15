@@ -61,8 +61,12 @@ export function parsePauseState(value: string | null | undefined): PauseState | 
   } catch { return null; }
 }
 // The next pause after a 130429 at `now`: null = the pause still runs (the same burst), keep it as it is.
-export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS): { until: number; strikes: number } | null {
+// sentAt (owner 2026-10-15: "is baar theek se kaam nahi kiya", the 3rd refusal came one minute after a 30-minute pause
+// ended): Meta often reports a refusal LATER, as a failed delivery report; a report for a message sent before the last
+// pause ended belongs to that old burst, never a new refusal: no new strike, no longer pause.
+export function nextPause(prev: PauseState | null, now: number, base = PAUSE_MS, sentAt?: number | null): { until: number; strikes: number } | null {
   if (prev && prev.until > now) return null;
+  if (prev && sentAt != null && Number.isFinite(sentAt) && sentAt < prev.until) return null;
   const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1;
   return { until: now + Math.min(base * 2 ** (strikes - 1), MAX_PAUSE_MS), strikes };
 }

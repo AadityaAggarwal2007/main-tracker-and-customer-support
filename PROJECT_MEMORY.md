@@ -295,6 +295,9 @@ Done and live:
   an alert waits; the auto "help is by email" reply waits during a pause.
   Same day: WhatsApp > Automation has a "Number status" box (paused by Meta / by hand until when with a countdown,
   slow until when, Meta's last refusal, next pause, messages due) with Pause now (15-120 min) and Resume now.
+  Then: a LATE 130429 report (a message sent before the last pause ended) no longer counts as a new refusal; the log
+  line `[whatsapp] late 130429 report` shows it. If refusals still come at 1 a minute, it is Meta's side (ask the owner
+  for WhatsApp Manager > the number's status / quality), not our speed.
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 

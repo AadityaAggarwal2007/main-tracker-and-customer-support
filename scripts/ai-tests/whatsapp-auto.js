@@ -39,7 +39,7 @@ const db = {
     if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', due_at = now\(\), updated_at = now\(\) WHERE status = 'failed' AND \(code = \$1 OR error LIKE '130429%'\)/.test(sql)) { let n = 0; for (const r of S.rows) if (r.status === 'failed' && (r.code === p[0] || /^130429/.test(r.error || '')) && r.attempts < p[1]) { Object.assign(r, { status: 'pending', due_at: new Date(S.nowMs) }); n++; } return { rows: [], rowCount: n }; }
     if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
-    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs + p[3]), error: p[1], code: 130429 }); return { rows: [], rowCount: r ? 1 : 0 }; }
+    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs + p[3]), error: p[1], code: 130429 }); return { rows: r ? [{ sent_at: r.sent_at || null }] : [], rowCount: r ? 1 : 0 }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$3, updated_at = now\(\) WHERE business_id = \$1 AND order_id = \$2 AND kind = 'tracking'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.order_id === p[1] && r.kind === 'tracking' && r.status === 'pending') { r.status = 'skipped'; r.error = p[2]; n++; } return { rows: [], rowCount: n }; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql)) return { rows: S.panels.map((x) => ({ ...x })), rowCount: S.panels.length };
@@ -724,6 +724,26 @@ async function t(name, fn) {
     st = rules.parsePauseState(S.settings.wa_pause);
     deq([st.strikes, st.until <= Date.now() + 16 * m + 1000], [2, true]);
     eq(rules.pauseView(st, Date.now() + 17 * m).state, 'slow');
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+
+  await t('a LATE 130429 report (owner 15 Oct, "is baar theek se kaam nahi kiya"): a refusal for a message sent before the last pause ended is the old burst: no new strike, no longer pause; one sent after it is a real new refusal', async () => {
+    const m = 60000, t0 = Date.now() - 60 * m;
+    eq(rules.nextPause({ until: t0 + 30 * m, at: t0, strikes: 2, reason: '' }, t0 + 31 * m, rules.PAUSE_MS, t0 - 5 * m), null);
+    eq(rules.nextPause({ until: t0 + 30 * m, at: t0, strikes: 2, reason: '' }, t0 + 31 * m, rules.PAUSE_MS, t0 + 30 * m + 10000).strikes, 3);
+    eq(rules.nextPause({ until: t0 + 30 * m, at: t0, strikes: 2, reason: '' }, t0 + 31 * m).strikes, 3);   // no time known: as before
+    // through the delivery report of an automation row
+    pause.forgetPauseCache(); delete S.settings.wa_pause;
+    S.settings.wa_pause = JSON.stringify({ until: new Date(Date.now() - m).toISOString(), reason: '130429', at: new Date(Date.now() - 31 * m).toISOString(), strikes: 2 });
+    S.rows.push({ id: 'late1', business_id: 'b1', order_id: '#1553', kind: 'placed', status: 'sent', wa_id: 'wamid.late1', attempts: 1, sent_at: new Date(Date.now() - 40 * m), due_at: new Date(), updated_at: new Date() });
+    await status.noteAutoStatus('wamid.late1', 'failed', '130429 · Rate limit hit');
+    let st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.until < Date.now()], [2, true]);                          // not paused again
+    eq(S.rows.find((r) => r.id === 'late1').status, 'pending');                   // the message still waits to go again
+    S.rows.push({ id: 'new1', business_id: 'b1', order_id: '#1554', kind: 'placed', status: 'sent', wa_id: 'wamid.new1', attempts: 1, sent_at: new Date(), due_at: new Date(), updated_at: new Date() });
+    await status.noteAutoStatus('wamid.new1', 'failed', '130429 · Rate limit hit');
+    st = rules.parsePauseState(S.settings.wa_pause);
+    deq([st.strikes, st.until > Date.now()], [3, true]);                          // a real new refusal
     delete S.settings.wa_pause; pause.forgetPauseCache();
   });
 

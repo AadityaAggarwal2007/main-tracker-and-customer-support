@@ -31,10 +31,13 @@ export async function whatsAppPause(now = Date.now()): Promise<WaPause | null> {
 
 // Pause the number after a 130429. `ms` given = exactly that long (tests); else the strikes decide (nextPause: 15, 30,
 // 60, 120 minutes; a 130429 while the pause runs is the same burst and counts once). Returns when the number may send again.
-export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number): Promise<number> {
+export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number, sentAt?: number | null): Promise<number> {
   const prev = await pauseState();
-  const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1 } : nextPause(prev, now);
-  if (!next) return prev!.until;                                   // the same burst: the pause already runs
+  const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1 } : nextPause(prev, now, undefined, sentAt);
+  if (!next) {                                                     // the same burst: the pause already ran / runs
+    if (prev && sentAt != null && prev.until <= now) console.warn(`[whatsapp] late 130429 report for a message sent ${Math.round((now - sentAt) / 60000)} min ago, before the last pause ended: not a new refusal`);
+    return prev!.until;
+  }
   const until = new Date(next.until).toISOString();
   const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString(), strikes: next.strikes });
   cache = { at: now, pause: { until: next.until, reason } };
