@@ -34,6 +34,7 @@ const db = {
       j.hours = { ...j.hours, [p[3]]: h }; S.settings[p[0]] = JSON.stringify(j); return { rows: [], rowCount: 1 };
     }
     if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO NOTHING$/.test(sql)) { if (!(p[0] in S.settings)) S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
+    if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 ORDER BY updated_at DESC LIMIT 20$/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre)).map((k) => ({ value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE conversations SET last_message_at/.test(sql)) return { rows: [], rowCount: 1 };
     if (/WHERE c\.source = 'whatsapp' AND c\.merged_into IS NULL/.test(sql)) { const rows = S.convs.map((c) => ({ id: c.id, name: c.visitor_name, phone: c.visitor_phone, status: c.status, unread: c.unread_count, last_message_at: null, last_message: (S.msgs.filter((m) => m.conversation_id === c.id).pop() || {}).content || null, last_sender: 'visitor', panel: 'vastora' })); return { rows, rowCount: rows.length }; }
@@ -58,6 +59,7 @@ const db = {
     if (/^SELECT 1 FROM wa_auto_sends WHERE wa_id = \$1 LIMIT 1/.test(sql)) { if (S.noAutoTable) { const e = new Error('relation "wa_auto_sends" does not exist'); e.code = '42P01'; throw e; } return (S.autoRows || []).some((x) => x.wa_id === p[0]) ? { '?column?': 1 } : null; }
     if (/^SELECT 1 FROM chat_settings WHERE key IN \(\$1, \$2\) LIMIT 1/.test(sql)) return p[0] in S.settings || p[1] in S.settings ? { '?column?': 1 } : null;
     if (/FROM orders o\s+WHERE o\.business_id IS NOT NULL/.test(sql)) { const b = (S.orderPanels || {})[p[0]]; return b ? { business_id: b } : null; }
+    if (/^INSERT INTO chat_settings[\s\S]*WHERE chat_settings\.value IS DISTINCT FROM EXCLUDED\.value RETURNING key/.test(sql)) { if (S.settings[p[0]] === p[1]) return null; S.settings[p[0]] = p[1]; return { key: p[0] }; }
     if (/FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? null : { value: v }; }
     if (/SELECT name FROM businesses WHERE id::text/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { name: b.id } : null; }
     if (/conversations c WHERE c\.id = \$1 AND c\.source = 'whatsapp'/.test(sql)) { const c = S.convs.find((x) => x.id === p[0] && x.source === 'whatsapp' && !x.merged_into); return c ? { id: c.id, name: c.visitor_name } : null; }
@@ -859,7 +861,7 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     // the test send keeps its wamid (whatsapp-auto.ts sendAutomationTest -> noteTestSent)
     await foreign.noteTestSent('wamid.t9', '919876500005');
     eq(S.settings['wa_test_sent:wamid.t9'] && JSON.parse(S.settings['wa_test_sent:wamid.t9']).to, '••••0005');
-    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await noteTestSent\(r\.id, digits\)/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await noteTestSent\(r\.id, digits, \{ template: tpl\.name, language: tpl\.language, panel: panelId, panelName, order: o\?\.order_id \|\| null \}\)/);
   });
   await t('a foreign 130429 failure counts in failed130429 AND still pauses the number (it is shared); the webhook answers 200 before the count, nothing waits on it', async () => {
     delete S.settings.wa_pause; require(path.join(SRC, 'lib/chat/whatsapp-pause.ts')).forgetPauseCache();
@@ -878,6 +880,43 @@ const eq = assert.strictEqual, deq = assert.deepStrictEqual;
     finally { console.warn = warn; }
     deq(lines.map((l) => /never sent/.test(l)), [true, true]); assert.match(lines[1], /4 more since the last line/);
     assert.ok(!/9876500009/.test(lines.join('\n')), 'the log masks the number');
+  });
+
+  console.log('whatsapp: the test message\'s report and the safety stop (owner 15 Oct night: a test said "sent" and never arrived)');
+  await t('a delivery report for a test wamid lands on its record (never backwards, failed wins), is logged with the number masked, and a failed report on Meta\'s side STOPS the order messages; a customer-side one does not; the webhook counts it as ours', async () => {
+    const pauseLib = require(path.join(SRC, 'lib/chat/whatsapp-pause.ts'));
+    const ff = require(path.join(SRC, 'lib/chat/whatsapp-foreign.ts'));
+    delete S.settings.wa_pause; pauseLib.forgetPauseCache();
+    await ff.noteTestSent('wamid.tt1', '919876500007', { template: 'order_placed_link', language: 'en_US', panel: 'bizVast', panelName: 'vastora', order: '#1553' }, Date.UTC(2026, 9, 15, 14, 42));
+    let rec = JSON.parse(S.settings['wa_test_sent:wamid.tt1']);
+    deq([rec.to, rec.template, rec.panel, rec.panelName, rec.order, rec.status, rec.at], ['••••0007', 'order_placed_link', 'bizVast', 'vastora', '#1553', 'sent', '2026-10-15T14:42:00.000Z']);
+    assert.ok(!/9876500007/.test(S.settings['wa_test_sent:wamid.tt1']), 'never the full number');
+    const warn = console.warn, lines = []; console.warn = (m) => lines.push(String(m));
+    try {
+      eq(await inbound.storeWaStatus({ id: 'wamid.tt1', status: 'delivered', error: null, recipient: '919876500007' }), true);
+      eq(await inbound.storeWaStatus({ id: 'wamid.tt1', status: 'sent', error: null, recipient: null }), true);           // out of order: ignored
+      rec = JSON.parse(S.settings['wa_test_sent:wamid.tt1']); eq(rec.status, 'delivered'); assert.ok(rec.reportAt);
+      eq(S.settings.wa_pause, undefined, 'a delivered test stops nothing');
+      // Meta's failed report on its side: the record says so and the order messages stop
+      eq(await inbound.storeWaStatus({ id: 'wamid.tt1', status: 'failed', error: '130429 · Rate limit hit · too many messages from this phone number', recipient: null }), true);
+      rec = JSON.parse(S.settings['wa_test_sent:wamid.tt1']);
+      deq([rec.status, rec.code, rec.words], ['failed', 130429, '130429 · Rate limit hit · too many messages from this phone number']);
+      const st = JSON.parse(S.settings.wa_pause);
+      deq([st.stopped, st.by, st.kind, st.order, st.code], [true, 'Meta failure', 'test', '#1553', 130429]);
+    } finally { console.warn = warn; }
+    deq(lines.filter((l) => /test message to/.test(l)), ['[whatsapp] test message to ••••0007: delivered', '[whatsapp] test message to ••••0007: sent', '[whatsapp] test message to ••••0007: failed 130429 · Rate limit hit · too many messages from this phone number']);
+    assert.ok(!/9876500007/.test(lines.join('\n')), 'the log masks the number');
+    await foreign.foreignSettled();
+    eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_foreign:')).length, 0, 'a test report is ours, never another app\'s');
+    // a customer-side failure (the test number is not on WhatsApp): recorded, nothing stops
+    delete S.settings.wa_pause; pauseLib.forgetPauseCache();
+    await ff.noteTestSent('wamid.tt2', '919876500008', { template: 'order_placed_link', panel: 'bizVast' });
+    eq(await inbound.storeWaStatus({ id: 'wamid.tt2', status: 'failed', error: '131026 · Message undeliverable', recipient: null }), true);
+    deq([JSON.parse(S.settings['wa_test_sent:wamid.tt2']).status, JSON.parse(S.settings['wa_test_sent:wamid.tt2']).code, S.settings.wa_pause], ['failed', 131026, undefined]);
+    // the last tests, newest first; an unknown wamid is not a test
+    const list = await ff.loadTestReports(); deq(list.map((x) => x.to), ['••••0008', '••••0007']);
+    eq(await ff.noteTestStatus({ id: 'wamid.nobody', status: 'failed', error: '130429' }), false);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-inbound.ts'), 'utf8'), /const test = auto \|\| alert \? false : await noteTestStatus\(s\)/);
   });
 
   console.log(`\nwhatsapp: ${pass} passed, ${fail} failed`);

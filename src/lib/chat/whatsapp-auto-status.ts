@@ -1,8 +1,8 @@
 // Meta's delivery reports (sent / delivered / read / failed) for the automation's messages land on their row by
 // the message id (owner 2026-10-10). Tiny on purpose: the webhook path imports only this and the database.
 import { query } from '@/lib/db';
-import { isRateLimited, PAUSE_MS, QUIET_MS, RATE_MAX_ATTEMPTS } from './whatsapp-auto-rules';
-import { pauseWhatsApp } from './whatsapp-pause';
+import { QUIET_MS, RATE_MAX_ATTEMPTS, codeIn, failureSide } from './whatsapp-auto-rules';
+import { safetyStop } from './whatsapp-safety-stop';
 
 // Was the 10 minutes before `atMs` quiet, i.e. did NO other order message go out then? (owner 2026-10-15: a 130429 on
 // the first message after a quiet stretch is Meta's side, not our speed.) A failed read = not quiet (nothing is flagged
@@ -20,22 +20,25 @@ export async function quietBefore(atMs: number, exceptWaId: string | null = null
 // A report never moves a row backwards (reports can arrive out of order): sent -> delivered -> read; failed wins.
 export async function noteAutoStatus(waId: string, status: string, error: string | null): Promise<boolean> {
   if (!waId || !['sent', 'delivered', 'read', 'failed'].includes(status)) return false;
-  // Meta's rate limit (owner 2026-10-15, "130429 Rate limit hit"): the message never went out, so the row waits and goes
-  // again after the pause (at most RATE_MAX_ATTEMPTS tries), and the whole number pauses.
-  if (status === 'failed' && isRateLimited(null, error)) {
+  // A failure on META's side (owner 2026-10-15 night, whatsapp-auto-rules.ts failureSide: 130429, 132001 template missing,
+  // the token ...): the message never reached the customer, so the row is NOT lost: it waits in line again (pending, due
+  // now; failed only after RATE_MAX_ATTEMPTS tries) and every order message stops until Resume (whatsapp-safety-stop.ts).
+  // A customer-side failure (not on WhatsApp, blocked) fails that one row below, as before.
+  if (status === 'failed' && failureSide(null, error) === 'meta') {
     try {
+      const code = codeIn(null, error);
       const r = await query(
         `UPDATE wa_auto_sends
             SET status = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'pending' END,
-                due_at = now() + $4 * interval '1 millisecond', error = $2, code = 130429, updated_at = now()
-          WHERE wa_id = $1 AND status IN ('pending', 'sent') RETURNING sent_at`,
-        [waId, error, RATE_MAX_ATTEMPTS, PAUSE_MS]);
-      // when that message went: a late report of a message sent before the last pause ended is no new refusal
-      const sent = (r.rows?.[0] as { sent_at?: string | Date | null } | undefined)?.sent_at;
-      const sentAt = sent ? new Date(sent).getTime() : null;
+                due_at = now(), error = $2, code = $4, updated_at = now()
+          WHERE wa_id = $1 AND status IN ('pending', 'sent') RETURNING sent_at, order_id, kind`,
+        [waId, error, RATE_MAX_ATTEMPTS, code]);
+      const row = r.rows?.[0] as { sent_at?: string | Date | null; order_id?: string | null; kind?: string | null } | undefined;
+      // when that message went: a late report of a message sent before the last pause / stop ended is no new stop
+      const sentAt = row?.sent_at ? new Date(row.sent_at).getTime() : null;
       // and was it the first order message after a quiet stretch? (then the refusal is Meta's side, not our speed)
       const quiet = sentAt != null ? await quietBefore(sentAt, waId) : false;
-      await pauseWhatsApp(String(error || '130429 rate limit'), Date.now(), undefined, sentAt, quiet);
+      await safetyStop({ code, words: String(error || 'WhatsApp could not deliver it'), order: row?.order_id ?? null, kind: row?.kind ?? null }, Date.now(), sentAt, quiet);
       return (r.rowCount ?? 0) > 0;
     } catch (e) {
       if ((e as { code?: string })?.code !== '42P01') console.error('[whatsapp] automation status:', (e as Error).message);

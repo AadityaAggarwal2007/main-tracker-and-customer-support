@@ -11,11 +11,19 @@
 // runAlertQueue (the minute cron) sends what waits, 2 s apart, each alert at most ALERT_MAX_TRIES times and never after
 // 12 hours. A queued alert answers like a sent one (`ok: true, id: null`), so the
 // callers' "one alert a day / per order" claims stay as they were. Never throws.
+// The SAFETY STOP (owner 2026-10-15 night, "1 msg bhi fail ho toh pause"): a Meta-side refusal of an alert (at send time,
+// or in its later failed delivery report; whatsapp-auto-rules.ts failureSide) stops every ORDER message until Resume
+// (whatsapp-pause.ts stopWhatsApp), on the job's FIRST try only (as the pause before it). Alerts themselves never wait
+// for a stop. alertStopped below is the ONE WhatsApp the owner gets when a stop begins, whoever started it (the worker,
+// a delivery report, an alert, the test message): claimed in chat_settings STOP_ALERT_KEY, so both processes together
+// send it once per stop; when that alert itself fails, the stop already runs and nothing loops.
 import { randomUUID } from 'crypto';
 import { query, queryOne } from '@/lib/db';
 import { sendWhatsAppTemplate, type WaSendResult } from '@/lib/chat/whatsapp';
-import { isRateLimited, SEND_GAP_MS } from '@/lib/chat/whatsapp-auto-rules';
-import { pauseWhatsApp } from '@/lib/chat/whatsapp-pause';
+import { ALERT_TEMPLATE, STOP_ALERT_KEY, failureSide, isRateLimited, SEND_GAP_MS, stopAlertText } from '@/lib/chat/whatsapp-auto-rules';
+import { stopWhatsApp, type StopInfo, type StopResult } from '@/lib/chat/whatsapp-pause';
+import { alertTo, extraAlertTo, templatesAccount } from '@/lib/chat/whatsapp-settings';
+import { listTemplates } from '@/lib/chat/whatsapp-templates';
 
 export interface AlertJob { to: string; name: string; language: string; text: string; chargebackId?: string | null; tries?: number; first?: string }
 const SENT = 'wa_alert_sent:';
@@ -57,14 +65,50 @@ export async function sendAlert(job: AlertJob): Promise<WaSendResult> {
     }
     return r;
   }
+  // A Meta-side refusal stops the order messages (the job's FIRST try only: one alert Meta keeps refusing, tried every
+  // minute, must never count again and again); a customer-side one (the alert number is not on WhatsApp) stops nothing.
+  if (tries === 1 && failureSide(r.code, r.error) === 'meta') await stopForAlert({ code: r.code, words: r.error, kind: 'alert' }, Date.now(), null);
   if (isRateLimited(r.code, r.error) && tries < ALERT_MAX_TRIES) {
-    // The number pauses on the job's FIRST refusal only: one alert Meta keeps refusing (tried every minute) must never
-    // push the order pause up strike by strike.
-    if (tries === 1) await pauseWhatsApp(`${r.code ?? ''} ${r.error}`.trim());
     await enqueue({ ...job, tries });
     return { ok: true, id: null };
   }
   return r;
+}
+
+// The stop that an alert's own failure starts: the owner is told through the queue (the number is refusing now, so the
+// alert waits and goes when it can); never throws. The other starters go through whatsapp-safety-stop.ts safetyStop.
+async function stopForAlert(info: StopInfo, now: number, sentAt: number | null): Promise<void> {
+  try {
+    const r = await stopWhatsApp(info, now, sentAt);
+    if (r.started) await alertStopped(r, info, now);
+  } catch (e) { console.error('[wa-alert] stop:', (e as Error).message); }
+}
+
+// ONE WhatsApp to the owner per stop (claimed by the stop's `at` in chat_settings STOP_ALERT_KEY: one UPDATE only one
+// process wins; no alert number or no approved template = nothing, said in the log). Goes through sendAlert, so while
+// Meta refuses it waits in the queue; its own refusal never starts another stop (one already runs). Never throws.
+export async function alertStopped(stop: StopResult, info: StopInfo, now = Date.now()): Promise<number> {
+  try {
+    const claim = await queryOne<{ key: string }>(
+      `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+       WHERE chat_settings.value IS DISTINCT FROM EXCLUDED.value RETURNING key`,
+      [STOP_ALERT_KEY, new Date(stop.at).toISOString()]);
+    if (!claim) return 0;
+    const numbers = [...new Set([await alertTo(), ...(await extraAlertTo())].map((n) => n.replace(/\D/g, '')).filter(Boolean))];
+    if (!numbers.length) { console.warn('[whatsapp] stop alert not sent: no alert number saved (WhatsApp > Setup)'); return 0; }
+    const list = await listTemplates(await templatesAccount());
+    const tpl = list.ok ? list.value.find((t) => t.name.trim().toLowerCase() === ALERT_TEMPLATE && t.status === 'APPROVED') : null;
+    if (!tpl) { console.warn(`[whatsapp] stop alert not sent: ${'error' in list ? list.error : `the ${ALERT_TEMPLATE} template is not approved`}`); return 0; }
+    const text = stopAlertText(info.code, info.order, stop.at, info.kind);
+    let sent = 0;
+    for (const to of numbers) {
+      const r = await sendAlert({ to, name: tpl.name, language: tpl.language, text });
+      if ('error' in r) console.error(`[whatsapp] stop alert to ••••${to.slice(-4)} not sent: ${r.error}`); else sent++;
+    }
+    console.warn(`[whatsapp] stop alert ${sent ? `sent to ${sent} number${sent === 1 ? '' : 's'}` : 'not sent'}${sent < numbers.length ? ` (${numbers.length - sent} refused)` : ''}`);
+    return sent;
+  } catch (e) { console.error('[whatsapp] stop alert:', (e as Error).message); return 0; }
 }
 
 // How many alerts wait (order messages hold back while any does: alerts first). A job older than ALERT_KEEP_MS is
@@ -93,8 +137,10 @@ export async function noteAlertStatus(waId: string, status: string, error: strin
   if (status === 'failed') {
     const tries = job.tries || 1;
     const fresh = Date.now() - (Date.parse(job.first || '') || 0) < ALERT_KEEP_MS;
+    // a Meta-side failure stops the order messages (the first try only, as sendAlert); the alert's own time tells a
+    // late report (sent before the last pause ended) from a new refusal
+    if (tries === 1 && failureSide(null, error) === 'meta') await stopForAlert({ code: null, words: String(error || 'WhatsApp could not deliver it'), kind: 'alert' }, Date.now(), Date.parse(job.first || '') || null);
     if (isRateLimited(null, error) && tries < ALERT_MAX_TRIES && fresh) {
-      if (tries === 1) await pauseWhatsApp(String(error || '130429 rate limit'));   // the first refusal only (as sendAlert)
       await enqueue({ ...job, tries });
       await setChargeback(job.chargebackId, ALERT_WAITING);
     } else {

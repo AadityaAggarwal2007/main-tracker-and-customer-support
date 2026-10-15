@@ -3,21 +3,26 @@
 // One row in chat_settings (`wa_pause` = {until, reason, at}), so BOTH PM2 processes stop sending from the number until
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
+// The SAFETY STOP (owner 2026-10-15 night, "1 msg bhi dubara drop ya fail ho toh pause ho jae"): a Meta-side failure of
+// an order message, an alert or the test message (whatsapp-auto-rules.ts failureSide) writes the same row with
+// `stopped: true` and `until` 30 days on (stopWhatsApp): no order message goes until the Super Admin presses Resume
+// (resumeNow). The timed 130429 pause (pauseWhatsApp) stays for a report that is nobody's (another app on the number)
+// and for a team chat message; it never shortens a stop.
 import { query, queryOne } from '@/lib/db';
 import {
-  MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, SEND_RATE_KEY, SEND_RATES, STRIKE_WINDOW_MS, firstAfterQuietOf, gapFor, nextPause, parsePauseState, parseSendRate,
-  sendEveryFor, sendRateValue, type PauseState, type SendRate,
+  MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, SEND_RATE_KEY, SEND_RATES, STOP_BY, STOP_MS, STRIKE_WINDOW_MS, firstAfterQuietOf, gapFor, nextPause, parsePauseState, parseSendRate,
+  sendEveryFor, sendRateValue, stopLogLine, type PauseState, type SendRate,
 } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
-export interface WaPause { until: number; reason: string }
+export interface WaPause { until: number; reason: string; stopped?: boolean }
 let cache: { at: number; pause: WaPause | null } | null = null;
 
 export function parsePause(value: string | null | undefined, now = Date.now()): WaPause | null {
   try {
     const j = JSON.parse(String(value || ''));
     const until = Date.parse(j?.until);
-    return Number.isFinite(until) && until > now ? { until, reason: String(j?.reason || '') } : null;
+    return Number.isFinite(until) && until > now ? { until, reason: String(j?.reason || ''), ...(j?.stopped === true ? { stopped: true } : {}) } : null;
   } catch { return null; }
 }
 
@@ -39,6 +44,7 @@ export async function whatsAppPause(now = Date.now()): Promise<WaPause | null> {
 // Number status box: "not our speed", whatsapp-auto-rules.ts FIRST_AFTER_QUIET_TEXT).
 export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number, sentAt?: number | null, quietBefore = false): Promise<number> {
   const prev = await pauseState();
+  if (prev?.stopped && prev.until > now) return prev.until;          // the safety stop holds: a timed pause never shortens or replaces it
   const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1 } : nextPause(prev, now, undefined, sentAt);
   if (!next) {                                                     // the same burst: the pause already ran / runs
     if (prev && sentAt != null && prev.until <= now) console.warn(`[whatsapp] late 130429 report for a message sent ${Math.round((now - sentAt) / 60000)} min ago, before the last pause ended: not a new refusal`);
@@ -115,6 +121,7 @@ async function writePause(value: Record<string, unknown>): Promise<void> {
 export async function manualPause(minutes: number, by: string, now = Date.now()): Promise<number | null> {
   if (!MANUAL_PAUSE_MIN.includes(minutes)) return null;
   const prev = await pauseState();
+  if (prev?.stopped && prev.until > now) return prev.until;          // the safety stop already holds everything: nothing to add
   const until = Math.max(now + minutes * 60_000, prev && prev.until > now ? prev.until : 0);
   await writePause({
     until: new Date(until).toISOString(), reason: `Paused by ${by}`.slice(0, 200),
@@ -125,8 +132,8 @@ export async function manualPause(minutes: number, by: string, now = Date.now())
   return until;
 }
 
-// "Resume now": the pause ends at once (Meta's or one by hand). The strikes stay, so after a Meta pause messages still
-// go 1 a minute for the rest of the 2 hours and a new refusal still makes the next pause longer. false = nothing paused.
+// "Resume now": the pause ends at once (Meta's, one by hand, or the safety stop: the ONLY way a stop ends). The strikes
+// stay, so after a Meta refusal messages still go 1 a minute for the rest of the 2 hours. false = nothing paused.
 export async function resumeNow(by: string, now = Date.now()): Promise<boolean> {
   const prev = await pauseState();
   if (!prev || prev.until <= now) return false;
@@ -134,8 +141,42 @@ export async function resumeNow(by: string, now = Date.now()): Promise<boolean> 
     until: new Date(now).toISOString(), reason: prev.reason, at: new Date(prev.at).toISOString(), strikes: prev.strikes,
     ...(prev.manual ? { manual: true, by: prev.by || '' } : {}), resumedBy: by.slice(0, 60), ...(prev.firstAfterQuiet ? { firstAfterQuiet: true } : {}),
   });
-  console.warn(`[whatsapp] sending resumed by hand (${by})`);
+  console.warn(`[whatsapp] sending resumed by hand (${by})${prev.stopped ? `: the stop after ${prev.reason.slice(0, 80)} is over, the waiting order messages go in line` : ''}`);
   return true;
+}
+
+// ── The safety stop (owner 2026-10-15 night) ──
+// A Meta-side failure (whatsapp-auto-rules.ts failureSide): the number stops sending order messages until Resume. The row
+// keeps `strikes` counting as a refusal (the Number status box's "Nth in the last 2 hours") and `firstAfterQuiet`;
+// `code` / `order` / `kind` ('placed' / 'tracking' / 'alert' / 'test') say what failed. Nothing is written when a stop
+// already runs (the same failure reported twice, a second message of the same burst), and a LATE report for a message
+// SENT before the last pause / stop ended (`sentAt`, as nextPause reads it) belongs to the failure the owner already saw:
+// no new stop, the row still goes back in line. Returns whether a NEW stop began (the caller then alerts the owner once).
+export interface StopInfo { code: number | null; words: string; order?: string | null; kind?: string | null }
+export interface StopResult { started: boolean; until: number; at: number }
+export async function stopWhatsApp(info: StopInfo, now = Date.now(), sentAt?: number | null, quietBefore = false): Promise<StopResult> {
+  const prev = await pauseState();
+  if (prev?.stopped && prev.until > now) return { started: false, until: prev.until, at: prev.at };
+  if (prev && sentAt != null && Number.isFinite(sentAt) && sentAt < prev.until) {
+    console.warn(`[whatsapp] late failure report (${info.code ?? 'no code'}) for a message sent ${Math.round((now - sentAt) / 60000)} min ago, before the last pause ended: not a new stop`);
+    return { started: false, until: prev.until, at: prev.at };
+  }
+  const strikes = prev && now - prev.at < STRIKE_WINDOW_MS ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1;
+  const firstAfterQuiet = firstAfterQuietOf(prev, sentAt, quietBefore);
+  const words = String(info.words || '').replace(/[\r\n\t]+/g, ' ').trim();
+  const reason = (info.code != null && !new RegExp(`^${info.code}\\b`).test(words) ? `${info.code} ${words}` : words).trim().slice(0, 200) || 'no words from Meta';   // a report's words already start with the code
+  const until = now + STOP_MS;
+  cache = { at: now, pause: { until, reason, stopped: true } };
+  try {
+    await writePause({
+      until: new Date(until).toISOString(), reason, at: new Date(now).toISOString(), strikes,
+      stopped: true, by: STOP_BY, code: info.code ?? null, order: info.order ? String(info.order).slice(0, 40) : null, kind: info.kind ? String(info.kind).slice(0, 20) : null,
+      ...(firstAfterQuiet ? { firstAfterQuiet: true } : {}),
+    });
+    cache = { at: now, pause: { until, reason, stopped: true } };
+    console.error(stopLogLine(info.code, info.words, info.order));
+  } catch (e) { console.error('[whatsapp] stop:', (e as Error).message); }
+  return { started: true, until, at: now };
 }
 
 // The send slot (owner 2026-10-15, "har minute 1 ya 2 msg"): one automation message per SEND_EVERY_MS for the whole

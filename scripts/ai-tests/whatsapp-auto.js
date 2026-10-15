@@ -10,7 +10,7 @@ const IST = (d, h, m = 0) => Date.UTC(2026, 9, d, h, m) - 330 * 60000;   // an I
 const S = {};
 function reset() {
   Object.assign(S, {
-    nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0,
+    nowMs: IST(13, 12), noTable: false, slotBusy: false, slots: 0, sendFail: null, sendThrow: false, stealClaims: false, trackingFlags: [], reports: [], fetches: [], seq: 0, stopAlertClaims: 0,
     // owner 15 Oct: Meta's side of the number (the Number status box) and a template list that Meta pages
     phone: { display_phone_number: '+91 98765 00001', verified_name: 'ShipTrack', name_status: 'APPROVED', quality_rating: 'GREEN', status: 'CONNECTED', messaging_limit_tier: 'TIER_2K', code_verification_status: 'VERIFIED' },
     metaPages: null,
@@ -39,6 +39,8 @@ const db = {
     // owner 15 Oct: the send slot (one order message per 30 s) and the 130429 handling
     if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO NOTHING$/.test(sql)) { if (!(p[0] in S.settings)) S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { S.slotEvery = p[1]; if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
+    // the one owner alert per stop (whatsapp-alert-queue.ts alertStopped): claimed by the stop's time, one UPDATE wins
+    if (/^INSERT INTO chat_settings \(key, value, updated_at\) VALUES \(\$1, \$2, now\(\)\) ON CONFLICT \(key\) DO UPDATE SET value = EXCLUDED\.value, updated_at = now\(\) WHERE chat_settings\.value IS DISTINCT FROM EXCLUDED\.value RETURNING key$/.test(sql)) { if (S.settings[p[0]] === p[1]) return { rows: [], rowCount: 0 }; S.settings[p[0]] = p[1]; S.stopAlertClaims = (S.stopAlertClaims || 0) + 1; return { rows: [{ key: p[0] }], rowCount: 1 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^SELECT key FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ key })); return { rows, rowCount: rows.length }; }
     if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ value: S.settings[key] })); return { rows, rowCount: rows.length }; }
@@ -50,7 +52,9 @@ const db = {
       const at = p[0].getTime(); const rows = S.rows.filter((r) => r.sent_at && new Date(r.sent_at).getTime() > at - p[1] && new Date(r.sent_at).getTime() < at && (p[2] == null || r.wa_id !== p[2]));
       return { rows: rows.slice(0, 1).map(() => ({ '?column?': 1 })), rowCount: Math.min(rows.length, 1) };
     }
-    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs + p[3]), error: p[1], code: 130429 }); return { rows: r ? [{ sent_at: r.sent_at || null }] : [], rowCount: r ? 1 : 0 }; }
+    // owner 15 Oct night: a Meta-side failed report puts the row back in line (due now, the report's code), the stop follows
+    if (/^UPDATE wa_auto_sends SET status = CASE WHEN attempts >= \$3/.test(sql)) { const r = S.rows.find((x) => x.wa_id === p[0] && ['pending', 'sent'].includes(x.status)); if (r) Object.assign(r, { status: r.attempts >= p[2] ? 'failed' : 'pending', due_at: new Date(S.nowMs), error: p[1], code: p[3] }); return { rows: r ? [{ sent_at: r.sent_at || null, order_id: r.order_id, kind: r.kind }] : [], rowCount: r ? 1 : 0 }; }
+    if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 ORDER BY updated_at DESC LIMIT 20$/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre)).map((k) => ({ value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE wa_auto_sends SET status = 'skipped', error = \$3, updated_at = now\(\) WHERE business_id = \$1 AND order_id = \$2 AND kind = 'tracking'/.test(sql)) { let n = 0; for (const r of S.rows) if (r.business_id === p[0] && r.order_id === p[1] && r.kind === 'tracking' && r.status === 'pending') { r.status = 'skipped'; r.error = p[2]; n++; } return { rows: [], rowCount: n }; }
     if (/^SELECT key, value FROM chat_settings WHERE key LIKE 'wa_stop:%'/.test(sql)) { const rows = Object.keys(S.settings).filter((k) => k.startsWith('wa_stop:')).map((k) => ({ key: k, value: S.settings[k] })); return { rows, rowCount: rows.length }; }
     if (/FROM businesses b ORDER BY b\.is_default DESC, b\.created_at ASC/.test(sql)) return { rows: S.panels.map((x) => ({ ...x })), rowCount: S.panels.length };
@@ -103,7 +107,11 @@ const db = {
     if (/^UPDATE wa_auto_sends SET attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'failed', error = \$2, code = \$3, attempts = attempts \+ 1/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: 'failed', error: p[1], code: p[2], attempts: r.attempts + 1 }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', attempts = 0/.test(sql)) { const r = S.rows.find((x) => x.id === p[0] && x.status === 'failed'); if (r) Object.assign(r, { status: 'pending', attempts: 0, error: null, due_at: new Date(S.nowMs) }); return { rows: [], rowCount: r ? 1 : 0 }; }
-    if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) { S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]); return { rows: [], rowCount: r ? 1 : 0 }; }
+    if (/^UPDATE wa_auto_sends SET status = CASE/.test(sql)) {
+      S.reports = (S.reports || []).concat([p]); const r = S.rows.find((x) => x.wa_id === p[0]);
+      if (r) { const st = p[1]; if (st === 'failed') { r.status = 'failed'; r.error = p[2]; } else if (st === 'read') r.status = 'read'; else if (st === 'delivered' && ['pending', 'sent'].includes(r.status)) r.status = 'delivered'; else if (st === 'sent' && r.status === 'pending') r.status = 'sent'; }
+      return { rows: [], rowCount: r ? 1 : 0 };
+    }
     if (/count\(DISTINCT w\.to_number\)::int AS replied/.test(sql)) return { rows: [{ business_id: 'b1', replied: 2 }], rowCount: 1 };
     if (/^SELECT w\.kind, w\.status, count\(\*\)::int AS n FROM wa_auto_sends w WHERE COALESCE/.test(sql)) {
       // the India day of S.nowMs
@@ -127,6 +135,7 @@ const db = {
     }
     if (/FROM orders o LEFT JOIN businesses b ON b\.id = o\.business_id WHERE o\.business_id::text = \$1 ORDER BY o\.created_at DESC LIMIT 1/.test(sql)) { const o = S.orders.filter((x) => x.business_id === p[0]).sort((a, b) => b.created_at - a.created_at)[0]; return o ? { rows: [{ order_id: o.order_id, tracking_token: o.tracking_token, tracking_domain: null }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT 1 FROM businesses WHERE id::text = \$1/.test(sql)) return S.panels.some((x) => x.id === p[0]) ? { rows: [{ x: 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
+    if (/^SELECT name FROM businesses WHERE id::text = \$1/.test(sql)) { const b = S.panels.find((x) => x.id === p[0]); return b ? { rows: [{ name: b.name }], rowCount: 1 } : { rows: [], rowCount: 0 }; }
     if (/^SELECT count\(\*\)::text AS n FROM chat_settings WHERE key LIKE \$1/.test(sql)) { const pre = p[0].replace('%', ''); const n = String(Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).length); return { rows: [{ n }], rowCount: 1 }; }
     if (/^SELECT value FROM chat_settings WHERE key = \$1/.test(sql)) { const v = S.settings[p[0]]; return v == null ? { rows: [], rowCount: 0 } : { rows: [{ value: v }], rowCount: 1 }; }
     throw new Error('fake db query: ' + sql.slice(0, 120));
@@ -169,6 +178,7 @@ global.fetch = async (url, init = {}) => {
 process.env.WHATSAPP_CLOUD_TOKEN = 'tok-secret'; process.env.WHATSAPP_PHONE_NUMBER_ID = '1335396902996145';
 
 const rules = require(path.join(SRC, 'lib/chat/whatsapp-auto-rules.ts'));
+const pause = require(path.join(SRC, 'lib/chat/whatsapp-pause.ts'));
 const auto = require(path.join(SRC, 'lib/chat/whatsapp-auto.ts'));
 const status = require(path.join(SRC, 'lib/chat/whatsapp-auto-status.ts'));
 const route = require(path.join(SRC, 'app/api/whatsapp/automation/route.ts'));
@@ -188,7 +198,7 @@ const run = (ms) => { S.nowMs = ms; return auto.runWaAutomation(ms); };
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
-  reset(); auto.resetTemplateCache(); auto.forgetLinkModeCache(); delete global.__waAutoBusy; delete require('child_process').__x;
+  reset(); auto.resetTemplateCache(); auto.forgetLinkModeCache(); pause.forgetPauseCache(); pause.forgetSendRateCache(); delete global.__waAutoBusy; delete require('child_process').__x;
   try { await fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e).toString().split('\n').slice(0, 14).join('\n       ')); }
 }
 
@@ -323,18 +333,21 @@ async function t(name, fn) {
     eq(health.waHealthLines({ ...base, limit: null, used24h: 9999 }).length, 0);
     eq(health.waHealthLines({ ...base, phoneError: 'token expired' })[0].tone, 'warn');
   });
-  await t('a refusal that cannot change (not on WhatsApp) fails at once; a hiccup is tried again 3 times then fails; Send again queues it', async () => {
+  await t('a refusal that cannot change (not on WhatsApp) fails at once and nothing stops; a Meta-side hiccup (131056) is no longer retried by itself: the row waits and the number STOPS until Resume (owner 15 Oct night); Send again queues a Failed row', async () => {
     turnOn(); S.orders = [order()];
     S.sendFail = { code: 131026, message: 'Message undeliverable' };
     await run(IST(13, 12)); deq([S.rows[0].status, S.rows[0].code, S.rows[0].attempts], ['failed', 131026, 1]);
-    reset(); auto.resetTemplateCache(); turnOn(); S.orders = [order()]; S.sendFail = { code: 131056, message: 'Pair rate limit hit' };
+    eq(S.settings.wa_pause, undefined, 'a customer-side failure never stops the number');
+    reset(); auto.resetTemplateCache(); pause.forgetPauseCache(); turnOn(); S.orders = [order()]; S.sendFail = { code: 131056, message: 'Pair rate limit hit' };
     await run(IST(13, 12)); deq([S.rows[0].status, S.rows[0].attempts], ['pending', 1]);
-    await run(IST(13, 12, 5)); eq(sends().length, 1);                          // the 10-minute wait
-    await run(IST(13, 12, 11)); deq([S.rows[0].status, S.rows[0].attempts], ['pending', 2]);
-    await run(IST(13, 12, 22)); deq([S.rows[0].status, S.rows[0].attempts], ['failed', 3]);
-    S.sendFail = null;
-    eq(await auto.retryFailed('1'), true); eq(await auto.retryFailed('1'), false);
+    assert.ok(JSON.parse(S.settings.wa_pause).stopped, 'stopped');
+    await run(IST(13, 12, 5)); eq(sends().length, 1);                          // stopped: nothing more
+    await run(IST(13, 12, 22)); deq([S.rows[0].status, S.rows[0].attempts], ['pending', 1]);   // still waiting, never failed by itself
+    S.sendFail = null; await pause.resumeNow('owner', IST(13, 12, 29));
     await run(IST(13, 12, 30)); eq(S.rows[0].status, 'sent');
+    S.rows[0].status = 'failed';
+    eq(await auto.retryFailed('1'), true); eq(await auto.retryFailed('1'), false);
+    await run(IST(13, 12, 31)); eq(S.rows[0].status, 'sent');
   });
   await t('at most 15 sends a minute; the rest go the next minute', async () => {
     turnOn(); S.orders = Array.from({ length: 20 }, (_, i) => order({ order_id: '#2' + String(100 + i), customer_mobile: '98765432' + String(10 + i) }));
@@ -358,10 +371,12 @@ async function t(name, fn) {
     turnOn(); S.orders = [order()]; S.stealClaims = true;
     await run(IST(13, 12)); eq(sends().length, 0); eq(S.rows[0].status, 'pending');
   });
-  await t('review fixes: a timeout is never sent again by itself (Meta may have taken it)', async () => {
+  await t('review fixes: a timeout is never sent again by itself (Meta may have taken it); since 15 Oct night it also stops the number (a lost answer is Meta\'s side)', async () => {
     turnOn(); S.orders = [order()]; S.sendThrow = true;
     await run(IST(13, 12)); deq([S.rows[0].status, /may still have been delivered/.test(S.rows[0].error)], ['failed', true]);
+    assert.ok(JSON.parse(S.settings.wa_pause).stopped, 'stopped: the owner looks before anything else goes');
     S.sendThrow = false; await run(IST(13, 12, 15)); eq(sends().length, 1);
+    await pause.resumeNow('owner', IST(13, 12, 16)); await run(IST(13, 12, 17)); eq(sends().length, 1, 'the timed-out row is not resent after Resume either');
   });
   await t('review fixes: 60 waiting tracking rows never hold back a new order-placed message; tracking rows are asked for only when they can go', async () => {
     turnOn(); S.metaTemplates[1].status = 'PENDING';
@@ -536,7 +551,6 @@ async function t(name, fn) {
   });
 
   // ── owner 15 Oct: ONE message with the tracking link; Meta's 130429 rate limit; 2 messages a minute ──
-  const pause = require(path.join(SRC, 'lib/chat/whatsapp-pause.ts'));
   const LINK = { id: 't3', name: 'order_placed_link', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Track it here: {{4}} . For any confusion, please email us at {{5}} and our team will help you.' }] };
   const tplOf = (f) => f.body.template.name;
   const valuesOf = (f) => f.body.template.components[0].parameters.map((x) => x.text);
@@ -575,29 +589,33 @@ async function t(name, fn) {
     const src = fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8');
     assert.ok(src.indexOf('takeSendSlot(every)') > 0 && src.indexOf('takeSendSlot(every)') < src.indexOf("SET due_at = now() + interval '30 minutes'"), 'the slot is taken before the row is claimed');
   });
-  await t('130429 at once (owner 15 Oct): the number pauses 15 min, the row waits (not Failed), nothing more goes that run or while paused; after the pause it goes', async () => {
+  await t('130429 at once (owner 15 Oct; since 15 Oct night a STOP until Resume, no 15-minute pause): the row waits due now (not Failed), nothing more goes that run, 5 or 16 minutes later; after Resume it goes', async () => {
     pause.forgetPauseCache(); turnOn(); S.orders = [order(), order({ order_id: '#1554' })];
     S.sendFail = { code: 130429, message: 'Rate limit hit' };
     const r1 = await run(IST(13, 12));
-    eq(sends().length, 1); eq(r1.paused, true);
+    eq(sends().length, 1); deq([r1.paused, r1.stopped], [true, true]);
     const row = S.rows.find((r) => r.order_id === '#1553' && r.kind === 'placed');
     deq([row.status, row.attempts, row.code], ['pending', 1, 130429]);
-    eq(new Date(row.due_at).getTime(), IST(13, 12) + rules.PAUSE_MS);
-    assert.ok(JSON.parse(S.settings.wa_pause).until, 'paused for both processes');
+    eq(new Date(row.due_at).getTime(), IST(13, 12));                             // due now: it goes the moment Resume is pressed
+    const st = JSON.parse(S.settings.wa_pause);
+    deq([st.stopped, st.by, st.order, st.kind, st.code], [true, 'Meta failure', '#1553', 'placed', 130429]);
+    eq(Date.parse(st.until) - IST(13, 12), rules.STOP_MS, 'stopped for both processes, 30 days: never ends by itself');
     S.sendFail = null; S.fetches = []; pause.forgetPauseCache();
     await run(IST(13, 12, 5));
-    eq(sends().length, 0);                                                          // still paused
+    eq(sends().length, 0);                                                          // still stopped
     pause.forgetPauseCache(); await run(IST(13, 12, 16));
+    eq(sends().length, 0);                                                          // 16 minutes later too (no timed pause any more)
+    await pause.resumeNow('owner', IST(13, 12, 17)); await run(IST(13, 12, 18));
     eq(sends().length, 2);
   });
-  await t('130429 later, in Meta\'s delivery report: the row goes back to waiting and the number pauses; the old failed ones go again after the pause (at most 6 tries)', async () => {
+  await t('130429 later, in Meta\'s delivery report: the row goes back to waiting and the number STOPS (15 Oct night); the old failed ones go again after Resume (at most 6 tries)', async () => {
     pause.forgetPauseCache(); turnOn(); S.orders = [order()];
     await run(IST(13, 12));
     const row = S.rows.find((r) => r.kind === 'placed');
     eq(row.status, 'sent');
     await status.noteAutoStatus(row.wa_id, 'failed', '130429 · Rate limit hit · Message failed to send because there were too many messages sent from this phone number in a short period of time.');
     deq([row.status, row.code], ['pending', 130429]);
-    assert.ok(S.settings.wa_pause, 'the report paused the number');
+    assert.ok(S.settings.wa_pause && JSON.parse(S.settings.wa_pause).stopped, 'the report stopped the number');
     // a row that already sits in Failed with 130429 (before this fix) waits in line again once not paused
     S.rows.push({ id: 'old', business_id: 'b1', order_id: '#1553', kind: 'tracking', status: 'failed', to_number: '919876543210', error: '130429 · Rate limit hit', code: null, attempts: 1, due_at: new Date(IST(13, 9)), sent_at: null, wa_id: null, updated_at: new Date(IST(13, 9)) });
     delete S.settings.wa_pause; pause.forgetPauseCache();
@@ -1419,6 +1437,204 @@ async function t(name, fn) {
     assert.match(fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8'), /foreign=\{o\.foreign \?\? null\}/);
     for (const f of ['lib/chat/whatsapp-foreign-rules.ts', 'lib/chat/whatsapp-foreign.ts', 'components/whatsapp/PauseStatusCard.tsx']) assert.ok(!/model/i.test(fs.readFileSync(path.join(SRC, f), 'utf8')), 'no model names in ' + f);
     assert.ok(!/^import /m.test(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-foreign-rules.ts'), 'utf8')), 'the rules file is pure');
+  });
+
+  // ── owner 15 Oct night: "1 msg bhi dubara drop ya fail ho toh pause ho jae, meta ki limit na kharab ho" (3 order messages were
+  // LOST with 132001 while Meta propagated a deleted template; a test said "sent" and never arrived) ──
+  console.log('whatsapp automation: the safety stop (owner 15 Oct night)');
+  const ALERT_TPL = { id: 't9', name: 'shiptrack_alert', language: 'en_US', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Alert: {{1}}' }] };
+  const stopState = () => (S.settings.wa_pause ? rules.parsePauseState(S.settings.wa_pause) : null);
+  const alertSends = () => sends().filter((f) => tplOf(f) === 'shiptrack_alert');
+  const orderSends = () => sends().filter((f) => tplOf(f) !== 'shiptrack_alert');
+  await t('failureSide: the customer-side list (131026, 131030, 131021, 130472, 131049, an invalid recipient by its words) fails that one message; EVERYTHING else is Meta\'s side (130429, 131048, 131056, 132000-132016 incl. 132001, 131031, 131042, 131045, 368, the token 190 / 0 / 10 / 200-299, our timeout, an unknown code, no code); a report\'s words give the code', () => {
+    for (const c of [131026, 131030, 131021, 130472, 131049]) eq(rules.failureSide(c, 'whatever'), 'customer', String(c));
+    for (const c of [130429, 131048, 131056, 132000, 132001, 132005, 132007, 132012, 132015, 132016, 131031, 131042, 131045, 368, 190, 0, 10, 200, 230, 299, 100, 4, 80007, 133010, 1, 2, 33, 999999]) eq(rules.failureSide(c, 'whatever'), 'meta', String(c));
+    eq(rules.failureSide(null, 'WhatsApp did not answer in time'), 'meta'); eq(rules.failureSide(null, 'Could not reach WhatsApp'), 'meta'); eq(rules.failureSide(null, null), 'meta'); eq(rules.failureSide(undefined, ''), 'meta');
+    // the words (our own 'Not a WhatsApp number', Meta's invalid recipient / phone parameter on the generic 100 / 131009)
+    eq(rules.failureSide(null, 'Not a WhatsApp number'), 'customer');
+    eq(rules.failureSide(100, 'WhatsApp refused the message ((#100) Invalid parameter: phone number is invalid)'), 'customer');
+    eq(rules.failureSide(131009, 'Parameter value is not valid: recipient phone number not valid'), 'customer');
+    eq(rules.failureSide(100, 'WhatsApp refused the message ((#100) Invalid parameter)'), 'meta');          // a template value, our side: stop and look
+    eq(rules.failureSide(131026, 'This number cannot receive WhatsApp messages from us'), 'customer');
+    // a delivery report: the code is the number its words start with
+    eq(rules.failureSide(null, '131026 · Message undeliverable · Message Undeliverable.'), 'customer');
+    eq(rules.failureSide(null, '130429 · Rate limit hit · too many messages'), 'meta');
+    eq(rules.failureSide(null, '132001 · Template name does not exist in the translation'), 'meta');
+    eq(rules.failureSide(null, '131049 · This message was not delivered to maintain healthy ecosystem engagement'), 'customer');
+    deq([rules.codeIn(132001, null), rules.codeIn(null, '131026 · x'), rules.codeIn(null, 'no code here'), rules.codeIn(undefined, undefined)], [132001, 131026, null, null]);
+    eq(rules.STOP_MS, 30 * 24 * 3600 * 1000); eq(rules.STOP_BY, 'Meta failure'); eq(rules.STOP_ALERT_KEY, 'wa_stop_alert');
+    eq(rules.stopLogLine(132001, 'Template name does not exist', '#1553'), '[whatsapp] order messages STOPPED after a Meta failure (132001 Template name does not exist, order #1553): press Resume in WhatsApp > Automation');
+    eq(rules.stopLogLine(null, '130429 · Rate limit hit', null), '[whatsapp] order messages STOPPED after a Meta failure (130429 · Rate limit hit, order —): press Resume in WhatsApp > Automation');
+    const txt = rules.stopAlertText(132001, '#1553', IST(15, 20, 12));
+    eq(txt, 'WhatsApp order messages STOPPED: Meta refused (132001) on order #1553 at 8:12 pm. Nothing is lost; open WhatsApp > Automation and press Resume when fixed.');
+    assert.ok(txt.length <= 600 && !/\n/.test(txt)); assert.match(rules.stopAlertText(130429, null, IST(15, 9, 5), 'test'), /on the test message at 9:05 am/);
+    assert.match(rules.stopBoardLine('132001 Template name does not exist', IST(15, 20, 12), '#1553'), /^WhatsApp order messages are STOPPED after a Meta failure since 8:12 pm \(132001 Template name does not exist, order #1553\): nothing is lost/);
+    for (const f of ['lib/chat/whatsapp-auto-rules.ts', 'lib/chat/whatsapp-pause.ts', 'lib/chat/whatsapp-safety-stop.ts', 'lib/chat/whatsapp-alert-queue.ts', 'lib/chat/whatsapp-auto-status.ts', 'lib/chat/whatsapp-foreign.ts', 'components/whatsapp/PauseStatusCard.tsx']) assert.ok(!/\bmodel\b/i.test(fs.readFileSync(path.join(SRC, f), 'utf8')), 'no model names in ' + f);
+  });
+  await t('at send time: a Meta-side refusal (132001, the template gone while Meta propagates) STOPS everything, the row goes back in line (pending, due now, attempts +1, Meta\'s words kept), the other due rows are not touched, nothing goes until Resume; the log line once; one WhatsApp to the owner per stop', async () => {
+    S.metaTemplates.push(ALERT_TPL); S.settings.whatsapp_alert_to = '919876500001'; S.settings.whatsapp_alert_extra = '919876500002, 919876500001';
+    turnOn(); S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' }), order({ order_id: '#1555', customer_mobile: '9811122244' })];
+    S.sendFail = { code: 132001, message: 'Template name does not exist in the translation' };
+    const cap = captureLog(); const errs = console.error; const errLines = []; console.error = (...a) => errLines.push(a.join(' '));
+    let r; try { r = await run(IST(13, 12)); } finally { cap.restore(); console.error = errs; }
+    deq([r.sent, r.failed, r.retried, r.paused, r.stopped], [0, 0, 1, true, true]);
+    eq(orderSends().length, 1, 'the first refused, nothing more this run');
+    const p1 = S.rows.find((x) => x.order_id === '#1553' && x.kind === 'placed');
+    deq([p1.status, p1.attempts, p1.code, /Template name does not exist/.test(p1.error), new Date(p1.due_at).getTime()], ['pending', 1, 132001, true, IST(13, 12)]);
+    for (const id of ['#1554', '#1555']) { const p = S.rows.find((x) => x.order_id === id && x.kind === 'placed'); deq([p.status, p.attempts], ['pending', 0]); }
+    const st = stopState(); deq([st.stopped, st.by, st.code, st.order, st.kind, st.strikes], [true, 'Meta failure', 132001, '#1553', 'placed', 1]);
+    eq(st.until - IST(13, 12), rules.STOP_MS);
+    eq(errLines.filter((l) => l === rules.stopLogLine(132001, 'WhatsApp refused the message (Template name does not exist in the translation)', '#1553')).length, 1, 'the STOPPED line once');
+    // the owner's WhatsApp: once, to every alert number, through the queue's sendAlert; the claim keeps the second process out
+    const a = alertSends(); eq(a.length, 2); deq(a.map((f) => f.body.to).sort(), ['919876500001', '919876500002']);
+    eq(valuesOf(a[0])[0], rules.stopAlertText(132001, '#1553', IST(13, 12)));
+    eq(S.settings.wa_stop_alert, new Date(IST(13, 12)).toISOString()); eq(S.stopAlertClaims, 1);
+    // stopped: Meta recovered meanwhile, yet nothing goes (5 min, an hour, a day later); new orders are still queued
+    S.sendFail = null; S.fetches = []; S.orders.push(order({ order_id: '#1556', customer_mobile: '9811122255', created_at: new Date(IST(13, 12, 30)) }));
+    for (const at of [IST(13, 12, 5), IST(13, 13), IST(14, 12)]) { pause.forgetPauseCache(); const rr = await run(at); eq(rr.paused, true); eq(sends().length, 0, 'nothing at ' + at); }
+    eq(S.rows.filter((x) => x.order_id === '#1556').length, 2, 'queued while stopped');
+    eq(alertSends().length, 0, 'no second alert while the same stop runs');
+    // a second Meta-side failure while stopped (a late report of the burst) changes nothing and alerts nobody
+    await status.noteAutoStatus('wamid.none', 'failed', '130429 · Rate limit hit');
+    deq([stopState().code, S.stopAlertClaims, alertSends().length], [132001, 1, 0]);
+    // Resume: the waiting rows go in line at the chosen speed; the stop fields are gone; a NEW failure later stops again with a NEW alert
+    eq(await pause.resumeNow('owner', IST(13, 13)), true); pause.forgetPauseCache();          // the route's Resume = this call (proved in the Number status group)
+    const st2 = stopState(); deq([st2.stopped, st2.resumedBy, st2.until <= IST(13, 13)], [undefined, 'owner', true]);
+    const r2 = await run(IST(13, 13, 1));
+    eq(r2.sent, 4); eq(orderSends().length, 4); eq(S.slotEvery, 60000, 'the slot is asked for 1 a minute for 2 hours after a refusal (the fake slot always grants)');
+    deq(S.rows.filter((x) => x.kind === 'placed').map((x) => x.status), ['sent', 'sent', 'sent', 'sent']);
+    S.fetches = []; S.sendFail = { code: 130429, message: 'Rate limit hit' }; S.orders.push(order({ order_id: '#1557', customer_mobile: '9811122266', created_at: new Date(IST(13, 13, 20)) }));
+    await run(IST(13, 13, 30));
+    deq([stopState().stopped, stopState().code, stopState().strikes, alertSends().length, S.stopAlertClaims], [true, 130429, 2, 2, 2]);   // the 2nd refusal within 2 hours
+    assert.match(valuesOf(alertSends()[0])[0], /^WhatsApp order messages STOPPED: Meta refused \(130429\) on order #1557 at 1:30 pm/);
+    S.sendFail = null; delete S.settings.whatsapp_alert_to; delete S.settings.whatsapp_alert_extra; delete S.settings.wa_stop_alert;
+  });
+  await t('customer-side at send time (131026 not on WhatsApp, 131049 per-user limit, our own "Not a WhatsApp number"): that ONE row fails with the words and code, the rest go on in the same run, nothing stops, no alert', async () => {
+    S.metaTemplates.push(ALERT_TPL); S.settings.whatsapp_alert_to = '919876500001';
+    turnOn(); S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' }), order({ order_id: '#1555', customer_mobile: '9811122244' })];
+    let n = 0;
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => {
+      if (!/\/messages$/.test(url)) return realFetch(url, init);
+      n++; S.fetches.push({ url, method: 'POST', body: JSON.parse(init.body) });
+      if (n === 1) return { ok: false, status: 400, json: async () => ({ error: { code: 131026, message: 'Message undeliverable' } }) };
+      if (n === 2) return { ok: false, status: 400, json: async () => ({ error: { code: 131049, message: 'This message was not delivered to maintain healthy ecosystem engagement.' } }) };
+      return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.ok' + n }] }) };
+    };
+    let r; try { r = await run(IST(13, 12)); } finally { global.fetch = realFetch; }
+    deq([r.sent, r.failed, r.paused, r.stopped], [1, 2, false, false]);
+    deq(S.rows.filter((x) => x.kind === 'placed').map((x) => [x.status, x.code]), [['failed', 131026], ['failed', 131049], ['sent', null]]);
+    eq(S.settings.wa_pause, undefined, 'nothing stopped'); eq(alertSends().length, 0);
+    delete S.settings.whatsapp_alert_to;
+  });
+  await t('a later failed delivery report: Meta\'s side (132001 words) = the row back in line (pending, due now, the code from the words) + the STOP; the customer\'s side (131026) = the row Failed, nothing stops; a late report for a message sent before Resume is not a new stop (the row still waits)', async () => {
+    turnOn(); S.orders = [order(), order({ order_id: '#1554', customer_mobile: '9811122233' })];
+    await run(IST(13, 12)); await run(IST(13, 12, 1));
+    const [a, b] = ['#1553', '#1554'].map((id) => S.rows.find((x) => x.order_id === id && x.kind === 'placed'));
+    deq([a.status, b.status], ['sent', 'sent']);
+    eq(await status.noteAutoStatus(b.wa_id, 'failed', '131026 · Message undeliverable · Message Undeliverable.'), true);
+    deq([b.status, S.settings.wa_pause], ['failed', undefined]);
+    eq(await status.noteAutoStatus(a.wa_id, 'failed', '132001 · Template name does not exist in the translation'), true);
+    deq([a.status, a.code, new Date(a.due_at).getTime()], ['pending', 132001, IST(13, 12, 1)]);
+    const st = stopState(); deq([st.stopped, st.code, st.order, st.kind], [true, 132001, '#1553', 'placed']);
+    // Resume; then a report for a message sent BEFORE the resume (the old burst): the row waits, no new stop
+    await pause.resumeNow('owner', IST(13, 12, 5)); pause.forgetPauseCache();
+    S.rows.push({ id: 'old9', business_id: 'b1', order_id: '#1560', kind: 'placed', status: 'sent', wa_id: 'wamid.old9', attempts: 1, sent_at: new Date(IST(13, 11, 50)), due_at: new Date(IST(13, 11, 50)), updated_at: new Date(IST(13, 11, 50)) });
+    const warn = console.warn, lines = []; console.warn = (m) => lines.push(String(m));
+    try { await status.noteAutoStatus('wamid.old9', 'failed', '130429 · Rate limit hit'); } finally { console.warn = warn; }
+    deq([S.rows.find((x) => x.id === 'old9').status, stopState().stopped, stopState().resumedBy], ['pending', undefined, 'owner']);
+    assert.ok(lines.some((l) => /late failure report \(130429\)[^]*not a new stop/.test(l)), lines.join('\n'));
+    // after RATE_MAX_ATTEMPTS Meta-side tries the row is Failed (as today), the stop still comes
+    S.rows.push({ id: 'many9', business_id: 'b1', order_id: '#1561', kind: 'placed', status: 'sent', wa_id: 'wamid.many9', attempts: rules.RATE_MAX_ATTEMPTS, sent_at: new Date(IST(13, 12, 6)), due_at: new Date(), updated_at: new Date() });
+    await status.noteAutoStatus('wamid.many9', 'failed', '130429 · Rate limit hit');
+    deq([S.rows.find((x) => x.id === 'many9').status, stopState().stopped], ['failed', true]);
+    eq(stopState().reason, '130429 · Rate limit hit', 'a report\'s words already carry the code: never doubled');
+  });
+  await t('while stopped: a ShipTrack alert and the test message still go at once; a failed ALERT on Meta\'s side (190 token) stops the order messages too (its first try only), a customer-side alert failure never; the stop alert\'s own refusal never loops; the pure view and manual pause / timed pause against a stop', async () => {
+    const q = require(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts')); q.setAlertGap(0);
+    S.metaTemplates.push(ALERT_TPL); S.settings.whatsapp_alert_to = '919876500001';
+    turnOn(); S.orders = [order()];
+    await pause.stopWhatsApp({ code: 132001, words: 'Template name does not exist', order: '#1500', kind: 'placed' }, IST(13, 12));
+    pause.forgetPauseCache();
+    let r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA', chargebackId: 'cb1' });
+    assert.ok(r.id, 'the alert went through the stop'); eq(alertSends().length, 1);
+    const ts = await auto.sendAutomationTest('b1', '9876500001', 'Test'); deq(ts.results.map((x) => x.ok), [true, true]);
+    eq(orderSends().length, 2, 'the two test messages'); eq((await run(IST(13, 12, 1))).paused, true); eq(orderSends().length, 2, 'no order message');
+    // the pure view
+    const v = rules.pauseView(stopState(), IST(13, 12, 2));
+    deq([v.state, v.stopped, v.stopCode, v.stopOrder, v.stopKind, v.stopAt, v.manual, v.reason, v.strikes], ['stopped', true, 132001, '#1500', 'placed', new Date(IST(13, 12)).toISOString(), false, '132001 Template name does not exist', 1]);
+    deq([rules.pauseView(null, IST(13, 12)).stopped, rules.pauseView({ until: IST(13, 12) + 60000, at: IST(13, 12), strikes: 1, reason: '130429' }, IST(13, 12)).state], [false, 'paused']);
+    eq(rules.pauseView(stopState(), IST(13, 12) + rules.STOP_MS + 1).state, 'normal');   // 30 days on, the row is just old
+    const ov = (await route.GET(jreq(OWNER, {}))).body; deq([ov.pauseInfo.state, ov.pauseInfo.stopCode, ov.paused.stopped, ov.foreign.line && ov.foreign.line.tone], ['stopped', 132001, true, 'ok']);
+    // Pause now while stopped: the stop holds (nothing rewritten); a timed 130429 pause (another app's report) never shortens it
+    eq((await route.POST(jreq(OWNER, { action: 'pause', minutes: 15 }))).status, 200);
+    deq([stopState().stopped, stopState().manual, stopState().until - IST(13, 12)], [true, undefined, rules.STOP_MS]);
+    await pause.pauseWhatsApp('130429 foreign', IST(13, 12, 3), 15 * 60000); await pause.pauseWhatsApp('130429 foreign', IST(13, 12, 4));
+    deq([stopState().stopped, stopState().until - IST(13, 12)], [true, rules.STOP_MS]);
+    // the Today board's line
+    const wh = require(path.join(SRC, 'lib/chat/whatsapp-health.ts')); wh.resetWaPhoneCache();
+    const realNow = Date.now; Date.now = () => IST(13, 12, 5);
+    let h; try { h = await wh.loadWaHealth(IST(13, 12, 5)); } finally { Date.now = realNow; }
+    deq([h.safetyStop.reason, h.safetyStop.order, h.safetyStop.at], ['132001 Template name does not exist', '#1500', new Date(IST(13, 12)).toISOString()]);
+    const lines = health.waHealthLines(h); eq(lines[0].tone, 'danger'); assert.match(lines[0].text, /^WhatsApp order messages are STOPPED after a Meta failure since 12:00 pm \(132001 Template name does not exist, order #1500\)/);
+    eq(health.waHealthLines({ ...h, safetyStop: null }).some((l) => /STOPPED/.test(l.text)), false);
+    // Resume, then an alert Meta refuses with 190 (the token): the order messages stop again, the alert is answered to its caller as before
+    await pause.resumeNow('owner', IST(13, 12, 6)); pause.forgetPauseCache(); S.fetches = []; delete S.settings.wa_stop_alert;
+    S.sendFail = { code: 190, message: 'Invalid OAuth access token' };
+    r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on kurtiya' });
+    deq(['error' in r, r.code], [true, 190]);
+    deq([stopState().stopped, stopState().kind, stopState().code], [true, 'alert', 190]);
+    eq(alertSends().length, 2, 'the chargeback alert tried once, the stop alert tried once (refused too): no loop');
+    // the stop alert's refusal (190, tries 1) found the stop already running: one stop, one claim
+    eq(S.stopAlertClaims, 1);
+    // a customer-side alert failure (the alert number is not on WhatsApp) stops nothing
+    await pause.resumeNow('owner', IST(13, 12, 7)); pause.forgetPauseCache(); S.fetches = [];
+    S.sendFail = { code: 131026, message: 'Message undeliverable' };
+    r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'x' });
+    deq(['error' in r, stopState().stopped], [true, undefined]);
+    // a failed delivery report on a sent alert (Meta's side, tries 1): stops; on a retried one (tries 2): never
+    S.sendFail = null; S.fetches = [];
+    r = await q.sendAlert({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'y' }); assert.ok(r.id);
+    let wamid = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_sent:')).pop().slice('wa_alert_sent:'.length);
+    eq(await q.noteAlertStatus(wamid, 'failed', '131042 · Business eligibility payment issue'), true);
+    deq([stopState().stopped, stopState().kind, stopState().code], [true, 'alert', null]);
+    await pause.resumeNow('owner', Date.now() + 1000); pause.forgetPauseCache();
+    S.settings['wa_alert_sent:wamid.retried'] = JSON.stringify({ to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'z', tries: 2, first: new Date().toISOString() });
+    eq(await q.noteAlertStatus('wamid.retried', 'failed', '130429 · Rate limit hit'), true);
+    eq(stopState().stopped, undefined, 'a retried alert\'s report never stops');
+    for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:') || k.startsWith('wa_alert_sent:')) delete S.settings[k];
+    delete S.settings.whatsapp_alert_to; delete S.settings.wa_pause; delete S.settings.wa_stop_alert; pause.forgetPauseCache();
+  });
+  await t('the test report (owner 15 Oct night, "sent" but never arrived): the test send records the number (masked), the template, the panel and the order; the overview answers the last 5 newest first; the Automation tab shows them under the test boxes; the screens and the wiring', async () => {
+    S.metaTemplates.push(LINK); auto.resetTemplateCache();
+    S.orders = [order({ order_id: '#1560', created_at: new Date(IST(13, 11, 30)) })];
+    const ff = require(path.join(SRC, 'lib/chat/whatsapp-foreign.ts'));
+    const ts = await auto.sendAutomationTest('b1', '9876500001', 'Test'); deq(ts.results.map((x) => x.ok), [true]);
+    const key = Object.keys(S.settings).find((k) => k.startsWith('wa_test_sent:')); assert.ok(key);
+    const rec = JSON.parse(S.settings[key]);
+    deq([rec.to, rec.template, rec.language, rec.panel, rec.panelName, rec.order, rec.status], ['••••0001', 'order_placed_link', 'en_US', 'b1', 'vastora', '#1560', 'sent']);
+    assert.ok(!/9876500001/.test(S.settings[key]), 'never the full number');
+    // six tests: the overview keeps the newest five, newest first
+    for (let i = 0; i < 6; i++) await ff.noteTestSent('wamid.t' + i, '91987650001' + i, { template: 'order_placed_link', panel: 'b2', panelName: 'VASTRIKA' }, IST(13, 10, i));
+    const ov = await auto.automationOverview(null, IST(13, 12));
+    deq(ov.tests.map((x) => x.to), ['••••0001', '••••0015', '••••0014', '••••0013', '••••0012']); eq(ff.TEST_REPORTS, 5);
+    deq([ov.tests[0].panel, ov.tests[1].panel, ov.tests[0].status], ['b1', 'b2', 'sent']);
+    const g = await route.GET(jreq(OWNER, {})); eq(g.status, 200); eq(g.body.tests.length, 5);
+    // the record follows Meta's report (whatsapp.js proves the webhook path); here the parse never throws
+    deq(ff.parseTestRecord('junk'), null); deq(ff.parseTestRecord(JSON.stringify({ to: '••••0001', at: 'x', status: 'bogus' })).status, 'sent');
+    // the screens: the Automation tab lists the brand's tests under its test boxes, the Number status box the stop, the Today board the line
+    const panel = fs.readFileSync(path.join(SRC, 'components/whatsapp/AutomationPanel.tsx'), 'utf8');
+    assert.match(panel, /\(o\.tests \|\| \[\]\)\.filter\(\(t\) => t\.panel === p\.id\)/); assert.match(panel, /Test \{when\(t\.at\)\} to \{t\.to\}/); assert.match(panel, /failed: \$\{t\.words/);
+    assert.match(panel, /every order message stops until you press Resume/);
+    const card = fs.readFileSync(path.join(SRC, 'components/whatsapp/PauseStatusCard.tsx'), 'utf8');
+    assert.match(card, /info\.state === 'stopped'/); assert.match(card, /Stopped after a Meta failure · \$\{info\.reason/); assert.match(card, /STOP_RESUME_CONFIRM\(chosen, ordersDue\)/); assert.match(card, /nothing is lost, \$\{n\(ordersDue\)\} message/);
+    assert.ok(!/the number stops for \{info\.nextPauseMin\} min/.test(card), 'the old "stops for N min" words are gone');
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-health.ts'), 'utf8'), /h\.safetyStop = st\?\.stopped && st\.until > now/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8'), /await safetyStop\(\{ code: res\.code, words: res\.error, order: r\.order_id, kind: r\.kind \}/);
+    assert.ok(!/pauseWhatsApp|retryable\(|RETRY_MS|MAX_ATTEMPTS\b/.test(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto.ts'), 'utf8').replace(/RATE_MAX_ATTEMPTS/g, '')), 'the worker no longer pauses for a while or retries by itself');
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-auto-status.ts'), 'utf8'), /failureSide\(null, error\) === 'meta'/);
+    assert.match(fs.readFileSync(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'), 'utf8'), /tries === 1 && failureSide\(r\.code, r\.error\) === 'meta'/);
+    eq(rules.STOP_RESUME_CONFIRM(2, 3), 'Start sending order messages again, 2 a minute? The 3 that waited go out in line. Make sure the cause (Meta\'s words in the Number status box) is fixed first: if Meta refuses even one again, everything stops again.');
   });
 
   console.log(`WHATSAPP AUTOMATION: ${pass} groups passed${fail ? `, ${fail} FAILED` : ''}`);

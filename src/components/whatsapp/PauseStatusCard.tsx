@@ -3,11 +3,13 @@
 // ── WhatsApp > Automation: the number's status (owner 2026-10-15: "pause ka koi option banade automation ma jissa pata
 // chal jaee ki meta na pause kia ha kab tak resume ho jaega yeh sab") ──
 // Paused (by Meta's 130429 or by hand) until when, with a live countdown; or sending slowly until when; or normal.
-// Meta's words, its last refusal, which refusal of the last 2 hours it was, how long the next pause would be; the order
-// messages due now and the alerts waiting. Pause now (15 / 30 / 60 / 120 min) and Resume now. Super Admin only (the tab).
+// Meta's words, its last refusal, which refusal of the last 2 hours it was; the order messages due now and the alerts
+// waiting. Pause now (15 / 30 / 60 / 120 min) and Resume now. Super Admin only (the tab).
+// STOPPED (owner 2026-10-15 night, "1 msg bhi fail ho toh pause"): a Meta-side failure stopped every order message; the red
+// line names Meta's code and words, the order and the time, how many wait, and the ONLY way on is Resume.
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Pause, Play } from 'lucide-react';
-import { FIRST_AFTER_QUIET_TEXT, SEND_RATES, type PauseView, type SendRate } from '@/lib/chat/whatsapp-auto-rules';
+import { FIRST_AFTER_QUIET_TEXT, SEND_RATES, STOP_RESUME_CONFIRM, type PauseView, type SendRate } from '@/lib/chat/whatsapp-auto-rules';
 import type { AutoOverview, NumberHealth } from '@/lib/chat/whatsapp-auto';
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
@@ -34,22 +36,28 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
   const chosen = rate?.perMinute ?? info.perMinute ?? 2;
   const [pick, setPick] = useState(chosen);
   useEffect(() => { setPick(chosen); }, [chosen]);
-  const paused = info.state === 'paused' && !!info.until && Date.parse(info.until) > now;
+  const stopped = info.state === 'stopped' && !!info.until && Date.parse(info.until) > now;
+  const paused = stopped || (info.state === 'paused' && !!info.until && Date.parse(info.until) > now);
   const tone = paused ? 'var(--danger, #b91c1c)' : info.state === 'slow' ? '#b45309' : 'var(--success, #15803d)';
   const perMin = Math.max(1, Math.round(60000 / (info.sendEveryMs || 30000)));
   const limitAt = health?.limitFreeAt ? time(health.limitFreeAt) : null;
   const resume = () => {
-    const text = info.manual
-      ? 'Resume sending order messages now?'
-      : 'Meta paused this number for sending too many messages. Resuming early may make Meta refuse again and the next pause longer. Resume now anyway?';
+    const text = stopped
+      ? STOP_RESUME_CONFIRM(chosen, ordersDue)
+      : info.manual
+        ? 'Resume sending order messages now?'
+        : 'Meta paused this number for sending too many messages. Resuming early may make Meta refuse again. Resume now anyway?';
     if (window.confirm(text)) onResume();
   };
+  const stopWhat = info.stopKind === 'test' ? 'the test message' : info.stopKind === 'alert' ? 'a ShipTrack alert' : `order ${info.stopOrder || '—'}`;
 
   return (
     <div className="tf-card" style={{ padding: '0.75rem 1rem', borderLeft: `4px solid ${tone}`, display: 'grid', gap: 6 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <strong style={{ fontSize: '0.9rem', color: tone }}>
-          {paused
+          {stopped
+            ? `Stopped after a Meta failure · ${info.reason || 'no words from Meta'} · ${stopWhat} · ${info.stopAt ? time(info.stopAt) : ''} — nothing is lost, ${n(ordersDue)} message${ordersDue === 1 ? '' : 's'} waiting. Check, then press Resume.`
+            : paused
             ? `${info.manual ? `Paused by ${info.by || 'you'}` : 'Paused by Meta (130429)'} · resumes at ${time(info.until!)} (${inText(Date.parse(info.until!) - now)})`
             : info.state === 'slow'
               ? `Sending slowly: ${perMin} order message${perMin === 1 ? '' : 's'} a minute${info.slowUntil ? ` until ${time(info.slowUntil)}` : ''}`
@@ -72,7 +80,13 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
           </span>
         )}
       </div>
-      {paused && !info.manual && info.reason && <div className="meta" style={{ fontSize: '0.78rem' }}>Meta said: {info.reason}</div>}
+      {stopped && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.8125rem', color: 'var(--danger, #b91c1c)', fontWeight: 600 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>Every order message stops the moment Meta refuses one on its side (rate limit, a missing template, the token, no answer), so Meta&apos;s limit is never worn down: the refused message went back in line, new orders keep queueing, chargeback alerts and tests still go. It starts again ONLY when you press Resume. A number that is not on WhatsApp fails that one message only and never stops the rest.</span>
+        </div>
+      )}
+      {paused && !info.manual && !stopped && info.reason && <div className="meta" style={{ fontSize: '0.78rem' }}>Meta said: {info.reason}</div>}
       {/* the speed (owner 2026-10-15, "button se set kar sakein ki har minute 2, 3, 4 message"): 1-4 order messages a minute */}
       {onRate && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8125rem' }}>
@@ -136,7 +150,7 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
       ))}
       {info.lastRefusalAt && (
         <div className="meta" style={{ fontSize: '0.78rem' }}>
-          Meta&apos;s last refusal: {time(info.lastRefusalAt)} · the {ordinal(info.strikes)} in the last 2 hours. If Meta refuses again{paused ? ' after it resumes' : ''}, the number stops for {info.nextPauseMin} min.
+          Meta&apos;s last refusal: {time(info.lastRefusalAt)} · the {ordinal(info.strikes)} in the last 2 hours. If Meta refuses an order message again{paused ? ' after it resumes' : ''}, every order message stops until you press Resume.
           {info.state !== 'normal' && info.slowUntil && !paused ? ` Back to ${chosen} a minute at ${time(info.slowUntil)} if Meta refuses nothing more.` : ''}
         </div>
       )}
@@ -146,7 +160,7 @@ export default function PauseStatusCard({ info, ordersDue, alertsWaiting, busy, 
         Order messages due now: <strong>{ordersDue}</strong>
         {ordersDue > 0 ? ` (about ${Math.ceil(ordersDue / (paused ? 1 : perMin))} min to send them once ${paused ? 'it resumes' : 'their turn comes'})` : ''}
         {' · '}ShipTrack alerts waiting: <strong>{alertsWaiting}</strong>{alertsWaiting > 0 ? ' (they go first; order messages wait for them)' : ''}.
-        {' '}Chargeback alerts and test messages go even while paused; nothing is lost while paused, the messages wait in line.
+        {' '}Chargeback alerts and test messages go even while paused or stopped; nothing is lost meanwhile, the messages wait in line.
       </div>
     </div>
   );

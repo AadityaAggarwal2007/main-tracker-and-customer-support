@@ -12,6 +12,7 @@ import { stoppedNumbers } from './whatsapp-stop';
 import { dailyLimit } from './whatsapp-settings';
 import { loadForeignToday } from './whatsapp-foreign';
 import { foreignSeen } from './whatsapp-foreign-rules';
+import { pauseState } from './whatsapp-pause';
 
 const PHONE_TTL_MS = 5 * 60_000;
 type PhoneCache = { at: number; quality: string; status: string; tier: string; error: string | null };
@@ -111,6 +112,9 @@ export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
   } catch (e) { ignoreMissing(e, 'stopped'); }
   // another app on the number (owner 2026-10-15): one small read, never throws
   h.foreignToday = foreignSeen(await loadForeignToday(now));
+  // the safety stop (owner 2026-10-15 night): the Today board's red line until Resume
+  const st = await pauseState().catch(() => null);
+  h.safetyStop = st?.stopped && st.until > now ? { reason: st.reason, at: new Date(st.at).toISOString(), order: st.order ?? null } : null;
   return h;
 }
 
