@@ -20,6 +20,41 @@ export interface WaHealth {
   // Today's automation, India day (owner 2026-10-11: "Today ma bhi WhatsApp message ka daily ka dikhe"): a message counts on
   // the day of its own time (sent, failed or skipped; a waiting one by when it goes), as WhatsApp > Automation counts it.
   today?: { placedWent: number; placedRead: number; trackingWent: number; trackingRead: number; failed: number; skipped: number; dueLater: number };
+  // When the OLDEST of the last 24 hours' conversations started (ISO): 24 hours after it, Meta's rolling count drops by
+  // one and the automation may message a new customer again (owner 2026-10-15, the daily limit guard).
+  oldest24h?: string | null;
+}
+
+// The daily limit guard (owner 2026-10-15: at 242 customers messaged today Meta refused every message to a NEW customer
+// with 130429 whatever the speed; Meta's starting limit is 250 business-initiated customers per rolling 24 hours, and the
+// "2,000" in WhatsApp Manager is the business portfolio's, not necessarily this number's). The worker (whatsapp-auto.ts)
+// stops messaging NEW customers once used24h reaches the limit; a customer messaged in the last 24 hours still gets theirs.
+export const METAS_STARTING_LIMIT = 250;
+export const limitReached = (h: { used24h: number; limit: number | null }): boolean => h.limit != null && h.limit > 0 && h.used24h >= h.limit;
+// When the oldest conversation of the window drops out of Meta's rolling 24 hours (ISO), null = not known.
+export function limitFreeAt(h: { oldest24h?: string | null }): string | null {
+  const t = Date.parse(h.oldest24h || '');
+  return Number.isFinite(t) ? new Date(t + 24 * 3600 * 1000).toISOString() : null;
+}
+const istTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+export function dailyLimitLine(h: { used24h: number; limit: number | null; oldest24h?: string | null }): string | null {
+  if (!limitReached(h)) return null;
+  const at = limitFreeAt(h);
+  return `Daily limit reached: ${h.used24h} / ${h.limit} in the last 24 h — new customers wait until the oldest drops out${at ? ` (about ${istTime(at)})` : ''}; customers messaged in the last 24 h still get theirs`;
+}
+// Meta refused (130429) while the count sits within 10% of the typed limit, or above 230 whatever is typed: the real limit
+// is most likely Meta's starting 250, not the 2,000 the portfolio shows. One red line in plain words; null = nothing to say.
+export const REFUSED_NEAR_LIMIT_PCT = 0.9;
+export const REFUSED_ABOVE = 230;
+export function refusedNearLimit(refusedAt: string | null | undefined, used24h: number, limit: number | null): string | null {
+  if (!refusedAt || !Number.isFinite(Date.parse(refusedAt))) return null;
+  const near = (limit != null && limit > 0 && used24h >= limit * REFUSED_NEAR_LIMIT_PCT) || used24h >= REFUSED_ABOVE;
+  if (!near) return null;
+  const head = `Meta refused at ${used24h} customers in the last 24 h. Meta's starting limit is ${METAS_STARTING_LIMIT} customers a day; WhatsApp Manager > Overview may show 2,000 for the business, but this number may still be on ${METAS_STARTING_LIMIT}.`;
+  if (limit != null && limit <= METAS_STARTING_LIMIT) {
+    return `${head} ShipTrack already waits at ${limit}; Meta may count a few more than ShipTrack does (messages from another tool, or the team's template messages). Lower the Daily limit in WhatsApp > Setup a little (e.g. ${Math.max(50, limit - 20)}).`;
+  }
+  return `${head} Type ${METAS_STARTING_LIMIT} in WhatsApp > Setup > Daily limit and ShipTrack will wait instead of being refused.`;
 }
 
 export type WaTone = 'ok' | 'warn' | 'danger';
@@ -44,7 +79,9 @@ export function waHealthLines(h: WaHealth): WaLine[] {
   else if (quality === 'YELLOW') out.push({ tone: 'warn', text: 'Quality YELLOW: some customers blocked or reported the number. Watch the messages that go out' });
   if (h.limit) {
     const pct = h.used24h / h.limit;
-    if (pct >= 0.9) out.push({ tone: 'danger', text: `Daily limit almost used: ${h.used24h} of ${h.limit} customers in the last 24 hours. New ones will not get the message` });
+    const reached = dailyLimitLine(h);
+    if (reached) out.push({ tone: 'danger', text: reached });
+    else if (pct >= 0.9) out.push({ tone: 'danger', text: `Daily limit almost used: ${h.used24h} of ${h.limit} customers in the last 24 hours. New ones will wait once it is reached` });
     else if (pct >= 0.7) out.push({ tone: 'warn', text: `Daily limit ${Math.round(pct * 100)}% used: ${h.used24h} of ${h.limit} customers in the last 24 hours` });
   }
   if (h.failedToday > 0) out.push({ tone: 'warn', text: `${h.failedToday} automation ${h.failedToday === 1 ? 'message' : 'messages'} failed today: open WhatsApp > Automation > Failed` });

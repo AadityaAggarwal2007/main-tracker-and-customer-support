@@ -112,6 +112,49 @@ export const SEND_GAP_MS = 2_000;
 // day. A run that finds the slot taken stops and the next run (every 30 s) goes on. ShipTrack's own alerts do not wait
 // for it (a chargeback alert is never held back by order messages).
 export const SEND_EVERY_MS = 30_000;
+// The speed, set by the owner (owner 2026-10-15: "button se set kar sakein ki har minute 2, 3, 4 message"): one row in
+// chat_settings `wa_send_rate` = {perMinute, by, at}; 1, 2, 3 or 4 order messages a minute for the whole install (no row
+// = 2, i.e. SEND_EVERY_MS). After a 130429 the gap is the SLOWER of 60 s and the chosen one for two hours (never faster
+// than chosen): today's "1 a minute after a refusal" stays. Read with a 10-second cache per process (whatsapp-pause.ts).
+export const SEND_RATE_KEY = 'wa_send_rate';
+export const SEND_RATES: readonly number[] = [1, 2, 3, 4];
+export const DEFAULT_PER_MINUTE = 2;
+export interface SendRate { perMinute: number; by: string | null; at: string | null }
+export function parseSendRate(value: string | null | undefined): SendRate {
+  try {
+    const j = JSON.parse(String(value || ''));
+    const n = Number(j?.perMinute);
+    if (!SEND_RATES.includes(n)) return { perMinute: DEFAULT_PER_MINUTE, by: null, at: null };
+    return { perMinute: n, by: typeof j?.by === 'string' ? j.by.slice(0, 60) : null, at: typeof j?.at === 'string' ? j.at : null };
+  } catch { return { perMinute: DEFAULT_PER_MINUTE, by: null, at: null }; }
+}
+export const sendRateValue = (perMinute: number, by: string, nowMs: number) => JSON.stringify({ perMinute, by: by.slice(0, 60), at: new Date(nowMs).toISOString() });
+// The gap between two order messages at that speed (2 a minute = SEND_EVERY_MS).
+export const gapFor = (perMinute: number): number => Math.round(60_000 / (SEND_RATES.includes(perMinute) ? perMinute : DEFAULT_PER_MINUTE));
+
+// Which template ShipTrack uses for what (owner 2026-10-15: "template ke bahar on/off ka button ki ye wala working hai
+// baaki nahi"): one chip per template card in WhatsApp > Templates, from the automation's current mode (linkModeOf).
+export const ALERT_TEMPLATE = 'shiptrack_alert';
+export interface TemplateUsage { text: string; tone: 'ok' | 'warn' | 'muted' }
+export function templateUsage(t: { name: string; status: string }, mode: LinkMode): TemplateUsage {
+  const name = tplKey(t), approved = t.status === 'APPROVED';
+  const notYet = t.status === 'PENDING' ? 'waiting for approval' : `not approved (${String(t.status || 'unknown').toLowerCase()})`;
+  const use = (text: string): TemplateUsage => (approved ? { text, tone: 'ok' } : { text: `${text} — but ${notYet}`, tone: 'warn' });
+  if (isLinkTemplateName(name)) {
+    if (mode.active) {
+      return mode.template && tplKey(mode.template) === name
+        ? { text: 'In use: every new order (one message)', tone: 'ok' }
+        : { text: `Not in use (${mode.template ? tplKey(mode.template) : LINK_TEMPLATE} is the one sent)`, tone: 'muted' };
+    }
+    if (!mode.on) return { text: 'Not in use (switch OFF)', tone: 'warn' };
+    if (!approved) return { text: t.status === 'PENDING' ? 'Waiting for approval' : `Not in use (${notYet})`, tone: 'warn' };
+    return { text: `Not in use: ${mode.reason.replace(/^two messages: /, '')}`, tone: 'warn' };
+  }
+  if (name === PLACED_TEMPLATE) return use(mode.active ? 'In use: only orders without a tracking link' : 'In use: every new order');
+  if (name === TRACKING_TEMPLATE) return use(mode.active ? 'In use: the 48-hour link for orders whose first message had none' : 'In use: every order, 48 hours later');
+  if (name === ALERT_TEMPLATE) return use('In use: ShipTrack alerts (chargeback, AI credit, chargeback risk, stuck promises)');
+  return { text: 'Not used by ShipTrack', tone: 'muted' };
+}
 // Meta keeps refusing after a burst (owner 2026-10-15, live: 77 messages in 3 minutes during the deploy, then 130429 again
 // at ONE message a minute): every new 130429 within STRIKE_WINDOW_MS of the last one is a "strike"; the pause doubles
 // (15, 30, 60, 120 min) and, after the pause, order messages go 1 a minute instead of 2 (owner: "har minute 2-4 msg", never
@@ -173,32 +216,36 @@ export interface PauseView {
   nextPauseMin: number;          // if Meta refuses again now / after the pause
   resumedBy: string | null;
   firstAfterQuiet: boolean;      // Meta's last refusal hit the first message after a quiet stretch: not our speed
+  perMinute: number;             // the chosen speed (wa_send_rate), what "normal" means
 }
-export function pauseView(st: PauseState | null, now: number): PauseView {
+// `base` = the chosen gap (gapFor(perMinute)); the view says "slow" only when the gap is wider than the chosen one.
+export function pauseView(st: PauseState | null, now: number, base = SEND_EVERY_MS): PauseView {
   const inWindow = !!st && now - st.at < STRIKE_WINDOW_MS && !(st.manual && st.at <= now - STRIKE_WINDOW_MS);
   const strikes = st && inWindow ? st.strikes : 0;
   const paused = !!st && st.until > now;
-  const every = sendEveryFor(st && inWindow ? st : null, now);
+  const every = sendEveryFor(st && inWindow ? st : null, now, base);
   const iso = (ms: number) => new Date(ms).toISOString();
   return {
-    state: paused ? 'paused' : every > SEND_EVERY_MS ? 'slow' : 'normal',
+    state: paused ? 'paused' : every > base ? 'slow' : 'normal',
     until: paused ? iso(st!.until) : null,
     manual: !!(paused && st!.manual), by: paused && st!.manual ? st!.by || null : null,
     reason: st ? st.reason || null : null,
     lastRefusalAt: st && strikes > 0 ? iso(st.at) : null,
     strikes,
-    slowUntil: !paused && every > SEND_EVERY_MS && st ? iso(st.at + STRIKE_WINDOW_MS) : null,
+    slowUntil: !paused && every > base && st ? iso(st.at + STRIKE_WINDOW_MS) : null,
     sendEveryMs: every,
     nextPauseMin: Math.round(Math.min(PAUSE_MS * 2 ** (strikes > 0 ? Math.min(strikes, MAX_STRIKES - 1) : 0), MAX_PAUSE_MS) / 60000),
     resumedBy: st && !paused ? st.resumedBy || null : null,
     firstAfterQuiet: !!(st && st.firstAfterQuiet && (paused || strikes > 0)),
+    perMinute: Math.max(1, Math.round(60_000 / base)),
   };
 }
 export const MANUAL_PAUSE_MIN = [15, 30, 60, 120];
-// How far apart order messages go now: the normal SEND_EVERY_MS, wider while the last 130429 is under two hours old.
+// How far apart order messages go now: the chosen gap (`base`, gapFor(perMinute); 30 s by default), and while the last
+// 130429 is under two hours old the SLOWER of 60 s and the chosen gap (never faster than chosen).
 export function sendEveryFor(state: PauseState | null, now: number, base = SEND_EVERY_MS): number {
   if (!state || now - state.at >= STRIKE_WINDOW_MS) return base;
-  return Math.min(base * 2 ** state.strikes, MAX_SEND_EVERY_MS);
+  return Math.max(base, MAX_SEND_EVERY_MS);
 }
 export function isRateLimited(code: number | null | undefined, error?: string | null): boolean {
   return code === RATE_LIMIT_CODE || /^\s*130429\b/.test(String(error || ''));

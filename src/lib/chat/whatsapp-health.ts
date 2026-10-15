@@ -34,26 +34,52 @@ const ignoreMissing = (e: unknown, what: string) => {
   if (code !== '42P01' && code !== '42703') console.error(`[wa-health] ${what}:`, (e as Error).message);
 };
 
-export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
-  if (!waConfigured()) return null;
-  const phone = await phoneFacts(now);
-  // Meta's tier when the number carries one; else the limit typed in WhatsApp > Setup (Meta keeps it on the portfolio now)
-  const metaLimit = tierLimit(phone.tier);
-  const saved = metaLimit || phone.tier.toUpperCase() === 'TIER_UNLIMITED' ? null : await dailyLimit();
-  const h: WaHealth = { quality: phone.quality, status: phone.status, tier: phone.tier, limit: metaLimit ?? saved, limitFrom: metaLimit ? 'meta' : saved ? 'saved' : null, used24h: 0, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: phone.error };
-  try {
-    const r = await query<{ n: number; today: number }>(
-      `SELECT count(DISTINCT x.digits)::int AS n, (count(DISTINCT x.digits) FILTER (WHERE x.at >= ${IST_TODAY}))::int AS today FROM (
+// The conversations WE started in the last 24 hours (Meta's rolling window): the automation's sends and the team's
+// template messages, one per different number.
+const STARTED_24H_SQL = `
          SELECT w.to_number AS digits, w.sent_at AS at FROM wa_auto_sends w
           WHERE w.sent_at > now() - interval '24 hours' AND w.status IN ('sent', 'delivered', 'read')
          UNION ALL
          SELECT substr(c.visitor_id, 4), m.created_at FROM messages m JOIN conversations c ON c.id = m.conversation_id
           WHERE m.created_at > now() - interval '24 hours' AND m.sender = 'agent' AND m.metadata ? 'wa_template'
-            AND c.source = 'whatsapp' AND c.visitor_id LIKE 'wa:%' AND COALESCE(m.metadata->>'wa_sent', 'true') <> 'false'
+            AND c.source = 'whatsapp' AND c.visitor_id LIKE 'wa:%' AND COALESCE(m.metadata->>'wa_sent', 'true') <> 'false'`;
+
+// How many different customers we started a conversation with in the last 24 hours / since midnight India time, and
+// when the oldest of them was (24 hours after it the rolling count drops by one). One query; a failed read = zeros.
+export async function usedNumbers(): Promise<{ used24h: number; usedToday: number; oldest24h: string | null }> {
+  try {
+    const r = await query<{ n: number; today: number; oldest: string | Date | null }>(
+      `SELECT count(DISTINCT x.digits)::int AS n, (count(DISTINCT x.digits) FILTER (WHERE x.at >= ${IST_TODAY}))::int AS today, min(x.at) AS oldest FROM (${STARTED_24H_SQL}
        ) x`);
-    h.usedToday = r.rows[0]?.today ?? 0;
-    h.used24h = r.rows[0]?.n ?? 0;
-  } catch (e) { ignoreMissing(e, 'used'); }
+    const oldest = r.rows[0]?.oldest;
+    return { used24h: r.rows[0]?.n ?? 0, usedToday: r.rows[0]?.today ?? 0, oldest24h: oldest ? new Date(oldest).toISOString() : null };
+  } catch (e) { ignoreMissing(e, 'used'); return { used24h: 0, usedToday: 0, oldest24h: null }; }
+}
+// The numbers of those customers (the daily limit guard, whatsapp-auto.ts: a message to one of them is not a NEW
+// conversation for Meta and may still go at the limit). Read only when the count is near the limit. A failed read = none.
+export async function knownNumbers24h(): Promise<Set<string>> {
+  try {
+    const r = await query<{ digits: string }>(`SELECT DISTINCT x.digits FROM (${STARTED_24H_SQL}
+       ) x WHERE x.digits IS NOT NULL`);
+    return new Set(r.rows.map((x) => String(x.digits)));
+  } catch (e) { ignoreMissing(e, 'known'); return new Set(); }
+}
+// The daily limit that counts now: Meta's tier when the number carries one, else the limit typed in WhatsApp > Setup
+// (Meta keeps it on the portfolio now, so the tier often comes back empty); null = unlimited or not known.
+export async function limitNow(now = Date.now()): Promise<{ limit: number | null; limitFrom: 'meta' | 'saved' | null; phone: { quality: string; status: string; tier: string; error: string | null } }> {
+  if (!waConfigured()) return { limit: null, limitFrom: null, phone: { quality: 'UNKNOWN', status: 'UNKNOWN', tier: 'UNKNOWN', error: null } };
+  const phone = await phoneFacts(now);
+  const metaLimit = tierLimit(phone.tier);
+  const saved = metaLimit || phone.tier.toUpperCase() === 'TIER_UNLIMITED' ? null : await dailyLimit();
+  return { limit: metaLimit ?? saved, limitFrom: metaLimit ? 'meta' : saved ? 'saved' : null, phone };
+}
+
+export async function loadWaHealth(now = Date.now()): Promise<WaHealth | null> {
+  if (!waConfigured()) return null;
+  const { limit, limitFrom, phone } = await limitNow(now);
+  const h: WaHealth = { quality: phone.quality, status: phone.status, tier: phone.tier, limit, limitFrom, used24h: 0, failedToday: 0, waitingToday: 0, stopped: 0, phoneError: phone.error };
+  const used = await usedNumbers();
+  h.usedToday = used.usedToday; h.used24h = used.used24h; h.oldest24h = used.oldest24h;
   try {
     const r = await query<{ failed: number; waiting: number }>(
       `SELECT (count(*) FILTER (WHERE status = 'failed' AND updated_at >= ${IST_TODAY}))::int AS failed,

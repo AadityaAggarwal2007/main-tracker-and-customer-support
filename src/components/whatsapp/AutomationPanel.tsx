@@ -159,7 +159,7 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 'auto', gap: 4 }} onClick={() => void load(true)}><RefreshCw size={13} /> Refresh</button>
         </div>
         <p style={{ fontSize: '0.8125rem', margin: 0, color: 'var(--fg-muted)' }}>
-          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, one every 30 seconds (2 a minute; 1 a minute for two hours after Meta refuses one), so Meta does not block the number for sending too fast. ShipTrack&apos;s alerts (chargeback first) go before any order message.
+          When it is ON for a panel, every new order of that panel (Shopify or CSV) gets the <strong>order placed</strong> message on the customer&apos;s WhatsApp number by itself, with the order id, the brand and its support email. 48 hours later the customer gets the <strong>tracking link</strong>, only while the office is open (10 AM to 7:30 PM, Saturday till 2 PM): a 48th hour at night, on a Sunday or a holiday goes out when the office opens next. Old orders (an old CSV, anything placed before you switched it on or more than 24 hours back) are never messaged, and nobody gets the same message twice. Messages go out slowly, <strong>{o.sendRate?.perMinute ?? 2} a minute</strong> (one every {Math.round(60 / (o.sendRate?.perMinute ?? 2))} seconds; 1 a minute for two hours after Meta refuses one): pick the speed in the Number status box below. Once the daily limit (WhatsApp &gt; Setup) is reached in the last 24 hours, new customers wait for their turn and customers already messaged in those 24 hours still get theirs, so Meta does not refuse the number for sending too many new conversations. ShipTrack&apos;s alerts (chargeback first) go before any order message.
         </p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8125rem', alignItems: 'center' }}>
           <span>Template <code>order_placed</code>: <span className={`chip ${tplTone(o.templates.placed)}`}>{o.templates.placed}</span></span>
@@ -187,9 +187,10 @@ export default function AutomationPanel({ token, onAlert }: { token: string; onA
           </div>
         )}
         {o.pauseInfo && (
-          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'} health={o.numberHealth ?? null}
+          <PauseStatusCard info={o.pauseInfo} ordersDue={o.ordersDue ?? 0} alertsWaiting={o.alertsWaiting ?? 0} busy={busy === 'pause'} health={o.numberHealth ?? null} rate={o.sendRate ?? null}
             onPause={(m) => void pauseAct({ action: 'pause', minutes: m }, `Order messages paused for ${m} minutes`)}
-            onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')} />
+            onResume={() => void pauseAct({ action: 'resume' }, 'Sending resumed')}
+            onRate={(n) => void pauseAct({ action: 'rate', perMinute: n }, `Order messages: ${n} a minute from now on`)} />
         )}
         {(o.templates.placed === 'MISSING' || o.templates.tracking === 'MISSING') && (
           <div className="meta" style={{ fontSize: '0.78rem' }}>Make the missing one in Templates (the buttons &quot;Order placed template&quot; and &quot;Tracking link template&quot; fill it), send it to Meta, and come back when it says APPROVED.</div>

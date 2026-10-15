@@ -4,7 +4,10 @@
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
 import { query, queryOne } from '@/lib/db';
-import { MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, STRIKE_WINDOW_MS, firstAfterQuietOf, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
+import {
+  MANUAL_PAUSE_MIN, MAX_STRIKES, SEND_EVERY_MS, SEND_RATE_KEY, SEND_RATES, STRIKE_WINDOW_MS, firstAfterQuietOf, gapFor, nextPause, parsePauseState, parseSendRate,
+  sendEveryFor, sendRateValue, type PauseState, type SendRate,
+} from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
 export interface WaPause { until: number; reason: string }
@@ -63,9 +66,37 @@ export async function pauseState(): Promise<PauseState | null> {
   } catch { return null; }
 }
 
-// The gap between two order messages right now (wider for two hours after a 130429).
+// The speed the owner chose (owner 2026-10-15, "har minute 2, 3, 4 message"; whatsapp-auto-rules.ts SEND_RATE_KEY): 1-4
+// order messages a minute for the whole install, read with a 10-second cache per process like the pause; a failed read
+// or no row = 2 a minute (today's 30 s).
+let rateCache: { at: number; rate: SendRate } | null = null;
+export async function loadSendRate(now = Date.now()): Promise<SendRate> {
+  if (rateCache && now - rateCache.at < 10_000) return rateCache.rate;
+  let rate = parseSendRate(null);
+  try {
+    const r = await queryOne<{ value: string }>(`SELECT value FROM chat_settings WHERE key = $1`, [SEND_RATE_KEY]);
+    rate = parseSendRate(r?.value);
+  } catch (e) { console.error('[whatsapp] send rate:', (e as Error).message); }
+  rateCache = { at: now, rate };
+  return rate;
+}
+export async function saveSendRate(perMinute: number, by: string, now = Date.now()): Promise<SendRate | null> {
+  if (!SEND_RATES.includes(perMinute)) return null;
+  const value = sendRateValue(perMinute, by, now);
+  await query(
+    `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [SEND_RATE_KEY, value]);
+  rateCache = null;
+  console.log(`[whatsapp] order messages: ${perMinute} a minute, set by ${by}`);
+  return parseSendRate(value);
+}
+export function forgetSendRateCache(): void { rateCache = null; }
+
+// The gap between two order messages right now: the chosen one (gapFor), the slower of it and 60 s for two hours after
+// a 130429.
 export async function sendEvery(now = Date.now()): Promise<number> {
-  return sendEveryFor(await pauseState(), now);
+  return sendEveryFor(await pauseState(), now, gapFor((await loadSendRate(now)).perMinute));
 }
 
 export function forgetPauseCache(): void { cache = null; }
