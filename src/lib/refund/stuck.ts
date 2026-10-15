@@ -6,7 +6,8 @@
 import { query, queryOne } from '@/lib/db';
 import { isOfficeHours } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
-import { sendWhatsAppTemplate, waConfigured } from '@/lib/chat/whatsapp';
+import { waConfigured } from '@/lib/chat/whatsapp';
+import { sendAlert } from '@/lib/chat/whatsapp-alert-queue';
 import { listTemplates } from '@/lib/chat/whatsapp-templates';
 import { alertTo, extraAlertTo, templatesAccount } from '@/lib/chat/whatsapp-settings';
 import { STUCK_DAYS, alertTimeOk, emptyStuck, istDay, stuckAlertText, stuckTotal, type StuckCounts } from './stuck-rules';
@@ -72,7 +73,7 @@ export async function runStuckAlert(now = Date.now()): Promise<number> {
     if (!claim) return 0;
     let sent = 0;
     for (const n of to) {
-      const r = await sendWhatsAppTemplate(n, tpl.name, tpl.language, [text]);
+      const r = await sendAlert({ to: n, name: tpl.name, language: tpl.language, text });   // waits out Meta's rate limit (whatsapp-alert-queue.ts)
       if ('error' in r) console.error('[stuck] alert not sent:', r.error); else sent++;
     }
     console.log(`[stuck] daily alert sent to ${sent} of ${to.length} number(s)`);

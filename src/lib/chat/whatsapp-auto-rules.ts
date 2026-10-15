@@ -18,6 +18,30 @@ export const MAX_ATTEMPTS = 3;
 export const RETRY_MS = 10 * 60 * 1000;
 export const BATCH = 15;                            // sends per minute: Meta's rate limit and the minute's budget
 
+// ONE message per order (owner 2026-10-15: "pehle hi message mein saath mein tracking link chala jaye ... double double
+// message ... do do hazar messages"): once Meta has APPROVED the "order_placed_link" template (order placed + the
+// tracking link, the brand-rules preset ORDER_LINK_PRESET) the first message carries the link and the 48-hour tracking
+// message is skipped for that order; until then the two messages go as before. Its values are trackingParams'.
+export const LINK_TEMPLATE = 'order_placed_link';
+
+// Meta's "130429 Rate limit hit: too many messages sent from this phone number in a short period of time" (owner
+// 2026-10-15: 59 order messages failed in half an hour, and the chargeback alert on the same number did not arrive). It
+// often comes AFTER Meta took the message, as a failed delivery report. The message never went out, so: every send from
+// the number stops for PAUSE_MS (whatsapp-pause.ts, both processes), the row waits and goes again by itself, at most
+// RATE_MAX_ATTEMPTS tries; and sends are spaced SEND_GAP_MS apart instead of back to back.
+export const RATE_LIMIT_CODE = 130429;
+export const RATE_MAX_ATTEMPTS = 6;
+export const PAUSE_MS = 15 * 60 * 1000;
+export const SEND_GAP_MS = 2_000;
+// Slow and steady (owner 2026-10-15: "dheere dheere chala jaye, har minute 1 ya 2 msg, jisse yeh crash na kare"): ONE
+// order message every SEND_EVERY_MS across the whole install (both processes, every run): 2 a minute, at most 2,880 a
+// day. A run that finds the slot taken stops and the next run (every 30 s) goes on. ShipTrack's own alerts do not wait
+// for it (a chargeback alert is never held back by order messages).
+export const SEND_EVERY_MS = 30_000;
+export function isRateLimited(code: number | null | undefined, error?: string | null): boolean {
+  return code === RATE_LIMIT_CODE || /^\s*130429\b/.test(String(error || ''));
+}
+
 export const AUTO_PREFIX = 'wa_auto:';
 export const autoKey = (panelId: string) => AUTO_PREFIX + panelId;
 
@@ -88,4 +112,5 @@ export const SKIP = {
   noLink: 'The order has no tracking link',
   gone: 'The order is no longer there',
   stopped: 'The customer asked us to stop WhatsApp messages (STOP)',
+  inFirst: 'Not needed: the tracking link already went in the first message (one message per order)',
 } as const;

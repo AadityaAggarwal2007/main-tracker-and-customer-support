@@ -14,11 +14,13 @@ import { loadBrands } from './whatsapp-brands';
 import { loadHolidays } from './holidays';
 import { isOfficeHours } from '@/lib/office-hours';
 import {
-  AUTO_PREFIX, BATCH, FRESH_MS, MAX_ATTEMPTS, PLACED_TEMPLATE, RETRY_MS, SKIP, TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
-  autoKey, autoValue, dueNow, eligibleFrom, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
+  AUTO_PREFIX, BATCH, FRESH_MS, LINK_TEMPLATE, MAX_ATTEMPTS, PAUSE_MS, PLACED_TEMPLATE, RATE_MAX_ATTEMPTS, RETRY_MS, SKIP,
+  TRACKING_TEMPLATE, TRACKING_TOO_LATE_MS,
+  autoKey, autoValue, dueNow, eligibleFrom, isRateLimited, parseAuto, placedParams, retryable, trackingDueMs, trackingParams,
   type AutoSetting, type BrandWords, type OrderFacts,
 } from './whatsapp-auto-rules';
 import { dayRange } from './whatsapp-auto-view';
+import { pauseWhatsApp, takeSendSlot, whatsAppPause } from './whatsapp-pause';
 
 export type Kind = 'placed' | 'tracking';
 const STATUSES = ['pending', 'sent', 'delivered', 'read', 'failed', 'skipped'] as const;
@@ -66,13 +68,13 @@ export const resetTemplateCache = () => { tplCache = { at: 0, list: null, error:
 const approved = (list: TemplateInfo[] | null, name: string) => list?.find((t) => t.name === name && t.status === 'APPROVED') || null;
 
 interface DueRow {
-  id: string; order_id: string; kind: Kind; attempts: number; due_at: string;
+  id: string; order_id: string; kind: Kind; attempts: number; due_at: string; placed_template: string | null;
   gone: boolean; customer_name: string | null; customer_mobile: string | null; created_at: string | null;
   is_cancelled: boolean | null; tracking_status: string | null; delivered_at: string | null;
   tracking_token: string | null; tracking_domain: string | null;
 }
 
-export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number }
+export interface AutoRun { idle?: string; panels: number; queued: number; sent: number; failed: number; skipped: number; retried: number; paused?: boolean }
 
 const TIMED_OUT = 'WhatsApp did not answer in time';   // whatsapp.ts, the 15-second cut
 const g = globalThis as unknown as { __waAutoBusy?: boolean; __waAutoInstalled?: boolean | null };
@@ -95,6 +97,16 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     for (const b of await loadBrands().catch(() => [])) brands.set(b.id, { name: b.name, email: b.email });
     const { list } = await templateStates(nowMs);
     let budget = BATCH;
+    // Meta's rate limit (130429): nothing is sent while the number is paused; new orders are still queued. When the pause
+    // is over, the messages that failed with it (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
+    let paused = !!(await whatsAppPause(nowMs));
+    if (!paused) {
+      await query(
+        `UPDATE wa_auto_sends SET status = 'pending', due_at = now(), updated_at = now()
+          WHERE status = 'failed' AND (code = $1 OR error LIKE '130429%') AND attempts < $2 AND updated_at > now() - interval '24 hours'`,
+        [130429, RATE_MAX_ATTEMPTS]).catch((e) => console.error('[wa-auto] requeue:', (e as Error).message));
+    }
+    out.paused = paused;
     // numbers whose customer wrote STOP (whatsapp-stop.ts): never messaged
     const stopped = await stoppedNumbers().catch(() => new Set<string>());
 
@@ -127,11 +139,13 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         out.queued++;
       }
 
+      if (paused) continue;
       // 2. due rows, a few a minute: order-placed first; tracking rows only while the office is open and Meta has
       // approved that template (a pile of waiting tracking rows must never hold back today's order-placed messages)
       const trackingCanGo = isOfficeHours(nowMs, holidays) && !!approved(list, TRACKING_TEMPLATE);
       const due = await query<DueRow>(
         `SELECT w.id::text AS id, w.order_id, w.kind, w.attempts, w.due_at,
+                (SELECT p.template FROM wa_auto_sends p WHERE p.business_id = w.business_id AND p.order_id = w.order_id AND p.kind = 'placed') AS placed_template,
                 (o.order_id IS NULL) AS gone, o.customer_name, o.customer_mobile, o.created_at, o.is_cancelled,
                 o.tracking_status, o.delivered_at, o.tracking_token::text AS tracking_token, b.tracking_domain
            FROM wa_auto_sends w
@@ -143,7 +157,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
       );
       const brand: BrandWords = brands.get(panelId) || { name: '', email: '' };
       for (const r of due.rows) {
-        if (budget <= 0) break;
+        if (budget <= 0 || paused) break;
         const skip = async (why: string) => { await query(`UPDATE wa_auto_sends SET status = 'skipped', error = $2, updated_at = now() WHERE id = $1`, [r.id, why]); out.skipped++; };
         if (r.gone) { await skip(SKIP.gone); continue; }
         const createdMs = r.created_at ? new Date(r.created_at).getTime() : nowMs;
@@ -153,16 +167,19 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
         if (stopped.has(digits)) { await skip(SKIP.stopped); continue; }
         if (r.kind === 'placed' && nowMs - createdMs > FRESH_MS) { await skip(SKIP.tooOld); continue; }
         if (r.kind === 'tracking') {
+          if (r.placed_template === LINK_TEMPLATE) { await skip(SKIP.inFirst); continue; }   // the link went in the first message
           if (r.delivered_at || /^delivered$/i.test(r.tracking_status || '')) { await skip(SKIP.delivered); continue; }
           if (!r.tracking_token) { await skip(SKIP.noLink); continue; }
           if (nowMs - createdMs > TRACKING_TOO_LATE_MS) { await skip(SKIP.tooOld); continue; }
           if (!dueNow('tracking', new Date(r.due_at).getTime(), nowMs, holidays)) continue;   // office closed: it waits
         }
-        const tpl = approved(list, r.kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
+        // one message per order once Meta approved order_placed_link (the order needs its tracking link for it)
+        const linkTpl = r.kind === 'placed' && r.tracking_token ? approved(list, LINK_TEMPLATE) : null;
+        const tpl = linkTpl || approved(list, r.kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
         if (!tpl) continue;                                                                    // not approved by Meta yet: it waits
         const base = (r.tracking_domain || process.env.TRACKING_BASE_URL || 'https://shiptrack.store').replace(/\/+$/, '');
         const facts: OrderFacts = { orderId: r.order_id, customerName: r.customer_name, trackingLink: r.tracking_token ? `${base}/track/${r.tracking_token}` : null };
-        const params = r.kind === 'placed' ? placedParams(facts, brand) : trackingParams(facts, brand);
+        const params = linkTpl || r.kind === 'tracking' ? trackingParams(facts, brand) : placedParams(facts, brand);
         if (params.length < tpl.vars) {
           await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
             [r.id, `The template "${tpl.name}" has ${tpl.vars} values but the automation fills ${params.length}. Make the template again from its preset button.`]);
@@ -173,6 +190,8 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, 'This brand has no support email for the message: set it in WhatsApp > Templates > "Each brand\'s own words", then Send again']);
           out.failed++; continue;
         }
+        // Slow and steady (owner 2026-10-15): one order message per 30 s for the whole install; no slot = this run stops
+        if (!(await takeSendSlot())) break;
         // The server runs two processes: claim the row first (only one of them gets it) so nobody is messaged twice.
         const claim = await query(
           `UPDATE wa_auto_sends SET due_at = now() + interval '30 minutes', updated_at = now()
@@ -187,6 +206,17 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
             [r.id, res.id, digits, tpl.name, renderTemplate(tpl, params.slice(0, tpl.vars))]
           );
           out.sent++;
+          if (linkTpl) {
+            await query(`UPDATE wa_auto_sends SET status = 'skipped', error = $3, updated_at = now()
+                          WHERE business_id = $1 AND order_id = $2 AND kind = 'tracking' AND status = 'pending'`,
+              [panelId, r.order_id, SKIP.inFirst]).catch(() => undefined);
+          }
+        } else if (isRateLimited(res.code, res.error)) {
+          // Meta's rate limit: this one waits for the pause, and nothing more goes from the number this run
+          await query(`UPDATE wa_auto_sends SET status = $5, attempts = attempts + 1, error = $2, code = $3, due_at = $4, updated_at = now() WHERE id = $1`,
+            [r.id, res.error, res.code, new Date(nowMs + PAUSE_MS), r.attempts + 1 >= RATE_MAX_ATTEMPTS ? 'failed' : 'pending']);
+          await pauseWhatsApp(`${res.code ?? ''} ${res.error}`.trim(), nowMs);
+          paused = true; out.paused = true; out.retried++;
         } else if (res.error === TIMED_OUT) {
           // Meta may have taken it before the answer was lost: never sent again by itself
           await query(`UPDATE wa_auto_sends SET status = 'failed', error = $2, code = NULL, attempts = attempts + 1, updated_at = now() WHERE id = $1`,
@@ -228,7 +258,8 @@ export interface RecentRow {
 }
 export interface AutoOverview {
   installed: boolean; configured: boolean;
-  templates: { placed: string; tracking: string; error: string | null };
+  templates: { placed: string; tracking: string; link: string; error: string | null };
+  paused: { until: string; reason: string } | null;
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -298,7 +329,8 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     if (missingTable(e)) installed = false; else console.error('[wa-auto] overview:', (e as Error).message);
   }
   return {
-    installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), error },
+    installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), link: stateOf(LINK_TEMPLATE), error },
+    paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
   };
 }
@@ -334,10 +366,12 @@ export async function sendAutomationTest(panelId: string, to: string, name: stri
   const facts: OrderFacts = { orderId: o?.order_id || '#TEST', customerName: name || 'Test', trackingLink: o?.tracking_token ? `${base}/track/${o.tracking_token}` : `${base}/track` };
   const words: BrandWords = { name: brand?.name || '', email: brand?.email || '' };
   const results: TestSend[] = [];
-  for (const kind of ['placed', 'tracking'] as const) {
-    const tpl = approved(list, kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
+  // one message per order once order_placed_link is approved (owner 2026-10-15), else the two as before
+  const link = approved(list, LINK_TEMPLATE);
+  for (const kind of (link ? ['placed'] : ['placed', 'tracking']) as Kind[]) {
+    const tpl = kind === 'placed' && link ? link : approved(list, kind === 'placed' ? PLACED_TEMPLATE : TRACKING_TEMPLATE);
     if (!tpl) { results.push({ kind, ok: false, text: '', error: 'Template not approved by Meta yet' }); continue; }
-    const params = (kind === 'placed' ? placedParams(facts, words) : trackingParams(facts, words)).slice(0, tpl.vars);
+    const params = (kind === 'tracking' || tpl === link ? trackingParams(facts, words) : placedParams(facts, words)).slice(0, tpl.vars);
     const r = await sendWhatsAppTemplate(digits, tpl.name, tpl.language, params);
     results.push({ kind, ok: !('error' in r), text: renderTemplate(tpl, params), error: 'error' in r ? r.error : null });
   }

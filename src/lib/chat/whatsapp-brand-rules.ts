@@ -26,6 +26,18 @@ export const ORDER_TRACKING_PRESET = {
   footer: '',
   examples: ['Rahul', '#1042', 'Your Brand', 'https://shiptrack.store/track/abc123', 'help@yourbrand.com'],
 };
+// ONE message per order (owner 2026-10-15): order placed + the tracking link together. Its values are the tracking
+// template's ({{1}} customer, {{2}} order, {{3}} brand, {{4}} tracking link, {{5}} support email); once Meta approves it
+// the automation sends only this one (whatsapp-auto-rules.ts LINK_TEMPLATE).
+export const ORDER_LINK_PRESET = {
+  name: 'order_placed_link',
+  language: 'en_US',
+  category: 'UTILITY',
+  header: 'Order Placed Successfully',
+  body: 'Hi {{1}}, your order {{2}} with {{3}} has been placed successfully. Thank you for shopping with us! You can track your order anytime here: {{4}} . For any confusion, please email us at {{5}} and our team will help you.',
+  footer: '',
+  examples: ['Rahul', '#1042', 'Your Brand', 'https://shiptrack.store/track/abc123', 'help@yourbrand.com'],
+};
 // ShipTrack's own alert to the owner (owner 2026-10-10: the AI's OpenRouter credits about to run out, ai-credit.ts).
 // One variable = what is wrong and what to do; to the number saved in WhatsApp > Setup.
 export const SHIPTRACK_ALERT_PRESET = {

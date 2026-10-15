@@ -5,6 +5,7 @@ import { runStuckAlert } from '@/lib/refund/stuck';
 import { getPool } from '@/lib/db';
 import { pollAllMailboxes } from '@/lib/chat/email';
 import { runWaAutomation } from '@/lib/chat/whatsapp-auto';
+import { runAlertQueue } from '@/lib/chat/whatsapp-alert-queue';
 import { runAutoAssign } from '@/lib/chat/auto-assign';
 import { runLateEscalation } from '@/lib/chat/escalate-late';
 
@@ -43,6 +44,8 @@ export async function GET(request: NextRequest) {
   void runRiskEscalation().catch(() => {});
   // Promises waiting 2+ days (owner 2026-10-14, refund/stuck.ts): one WhatsApp a working day to the alert numbers.
   void runStuckAlert().catch(() => {});
+  // ShipTrack's own alerts that waited out Meta's rate limit (owner 2026-10-15)
+  void runAlertQueue().catch(() => {});
 
   const client = await getPool().connect();
   try {

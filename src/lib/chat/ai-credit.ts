@@ -7,7 +7,8 @@
 // The key never leaves this file; nothing about it is logged.
 import { query, queryOne } from '@/lib/db';
 import { alertText, assessCredit, parseCredits, parseKey, type AiCredit } from './ai-credit-rules';
-import { sendWhatsAppTemplate, waConfigured } from './whatsapp';
+import { waConfigured } from './whatsapp';
+import { sendAlert } from './whatsapp-alert-queue';
 import { listTemplates } from './whatsapp-templates';
 import { alertTo, templatesAccount } from './whatsapp-settings';
 
@@ -63,7 +64,7 @@ export async function aiCreditAlert(now = Date.now()): Promise<{ sent: boolean; 
     const list = await listTemplates(await templatesAccount());
     const tpl = list.ok ? list.value.find((t) => t.name === 'shiptrack_alert' && t.status === 'APPROVED') : null;
     if (!tpl) return { sent: false, why: 'template not approved' };
-    const r = await sendWhatsAppTemplate(to, tpl.name, tpl.language, [text]);
+    const r = await sendAlert({ to, name: tpl.name, language: tpl.language, text });   // waits out Meta's rate limit (whatsapp-alert-queue.ts)
     if ('error' in r) { console.error('[ai-credit] alert not sent:', r.error); return { sent: false, why: r.error }; }
     await query(
       `INSERT INTO chat_settings (key, value, updated_at) VALUES ($1, $2, now())

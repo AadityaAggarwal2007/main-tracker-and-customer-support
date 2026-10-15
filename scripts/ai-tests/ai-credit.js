@@ -18,6 +18,7 @@ const fakes = {
   './whatsapp-templates': { listTemplates: async () => ({ ok: true, value: S.templates }) },
   './whatsapp-settings': { alertTo: async () => S.to, templatesAccount: async () => '123456789' },
 };
+fakes['@/lib/chat/whatsapp'] = fakes['./whatsapp'];                   // the alert queue (whatsapp-alert-queue.ts) sends through the same fake
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, ...rest) {
   if (fakes[request]) return request;

@@ -19,7 +19,8 @@ import { isOfficeHours } from '@/lib/office-hours';
 import { loadHolidays } from '@/lib/chat/holidays';
 import { OWNER_KEY, transferStatus } from '@/lib/chat/team-rules';
 import { isKnownCustomer, logChatEvent, nameOfKey, pickManager, setSystemActor } from '@/lib/chat/team-routing';
-import { sendWhatsAppTemplate, waConfigured } from '@/lib/chat/whatsapp';
+import { waConfigured } from '@/lib/chat/whatsapp';
+import { sendAlert } from '@/lib/chat/whatsapp-alert-queue';
 import { listTemplates } from '@/lib/chat/whatsapp-templates';
 import { alertTo, extraAlertTo, templatesAccount } from '@/lib/chat/whatsapp-settings';
 import { loadRiskList, type RiskItem } from './risk';
@@ -113,7 +114,7 @@ async function sendAlerts(items: RiskItem[]): Promise<number> {
     if (!claim) continue;
     const text = riskAlertText(item);
     for (const n of to) {
-      const r = await sendWhatsAppTemplate(n, tpl.name, tpl.language, [text]);
+      const r = await sendAlert({ to: n, name: tpl.name, language: tpl.language, text });   // waits out Meta's rate limit (whatsapp-alert-queue.ts)
       if ('error' in r) console.error('[risk] alert not sent:', r.error); else sent++;
     }
   }
