@@ -35,6 +35,7 @@ const db = {
     if (/^UPDATE chat_settings SET value = to_char\(clock_timestamp\(\)/.test(sql)) { S.slotEvery = p[1]; if (S.slotBusy) return { rows: [], rowCount: 0 }; S.slots++; return { rows: [{ key: p[0] }], rowCount: 1 }; }
     if (/^INSERT INTO chat_settings/.test(sql)) { S.settings[p[0]] = p[1]; return { rows: [], rowCount: 1 }; }
     if (/^SELECT key FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ key })); return { rows, rowCount: rows.length }; }
+    if (/^SELECT value FROM chat_settings WHERE key LIKE \$1 AND \(CASE/.test(sql)) { const pre = p[0].replace('%', ''); const rows = Object.keys(S.settings).filter((k) => k.startsWith(pre) && !JSON.parse(S.settings[k]).done).map((key) => ({ value: S.settings[key] })); return { rows, rowCount: rows.length }; }
     if (/^UPDATE chat_settings SET value = \(value::jsonb \|\| '\{"done":true\}'::jsonb\)::text/.test(sql)) { const v = S.settings[p[0]]; if (!v || JSON.parse(v).done) return { rows: [], rowCount: 0 }; S.settings[p[0]] = JSON.stringify({ ...JSON.parse(v), done: true }); return { rows: [{ value: S.settings[p[0]] }], rowCount: 1 }; }
     if (/^UPDATE wa_auto_sends SET status = 'pending', due_at = now\(\), updated_at = now\(\) WHERE status = 'failed' AND \(code = \$1 OR error LIKE '130429%'\)/.test(sql)) { let n = 0; for (const r of S.rows) if (r.status === 'failed' && (r.code === p[0] || /^130429/.test(r.error || '')) && r.attempts < p[1]) { Object.assign(r, { status: 'pending', due_at: new Date(S.nowMs) }); n++; } return { rows: [], rowCount: n }; }
     if (/^UPDATE wa_auto_sends SET status = \$5, attempts = attempts \+ 1, error = \$2, code = \$3, due_at = \$4/.test(sql)) { const r = S.rows.find((x) => x.id === p[0]); Object.assign(r, { status: p[4], attempts: r.attempts + 1, error: p[1], code: p[2], due_at: p[3] }); return { rows: [], rowCount: 1 }; }
@@ -608,15 +609,20 @@ async function t(name, fn) {
     for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:')) delete S.settings[k];
     delete S.settings.wa_pause; pause.forgetPauseCache();
   });
-  await t('130429 again and again (owner 15 Oct, live: refused at one message a minute after a burst): each new strike within 2 h doubles the pause (15, 30, 60, 120 min) and order messages go 1 a minute instead of 2 (never slower); the same burst\'s reports count once; 2 quiet hours = back to normal', async () => {
+  await t('130429 again and again (owner 15 Oct, live: refused at one message a minute after a burst): a new strike after the pause ends and within 2 h doubles the pause (15, 30, 60, 120 min) and order messages go 1 a minute instead of 2 (never slower); a 130429 WHILE the pause runs is the same burst (no strike, no extension); strikes stop at 10; 2 quiet hours = back to normal', async () => {
     const P = rules.PAUSE_MS, m = 60000, t0 = IST(13, 13);
     eq(rules.nextPause(null, t0).until - t0, P);
     let st = { until: t0 + P, at: t0, strikes: 1, reason: '' };
     eq(rules.nextPause(st, t0 + m), null);                                          // the same burst
-    const n2 = rules.nextPause(st, t0 + 20 * m); deq([n2.strikes, n2.until - (t0 + 20 * m)], [2, 2 * P]);
+    eq(rules.nextPause(st, t0 + 10 * m), null);                                     // still paused 10 min later: the same burst, not a strike
+    eq(rules.nextPause(st, t0 + P - 1), null);                                      // up to the pause's last moment
+    const n2 = rules.nextPause(st, t0 + 20 * m); deq([n2.strikes, n2.until - (t0 + 20 * m)], [2, 2 * P]);   // after it ends, within 2 h: the next strike
     st = { until: n2.until, at: t0 + 20 * m, strikes: 2, reason: '' };
+    eq(rules.nextPause(st, t0 + 40 * m), null);                                     // the 30-minute pause runs: same burst
     const n3 = rules.nextPause(st, t0 + 60 * m); deq([n3.strikes, n3.until - (t0 + 60 * m)], [3, 4 * P]);
     const n9 = rules.nextPause({ until: 0, at: t0, strikes: 9, reason: '' }, t0 + 10 * m); eq(n9.until - (t0 + 10 * m), rules.MAX_PAUSE_MS);
+    eq(rules.nextPause({ until: 0, at: t0, strikes: 10, reason: '' }, t0 + 10 * m).strikes, 10);   // never past 10
+    eq(rules.MAX_STRIKES, 10); eq(rules.SAME_STRIKE_MS, undefined, 'the old 2-minute window is gone');
     eq(rules.nextPause({ until: 0, at: t0, strikes: 3, reason: '' }, t0 + 3 * 60 * m).strikes, 1);   // quiet for 3 h: a fresh start
     eq(rules.sendEveryFor(null, t0), rules.SEND_EVERY_MS);
     deq([1, 2, 3, 4].map((k) => rules.sendEveryFor({ until: 0, at: t0, strikes: k, reason: '' }, t0 + 30 * m)), [60000, 60000, 60000, 60000]);
@@ -631,6 +637,42 @@ async function t(name, fn) {
     turnOn(); S.orders = [order()]; pause.forgetPauseCache();
     await run(t0 + 20 * m + 2 * P + m);
     eq(sends().length, 1); eq(S.slotEvery, 60000);                                  // after the pause, one a minute
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+  });
+  await t('one alert Meta keeps refusing never pushes the pause up (review 15 Oct): sendAlert pauses on its FIRST refusal only (strikes stays 1 over 3 tries); a report on a retried alert does not pause either; a queued job older than 12 h is not counted as waiting', async () => {
+    const q = require(path.join(SRC, 'lib/chat/whatsapp-alert-queue.ts'));
+    q.setAlertGap(0);
+    for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:') || k.startsWith('wa_alert_sent:')) delete S.settings[k];
+    delete S.settings.wa_pause; pause.forgetPauseCache();
+    S.fetches = []; S.sendFail = { code: 130429, message: 'Rate limit hit' };
+    const job = { to: '919876500001', name: 'shiptrack_alert', language: 'en_US', text: 'CHARGEBACK mail on VASTRIKA', chargebackId: 'cb1' };
+    deq(await q.sendAlert(job), { ok: true, id: null });                            // try 1: refused, queued, the number paused
+    eq(JSON.parse(S.settings.wa_pause).strikes, 1);
+    // the pause runs out (at stays recent, so a second pauseWhatsApp WOULD be strike 2); the queue tries again, twice
+    const expired = (strikes) => { const j = JSON.parse(S.settings.wa_pause); S.settings.wa_pause = JSON.stringify({ ...j, until: new Date(Date.now() - 1000).toISOString(), at: new Date(Date.now() - 5 * 60000).toISOString(), strikes }); pause.forgetPauseCache(); };
+    expired(1);
+    eq(await q.runAlertQueue(), 0);                                                 // try 2: refused again, queued again
+    eq(JSON.parse(S.settings.wa_pause).strikes, 1); assert.ok(Date.parse(JSON.parse(S.settings.wa_pause).until) < Date.now(), 'no new pause');
+    expired(1);
+    eq(await q.runAlertQueue(), 0);                                                 // try 3
+    eq(JSON.parse(S.settings.wa_pause).strikes, 1);
+    const waiting = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:') && !JSON.parse(S.settings[k]).done);
+    eq(waiting.length, 1); eq(JSON.parse(S.settings[waiting[0]]).tries, 3);
+    eq(await q.alertsWaiting(), 1);
+    // Meta's later failed report on a retried alert: back in line, no pause
+    S.sendFail = null; S.fetches = []; expired(1);
+    eq(await q.runAlertQueue(), 1);                                                 // try 4: sent
+    const wamid = Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_sent:')).pop().slice('wa_alert_sent:'.length);
+    eq(JSON.parse(S.settings['wa_alert_sent:' + wamid]).tries, 4);
+    eq(await q.noteAlertStatus(wamid, 'failed', '130429 · Rate limit hit'), true);
+    eq(JSON.parse(S.settings.wa_pause).strikes, 1); assert.ok(Date.parse(JSON.parse(S.settings.wa_pause).until) < Date.now(), 'a retried alert\'s report never pauses');
+    eq(await q.alertsWaiting(), 1);
+    // a job older than 12 hours is dropped on the next run: it does not hold order messages meanwhile
+    for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:')) S.settings[k] = JSON.stringify({ ...JSON.parse(S.settings[k]), first: new Date(Date.now() - q.ALERT_KEEP_MS - 60000).toISOString() });
+    eq(await q.alertsWaiting(), 0);
+    eq(await q.runAlertQueue(), 0);
+    eq(Object.keys(S.settings).filter((k) => k.startsWith('wa_alert_q:') && !JSON.parse(S.settings[k]).done).length, 0, 'dropped');
+    for (const k of Object.keys(S.settings)) if (k.startsWith('wa_alert_q:') || k.startsWith('wa_alert_sent:')) delete S.settings[k];
     delete S.settings.wa_pause; pause.forgetPauseCache();
   });
   await t('while paused: the test send still goes at once (owner: "test sabse pehle"), and a customer\'s message gets no auto reply now (nothing claimed)', async () => {

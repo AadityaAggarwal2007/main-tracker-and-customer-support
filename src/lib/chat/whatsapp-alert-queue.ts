@@ -58,19 +58,26 @@ export async function sendAlert(job: AlertJob): Promise<WaSendResult> {
     return r;
   }
   if (isRateLimited(r.code, r.error) && tries < ALERT_MAX_TRIES) {
-    await pauseWhatsApp(`${r.code ?? ''} ${r.error}`.trim());
+    // The number pauses on the job's FIRST refusal only: one alert Meta keeps refusing (tried every minute) must never
+    // push the order pause up strike by strike.
+    if (tries === 1) await pauseWhatsApp(`${r.code ?? ''} ${r.error}`.trim());
     await enqueue({ ...job, tries });
     return { ok: true, id: null };
   }
   return r;
 }
 
-// How many alerts wait (order messages hold back while any does: alerts first). A failed read = none.
-export async function alertsWaiting(): Promise<number> {
+// How many alerts wait (order messages hold back while any does: alerts first). A job older than ALERT_KEEP_MS is
+// dropped on the next run, so it never holds order messages. A failed read = none.
+export async function alertsWaiting(now = Date.now()): Promise<number> {
   try {
-    const r = await queryOne<{ n: string }>(
-      `SELECT count(*)::text AS n FROM chat_settings WHERE key LIKE $1 AND (CASE WHEN key LIKE $1 THEN value::jsonb->>'done' END) IS NULL`, [QUEUE + '%']);
-    return Number(r?.n || 0);
+    const r = await query<{ value: string }>(
+      `SELECT value FROM chat_settings WHERE key LIKE $1 AND (CASE WHEN key LIKE $1 THEN value::jsonb->>'done' END) IS NULL`, [QUEUE + '%']);
+    let n = 0;
+    for (const { value } of r.rows) {
+      try { if (now - (Date.parse((JSON.parse(value) as AlertJob).first || '') || 0) <= ALERT_KEEP_MS) n++; } catch { /* not a job */ }
+    }
+    return n;
   } catch { return 0; }
 }
 
@@ -87,7 +94,7 @@ export async function noteAlertStatus(waId: string, status: string, error: strin
     const tries = job.tries || 1;
     const fresh = Date.now() - (Date.parse(job.first || '') || 0) < ALERT_KEEP_MS;
     if (isRateLimited(null, error) && tries < ALERT_MAX_TRIES && fresh) {
-      await pauseWhatsApp(String(error || '130429 rate limit'));
+      if (tries === 1) await pauseWhatsApp(String(error || '130429 rate limit'));   // the first refusal only (as sendAlert)
       await enqueue({ ...job, tries });
       await setChargeback(job.chargebackId, ALERT_WAITING);
     } else {

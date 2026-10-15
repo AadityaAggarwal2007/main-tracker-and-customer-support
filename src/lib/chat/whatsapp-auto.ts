@@ -102,7 +102,7 @@ export async function runWaAutomation(nowMs = Date.now()): Promise<AutoRun> {
     // is over, the messages that failed with it (they never went out) wait in line again, at most RATE_MAX_ATTEMPTS tries.
     let paused = !!(await whatsAppPause(nowMs));
     // ShipTrack's alerts go first (owner 2026-10-15, "chargeback sabse pehle"): while one waits, no order message goes.
-    const alertsFirst = (await alertsWaiting()) > 0;
+    const alertsFirst = (await alertsWaiting(nowMs)) > 0;
     if (!paused) {
       await query(
         `UPDATE wa_auto_sends SET status = 'pending', due_at = now(), updated_at = now()
@@ -266,6 +266,8 @@ export interface AutoOverview {
   templates: { placed: string; tracking: string; link: string; error: string | null };
   paused: { until: string; reason: string } | null;
   sendEveryMs?: number;
+  // ShipTrack's own alerts waiting in the queue (alerts first: order messages wait while any does).
+  alertsWaiting?: number;
   range: { day: string; from: string; to: string };
   panels: PanelAuto[]; recent: RecentRow[]; capped: boolean;
 }
@@ -338,6 +340,7 @@ export async function automationOverview(day: string | null = null, nowMs = Date
     installed, configured: waConfigured(), templates: { placed: stateOf(PLACED_TEMPLATE), tracking: stateOf(TRACKING_TEMPLATE), link: stateOf(LINK_TEMPLATE), error },
     paused: await whatsAppPause(nowMs).then((p) => (p ? { until: new Date(p.until).toISOString(), reason: p.reason } : null)).catch(() => null),
     sendEveryMs: await sendEvery(nowMs).catch(() => SEND_EVERY_MS),
+    alertsWaiting: await alertsWaiting(nowMs).catch(() => 0),
     range: { day: rg.day, from: from.toISOString(), to: to.toISOString() }, panels, recent, capped,
   };
 }

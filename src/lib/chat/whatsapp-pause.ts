@@ -4,7 +4,7 @@
 // `until`; a later pause only moves it forward. Read with a 10-second cache. Never throws: a failed read = not paused
 // (the send itself then meets Meta's answer again).
 import { query, queryOne } from '@/lib/db';
-import { SEND_EVERY_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
+import { MAX_STRIKES, SEND_EVERY_MS, nextPause, parsePauseState, sendEveryFor, type PauseState } from './whatsapp-auto-rules';
 
 const KEY = 'wa_pause';
 export interface WaPause { until: number; reason: string }
@@ -30,10 +30,10 @@ export async function whatsAppPause(now = Date.now()): Promise<WaPause | null> {
 }
 
 // Pause the number after a 130429. `ms` given = exactly that long (tests); else the strikes decide (nextPause: 15, 30,
-// 60, 120 minutes; the same burst's reports count once). Returns when the number may send again.
+// 60, 120 minutes; a 130429 while the pause runs is the same burst and counts once). Returns when the number may send again.
 export async function pauseWhatsApp(reason: string, now = Date.now(), ms?: number): Promise<number> {
   const prev = await pauseState();
-  const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? prev.strikes + 1 : 1 } : nextPause(prev, now);
+  const next = ms != null ? { until: now + ms, strikes: prev && now - prev.at < 2 * 60 * 60 * 1000 ? Math.min(prev.strikes + 1, MAX_STRIKES) : 1 } : nextPause(prev, now);
   if (!next) return prev!.until;                                   // the same burst: the pause already runs
   const until = new Date(next.until).toISOString();
   const value = JSON.stringify({ until, reason: reason.slice(0, 200), at: new Date(now).toISOString(), strikes: next.strikes });

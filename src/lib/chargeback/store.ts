@@ -200,7 +200,12 @@ export async function setAlertPanel(id: string, businessId: string, by: 'manual'
       if (m.length === 1) o = { order_id: m[0].order_id };
     } catch (e) { console.error('[chargeback] move match:', (e as Error).message); }
   }
-  await query(`UPDATE chargeback_alerts SET business_id = $2, order_id = $3, routed_by = $4 WHERE id = $1`, [id, businessId, o?.order_id ?? null, by]);
+  try { await query(`UPDATE chargeback_alerts SET business_id = $2, order_id = $3, routed_by = $4 WHERE id = $1`, [id, businessId, o?.order_id ?? null, by]); }
+  catch (e) {
+    // routed_by exists only after chargeback-shared.sql (as listAlerts): before it, the move is the same without it.
+    if ((e as { code?: string })?.code !== '42703') throw e;
+    await query(`UPDATE chargeback_alerts SET business_id = $2, order_id = $3 WHERE id = $1`, [id, businessId, o?.order_id ?? null]);
+  }
   return { ok: true, orderId: o?.order_id ?? null };
 }
 
@@ -209,9 +214,10 @@ export async function setAlertPanel(id: string, businessId: string, by: 'manual'
 // (a PayGlocal mail in vastora's chargeback Gmail, vastora = Easebuzz, kurtiya = PayGlocal -> kurtiya). Never a mail
 // tied to an order of its panel, never one the Super Admin moved by hand, never when the panel ticked nothing or two panels tick the gateway. The poller runs it
 // on each new mail BEFORE the WhatsApp (so the right panel's numbers get it) and once a minute over the open alerts.
+// Only a REAL chargeback moves (chargebackKind): the gateway's other mail (payment received, OTP) stays where it came.
 export async function sortByGateway(onlyId?: string): Promise<{ id: string; businessId: string; panelName: string; orderId: string | null }[]> {
-  type R = { id: string; business_id: string; gateway: string; order_id: string | null; routed_by?: string | null };
-  const sql = (cols: string) => `SELECT id, business_id, gateway, order_id${cols} FROM chargeback_alerts WHERE status <> 'done' AND ($1::text IS NULL OR id::text = $1::text) LIMIT 500`;
+  type R = { id: string; business_id: string; gateway: string; order_id: string | null; subject: string; snippet: string; routed_by?: string | null };
+  const sql = (cols: string) => `SELECT id, business_id, gateway, order_id, subject, snippet${cols} FROM chargeback_alerts WHERE status <> 'done' AND ($1::text IS NULL OR id::text = $1::text) ORDER BY received_at DESC LIMIT 500`;
   let rows: R[];
   try {
     try { rows = (await query<R>(sql(', routed_by'), [onlyId ?? null])).rows; }
@@ -226,6 +232,7 @@ export async function sortByGateway(onlyId?: string): Promise<{ id: string; busi
   for (const a of rows) {
     // The Super Admin's own move, or an order of this panel the mail names (the order proves the panel), stays.
     if (a.routed_by === 'manual' || a.routed_by === 'order' || a.order_id) continue;
+    if (chargebackKind(a.subject, a.snippet) !== 'chargeback') continue;
     const home = gatewayElsewhere(a, ticks);
     if (home.length !== 1) continue;
     try {
