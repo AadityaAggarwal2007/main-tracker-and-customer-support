@@ -4,7 +4,8 @@
 -- fields the owner names himself (e.g. "GST Firm" = "Jiva Enterprises", "Payment Gateway" = "PayU").
 -- These brands are NOT ShipTrack panels; nothing else in ShipTrack reads this table.
 --   founder_name                      required, 1-80 characters
---   brand_name                        required, 1-80 characters, unique ignoring capitals and outer spaces
+--   brand_name                        required, 1-80 characters; the same name may be saved more than once
+--                                     (owner 2026-10-17: "existing brand likh sakte hain, ye rule mat laga")
 --   bank_account_name                 optional, at most 120
 --   custom_field_1_label / _value     the owner's own label (at most 40) and value (at most 200), optional
 --   custom_field_2_label / _value     the same, second field
@@ -29,8 +30,10 @@ CREATE TABLE IF NOT EXISTS brand_directory (
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now()
 );
--- One brand name once, whatever its capitals or outer spaces ("Jiva", " jiva ").
-CREATE UNIQUE INDEX IF NOT EXISTS brand_directory_name_key ON brand_directory (lower(btrim(brand_name)));
+-- The first version kept one brand name once; the owner asked for that rule to go (2026-10-17). Dropping the
+-- unique index removes no row. A plain index keeps the name lookups quick.
+DROP INDEX IF EXISTS brand_directory_name_key;
+CREATE INDEX IF NOT EXISTS brand_directory_name_idx ON brand_directory (lower(btrim(brand_name)));
 
 DO $$
 BEGIN

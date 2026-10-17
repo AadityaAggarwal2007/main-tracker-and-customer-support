@@ -104,5 +104,5 @@ export function founderGroups<T extends BrandInput>(rows: T[]): { key: string; n
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
-export const DUPLICATE_ERROR = 'A brand with this name is already saved';
+export const DUPLICATE_ERROR = 'The server still blocks a repeated brand name: run brand-directory.sql once more';
 export const NOT_INSTALLED_ERROR = 'Brand Directory is not installed yet: run brand-directory.sql once on the server';

@@ -1,9 +1,11 @@
 // Payments > Brand Directory (owner 2026-10-17): the database side. Super Admin only (the routes check).
 // Table brand_directory (brand-directory.sql). Parameterised queries only; a missing table = NotInstalled.
 import { query, queryOne } from '@/lib/db';
-import { nameKey, type BrandInput, type BrandRow } from '@/lib/brand-directory-rules';
+import type { BrandInput, BrandRow } from '@/lib/brand-directory-rules';
 
 export class NotInstalled extends Error {}
+// Owner 2026-10-17: the same brand name may be saved more than once. Duplicate only answers the old unique key
+// (brand_directory_name_key) on an install where brand-directory.sql has not been run again since.
 export class Duplicate extends Error {}
 
 interface Row {
@@ -47,18 +49,8 @@ export async function getBrand(id: string): Promise<BrandRow | null> {
   } catch (e) { return dbError(e); }
 }
 
-// Another brand (not `exceptId`) already has this name, ignoring capitals and outer spaces.
-async function nameTaken(brandName: string, exceptId: string | null): Promise<boolean> {
-  const r = await queryOne<{ id: string }>(
-    `SELECT id FROM brand_directory WHERE lower(btrim(brand_name)) = $1 AND ($2::bigint IS NULL OR id <> $2::bigint) LIMIT 1`,
-    [nameKey(brandName), exceptId],
-  );
-  return !!r;
-}
-
 export async function createBrand(v: BrandInput, actor: string): Promise<BrandRow> {
   try {
-    if (await nameTaken(v.brandName, null)) throw new Duplicate();
     const r = await queryOne<Row>(
       `INSERT INTO brand_directory (founder_name, brand_name, bank_account_name, custom_field_1_label, custom_field_1_value,
          custom_field_2_label, custom_field_2_value, created_by, updated_by)
@@ -67,13 +59,12 @@ export async function createBrand(v: BrandInput, actor: string): Promise<BrandRo
         v.customField2Label, v.customField2Value, actor],
     );
     return toRow(r as Row);
-  } catch (e) { if (e instanceof Duplicate) throw e; return dbError(e); }
+  } catch (e) { return dbError(e); }
 }
 
 // Changes only the fields sent; the others stay as saved. null = no such brand.
 export async function updateBrand(id: string, v: Partial<BrandInput>, actor: string): Promise<BrandRow | null> {
   try {
-    if (v.brandName !== undefined && await nameTaken(v.brandName, id)) throw new Duplicate();
     const r = await queryOne<Row>(
       `UPDATE brand_directory SET
          founder_name         = COALESCE($2, founder_name),
@@ -89,7 +80,7 @@ export async function updateBrand(id: string, v: Partial<BrandInput>, actor: str
         v.customField1Value ?? null, v.customField2Label ?? null, v.customField2Value ?? null, actor],
     );
     return r ? toRow(r) : null;
-  } catch (e) { if (e instanceof Duplicate) throw e; return dbError(e); }
+  } catch (e) { return dbError(e); }
 }
 
 // Removes ONE brand row by its id. false = no such brand.
