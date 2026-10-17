@@ -45,4 +45,4 @@ export interface PanelImpact {
   chatSites: number; chatConversations: number; chatMessages: number;
   teamMembers: number; teamMembersLosingAccess: number;
 }
-export type TabType = 'today' | 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds' | 'mail' | 'chargebacks' | 'whatsapp' | 'shopify';
+export type TabType = 'today' | 'orders' | 'upload' | 'team' | 'settings' | 'score' | 'refunds' | 'mail' | 'chargebacks' | 'whatsapp' | 'shopify' | 'payments';

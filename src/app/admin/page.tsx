@@ -15,6 +15,7 @@ import { clearMailCache } from '@/components/mail/cache';
 import ChargebacksCard from '@/components/ChargebacksCard';
 import ChargebackSettingsCard from '@/components/ChargebackSettingsCard';
 import WhatsAppPage from '@/components/whatsapp/WhatsAppPage';
+import BrandDirectoryCard from '@/components/BrandDirectoryCard';
 import ProductStatsCard from '@/components/ProductStatsCard';
 import OwnerLoginDialog from '@/components/OwnerLogin';
 import MyProfile from '@/components/MyProfile';
@@ -26,12 +27,12 @@ import {
   Check, AlertCircle, ShoppingBag,
   Loader2, Trash2, Building2, Plus,
   Settings, Trophy, Undo2, ShieldAlert, Sun,
-  MessageSquareText, Store,
+  MessageSquareText, Store, Landmark,
 } from 'lucide-react';
 import type { ParseConfig } from 'papaparse';
 import type { RecentUpload, Order, AuthUser, Business, PanelEmailAccount, PanelChatSite, PanelImpact, TabType } from './_lib/types';
 
-const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks', 'whatsapp', 'shopify'];
+const TAB_IDS: TabType[] = ['today', 'orders', 'upload', 'team', 'settings', 'score', 'refunds', 'mail', 'chargebacks', 'whatsapp', 'shopify', 'payments'];
 import { plural, agoText } from './_lib/format';
 import AdminSidebar from './_components/AdminSidebar';
 import OrdersTab from './_components/OrdersTab';
@@ -434,6 +435,7 @@ export default function AdminDashboard() {
       : activeTab === 'refunds' ? canRefunds(user)
       : activeTab === 'chargebacks' ? canChargebacks(user)
       : activeTab === 'whatsapp' ? isSuperAdmin(user)
+      : activeTab === 'payments' ? isSuperAdmin(user)
       : activeTab === 'shopify' ? isSuperAdmin(user) || isTeamLead(user)
       : activeTab === 'mail' ? can(user, 'mail.view') : true;
     if (!ok) setActiveTab('today');
@@ -1021,6 +1023,8 @@ export default function AdminDashboard() {
     { id: 'chargebacks' as TabType, label: 'Chargebacks', icon: ShieldAlert, show: canChargebacks(user) },
     // Owner 2026-10-10: the WhatsApp business number: setup, profile, templates, a test send, activity. Super Admin only.
     { id: 'whatsapp' as TabType, label: 'WhatsApp', icon: MessageSquareText, show: isSuperAdmin(user) },
+    // Owner 2026-10-17: Payments = the Brand Directory (founder, brand, bank account name, two own fields). Super Admin only.
+    { id: 'payments' as TabType, label: 'Payments', icon: Landmark, show: isSuperAdmin(user) },
   ].filter((i) => i.show);
 
   return (
@@ -1036,7 +1040,7 @@ export default function AdminDashboard() {
         {/* Mobile header */}
         <div className="mobile-header">
           <button className="btn-icon" onClick={() => setSidebarOpen(true)}><Package size={20} /></button>
-          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? 'Team score' : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab === 'shopify' ? 'Shopify' : activeTab}</span>
+          <span className="mobile-header-title">{activeTab === 'today' ? 'Today' : activeTab === 'score' ? 'Team score' : activeTab === 'refunds' ? 'Refund requests' : activeTab === 'mail' ? 'Mail' : activeTab === 'chargebacks' ? 'Chargebacks' : activeTab === 'whatsapp' ? 'WhatsApp' : activeTab === 'shopify' ? 'Shopify' : activeTab === 'payments' ? 'Payments' : activeTab}</span>
         </div>
 
         {uploadWarn && (
@@ -1695,6 +1699,10 @@ export default function AdminDashboard() {
           {/* ════════ WHATSAPP (Super Admin only) ════════ */}
           {activeTab === 'whatsapp' && isSuperAdmin(user) && (
             <WhatsAppPage token={token} onAlert={showAlert} />
+          )}
+          {/* ════════ PAYMENTS: Brand Directory (Super Admin only) ════════ */}
+          {activeTab === 'payments' && isSuperAdmin(user) && (
+            <BrandDirectoryCard token={token} onAlert={showAlert} />
           )}
           {/* ════════ REFUND REQUESTS (Super Admin only) ════════ */}
           {activeTab === 'refunds' && canRefunds(user) && (
