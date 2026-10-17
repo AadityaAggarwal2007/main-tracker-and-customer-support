@@ -338,6 +338,9 @@ Done and live:
 
 ## Open with the owner (needs his clicks; I act on the screenshot)
 
+0. (17 Oct) **Payments > Brand Directory** is built (Super Admin only, founder tiles that open into their brands):
+   he runs `brand-directory.sql` once, then adds the brands. WhatsApp: WABA health_status still says BLOCKED 141006
+   (Meta case 29337537139183755) but messages are delivered and read; speed set to 2 a minute.
 1. VASTRIKA > Settings > Copy setup > Copy from vastora > Preview → he sends the lines, I check,
    then Copy now. Same for kurtiya.
 2. (Done 14 Oct) the shared chargeback Gmail reads fine on VASTRIKA ("Working"), kurtiya uses the same one; gateways

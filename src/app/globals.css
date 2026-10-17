@@ -3000,3 +3000,64 @@ p.chat-mail-tick { cursor: default; }
 /* Mail reply: a photo dropped on the reply, and the previews of what goes (owner 2026-10-14) */
 .mail-reply.mail-drop { outline: 2px dashed var(--primary); outline-offset: 2px; }
 .mail-file-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; vertical-align: middle; }
+/* Payments > Brand Directory (owner 2026-10-17): founder, brand, bank account name and two own fields per brand */
+.bd-wrap { display: flex; flex-direction: column; gap: 0.875rem; }
+.bd-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.bd-titles { min-width: 12rem; }
+.bd-title { display: flex; align-items: center; gap: 0.5rem; font-size: 1.375rem; font-weight: 700; margin: 0; }
+.bd-stats { display: flex; gap: 0.625rem; }
+.bd-stat { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 0.5rem 1rem; display: flex; flex-direction: column; min-width: 7.5rem; }
+.bd-stat b { font-size: 1.5rem; line-height: 1.2; color: var(--primary); }
+.bd-stat span { font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
+.bd-bar { display: flex; gap: 0.5rem; align-items: center; }
+.bd-search { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+.bd-search > svg { position: absolute; left: 0.625rem; color: var(--fg-muted); pointer-events: none; }
+.bd-search .form-input { padding-left: 2rem; padding-right: 2rem; }
+.bd-clear { position: absolute; right: 0.5rem; background: none; border: 0; color: var(--fg-muted); cursor: pointer; display: inline-flex; padding: 0.25rem; }
+.bd-refresh { width: auto; padding: 0.5rem 0.625rem; }
+.bd-add { width: auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 0.375rem; }
+.bd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem; }
+.bd-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 0.875rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; box-shadow: var(--shadow-xs); min-width: 0; }
+.bd-row { display: flex; flex-direction: column; gap: 0.0625rem; min-width: 0; }
+.bd-k { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted); }
+.bd-v { font-size: 0.9375rem; color: var(--fg); overflow-wrap: anywhere; }
+.bd-brand { font-size: 1.0625rem; font-weight: 700; }
+.bd-none { color: var(--fg-muted); }
+.bd-custom { background: var(--primary-light); border-radius: var(--radius); padding: 0.375rem 0.5rem; }
+.bd-custom .bd-k { color: var(--primary); text-transform: none; letter-spacing: 0; font-size: 0.75rem; }
+.bd-actions { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
+.bd-actions .btn { width: auto; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; padding: 0.375rem 0.5rem; font-size: 0.8125rem; }
+.bd-del { color: var(--danger); }
+.bd-del-confirm { background: var(--danger); border-color: var(--danger); display: inline-flex; align-items: center; gap: 0.375rem; }
+.bd-empty { background: var(--card-bg); border: 1px dashed var(--border-strong); border-radius: var(--radius-xl); padding: 1.5rem; text-align: center; color: var(--fg-secondary); display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; }
+.bd-empty .btn { width: auto; }
+.bd-warn { border-color: var(--warning); background: var(--warning-light); color: var(--fg); }
+.modal.bd-modal { max-width: 34rem; width: 100%; max-height: 90vh; overflow-y: auto; }
+.bd-form { display: flex; flex-direction: column; gap: 0.75rem; }
+.bd-form .form-group { margin: 0; }
+.bd-fieldset { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 0.5rem 0.75rem 0.75rem; margin: 0; }
+.bd-fieldset legend { font-size: 0.8125rem; font-weight: 700; padding: 0 0.25rem; color: var(--primary); }
+.bd-pair { display: grid; grid-template-columns: 1fr 1.4fr; gap: 0.5rem; }
+.bd-err { font-size: 0.75rem; color: var(--danger); font-weight: 600; margin-top: 0.25rem; }
+@media (max-width: 640px) {
+  .bd-stats { width: 100%; }
+  .bd-stat { flex: 1; min-width: 0; }
+  .bd-bar { flex-wrap: wrap; }
+  .bd-search { flex-basis: 100%; }
+  .bd-add { flex: 1; justify-content: center; }
+  .bd-pair { grid-template-columns: 1fr; }
+}
+/* Brand Directory: one tile per founder, open it to see only their brands (owner 2026-10-17) */
+.bd-founders { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.75rem; }
+.bd-founder { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 1rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.375rem; text-align: left; cursor: pointer; min-height: 11rem; box-shadow: var(--shadow-xs); transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; color: var(--fg); font: inherit; min-width: 0; }
+.bd-founder:hover, .bd-founder:focus-visible { border-color: var(--primary); box-shadow: var(--shadow-md); transform: translateY(-1px); outline: none; }
+.bd-avatar { width: 2.5rem; height: 2.5rem; border-radius: 0.75rem; background: var(--primary); color: var(--primary-fg, #fff); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.125rem; }
+.bd-fname { font-size: 1.0625rem; font-weight: 700; overflow-wrap: anywhere; }
+.bd-fcount { font-size: 0.8125rem; color: var(--fg-muted); font-weight: 600; }
+.bd-fbrands { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.bd-chip { background: var(--primary-light); color: var(--primary); border-radius: 9999px; padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-open { margin-top: auto; display: inline-flex; align-items: center; gap: 0.125rem; font-size: 0.8125rem; font-weight: 700; color: var(--primary); }
+.bd-crumb { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.bd-back { width: auto; display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.625rem; font-size: 0.8125rem; }
+.bd-ftitle { display: flex; align-items: center; gap: 0.375rem; font-size: 1.125rem; font-weight: 700; margin: 0; }
+@media (max-width: 640px) { .bd-founders { grid-template-columns: repeat(2, minmax(0, 1fr)); } .bd-founder { min-height: 9rem; padding: 0.75rem; } }
