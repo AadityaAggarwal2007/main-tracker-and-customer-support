@@ -9,7 +9,7 @@ require.extensions['.ts'] = (m, filename) => m._compile(
 const { NextRequest } = require('next/server');
 const eq = assert.strictEqual, deq = assert.deepStrictEqual, ok = assert.ok;
 
-const S = { user: null, rows: [], next: 1, missing: false, broken: false, raceDup: false, sql: [], logs: [] };
+const S = { user: null, rows: [], next: 1, missing: false, broken: false, oldKey: false, sql: [], logs: [] };
 const key = (v) => String(v).trim().toLowerCase();
 const COLS = ['founder_name', 'brand_name', 'bank_account_name', 'custom_field_1_label', 'custom_field_1_value', 'custom_field_2_label', 'custom_field_2_value'];
 function guard(q) {
@@ -35,14 +35,9 @@ const db = {
     guard(q);
     const s = q.replace(/\s+/g, ' ').trim();
     if (/^SELECT .* FROM brand_directory WHERE id = \$1$/.test(s)) { const r = S.rows.find((x) => String(x.id) === String(p[0])); return r ? out(r) : null; }
-    if (/^SELECT id FROM brand_directory WHERE lower\(btrim\(brand_name\)\) = \$1 AND \(\$2::bigint IS NULL OR id <> \$2::bigint\) LIMIT 1$/.test(s)) {
-      if (S.raceDup) return null;   // another tab saved the same name between the check and the insert
-      const r = S.rows.find((x) => key(x.brand_name) === p[0] && (p[1] == null || String(x.id) !== String(p[1])));
-      return r ? { id: String(r.id) } : null;
-    }
     if (/^INSERT INTO brand_directory/.test(s)) {
       ok(/RETURNING/.test(s));
-      if (S.rows.some((x) => key(x.brand_name) === key(p[1]))) throw Object.assign(new Error('duplicate key value violates unique constraint "brand_directory_name_key"'), { code: '23505' });
+      if (S.oldKey && S.rows.some((x) => key(x.brand_name) === key(p[1]))) throw Object.assign(new Error('duplicate key value violates unique constraint "brand_directory_name_key"'), { code: '23505' });
       const now = new Date().toISOString();
       const r = { id: S.next++, created_at: now, updated_at: now, created_by: p[7], updated_by: p[7] };
       COLS.forEach((c, i) => { r[c] = p[i]; });
@@ -52,7 +47,7 @@ const db = {
       const r = S.rows.find((x) => String(x.id) === String(p[0]));
       if (!r) return null;
       const name = p[2] ?? r.brand_name;
-      if (S.rows.some((x) => x !== r && key(x.brand_name) === key(name))) throw Object.assign(new Error('dup'), { code: '23505' });
+      if (S.oldKey && S.rows.some((x) => x !== r && key(x.brand_name) === key(name))) throw Object.assign(new Error('dup'), { code: '23505' });
       COLS.forEach((c, i) => { if (p[i + 1] !== null && p[i + 1] !== undefined) r[c] = p[i + 1]; });
       r.updated_by = p[8]; r.updated_at = new Date(Date.now() + 1000).toISOString();
       return out(r);
@@ -86,7 +81,7 @@ const add = (b, who = 'owner') => call(who, list.POST, '/api/brand-directory', '
 const getOne = (id, who = 'owner') => call(who, one.GET, `/api/brand-directory/${id}`, 'GET', undefined, { id: String(id) });
 const patch = (id, b, who = 'owner') => call(who, one.PATCH, `/api/brand-directory/${id}`, 'PATCH', b, { id: String(id) });
 const del = (id, who = 'owner') => call(who, one.DELETE, `/api/brand-directory/${id}`, 'DELETE', undefined, { id: String(id) });
-const reset = () => { S.rows = []; S.next = 1; S.missing = false; S.broken = false; S.raceDup = false; S.sql = []; S.logs = []; };
+const reset = () => { S.rows = []; S.next = 1; S.missing = false; S.broken = false; S.oldKey = false; S.sql = []; S.logs = []; };
 const FULL = { founderName: 'Sunny', brandName: 'Jiva', bankAccountName: 'Tradenest', customField1Label: 'GST Firm', customField1Value: 'Jiva Enterprises', customField2Label: 'Payment Gateway', customField2Value: 'PayU' };
 
 const oErr = console.error, oLog = console.log;
@@ -197,18 +192,20 @@ async function t(name, fn) { reset(); try { await fn(); pass++; oLog('  ok  ' + 
     ok(!S.sql.some((q) => /abc/.test(q)));
   });
 
-  await t('12: duplicate brand names (capitals / spaces ignored) are refused on add and on rename; renaming to its own name is fine; the race is 409 too', async () => {
+  await t('12: the same brand name may be saved again (owner 17 Oct), on add and on rename; an install still holding the old unique key answers 409 with what to run', async () => {
     const a = (await add(FULL)).body.brand.id;
-    let r = await add({ founderName: 'Other', brandName: '  JIVA ' });
-    eq(r.status, 409); ok(r.body.fields.brandName); eq(S.rows.length, 1);
-    const b = (await add({ founderName: 'Other', brandName: 'Kurtiya' })).body.brand.id;
+    let r = await add({ founderName: 'Robin', brandName: '  JIVA ' });
+    eq(r.status, 201); eq(S.rows.length, 2, 'a second Jiva is saved');
+    const b = (await add({ founderName: 'Robin', brandName: 'Kurtiya' })).body.brand.id;
     r = await patch(b, { brandName: 'jiva' });
-    eq(r.status, 409); eq(S.rows.find((x) => String(x.id) === b).brand_name, 'Kurtiya', 'nothing changed');
-    r = await patch(a, { brandName: 'JIVA' });
-    eq(r.status, 200, 'a brand may change its own capitals'); eq(r.body.brand.brandName, 'JIVA');
-    S.raceDup = true;
-    r = await add({ founderName: 'X', brandName: 'kurtiya' });
-    eq(r.status, 409, 'the database key catches what the check missed');
+    eq(r.status, 200); eq(r.body.brand.brandName, 'jiva');
+    eq((await getAll()).body.brands.length, 3);
+    ok(!S.sql.some((q) => /SELECT id FROM brand_directory WHERE lower/.test(q)), 'no name check any more');
+    S.oldKey = true;
+    r = await add({ founderName: 'X', brandName: 'kurtiya ' });
+    eq((await add({ founderName: 'X', brandName: 'JIVA' })).status, 409, 'the old key still in the database');
+    ok(/brand-directory\.sql/.test((await add({ founderName: 'X', brandName: 'JIVA' })).body.error));
+    void a;
   });
 
   await t('13: bad input and database trouble answer safely: 400 with field errors, 503 not installed, 500 without database detail', async () => {
@@ -235,12 +232,14 @@ async function t(name, fn) { reset(); try { await fn(); pass++; oLog('  ok  ' + 
     ok(!S.sql.some((q) => /Sunny|Jiva|Tradenest|Secret/.test(q)), 'values only as parameters');
   });
 
-  await t('the SQL file: additive, the unique name key, the DELETE grant only on this table, nothing dropped', () => {
+  await t('the SQL file: additive, no unique name, the DELETE grant only on this table, no table / row dropped', () => {
     const sql = fs.readFileSync(path.resolve(__dirname, '../../brand-directory.sql'), 'utf8');
     ok(/CREATE TABLE IF NOT EXISTS brand_directory/.test(sql));
-    ok(/CREATE UNIQUE INDEX IF NOT EXISTS brand_directory_name_key ON brand_directory \(lower\(btrim\(brand_name\)\)\)/.test(sql));
+    ok(!/CREATE UNIQUE INDEX/.test(sql), 'no unique brand name any more');
+    ok(/DROP INDEX IF EXISTS brand_directory_name_key;/.test(sql), 'the old unique key goes (no row is removed)');
+    ok(/CREATE INDEX IF NOT EXISTS brand_directory_name_idx ON brand_directory \(lower\(btrim\(brand_name\)\)\)/.test(sql));
     ok(/GRANT SELECT, INSERT, UPDATE, DELETE ON brand_directory TO tracker_user/.test(sql));
-    ok(!/\bDROP\b|\bTRUNCATE\b|DELETE FROM/i.test(sql.replace(/--.*$/gm, '')));
+    ok(!/DROP TABLE|\bTRUNCATE\b|DELETE FROM|DROP COLUMN/i.test(sql.replace(/--.*$/gm, '')));
   });
 
   await t('the screen: Payments tab for the Super Admin only; the card uses the real API and keeps nothing in the browser', () => {
