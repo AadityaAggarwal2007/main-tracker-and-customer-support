@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
 
 // ── Payments > Brand Directory, one brand (owner 2026-10-17) ────────────────────────────────────────────────────
 // GET    -> { brand }                       404 no such brand
-// PATCH  {any of the seven fields} -> { brand }   only the fields sent change; 400 bad input, 409 name taken
+// PATCH  {founderName?, brandName?, bankAccountName?, fields?, color?} -> { brand }   only the keys sent change;
+//        400 bad input
 // DELETE -> { ok: true }                    removes this ONE brand only
 // The Super Admin only, like the list route.
 const NOT_FOUND = () => NextResponse.json({ error: 'This brand is not saved any more' }, { status: 404 });
